@@ -17,7 +17,10 @@ import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { CursorPaginationResult } from '@docmost/db/pagination/cursor-pagination';
 import { QueueJob, QueueName } from '../../integrations/queue/constants';
 import { extractUserMentionIdsFromJson } from '../../common/helpers/prosemirror/utils';
-import { ICommentNotificationJob } from '../../integrations/queue/constants/queue.interface';
+import {
+  ICommentNotificationJob,
+  ICommentResolvedNotificationJob,
+} from '../../integrations/queue/constants/queue.interface';
 import { WsService } from '../../ws/ws.service';
 
 @Injectable()
@@ -204,6 +207,65 @@ export class CommentService {
     });
 
     return comment;
+  }
+
+  async resolveComment(
+    comment: Comment,
+    resolved: boolean,
+    authUser: User,
+  ): Promise<Comment> {
+    const resolvedAt = resolved ? new Date() : null;
+    const resolvedById = resolved ? authUser.id : null;
+
+    await this.commentRepo.updateComment(
+      { resolvedAt, resolvedById },
+      comment.id,
+    );
+
+    // Reflect the resolved state on the inline comment mark in the
+    // collaborative document so all connected clients stay in sync.
+    const documentName = `page.${comment.pageId}`;
+    try {
+      await this.collaborationGateway.handleYjsEvent(
+        'resolveCommentMark',
+        documentName,
+        { commentId: comment.id, resolved, user: authUser },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to update comment mark for comment ${comment.id}`,
+        error,
+      );
+    }
+
+    // Notify the comment author when someone else resolves their comment.
+    if (resolved && comment.creatorId !== authUser.id) {
+      const jobData: ICommentResolvedNotificationJob = {
+        commentId: comment.id,
+        commentCreatorId: comment.creatorId,
+        pageId: comment.pageId,
+        spaceId: comment.spaceId,
+        workspaceId: comment.workspaceId,
+        actorId: authUser.id,
+      };
+      await this.notificationQueue.add(
+        QueueJob.COMMENT_RESOLVED_NOTIFICATION,
+        jobData,
+      );
+    }
+
+    const updatedComment = await this.commentRepo.findById(comment.id, {
+      includeCreator: true,
+      includeResolvedBy: true,
+    });
+
+    this.wsService.emitCommentEvent(comment.spaceId, comment.pageId, {
+      operation: 'commentResolved',
+      pageId: comment.pageId,
+      comment: updatedComment,
+    });
+
+    return updatedComment;
   }
 
   private async queueCommentNotification(
