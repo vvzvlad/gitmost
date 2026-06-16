@@ -8,7 +8,6 @@ import { useTranslation } from "react-i18next";
 import { TableOfContents } from "@/features/editor/components/table-of-contents/table-of-contents.tsx";
 import { useAtomValue } from "jotai";
 import { pageEditorAtom } from "@/features/editor/atoms/editor-atoms.ts";
-import AsideChatPanel from "@/ee/ai-chat/components/aside-chat-panel";
 import { PageDetailsAside } from "@/features/page-details/components/page-details-aside.tsx";
 import { ASIDE_PANEL_ID } from "@/hooks/use-toggle-aside.tsx";
 
@@ -35,10 +34,6 @@ export default function Aside() {
       component = <TableOfContents editor={pageEditor} />;
       title = "Table of contents";
       break;
-    case "chat":
-      component = <AsideChatPanel />;
-      title = "AI Chat";
-      break;
     case "details":
       component = <PageDetailsAside />;
       title = "Details";
@@ -52,23 +47,21 @@ export default function Aside() {
     <Box p="md" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {component && (
         <>
-          {tab !== "chat" && (
-            <Group justify="space-between" wrap="nowrap" mb="md">
-              <Title order={2} size="h6" fw={500}>{t(title)}</Title>
-              <Tooltip label={t("Close")} withArrow>
-                <ActionIcon
-                  variant="subtle"
-                  color="gray"
-                  onClick={closeAside}
-                  aria-label={t("Close")}
-                >
-                  <IconX size={18} />
-                </ActionIcon>
-              </Tooltip>
-            </Group>
-          )}
+          <Group justify="space-between" wrap="nowrap" mb="md">
+            <Title order={2} size="h6" fw={500}>{t(title)}</Title>
+            <Tooltip label={t("Close")} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                onClick={closeAside}
+                aria-label={t("Close")}
+              >
+                <IconX size={18} />
+              </ActionIcon>
+            </Tooltip>
+          </Group>
 
-          {tab === "comments" || tab === "chat" ? (
+          {tab === "comments" ? (
             component
           ) : (
             <ScrollArea

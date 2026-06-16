@@ -43,11 +43,6 @@ import { formattedDate } from "@/lib/time.ts";
 import { PageEditModeToggle } from "@/features/user/components/page-state-pref.tsx";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
-import { PageShareModal } from "@/ee/page-permission";
-import {
-  PageVerificationMenuItem,
-  PageVerificationModal,
-} from "@/ee/page-verification";
 import {
   useFavoriteIds,
   useAddFavoriteMutation,
@@ -58,6 +53,8 @@ import {
   useWatchPageMutation,
   useUnwatchPageMutation,
 } from "@/features/page/queries/watcher-query";
+import ShareModal from "@/features/share/components/share-modal.tsx";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 
 interface PageHeaderMenuProps {
   readOnly?: boolean;
@@ -71,6 +68,9 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
     pageId: extractPageSlugId(pageSlug),
   });
   const isDeleted = !!page?.deletedAt;
+  const [workspace] = useAtom(workspaceAtom);
+  // Community public-sharing entry point (replaces the removed EE PageShareModal)
+  const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
 
   useHotkeys(
     [
@@ -103,7 +103,7 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
 
       {!readOnly && <PageEditModeToggle size="xs" />}
 
-      <PageShareModal readOnly={readOnly} />
+      {!workspaceSharingDisabled && <ShareModal readOnly={readOnly ?? false} />}
 
       <Tooltip label={t("Comments")} openDelay={250} withArrow>
         <ActionIcon
@@ -150,10 +150,6 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
   const [
     movePageModalOpened,
     { open: openMovePageModal, close: closeMoveSpaceModal },
-  ] = useDisclosure(false);
-  const [
-    verificationOpened,
-    { open: openVerificationModal, close: closeVerificationModal },
   ] = useDisclosure(false);
   const [pageEditor] = useAtom(pageEditorAtom);
   const pageUpdatedAt = useTimeAgo(page?.updatedAt);
@@ -285,13 +281,6 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
             {t("Page history")}
           </Menu.Item>
 
-          {!readOnly && (
-            <PageVerificationMenuItem
-              pageId={page?.id}
-              onClick={openVerificationModal}
-            />
-          )}
-
           <Menu.Divider />
 
           {!readOnly && (
@@ -380,12 +369,6 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
         currentSpaceSlug={spaceSlug}
         onClose={closeMoveSpaceModal}
         open={movePageModalOpened}
-      />
-
-      <PageVerificationModal
-        pageId={page.id}
-        opened={verificationOpened}
-        onClose={closeVerificationModal}
       />
     </>
   );

@@ -157,5 +157,3 @@ export function useDeleteCommentMutation(pageId?: string) {
     },
   });
 }
-
-// EE: useResolveCommentMutation has been moved to @/ee/comment/queries/comment-query

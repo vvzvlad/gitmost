@@ -17,7 +17,6 @@ import { IconInfoCircle } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { userAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { PageVerificationBadge } from "@/ee/page-verification";
 import { useTranslation } from "react-i18next";
 import { IContributor } from "@/features/page/types/page.types.ts";
 import { FixedToolbar } from "@/features/editor/components/fixed-toolbar/fixed-toolbar";
@@ -105,7 +104,6 @@ export function FullEditor({
       <PageByline
         creator={creator}
         contributors={contributors}
-        readOnly={!editable}
       />
       <MemoizedPageEditor
         pageId={pageId}
@@ -120,10 +118,9 @@ export function FullEditor({
 type PageBylineProps = {
   creator?: PageUser;
   contributors?: IContributor[];
-  readOnly?: boolean;
 };
 
-function PageByline({ creator, contributors, readOnly }: PageBylineProps) {
+function PageByline({ creator, contributors }: PageBylineProps) {
   const { t } = useTranslation();
   const detailsTriggerProps = useAsideTriggerProps("details");
 
@@ -210,8 +207,6 @@ function PageByline({ creator, contributors, readOnly }: PageBylineProps) {
           <IconInfoCircle size={20} stroke={1.5} />
         </ActionIcon>
       </Tooltip>
-
-      <PageVerificationBadge readOnly={readOnly} />
     </Group>
   );
 }

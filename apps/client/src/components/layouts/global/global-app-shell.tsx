@@ -11,11 +11,9 @@ import {
   sidebarWidthAtom,
 } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { SpaceSidebar } from "@/features/space/components/sidebar/space-sidebar.tsx";
-import AiChatSidebar from "@/ee/ai-chat/components/ai-chat-sidebar.tsx";
 import { AppHeader } from "@/components/layouts/global/app-header.tsx";
 import Aside from "@/components/layouts/global/aside.tsx";
 import classes from "./app-shell.module.css";
-import { useTrialEndAction } from "@/ee/hooks/use-trial-end-action.tsx";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 import GlobalSidebar from "@/components/layouts/global/global-sidebar.tsx";
 import { ASIDE_PANEL_ID } from "@/hooks/use-toggle-aside.tsx";
@@ -27,7 +25,6 @@ export default function GlobalAppShell({
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  useTrialEndAction();
   const [mobileOpened] = useAtom(mobileSidebarAtom);
   const toggleMobile = useToggleSidebar(mobileSidebarAtom);
   const [desktopOpened] = useAtom(desktopSidebarAtom);
@@ -78,9 +75,8 @@ export default function GlobalAppShell({
   const location = useLocation();
   const isSettingsRoute = location.pathname.startsWith("/settings");
   const isSpaceRoute = location.pathname.startsWith("/s/");
-  const isAiRoute = location.pathname.startsWith("/ai");
   const isPageRoute = location.pathname.includes("/p/");
-  const showGlobalSidebar = !isSpaceRoute && !isSettingsRoute && !isAiRoute;
+  const showGlobalSidebar = !isSpaceRoute && !isSettingsRoute;
 
   return (
     <>
@@ -116,9 +112,7 @@ export default function GlobalAppShell({
             ? t("Space navigation")
             : isSettingsRoute
               ? t("Settings navigation")
-              : isAiRoute
-                ? t("AI navigation")
-                : t("Main navigation")
+              : t("Main navigation")
         }
       >
         {isSpaceRoute && (
@@ -126,7 +120,6 @@ export default function GlobalAppShell({
         )}
         {isSpaceRoute && <SpaceSidebar />}
         {isSettingsRoute && <SettingsSidebar />}
-        {isAiRoute && <AiChatSidebar />}
         {showGlobalSidebar && <GlobalSidebar />}
       </AppShell.Navbar>
       <AppShell.Main id={MAIN_CONTENT_ID} tabIndex={-1}>
@@ -151,11 +144,9 @@ export default function GlobalAppShell({
               ? t("Comments")
               : asideTab === "toc"
                 ? t("Table of contents")
-                : asideTab === "chat"
-                  ? t("AI Chat")
-                  : asideTab === "details"
-                    ? t("Details")
-                    : undefined
+                : asideTab === "details"
+                  ? t("Details")
+                  : undefined
           }
         >
           <Aside />
