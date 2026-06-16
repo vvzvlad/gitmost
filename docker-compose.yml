@@ -1,6 +1,6 @@
 services:
   docmost:
-    image: docmost/docmost:latest
+    image: ghcr.io/vvzvlad/gitmost:latest
     depends_on:
       - db
       - redis
