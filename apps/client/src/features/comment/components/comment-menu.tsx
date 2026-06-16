@@ -1,18 +1,26 @@
 import { ActionIcon, Menu } from "@mantine/core";
-import { IconDots, IconEdit, IconTrash } from "@tabler/icons-react";
+import { IconDots, IconEdit, IconTrash, IconCircleCheck, IconCircleCheckFilled } from "@tabler/icons-react";
 import { modals } from "@mantine/modals";
 import { useTranslation } from "react-i18next";
 
 type CommentMenuProps = {
   onEditComment: () => void;
   onDeleteComment: () => void;
+  onResolveComment?: () => void;
   canEdit?: boolean;
+  canComment?: boolean;
+  isResolved?: boolean;
+  isParentComment?: boolean;
 };
 
 function CommentMenu({
   onEditComment,
   onDeleteComment,
+  onResolveComment,
   canEdit = true,
+  canComment = true,
+  isResolved = false,
+  isParentComment = false,
 }: CommentMenuProps) {
   const { t } = useTranslation();
 
@@ -45,6 +53,20 @@ function CommentMenu({
             leftSection={<IconEdit size={14} />}
           >
             {t("Edit comment")}
+          </Menu.Item>
+        )}
+        {isParentComment && canComment && (
+          <Menu.Item
+            onClick={onResolveComment}
+            leftSection={
+              isResolved ? (
+                <IconCircleCheckFilled size={14} />
+              ) : (
+                <IconCircleCheck size={14} />
+              )
+            }
+          >
+            {isResolved ? t("Re-open comment") : t("Resolve comment")}
           </Menu.Item>
         )}
         <Menu.Item
