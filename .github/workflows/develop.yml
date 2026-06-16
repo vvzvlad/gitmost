@@ -41,4 +41,4 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:develop
           cache-from: type=gha,scope=develop-amd64
-          cache-to: type=gha,scope=develop-amd64,mode=max
+          cache-to: type=gha,scope=develop-amd64,mode=max,ignore-error=true
