@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "docmost-local": {
+      "command": "node",
+      "args": ["./build/index.js"],
+      "env": {
+        "DOCMOST_API_URL": "http://localhost:3000/api",
+        "DOCMOST_EMAIL": "test@docmost.com",
+        "DOCMOST_PASSWORD": "test"
+      }
+    }
+  }
+}

@@ -345,13 +345,10 @@ export class WorkspaceService {
         throw new NotFoundException('Workspace not found');
       }
 
-      if (typeof updateWorkspaceDto.mcpEnabled !== 'undefined') {
-        if (!this.licenseCheckService.hasFeature(ws.licenseKey, 'mcp', ws.plan)) {
-          throw new ForbiddenException(
-            'This feature requires a valid license',
-          );
-        }
-      }
+      // MCP is a community feature in this fork: the server itself serves the
+      // Model Context Protocol over HTTP at /mcp, so toggling it no longer
+      // requires an enterprise license. The toggle still persists via
+      // updateAiSettings(workspaceId, 'mcp', ...) below.
 
       if (typeof updateWorkspaceDto.isScimEnabled !== 'undefined') {
         if (!this.licenseCheckService.hasFeature(ws.licenseKey, Feature.SCIM, ws.plan)) {

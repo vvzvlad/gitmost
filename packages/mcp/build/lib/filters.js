@@ -1,0 +1,87 @@
+/**
+ * Filter functions to extract only relevant information from API responses
+ * for better agent consumption
+ */
+export function filterWorkspace(data) {
+    return {
+        id: data.id,
+        name: data.name,
+        description: data.description,
+        defaultSpaceId: data.defaultSpaceId,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt,
+        deletedAt: data.deletedAt,
+    };
+}
+export function filterSpace(space) {
+    return {
+        id: space.id,
+        name: space.name,
+        description: space.description,
+        slug: space.slug,
+        visibility: space.visibility,
+        createdAt: space.createdAt,
+        updatedAt: space.updatedAt,
+        deletedAt: space.deletedAt,
+    };
+}
+export function filterGroup(group) {
+    return {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        workspaceId: group.workspaceId,
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+        deletedAt: group.deletedAt,
+    };
+}
+export function filterPage(page, content, subpages) {
+    return {
+        id: page.id,
+        slugId: page.slugId,
+        title: page.title,
+        parentPageId: page.parentPageId,
+        spaceId: page.spaceId,
+        isLocked: page.isLocked,
+        createdAt: page.createdAt,
+        updatedAt: page.updatedAt,
+        deletedAt: page.deletedAt,
+        // Include converted markdown content if valid string (even empty)
+        ...(typeof content === "string" && { content }),
+        // Include subpages if provided
+        ...(subpages &&
+            subpages.length > 0 && {
+            subpages: subpages.map((p) => ({ id: p.id, title: p.title })),
+        }),
+    };
+}
+export function filterComment(comment, markdownContent) {
+    return {
+        id: comment.id,
+        pageId: comment.pageId,
+        content: markdownContent ?? comment.content,
+        selection: comment.selection || null,
+        type: comment.type || "page",
+        parentCommentId: comment.parentCommentId || null,
+        creatorId: comment.creatorId,
+        creatorName: comment.creator?.name || null,
+        createdAt: comment.createdAt,
+        editedAt: comment.editedAt || null,
+        resolvedAt: comment.resolvedAt || null,
+        resolvedById: comment.resolvedById || null,
+    };
+}
+export function filterSearchResult(result) {
+    return {
+        id: result.id,
+        title: result.title,
+        parentPageId: result.parentPageId,
+        createdAt: result.createdAt,
+        updatedAt: result.updatedAt,
+        rank: result.rank,
+        highlight: result.highlight,
+        spaceId: result.space?.id,
+        spaceName: result.space?.name,
+    };
+}

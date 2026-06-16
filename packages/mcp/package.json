@@ -1,0 +1,63 @@
+{
+  "name": "@docmost/mcp",
+  "version": "1.0.0",
+  "description": "A Model Context Protocol (MCP) server for Docmost, allowing AI agents to manage documentation spaces and pages.",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "exports": {
+    ".": "./build/index.js",
+    "./http": "./build/http.js"
+  },
+  "bin": {
+    "docmost-mcp": "./build/stdio.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/stdio.js",
+    "watch": "tsc --watch",
+    "pretest": "tsc",
+    "test": "node --test \"test/unit/*.test.mjs\" \"test/mock/*.test.mjs\"",
+    "test:unit": "node --test \"test/unit/*.test.mjs\"",
+    "test:mock": "node --test \"test/mock/*.test.mjs\"",
+    "test:e2e": "node test-e2e.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "docmost",
+    "documentation",
+    "ai",
+    "agent"
+  ],
+  "author": "Moritz Krause",
+  "license": "MIT",
+  "dependencies": {
+    "@fellow/prosemirror-recreate-transform": "^1.2.3",
+    "@hocuspocus/provider": "^3.4.4",
+    "@hocuspocus/transformer": "^3.4.4",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "@tiptap/core": "3.20.4",
+    "@tiptap/extension-highlight": "3.20.4",
+    "@tiptap/extension-image": "3.20.4",
+    "@tiptap/extension-link": "3.20.4",
+    "@tiptap/extension-subscript": "3.20.4",
+    "@tiptap/extension-superscript": "3.20.4",
+    "@tiptap/extension-task-item": "3.20.4",
+    "@tiptap/extension-task-list": "3.20.4",
+    "@tiptap/html": "3.20.4",
+    "@tiptap/starter-kit": "3.20.4",
+    "@types/jsdom": "^27.0.0",
+    "axios": "^1.6.0",
+    "form-data": "^4.0.0",
+    "jsdom": "^27.4.0",
+    "marked": "^17.0.1",
+    "ws": "^8.19.0",
+    "yjs": "^13.6.29",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/form-data": "^2.5.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
