@@ -121,7 +121,7 @@ function DocTreeInner<T extends object>(
     openIds,
     selectedId,
     renderRow,
-    indentPerLevel = 16,
+    indentPerLevel = 8,
     rowHeight = 32,
     onMove,
     onToggle,
