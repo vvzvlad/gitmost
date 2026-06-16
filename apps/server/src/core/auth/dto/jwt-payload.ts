@@ -14,6 +14,13 @@ export type JwtPayload = {
   workspaceId: string;
   type: 'access';
   sessionId?: string;
+  // Optional agent-edit provenance, signed into the access token. Absent for a
+  // normal user token (treated as 'user'); set only when the internal agent
+  // mints a provenance access token so REST writes (create/rename/move page,
+  // comment create/resolve) record a non-spoofable 'agent' marker (§6.5 / §15
+  // C3 / §14 N2).
+  actor?: 'user' | 'agent';
+  aiChatId?: string;
 };
 
 export type JwtCollabPayload = {

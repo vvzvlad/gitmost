@@ -29,6 +29,10 @@ export class DocmostClient {
     // Per-user token provider. When set, login() calls it to obtain a BARE access
     // JWT instead of performLogin, and the 401/403 re-auth path re-calls it.
     getTokenFn = null;
+    // Optional collab-token provider. When set, getCollabTokenWithReauth() returns
+    // its token instead of calling POST /auth/collab-token; on a 401/403 it is
+    // re-invoked once. Used by the internal agent to carry signed provenance.
+    getCollabTokenFn = null;
     // In-flight login dedup: when the token expires, the 401 interceptor,
     // ensureAuthenticated, getCollabTokenWithReauth and the two multipart retries
     // can all call login() at once. Memoizing a single promise collapses that
@@ -49,6 +53,11 @@ export class DocmostClient {
             // Service-account variant: behaves exactly as before (performLogin).
             this.email = config.email;
             this.password = config.password;
+        }
+        // Optional, available to both variants. When present, content mutations get
+        // their collab token from here instead of POST /auth/collab-token.
+        if (config.getCollabToken) {
+            this.getCollabTokenFn = config.getCollabToken;
         }
         this.client = axios.create({
             baseURL: this.apiUrl,
@@ -112,6 +121,13 @@ export class DocmostClient {
                 : performLogin(this.apiUrl, this.email, this.password);
             this.loginPromise = fetchToken
                 .then((token) => {
+                // Guard against an empty/invalid token (e.g. a getToken provider that
+                // resolves to "" or null): without this an empty token would set a
+                // literal "Authorization: Bearer null"/"Bearer " header and every
+                // request would 401 with a confusing error. Fail loudly instead.
+                if (typeof token !== "string" || token.length === 0) {
+                    throw new Error("getToken returned an empty token");
+                }
                 this.token = token;
                 this.client.defaults.headers.common["Authorization"] =
                     `Bearer ${token}`;
@@ -135,6 +151,37 @@ export class DocmostClient {
      * expired-token auth error perform a fresh login and retry exactly once.
      */
     async getCollabTokenWithReauth() {
+        // Collab-token PROVIDER path: when a getCollabToken provider was supplied
+        // (the internal agent's provenance collab token), use it instead of the
+        // REST /auth/collab-token endpoint. Re-invoke it once on a 401/403 (e.g. the
+        // signed token expired between content mutations in a long agent turn).
+        if (this.getCollabTokenFn) {
+            try {
+                const token = await this.getCollabTokenFn();
+                if (typeof token !== "string" || token.length === 0) {
+                    throw new Error("getCollabToken returned an empty token");
+                }
+                return token;
+            }
+            catch (e) {
+                const axiosStatus = axios.isAxiosError(e)
+                    ? e.response?.status
+                    : undefined;
+                const attachedStatus = e?.status;
+                const isAuthError = axiosStatus === 401 ||
+                    axiosStatus === 403 ||
+                    attachedStatus === 401 ||
+                    attachedStatus === 403;
+                if (isAuthError) {
+                    const token = await this.getCollabTokenFn();
+                    if (typeof token !== "string" || token.length === 0) {
+                        throw new Error("getCollabToken returned an empty token");
+                    }
+                    return token;
+                }
+                throw e;
+            }
+        }
         await this.ensureAuthenticated();
         try {
             return await getCollabToken(this.apiUrl, this.token);
@@ -1465,6 +1512,25 @@ export class DocmostClient {
         return this.client
             .post("/comments/delete", { commentId })
             .then((res) => res.data);
+    }
+    /**
+     * Resolve or reopen a top-level comment thread (reversible — `resolved`
+     * toggles the state). Only top-level comments can be resolved; the server
+     * rejects resolving a reply. Hits POST /comments/resolve.
+     */
+    async resolveComment(commentId, resolved) {
+        await this.ensureAuthenticated();
+        const response = await this.client.post("/comments/resolve", {
+            commentId,
+            resolved,
+        });
+        const comment = response.data?.data ?? response.data;
+        return {
+            success: true,
+            commentId,
+            resolved,
+            comment,
+        };
     }
     /**
      * Check for new comments across pages in a space (optionally scoped to a

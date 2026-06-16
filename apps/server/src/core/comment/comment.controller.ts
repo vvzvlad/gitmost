@@ -17,6 +17,10 @@ import { ResolveCommentDto } from './dto/resolve-comment.dto';
 import { PageIdDto, CommentIdDto } from './dto/comments.input';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
+import {
+  AuthProvenance,
+  AuthProvenanceData,
+} from '../../common/decorators/auth-provenance.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { User, Workspace } from '@docmost/db/types/entity.types';
@@ -54,6 +58,7 @@ export class CommentController {
     @Body() createCommentDto: CreateCommentDto,
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
+    @AuthProvenance() provenance: AuthProvenanceData,
   ) {
     const page = await this.pageRepo.findById(createCommentDto.pageId);
     if (!page || page.deletedAt) {
@@ -69,6 +74,7 @@ export class CommentController {
         user,
       },
       createCommentDto,
+      provenance,
     );
 
     this.auditService.log({
@@ -147,6 +153,7 @@ export class CommentController {
     @Body() dto: ResolveCommentDto,
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
+    @AuthProvenance() provenance: AuthProvenanceData,
   ) {
     const comment = await this.commentRepo.findById(dto.commentId, {
       includeCreator: true,
@@ -172,6 +179,7 @@ export class CommentController {
       comment,
       dto.resolved,
       user,
+      provenance,
     );
 
     this.auditService.log({

@@ -22,6 +22,7 @@ import {
   ICommentResolvedNotificationJob,
 } from '../../integrations/queue/constants/queue.interface';
 import { WsService } from '../../ws/ws.service';
+import { AuthProvenanceData } from '../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class CommentService {
@@ -52,9 +53,14 @@ export class CommentService {
   async create(
     opts: { page: Page; workspaceId: string; user: User },
     createCommentDto: CreateCommentDto,
+    // Optional agent-edit provenance (from the signed access claim). When the
+    // actor is 'agent', stamp created_source/ai_chat_id so an agent-authored
+    // comment (incl. a reply) shows the AI marker (§15 C3). Normal user: default.
+    provenance?: AuthProvenanceData,
   ) {
     const { page, workspaceId, user } = opts;
     const commentContent = JSON.parse(createCommentDto.content);
+    const isAgent = provenance?.actor === 'agent';
 
     if (createCommentDto.parentCommentId) {
       const parentComment = await this.commentRepo.findById(
@@ -79,6 +85,11 @@ export class CommentService {
       creatorId: user.id,
       workspaceId: workspaceId,
       spaceId: page.spaceId,
+      // Agent-edit provenance: the user stays creatorId; this only annotates the
+      // source. Normal user requests leave the column default ('user').
+      ...(isAgent
+        ? { createdSource: 'agent', aiChatId: provenance.aiChatId }
+        : {}),
     });
 
     if (createCommentDto.yjsSelection) {
@@ -213,12 +224,22 @@ export class CommentService {
     comment: Comment,
     resolved: boolean,
     authUser: User,
+    // Optional agent-edit provenance (from the signed access claim). When the
+    // actor is 'agent' and the thread is being resolved, stamp resolved_source
+    // so the "resolved by" mark shows the AI marker (§15 C3). On unresolve the
+    // source is cleared alongside resolvedAt/resolvedById.
+    provenance?: AuthProvenanceData,
   ): Promise<Comment> {
     const resolvedAt = resolved ? new Date() : null;
     const resolvedById = resolved ? authUser.id : null;
+    const isAgent = provenance?.actor === 'agent';
+    // Set the agent marker only when resolving; on unresolve clear it back to
+    // null so a reopened thread carries no stale source. A normal user resolve
+    // leaves resolved_source null (no agent annotation).
+    const resolvedSource = resolved && isAgent ? 'agent' : null;
 
     await this.commentRepo.updateComment(
-      { resolvedAt, resolvedById },
+      { resolvedAt, resolvedById, resolvedSource },
       comment.id,
     );
 

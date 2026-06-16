@@ -25,6 +25,10 @@ import {
 import { PageHistoryService } from './services/page-history.service';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
+import {
+  AuthProvenance,
+  AuthProvenanceData,
+} from '../../common/decorators/auth-provenance.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { Page, User, Workspace } from '@docmost/db/types/entity.types';
@@ -203,6 +207,7 @@ export class PageController {
     @Body() createPageDto: CreatePageDto,
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
+    @AuthProvenance() provenance: AuthProvenanceData,
   ) {
     if (createPageDto.parentPageId) {
       // Creating under a parent page - check edit permission on parent
@@ -232,6 +237,7 @@ export class PageController {
       user.id,
       workspace.id,
       createPageDto,
+      provenance,
     );
 
     const { canEdit, hasRestriction } =
@@ -269,7 +275,11 @@ export class PageController {
 
   @HttpCode(HttpStatus.OK)
   @Post('update')
-  async update(@Body() updatePageDto: UpdatePageDto, @AuthUser() user: User) {
+  async update(
+    @Body() updatePageDto: UpdatePageDto,
+    @AuthUser() user: User,
+    @AuthProvenance() provenance: AuthProvenanceData,
+  ) {
     const page = await this.pageRepo.findById(updatePageDto.pageId);
 
     if (!page) {
@@ -285,6 +295,7 @@ export class PageController {
       page,
       updatePageDto,
       user,
+      provenance,
     );
 
     const permissions = { canEdit: true, hasRestriction };
@@ -572,6 +583,7 @@ export class PageController {
   async movePageToSpace(
     @Body() dto: MovePageToSpaceDto,
     @AuthUser() user: User,
+    @AuthProvenance() provenance: AuthProvenanceData,
   ) {
     const movedPage = await this.pageRepo.findById(dto.pageId);
     if (!movedPage) {
@@ -602,6 +614,7 @@ export class PageController {
       movedPage,
       dto.spaceId,
       user.id,
+      provenance,
     );
 
     this.auditService.log({
@@ -706,7 +719,11 @@ export class PageController {
 
   @HttpCode(HttpStatus.OK)
   @Post('move')
-  async movePage(@Body() dto: MovePageDto, @AuthUser() user: User) {
+  async movePage(
+    @Body() dto: MovePageDto,
+    @AuthUser() user: User,
+    @AuthProvenance() provenance: AuthProvenanceData,
+  ) {
     const movedPage = await this.pageRepo.findById(dto.pageId);
     if (!movedPage) {
       throw new NotFoundException('Moved page not found');
@@ -733,7 +750,7 @@ export class PageController {
       await this.pageAccessService.validateCanEdit(targetParent, user);
     }
 
-    return this.pageService.movePage(dto, movedPage);
+    return this.pageService.movePage(dto, movedPage, provenance);
   }
 
   @HttpCode(HttpStatus.OK)

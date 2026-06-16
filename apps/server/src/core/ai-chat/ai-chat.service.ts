@@ -140,7 +140,15 @@ export class AiChatService {
       adminPrompt: resolved?.systemPrompt,
     });
 
-    const tools = await this.tools.forUser(user, sessionId, workspace.id);
+    // Pass the resolved chatId so the write tools can mint provenance tokens
+    // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
+    // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
+    const tools = await this.tools.forUser(
+      user,
+      sessionId,
+      workspace.id,
+      chatId,
+    );
 
     // Persist the assistant message. Used by onFinish (full result) and the
     // abort/error paths (partial result). Guarded so we persist at most once.

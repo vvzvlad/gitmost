@@ -55,6 +55,7 @@ import { markdownToHtml } from '@docmost/editor-ext';
 import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
+import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class PageService {
@@ -92,6 +93,11 @@ export class PageService {
     userId: string,
     workspaceId: string,
     createPageDto: CreatePageDto,
+    // Optional agent-edit provenance (from the signed access claim). When the
+    // actor is 'agent', stamp the page's source marker so a freshly created page
+    // shows it was created by the AI agent (§14 N2) — create goes through REST,
+    // not collab, so the collab-token claim never reaches it.
+    provenance?: AuthProvenanceData,
   ): Promise<Page> {
     let parentPageId = undefined;
 
@@ -127,6 +133,8 @@ export class PageService {
       ydoc = createYdocFromJson(prosemirrorJson);
     }
 
+    const isAgent = provenance?.actor === 'agent';
+
     const page = await this.pageRepo.insertPage({
       slugId: generateSlugId(),
       title: createPageDto.title,
@@ -140,6 +148,15 @@ export class PageService {
       creatorId: userId,
       workspaceId: workspaceId,
       lastUpdatedById: userId,
+      // Agent-edit provenance. The human stays the responsible author
+      // (creatorId/lastUpdatedById); these only annotate the source. A normal
+      // user request leaves the column default ('user').
+      ...(isAgent
+        ? {
+            lastUpdatedSource: 'agent',
+            lastUpdatedAiChatId: provenance.aiChatId,
+          }
+        : {}),
       content,
       textContent,
       ydoc,
@@ -204,16 +221,29 @@ export class PageService {
     page: Page,
     updatePageDto: UpdatePageDto,
     user: User,
+    // Optional agent-edit provenance (from the signed access claim). Stamps the
+    // source marker on a REST rename/update by the agent (§6.6 REST path).
+    provenance?: AuthProvenanceData,
   ): Promise<Page> {
     const contributors = new Set<string>(page.contributorIds);
     contributors.add(user.id);
     const contributorIds = Array.from(contributors);
+
+    const isAgent = provenance?.actor === 'agent';
 
     await this.pageRepo.updatePage(
       {
         title: updatePageDto.title,
         icon: updatePageDto.icon,
         lastUpdatedById: user.id,
+        // Agent-edit provenance: annotate the source without changing the
+        // responsible author. A normal user request leaves the column default.
+        ...(isAgent
+          ? {
+              lastUpdatedSource: 'agent',
+              lastUpdatedAiChatId: provenance.aiChatId,
+            }
+          : {}),
         updatedAt: new Date(),
         contributorIds: contributorIds,
       },
@@ -374,8 +404,16 @@ export class PageService {
     return result;
   }
 
-  async movePageToSpace(rootPage: Page, spaceId: string, userId: string) {
+  async movePageToSpace(
+    rootPage: Page,
+    spaceId: string,
+    userId: string,
+    // Optional agent-edit provenance (from the signed access claim). Stamps the
+    // source marker on the moved root page when the agent moves it (§6.6 REST).
+    provenance?: AuthProvenanceData,
+  ) {
     let childPageIds: string[] = [];
+    const isAgent = provenance?.actor === 'agent';
 
     const allPages = await this.pageRepo.getPageAndDescendants(rootPage.id, {
       includeContent: false,
@@ -415,7 +453,20 @@ export class PageService {
       // Update root page
       const nextPosition = await this.nextPagePosition(spaceId);
       await this.pageRepo.updatePage(
-        { spaceId, parentPageId: null, position: nextPosition },
+        {
+          spaceId,
+          parentPageId: null,
+          position: nextPosition,
+          // Agent-edit provenance on the moved root page. Child pages are bulk
+          // re-parented to the new space (no content change), so the marker is
+          // stamped on the root the agent acted on. Normal user: no change.
+          ...(isAgent
+            ? {
+                lastUpdatedSource: 'agent',
+                lastUpdatedAiChatId: provenance.aiChatId,
+              }
+            : {}),
+        },
         rootPage.id,
         trx,
       );
@@ -787,7 +838,13 @@ export class PageService {
     };
   }
 
-  async movePage(dto: MovePageDto, movedPage: Page) {
+  async movePage(
+    dto: MovePageDto,
+    movedPage: Page,
+    // Optional agent-edit provenance (from the signed access claim). Stamps the
+    // source marker when the agent moves a page via REST (§6.6 REST path).
+    provenance?: AuthProvenanceData,
+  ) {
     // validate position value by attempting to generate a key
     try {
       generateJitteredKeyBetween(dto.position, null);
@@ -813,10 +870,20 @@ export class PageService {
       }
     }
 
+    const isAgent = provenance?.actor === 'agent';
+
     await this.pageRepo.updatePage(
       {
         position: dto.position,
         parentPageId: parentPageId,
+        // Agent-edit provenance: annotate the source on an agent move. A normal
+        // user request leaves the column default ('user').
+        ...(isAgent
+          ? {
+              lastUpdatedSource: 'agent',
+              lastUpdatedAiChatId: provenance.aiChatId,
+            }
+          : {}),
       },
       dto.pageId,
     );

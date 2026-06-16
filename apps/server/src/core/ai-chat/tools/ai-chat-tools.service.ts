@@ -29,23 +29,47 @@ export class AiChatToolsService {
   async forUser(
     user: User,
     sessionId: string,
-    // workspaceId is accepted for symmetry with the rest of the chat pipeline
-    // and to document the single-workspace assumption; the loopback client is
+    // workspaceId scopes the provenance collab token (which is workspace-bound),
+    // and documents the single-workspace assumption; the loopback REST client is
     // scoped by the user's JWT, not by an explicit workspace argument.
-    _workspaceId: string,
+    workspaceId: string,
+    // The resolved AI chat id. Threaded into both provenance tokens so every
+    // agent write (REST + collab) records { actor:'agent', aiChatId } off a
+    // SIGNED claim — non-spoofable, never a client body field (§6.5/§6.6).
+    aiChatId: string,
   ): Promise<Record<string, Tool>> {
     const apiUrl =
       process.env.MCP_DOCMOST_API_URL ||
       `http://127.0.0.1:${process.env.PORT || 3000}/api`;
 
-    // BARE access JWT (the client adds the "Bearer " prefix and re-calls this
-    // on a 401). Minted against the live session so jwt.strategy validates it
-    // (§15[C1]).
+    // BARE access JWT carrying the agent provenance claim (the client adds the
+    // "Bearer " prefix and re-calls this on a 401). Minted against the live
+    // session so jwt.strategy validates it (§15[C1]); the signed actor/aiChatId
+    // drives the REST write provenance (create/rename/move page, comment
+    // create/resolve) server-side.
     const getToken = () =>
-      this.tokenService.generateAccessToken(user, sessionId);
+      this.tokenService.generateAccessToken(user, sessionId, {
+        actor: 'agent',
+        aiChatId,
+      });
+
+    // Provenance COLLAB token for content mutations (which go over the collab
+    // websocket). Signed with the same agent claim so onAuthenticate ->
+    // onStoreDocument record 'agent'/aiChatId on the page (§6.6/§15 C2). The
+    // client routes every content mutation through this provider instead of
+    // POST /auth/collab-token.
+    const getCollabToken = () =>
+      this.tokenService.generateCollabToken(user, workspaceId, {
+        actor: 'agent',
+        aiChatId,
+      });
 
     const { DocmostClient } = await loadDocmostMcp();
-    const client: DocmostClientLike = new DocmostClient({ apiUrl, getToken });
+    const client: DocmostClientLike = new DocmostClient({
+      apiUrl,
+      getToken,
+      getCollabToken,
+    });
 
     return {
       searchPages: tool({
@@ -102,6 +126,172 @@ export class AiChatToolsService {
             title: data.title ?? '',
             markdown: typeof data.content === 'string' ? data.content : '',
           };
+        },
+      }),
+
+      // --- WRITE tools (all reversible — history/trash; §6.5 / D3) ---
+
+      createPage: tool({
+        description:
+          'Create a new page with a Markdown body in a space, optionally under ' +
+          'a parent page. Returns the new page id and title. Reversible: a page ' +
+          'can be moved to trash later.',
+        inputSchema: z.object({
+          title: z.string().describe('The title of the new page.'),
+          content: z
+            .string()
+            .describe('The page body as Markdown (may be empty).'),
+          spaceId: z
+            .string()
+            .describe('The id of the space to create the page in.'),
+          parentPageId: z
+            .string()
+            .optional()
+            .describe('Optional parent page id to nest the new page under.'),
+        }),
+        execute: async ({ title, content, spaceId, parentPageId }) => {
+          // createPage(title, content, spaceId, parentPageId?) ->
+          // { data: filterPage(page, markdown), success }.
+          const result = await client.createPage(
+            title,
+            content ?? '',
+            spaceId,
+            parentPageId,
+          );
+          const data = (result?.data ?? {}) as {
+            id?: string;
+            slugId?: string;
+            title?: string;
+          };
+          return { id: data.id ?? data.slugId, title: data.title ?? title };
+        },
+      }),
+
+      updatePageContent: tool({
+        description:
+          "Replace a page's body with new Markdown content (and optionally its " +
+          'title). Reversible: the previous version is kept in page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to update.'),
+          content: z.string().describe('The new page body as Markdown.'),
+          title: z
+            .string()
+            .optional()
+            .describe('Optional new title for the page.'),
+        }),
+        execute: async ({ pageId, content, title }) => {
+          // updatePage mutates the live collab doc -> provenance flows from the
+          // collab-token provider. Returns { success, modified, message, pageId }.
+          const result = (await client.updatePage(pageId, content, title)) as {
+            success?: boolean;
+          };
+          return { pageId, updated: result?.success ?? true };
+        },
+      }),
+
+      renamePage: tool({
+        description:
+          "Rename a page (change its title only; the body is untouched). " +
+          'Reversible: rename back at any time.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to rename.'),
+          title: z.string().describe('The new title.'),
+        }),
+        execute: async ({ pageId, title }) => {
+          // renamePage(pageId, title) -> { success, pageId, title }.
+          await client.renamePage(pageId, title);
+          return { pageId, title };
+        },
+      }),
+
+      movePage: tool({
+        description:
+          'Move a page under a new parent page, or to the space root when no ' +
+          'parent is given. Reversible: move it back at any time.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to move.'),
+          parentPageId: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              'Target parent page id. Null/omitted moves the page to the ' +
+                'space root.',
+            ),
+        }),
+        execute: async ({ pageId, parentPageId }) => {
+          // movePage(pageId, parentPageId, position?) -> raw move response.
+          await client.movePage(pageId, parentPageId ?? null);
+          return { pageId, parentPageId: parentPageId ?? null, moved: true };
+        },
+      }),
+
+      deletePage: tool({
+        description:
+          'Move a page to the trash (SOFT delete only — fully reversible; the ' +
+          'page can be restored from trash). This NEVER permanently deletes.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to move to trash.'),
+        }),
+        // GUARDRAIL (§14 H4): the only field ever passed to the client is
+        // pageId. permanentlyDelete/forceDelete are not part of the schema and
+        // are never forwarded, so the agent physically cannot permanently
+        // delete a page through this tool.
+        execute: async ({ pageId }) => {
+          // deletePage(pageId) hits POST /pages/delete with { pageId } only,
+          // which is the soft-delete (trash) path on the server.
+          await client.deletePage(pageId);
+          return { pageId, trashed: true };
+        },
+      }),
+
+      createComment: tool({
+        description:
+          'Add a comment to a page, or reply to an existing top-level comment ' +
+          '(one level only — the backend rejects replies to replies). ' +
+          'Reversible via the comment UI.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to comment on.'),
+          content: z.string().describe('The comment body as Markdown.'),
+          parentCommentId: z
+            .string()
+            .optional()
+            .describe(
+              'Optional id of a TOP-LEVEL comment to reply to (one level ' +
+                'of replies only).',
+            ),
+        }),
+        execute: async ({ pageId, content, parentCommentId }) => {
+          // createComment(pageId, content, type, selection?, parentCommentId?).
+          // Page-type comment (no inline selection); replies inherit the anchor.
+          const result = await client.createComment(
+            pageId,
+            content,
+            'page',
+            undefined,
+            parentCommentId,
+          );
+          const data = (result?.data ?? {}) as { id?: string };
+          return { commentId: data.id, pageId };
+        },
+      }),
+
+      resolveComment: tool({
+        description:
+          'Resolve or reopen a top-level comment thread (reversible — toggle ' +
+          'the resolved flag). Only top-level comments can be resolved.',
+        inputSchema: z.object({
+          commentId: z
+            .string()
+            .describe('The id of the top-level comment to resolve/reopen.'),
+          resolved: z
+            .boolean()
+            .describe('true to resolve the thread, false to reopen it.'),
+        }),
+        execute: async ({ commentId, resolved }) => {
+          // resolveComment(commentId, resolved) -> { success, commentId, resolved }.
+          await client.resolveComment(commentId, resolved);
+          return { commentId, resolved };
         },
       }),
     };

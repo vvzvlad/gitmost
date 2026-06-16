@@ -12,6 +12,7 @@ import {
   IconMarkdown,
   IconMessage,
   IconPrinter,
+  IconSparkles,
   IconStar,
   IconStarFilled,
   IconTrash,
@@ -63,6 +64,7 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const { t } = useTranslation();
   const commentsTriggerProps = useAsideTriggerProps("comments");
   const tocTriggerProps = useAsideTriggerProps("toc");
+  const aiChatTriggerProps = useAsideTriggerProps("ai-chat");
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
@@ -71,6 +73,8 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const [workspace] = useAtom(workspaceAtom);
   // Community public-sharing entry point (replaces the removed EE PageShareModal)
   const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
+  // AI chat entry point: only shown when the workspace enables it (A7 gate).
+  const aiChatEnabled = workspace?.settings?.ai?.chat === true;
 
   useHotkeys(
     [
@@ -126,6 +130,19 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
           <IconList size={20} stroke={2} />
         </ActionIcon>
       </Tooltip>
+
+      {aiChatEnabled && (
+        <Tooltip label={t("AI chat")} openDelay={250} withArrow>
+          <ActionIcon
+            variant="subtle"
+            color="dark"
+            aria-label={t("AI chat")}
+            {...aiChatTriggerProps}
+          >
+            <IconSparkles size={20} stroke={2} />
+          </ActionIcon>
+        </Tooltip>
+      )}
 
       <PageActionMenu readOnly={readOnly} />
     </>

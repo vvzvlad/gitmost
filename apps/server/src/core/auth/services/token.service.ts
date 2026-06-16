@@ -27,7 +27,15 @@ export class TokenService {
     private environmentService: EnvironmentService,
   ) {}
 
-  async generateAccessToken(user: User, sessionId: string): Promise<string> {
+  async generateAccessToken(
+    user: User,
+    sessionId: string,
+    // Optional agent-edit provenance. When omitted (the normal user path), the
+    // token carries no actor/aiChatId and is treated as 'user' downstream. The
+    // internal agent passes { actor:'agent', aiChatId } so REST writes record a
+    // non-spoofable 'agent' marker off the signed claim (§6.5 / §15 C3 / §14 N2).
+    provenance?: { actor: 'agent'; aiChatId: string },
+  ): Promise<string> {
     if (isUserDisabled(user)) {
       throw new ForbiddenException();
     }
@@ -38,6 +46,9 @@ export class TokenService {
       workspaceId: user.workspaceId,
       type: JwtType.ACCESS,
       sessionId,
+      ...(provenance
+        ? { actor: provenance.actor, aiChatId: provenance.aiChatId }
+        : {}),
     };
     return this.jwtService.sign(payload);
   }

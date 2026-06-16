@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/react": "^3.0.208",
     "@atlaskit/pragmatic-drag-and-drop": "1.8.1",
     "@atlaskit/pragmatic-drag-and-drop-auto-scroll": "2.1.5",
     "@atlaskit/pragmatic-drag-and-drop-flourish": "2.0.15",
@@ -33,10 +34,12 @@
     "@tabler/icons-react": "3.40.0",
     "@tanstack/react-query": "5.90.17",
     "@tanstack/react-virtual": "3.13.24",
+    "ai": "6.0.207",
     "alfaaz": "1.1.0",
     "axios": "1.16.0",
     "blueimp-load-image": "5.16.0",
     "clsx": "2.1.1",
+    "dompurify": "3.4.1",
     "file-saver": "2.0.5",
     "highlightjs-sap-abap": "0.3.0",
     "i18next": "25.10.1",
