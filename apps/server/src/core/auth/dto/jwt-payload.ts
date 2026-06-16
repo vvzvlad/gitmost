@@ -20,6 +20,11 @@ export type JwtCollabPayload = {
   sub: string;
   workspaceId: string;
   type: 'collab';
+  // Optional agent-edit provenance, signed into the collab token. Absent for
+  // the human collab path (treated as 'user'); set only when the internal agent
+  // mints a provenance collab token (§6.6 / §15 C2).
+  actor?: 'user' | 'agent';
+  aiChatId?: string;
 };
 
 export type JwtExchangePayload = {

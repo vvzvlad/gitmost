@@ -54,24 +54,68 @@ import {
 } from "./lib/transforms.js";
 import vm from "node:vm";
 
+/**
+ * Configuration for a DocmostClient / MCP server instance. A discriminated
+ * union: either service-account credentials (email/password — the client calls
+ * performLogin, powering the external /mcp HTTP endpoint and the stdio CLI) OR
+ * a token getter (getToken — the client uses the returned BARE access JWT as
+ * the Bearer and never calls performLogin; used for the internal per-user path).
+ *
+ * Housed here (not in index.ts) so client.ts has no type dependency on index.ts;
+ * index.ts re-exports it for the package's public surface.
+ */
+export type DocmostMcpConfig = { apiUrl: string } & (
+  | { email: string; password: string }
+  | { getToken: () => Promise<string> } // returns a BARE JWT; the client adds "Bearer "
+);
+
 export class DocmostClient {
   private client: AxiosInstance;
   private token: string | null = null;
   private apiUrl: string;
-  private email: string;
-  private password: string;
+  // email/password are only set on the service-account (credentials) variant;
+  // null on the getToken variant (where there are no credentials to log in with).
+  private email: string | null = null;
+  private password: string | null = null;
+  // Per-user token provider. When set, login() calls it to obtain a BARE access
+  // JWT instead of performLogin, and the 401/403 re-auth path re-calls it.
+  private getTokenFn: (() => Promise<string>) | null = null;
   // In-flight login dedup: when the token expires, the 401 interceptor,
   // ensureAuthenticated, getCollabTokenWithReauth and the two multipart retries
   // can all call login() at once. Memoizing a single promise collapses that
   // thundering herd into ONE /auth/login request that everyone awaits.
   private loginPromise: Promise<void> | null = null;
 
-  constructor(baseURL: string, email: string, password: string) {
-    this.apiUrl = baseURL;
-    this.email = email;
-    this.password = password;
+  // Two construction forms:
+  //  - new DocmostClient(config)                  // discriminated union (current)
+  //  - new DocmostClient(baseURL, email, password) // legacy positional creds
+  // The positional form is retained so existing callers/tests keep working; it
+  // is exactly equivalent to the credentials branch of the object form.
+  constructor(config: DocmostMcpConfig);
+  constructor(baseURL: string, email: string, password: string);
+  constructor(
+    configOrBaseURL: DocmostMcpConfig | string,
+    email?: string,
+    password?: string,
+  ) {
+    // Normalize the legacy positional form into the object union.
+    const config: DocmostMcpConfig =
+      typeof configOrBaseURL === "string"
+        ? { apiUrl: configOrBaseURL, email: email!, password: password! }
+        : configOrBaseURL;
+
+    this.apiUrl = config.apiUrl;
+    if ("getToken" in config) {
+      // Token variant: carry the user's JWT via getToken; no credentials, so
+      // login() must never call performLogin (there is nothing to log in with).
+      this.getTokenFn = config.getToken;
+    } else {
+      // Service-account variant: behaves exactly as before (performLogin).
+      this.email = config.email;
+      this.password = config.password;
+    }
     this.client = axios.create({
-      baseURL,
+      baseURL: this.apiUrl,
       // Default request timeout so a hung connection cannot wedge a per-page
       // lock or block the server indefinitely. Multipart uploads override this
       // with a longer per-request timeout.
@@ -129,9 +173,16 @@ export class DocmostClient {
 
   async login() {
     // Reuse an in-flight login if one is already running so concurrent callers
-    // share a single /auth/login request instead of each issuing their own.
+    // share a single token fetch instead of each issuing their own.
     if (!this.loginPromise) {
-      this.loginPromise = performLogin(this.apiUrl, this.email, this.password)
+      // Token variant: re-fetch a BARE JWT via getToken() (there are no
+      // credentials to log in with — on a 401/403 the interceptor below calls
+      // login() again, which re-invokes getToken()). Credentials variant:
+      // performLogin against /auth/login exactly as before.
+      const fetchToken = this.getTokenFn
+        ? this.getTokenFn()
+        : performLogin(this.apiUrl, this.email!, this.password!);
+      this.loginPromise = fetchToken
         .then((token) => {
           this.token = token;
           this.client.defaults.headers.common["Authorization"] =

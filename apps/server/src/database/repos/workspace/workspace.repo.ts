@@ -211,6 +211,36 @@ export class WorkspaceRepo {
       .executeTakeFirst();
   }
 
+  /**
+   * Deep-merge a partial provider config into the fixed path
+   * `settings.ai.provider`. Unlike `updateAiSettings` (single scalar key under
+   * `settings.ai`), this stores a nested object. The path is constant — only the
+   * provider value is parameterized (bound, not `sql.raw`) — so it cannot store
+   * a secret and is safe from injection. Sibling `settings.ai.*` keys (search /
+   * generative / chat / mcp / systemPrompt) and provider fields absent from the
+   * partial are preserved via jsonb `||` merge.
+   */
+  async updateAiProviderSettings(
+    workspaceId: string,
+    provider: Record<string, unknown>,
+    trx?: KyselyTransaction,
+  ): Promise<Workspace> {
+    const db = dbOrTx(this.db, trx);
+    const providerJson = JSON.stringify(provider);
+    return db
+      .updateTable('workspaces')
+      .set({
+        settings: sql`COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object('ai', COALESCE(settings->'ai', '{}'::jsonb)
+                || jsonb_build_object('provider', COALESCE(settings->'ai'->'provider', '{}'::jsonb)
+                || ${providerJson}::jsonb))`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', workspaceId)
+      .returning(this.baseFields)
+      .executeTakeFirst();
+  }
+
   async updateSharingSettings(
     workspaceId: string,
     prefKey: string,

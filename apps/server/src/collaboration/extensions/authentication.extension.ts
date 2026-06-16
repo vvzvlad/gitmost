@@ -103,8 +103,13 @@ export class AuthenticationExtension implements Extension {
 
     this.logger.debug(`Authenticated user ${user.id} on page ${pageId}`);
 
+    // Carry the signed agent-edit provenance claim into the hocuspocus
+    // connection context (§6.6 / §15 C2). The human collab path omits these
+    // claims, so it resolves to actor='user' / aiChatId=null.
     return {
       user,
+      actor: jwtPayload.actor ?? 'user',
+      aiChatId: jwtPayload.aiChatId ?? null,
     };
   }
 }

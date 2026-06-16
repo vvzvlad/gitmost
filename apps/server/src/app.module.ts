@@ -28,6 +28,8 @@ import { ClsModule } from 'nestjs-cls';
 import { NoopAuditModule } from './integrations/audit/audit.module';
 import { ThrottleModule } from './integrations/throttle/throttle.module';
 import { McpModule } from './integrations/mcp/mcp.module';
+import { AiModule } from './integrations/ai/ai.module';
+import { AiChatModule } from './core/ai-chat/ai-chat.module';
 
 const enterpriseModules = [];
 try {
@@ -87,6 +89,8 @@ try {
     TelemetryModule,
     ThrottleModule,
     McpModule,
+    AiModule,
+    AiChatModule,
     ...enterpriseModules,
   ],
   controllers: [AppController],

@@ -42,7 +42,13 @@ export class TokenService {
     return this.jwtService.sign(payload);
   }
 
-  async generateCollabToken(user: User, workspaceId: string): Promise<string> {
+  async generateCollabToken(
+    user: User,
+    workspaceId: string,
+    // Optional agent-edit provenance. When omitted (the human collab path), the
+    // token carries no actor/aiChatId and is treated as 'user' downstream.
+    provenance?: { actor: 'agent'; aiChatId: string },
+  ): Promise<string> {
     if (isUserDisabled(user)) {
       throw new ForbiddenException();
     }
@@ -51,6 +57,9 @@ export class TokenService {
       sub: user.id,
       workspaceId,
       type: JwtType.COLLAB,
+      ...(provenance
+        ? { actor: provenance.actor, aiChatId: provenance.aiChatId }
+        : {}),
     };
     const expiresIn = '24h';
     return this.jwtService.sign(payload, { expiresIn });

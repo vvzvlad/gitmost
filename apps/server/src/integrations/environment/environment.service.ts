@@ -278,56 +278,9 @@ export class EnvironmentService {
       .toLowerCase();
   }
 
-  getAiDriver(): string {
-    return this.configService.get<string>('AI_DRIVER');
-  }
-
-  getAiEmbeddingModel(): string {
-    return this.configService.get<string>('AI_EMBEDDING_MODEL');
-  }
-
-  getAiCompletionModel(): string {
-    return this.configService.get<string>('AI_COMPLETION_MODEL');
-  }
-
-  getAiChatModel(): string {
-    return (
-      this.configService.get<string>('AI_CHAT_MODEL') ||
-      this.configService.get<string>('AI_COMPLETION_MODEL')
-    );
-  }
-
-  getAiEmbeddingDimension(): number {
-    return parseInt(
-      this.configService.get<string>('AI_EMBEDDING_DIMENSION'),
-      10,
-    );
-  }
-
-  getAiEmbeddingSupportsMrl(): boolean | undefined {
-    const val = this.configService.get<string>('AI_EMBEDDING_SUPPORTS_MRL');
-    if (val === undefined || val === null || val === '') return undefined;
-    return val === 'true';
-  }
-
-  getOpenAiApiKey(): string {
-    return this.configService.get<string>('OPENAI_API_KEY');
-  }
-
-  getOpenAiApiUrl(): string {
-    return this.configService.get<string>('OPENAI_API_URL');
-  }
-
-  getGeminiApiKey(): string {
-    return this.configService.get<string>('GEMINI_API_KEY');
-  }
-
-  getOllamaApiUrl(): string {
-    return this.configService.get<string>(
-      'OLLAMA_API_URL',
-      'http://localhost:11434',
-    );
-  }
+  // NOTE: AI_*/OPENAI_*/GEMINI_*/OLLAMA_* env getters were removed (D8/§14[M3]):
+  // provider/model/key config now lives solely in workspace settings +
+  // ai_provider_credentials, with no env fallback. APP_SECRET stays (getAppSecret).
 
   getEventStoreDriver(): string {
     return this.configService

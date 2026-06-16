@@ -25,6 +25,8 @@ export class PageHistoryRepo {
     'icon',
     'coverPhoto',
     'lastUpdatedById',
+    'lastUpdatedSource',
+    'lastUpdatedAiChatId',
     'contributorIds',
     'spaceId',
     'workspaceId',
@@ -75,6 +77,9 @@ export class PageHistoryRepo {
         icon: page.icon,
         coverPhoto: page.coverPhoto,
         lastUpdatedById: page.lastUpdatedById ?? page.creatorId,
+        // Copy the provenance marker off the page row, as for lastUpdatedById.
+        lastUpdatedSource: page.lastUpdatedSource,
+        lastUpdatedAiChatId: page.lastUpdatedAiChatId,
         contributorIds: opts?.contributorIds,
         spaceId: page.spaceId,
         workspaceId: page.workspaceId,

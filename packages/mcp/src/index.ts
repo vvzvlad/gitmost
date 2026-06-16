@@ -3,7 +3,13 @@ import { z } from "zod";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { DocmostClient } from "./client.js";
+import { DocmostClient, DocmostMcpConfig } from "./client.js";
+
+// Re-export the client and its config type so embedding hosts (e.g. the gitmost
+// NestJS server) can `import('@docmost/mcp')` and construct a DocmostClient
+// directly — for the credentials variant OR the per-user getToken variant.
+export { DocmostClient } from "./client.js";
+export type { DocmostMcpConfig } from "./client.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -13,15 +19,11 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
-// Configuration for an MCP server instance. The factory below is fully
-// side-effect-free on import: it reads no environment variables and opens no
-// transport. The standalone stdio entrypoint (stdio.ts) and the HTTP handler
+// Configuration for an MCP server instance is the DocmostMcpConfig union
+// (credentials OR getToken) defined and re-exported above. The factory below is
+// fully side-effect-free on import: it reads no environment variables and opens
+// no transport. The standalone stdio entrypoint (stdio.ts) and the HTTP handler
 // (http.ts) supply this config and own the process/transport lifecycle.
-export interface DocmostMcpConfig {
-  apiUrl: string;
-  email: string;
-  password: string;
-}
 
 // --- Modern McpServer Implementation ---
 
@@ -46,11 +48,10 @@ const jsonContent = (data: any) => ({
  * credentials and auto-re-authenticates.
  */
 export function createDocmostMcpServer(config: DocmostMcpConfig): McpServer {
-  const docmostClient = new DocmostClient(
-    config.apiUrl,
-    config.email,
-    config.password,
-  );
+  // Pass the whole config union through: the client branches internally on
+  // credentials vs. getToken, so both the external /mcp (creds) and the
+  // internal per-user (getToken) paths are wired here unchanged.
+  const docmostClient = new DocmostClient(config);
 
   const server = new McpServer(
     {

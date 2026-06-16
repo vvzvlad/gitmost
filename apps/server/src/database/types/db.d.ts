@@ -157,8 +157,10 @@ export interface Billing {
 }
 
 export interface Comments {
+  aiChatId: string | null;
   content: Json | null;
   createdAt: Generated<Timestamp>;
+  createdSource: Generated<string>;
   creatorId: string | null;
   deletedAt: Timestamp | null;
   editedAt: Timestamp | null;
@@ -168,6 +170,7 @@ export interface Comments {
   parentCommentId: string | null;
   resolvedAt: Timestamp | null;
   resolvedById: string | null;
+  resolvedSource: string | null;
   selection: string | null;
   spaceId: string;
   type: string | null;
@@ -254,7 +257,9 @@ export interface PageHistory {
   createdAt: Generated<Timestamp>;
   icon: string | null;
   id: Generated<string>;
+  lastUpdatedAiChatId: string | null;
   lastUpdatedById: string | null;
+  lastUpdatedSource: string | null;
   pageId: string;
   slug: string | null;
   slugId: string | null;
@@ -276,7 +281,9 @@ export interface Pages {
   icon: string | null;
   id: Generated<string>;
   isLocked: Generated<boolean>;
+  lastUpdatedAiChatId: string | null;
   lastUpdatedById: string | null;
+  lastUpdatedSource: Generated<string>;
   parentPageId: string | null;
   position: string | null;
   slugId: string;

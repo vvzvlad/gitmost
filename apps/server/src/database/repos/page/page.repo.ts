@@ -35,6 +35,8 @@ export class PageRepo {
     'parentPageId',
     'creatorId',
     'lastUpdatedById',
+    'lastUpdatedSource',
+    'lastUpdatedAiChatId',
     'spaceId',
     'workspaceId',
     'isLocked',

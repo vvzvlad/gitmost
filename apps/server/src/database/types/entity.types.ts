@@ -39,6 +39,7 @@ import {
   Templates,
 } from './db';
 import { PageEmbeddings } from '@docmost/db/types/embeddings.types';
+import { AiProviderCredentials as AiProviderCredentialsTable } from '@docmost/db/types/ai-provider-credentials.types';
 
 // AI Chat
 export type AiChat = Selectable<AiChats>;
@@ -53,6 +54,16 @@ export type AiChatMessage = Omit<Selectable<AiChatMessages>, 'tsv'>;
 export type InsertableAiChatMessage = Omit<
   Insertable<AiChatMessages>,
   'tsv'
+>;
+
+// AI Provider Credentials
+// SECURITY (D9/§8.1): holds encrypted per-workspace provider API keys.
+// Never expose this table through workspace endpoints.
+export type AiProviderCredentials = Selectable<AiProviderCredentialsTable>;
+export type InsertableAiProviderCredentials =
+  Insertable<AiProviderCredentialsTable>;
+export type UpdatableAiProviderCredentials = Updateable<
+  Omit<AiProviderCredentialsTable, 'id'>
 >;
 
 // Workspace

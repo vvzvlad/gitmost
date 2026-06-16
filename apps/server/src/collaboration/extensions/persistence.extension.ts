@@ -38,6 +38,11 @@ import { TransclusionService } from '../../core/page/transclusion/transclusion.s
 export class PersistenceExtension implements Extension {
   private readonly logger = new Logger(PersistenceExtension.name);
   private contributors: Map<string, Set<string>> = new Map();
+  // Sticky agent-edit marker (§15 H2): a coalesced snapshot may mix human and
+  // agent edits. We accumulate "an agent touched this document during the
+  // coalescing window" per document and OR it across all edits in the window,
+  // so the snapshot is marked 'agent' regardless of who wrote last.
+  private agentTouched: Map<string, boolean> = new Map();
 
   constructor(
     private readonly pageRepo: PageRepo,
@@ -113,6 +118,12 @@ export class PersistenceExtension implements Extension {
 
     let page: Page = null;
     const editingUserIds = this.consumeContributors(documentName);
+    // Sticky agent marker: 'agent' if any agent edit landed in this window, OR
+    // if the current writer is the agent (covers a store with no prior onChange
+    // agent event in the same window). §15 H2.
+    const agentTouched =
+      this.consumeAgentTouched(documentName) || context?.actor === 'agent';
+    const lastUpdatedSource = agentTouched ? 'agent' : 'user';
 
     try {
       await executeTx(this.db, async (trx) => {
@@ -152,6 +163,9 @@ export class PersistenceExtension implements Extension {
             textContent: textContent,
             ydoc: ydocState,
             lastUpdatedById: context.user.id,
+            // Human stays the responsible author; these annotate the source.
+            lastUpdatedSource,
+            lastUpdatedAiChatId: context?.aiChatId ?? null,
             contributorIds: contributorIds,
           },
           pageId,
@@ -169,6 +183,8 @@ export class PersistenceExtension implements Extension {
         JSON.stringify({
           type: 'page.updated',
           updatedAt: new Date().toISOString(),
+          // Provenance for a future live badge; 'user' for human edits.
+          source: lastUpdatedSource,
           lastUpdatedById: context?.user?.id,
           lastUpdatedBy: context?.user
             ? {
@@ -228,11 +244,18 @@ export class PersistenceExtension implements Extension {
     }
 
     this.contributors.get(documentName).add(userId);
+
+    // Sticky agent marker: once an agent connection touches the document in the
+    // coalescing window, keep it marked until the next snapshot consumes it.
+    if (data.context?.actor === 'agent') {
+      this.agentTouched.set(documentName, true);
+    }
   }
 
   async afterUnloadDocument(data: afterUnloadDocumentPayload) {
     const documentName = data.documentName;
     this.contributors.delete(documentName);
+    this.agentTouched.delete(documentName);
   }
 
   private consumeContributors(documentName: string): string[] {
@@ -241,6 +264,13 @@ export class PersistenceExtension implements Extension {
     const userIds = [...contributorSet];
     this.contributors.delete(documentName);
     return userIds;
+  }
+
+  /** Read and clear the sticky agent-touched flag for this coalescing window. */
+  private consumeAgentTouched(documentName: string): boolean {
+    const touched = this.agentTouched.get(documentName) ?? false;
+    this.agentTouched.delete(documentName);
+    return touched;
   }
 
   private async enqueuePageHistory(page: Page): Promise<void> {
