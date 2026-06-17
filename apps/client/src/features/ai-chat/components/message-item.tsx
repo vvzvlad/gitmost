@@ -1,9 +1,11 @@
-import { Box, Text } from "@mantine/core";
+import { Alert, Box, Text } from "@mantine/core";
+import { IconAlertTriangle } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
 import { ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
+import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageItemProps {
@@ -81,6 +83,22 @@ export default function MessageItem({ message }: MessageItemProps) {
 
         return null;
       })}
+      {/* A persisted turn error (server stored it in metadata.error). Rendered
+          here so it survives a thread remount and shows in reopened history. */}
+      {(() => {
+        const errorText = (message.metadata as { error?: string } | undefined)?.error;
+        if (!errorText) return null;
+        return (
+          <Alert
+            variant="light"
+            color="red"
+            icon={<IconAlertTriangle size={16} />}
+            mt={4}
+          >
+            {describeChatError(errorText, t)}
+          </Alert>
+        );
+      })()}
     </Box>
   );
 }

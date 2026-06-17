@@ -35,6 +35,9 @@ export interface IAiChatMessageRow {
       outputTokens?: number;
       totalTokens?: number;
     };
+    // Set on an assistant row whose turn ended in a provider/stream error; the
+    // raw provider error text (e.g. "402: ...") for inline display in the thread.
+    error?: string;
   } | null;
   createdAt: string;
 }
