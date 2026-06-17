@@ -120,7 +120,12 @@ export class PageHistoryRepo {
       .$if(opts?.includeContent, (qb) => qb.select('content'))
       .where('pageId', '=', pageId)
       .limit(1)
+      // Secondary `id` tie-break: two snapshots for the same page can share a
+      // createdAt (e.g. the synchronous pre-agent boundary row and the
+      // immediate agent snapshot), so order by id to keep "last history"
+      // deterministic and consistent with findPageHistoryByPageId (id desc).
       .orderBy('createdAt', 'desc')
+      .orderBy('id', 'desc')
       .executeTakeFirst();
   }
 
