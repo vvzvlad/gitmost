@@ -1119,6 +1119,8 @@
   "Page menu for {{name}}": "Page menu for {{name}}",
   "Create subpage of {{name}}": "Create subpage of {{name}}",
   "AI chat": "AI chat",
+  "Minimize": "Minimize",
+  "Tokens used in this chat": "Tokens used in this chat",
   "AI agent": "AI agent",
   "AI agent is typing…": "AI agent is typing…",
   "Send": "Send",

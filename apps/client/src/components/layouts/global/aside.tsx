@@ -9,7 +9,6 @@ import { TableOfContents } from "@/features/editor/components/table-of-contents/
 import { useAtomValue } from "jotai";
 import { pageEditorAtom } from "@/features/editor/atoms/editor-atoms.ts";
 import { PageDetailsAside } from "@/features/page-details/components/page-details-aside.tsx";
-import AiChatPanel from "@/features/ai-chat/components/ai-chat-panel.tsx";
 import { ASIDE_PANEL_ID } from "@/hooks/use-toggle-aside.tsx";
 
 export default function Aside() {
@@ -39,24 +38,9 @@ export default function Aside() {
       component = <PageDetailsAside />;
       title = "Details";
       break;
-    case "ai-chat":
-      // The AI chat panel renders its own header (title + new-chat + close) and
-      // manages its own scrolling, so it bypasses the shared Aside chrome below.
-      component = <AiChatPanel />;
-      title = "AI chat";
-      break;
     default:
       component = null;
       title = null;
-  }
-
-  // The AI chat panel owns the full aside area (its own header + layout).
-  if (tab === "ai-chat") {
-    return (
-      <Box p="md" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-        {component}
-      </Box>
-    );
   }
 
   return (

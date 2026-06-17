@@ -8,8 +8,10 @@ import { IPageHistory } from "@/features/page-history/types/page.types";
 import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useSetAtom } from "jotai";
-import { asideStateAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
-import { activeAiChatIdAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import {
+  activeAiChatIdAtom,
+  aiChatWindowOpenAtom,
+} from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 
 const MAX_VISIBLE_AVATARS = 5;
@@ -27,9 +29,9 @@ interface HistoryItemProps {
  * Badge marking a version written by the AI agent (provenance C3 / §7.4). It is
  * ADDITIVE — shown next to the human author, never replacing them. When the
  * version carries an `aiChatId`, clicking the badge deep-links into that chat:
- * it sets the active-chat atom, opens the AI-chat aside tab, and closes the
- * history modal. The click is contained (stopPropagation) so it does not also
- * trigger the row's version-select.
+ * it sets the active-chat atom, opens the floating AI-chat window, and closes
+ * the history modal. The click is contained (stopPropagation) so it does not
+ * also trigger the row's version-select.
  */
 function AiAgentBadge({
   authorName,
@@ -39,7 +41,7 @@ function AiAgentBadge({
   aiChatId?: string | null;
 }) {
   const { t } = useTranslation();
-  const setAsideState = useSetAtom(asideStateAtom);
+  const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   const setActiveChatId = useSetAtom(activeAiChatIdAtom);
   const setHistoryModalOpen = useSetAtom(historyAtoms);
 
@@ -52,10 +54,10 @@ function AiAgentBadge({
       event.stopPropagation();
       if (!aiChatId) return;
       setActiveChatId(aiChatId);
-      setAsideState({ tab: "ai-chat", isAsideOpen: true });
+      setAiChatWindowOpen(true);
       setHistoryModalOpen(false);
     },
-    [aiChatId, setActiveChatId, setAsideState, setHistoryModalOpen],
+    [aiChatId, setActiveChatId, setAiChatWindowOpen, setHistoryModalOpen],
   );
 
   const badge = (

@@ -20,7 +20,8 @@ import {
 } from "@tabler/icons-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { aiChatWindowOpenAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
@@ -64,7 +65,7 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const { t } = useTranslation();
   const commentsTriggerProps = useAsideTriggerProps("comments");
   const tocTriggerProps = useAsideTriggerProps("toc");
-  const aiChatTriggerProps = useAsideTriggerProps("ai-chat");
+  const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
@@ -137,7 +138,7 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
             variant="subtle"
             color="dark"
             aria-label={t("AI chat")}
-            {...aiChatTriggerProps}
+            onClick={() => setAiChatWindowOpen((v) => !v)}
           >
             <IconSparkles size={20} stroke={2} />
           </ActionIcon>

@@ -1,0 +1,157 @@
+/* Floating AI chat window shell. Ported from the GitmostAgent.jsx design.
+   Dynamic values (left/top/width/height) stay inline on the element; only the
+   static chrome lives here. */
+
+.window {
+    /* position: fixed + left/top/width/height are applied inline so the window
+       floats over the whole viewport. z-index sits above page content and the
+       app shell but BELOW Mantine overlays (modals=200, menus=300,
+       notifications=400) so the rename input, kebab menu and delete-confirm
+       modal still render above the window. */
+    position: fixed;
+    z-index: 105;
+    background: light-dark(#fff, var(--mantine-color-dark-7));
+    border: 1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+    border-radius: 14px;
+    box-shadow:
+        0 10px 24px rgba(0, 0, 0, 0.13),
+        0 30px 64px rgba(0, 0, 0, 0.17);
+    overflow: hidden;
+    resize: both;
+    display: flex;
+    flex-direction: column;
+    min-width: 300px;
+    min-height: 400px;
+    max-width: 560px;
+    max-height: 880px;
+    font-size: 12px;
+    color: light-dark(var(--mantine-color-black), var(--mantine-color-dark-0));
+}
+
+/* Hide the native resizer; we draw our own affordance icon in the corner. */
+.window::-webkit-resizer {
+    background: transparent;
+}
+
+/* When minimized the window collapses to the header only: auto height, no
+   resize. Width/height inline values are overridden. */
+.minimized {
+    height: auto !important;
+    min-height: 0 !important;
+    resize: none;
+}
+
+/* Body wrapper (history + chat thread). Always rendered so ChatThread stays
+   mounted; hidden (not unmounted) when minimized so an in-flight stream keeps
+   running and the window collapses to just the header. */
+.content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.minimized .content {
+    display: none;
+}
+
+.dragBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    border-bottom: 1px solid light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+    background: light-dark(#fcfcfd, var(--mantine-color-dark-6));
+    flex: none;
+    cursor: grab;
+    user-select: none;
+}
+
+.title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.headerBtn {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    color: var(--mantine-color-dimmed);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.headerBtn:hover {
+    background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--mantine-color-dimmed);
+    background: light-dark(#f6f7f8, var(--mantine-color-dark-6));
+    border: 1px solid light-dark(#eceef0, var(--mantine-color-dark-4));
+    border-radius: 6px;
+    padding: 3px 9px;
+}
+
+.historySection {
+    padding: 6px 8px;
+    border-bottom: 1px solid light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+    flex: none;
+}
+
+.historyHeader {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--mantine-color-dimmed);
+    font-weight: 500;
+}
+
+.newChatBtn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 7px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--mantine-color-dimmed);
+    font-weight: 500;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.newChatBtn:hover {
+    background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+}
+
+.body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 13px 14px 12px;
+    overflow: hidden;
+}
+
+.resizeHandle {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    color: light-dark(#ced4da, var(--mantine-color-dark-3));
+    pointer-events: none;
+    display: flex;
+}

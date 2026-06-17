@@ -9,3 +9,6 @@ import { atom } from "jotai";
 // which mis-resolves the jotai useAtom overload to the read-only signature
 // under this TS/jotai version (the setter would type as `never`).
 export const activeAiChatIdAtom = atom(null as string | null);
+
+// Whether the floating AI chat window is open. Non-persistent (resets per session).
+export const aiChatWindowOpenAtom = atom<boolean>(false);

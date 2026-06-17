@@ -26,7 +26,16 @@ export interface IAiChatMessageRow {
   role: "user" | "assistant" | string;
   content: string | null;
   toolCalls?: unknown;
-  metadata?: { parts?: UIMessage["parts"] } | null;
+  metadata?: {
+    parts?: UIMessage["parts"];
+    // AI SDK v6 `totalUsage` persisted on assistant rows. Used to sum the token
+    // count shown in the floating window's header badge.
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+    };
+  } | null;
   createdAt: string;
 }
 
