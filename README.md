@@ -110,7 +110,7 @@ community feature, with no enterprise license. Open it from the page header; the
 - 🔭 **Viewer comments** — let read-only viewers leave comments.
 - 🔭 **Password-protected pages** — protect individual pages / shares with a password.
 - 🔭 **Windows / Linux app** — native desktop app for Windows and Linux.
-- 🔭 **Mobile app** — native mobile application.
+- 🔭 **Mobile app** — mobile apps (iOS first, Android to follow), reusing the existing responsive web UI and editor via a Capacitor wrapper, with offline planned for later. See [docs/mobile-app-plan.md](docs/mobile-app-plan.md).
 - 🔭 **Offline mode** — offline sync & PWA support.
 - 🔭 **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it. See [docs/voice-dictation-plan.md](docs/voice-dictation-plan.md).
 - 🔭 **Editor & UX improvements** — blocks inside tables (lists, to-do items), column layout, additional heading levels, highlight blocks, custom emoji in callouts, floating images, anchor links for page mentions, toggles (shared-page width, aside/sidebar, spellcheck, ligatures), sanitized space-tree export, and mentions in breadcrumbs.
