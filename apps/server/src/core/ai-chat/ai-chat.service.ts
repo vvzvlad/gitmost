@@ -428,6 +428,97 @@ type StepLike = {
 };
 
 /**
+ * Compaction tunables for persisted tool OUTPUTS. Read tools (getPage,
+ * getPageJson, getNode, diffPageVersions, exportPageMarkdown, ...) return whole
+ * pages with no size cap. Their outputs are stored in `metadata.parts` and
+ * RE-SENT to the provider on every later turn via convertToModelMessages, so an
+ * uncompacted large body grows token cost, latency, and DB row size on every
+ * turn. We shrink the big payloads while preserving the object's shape and its
+ * small scalar fields (id/title/pageId) the client reads to render citations.
+ */
+// Only outputs whose JSON serialization exceeds this are compacted at all
+// (fast path: smaller outputs are returned unchanged, by identity).
+const MAX_TOOL_OUTPUT_BYTES = 4000;
+// A string longer than this is truncated to a leading preview.
+const TOOL_OUTPUT_STRING_LIMIT = 600;
+// Number of leading characters kept from a truncated string.
+const TOOL_OUTPUT_STRING_PREVIEW = 500;
+// Maximum number of array elements kept; the rest are summarized by a marker.
+const TOOL_OUTPUT_ARRAY_LIMIT = 50;
+// Beyond this nesting depth a subtree is replaced with a marker, bounding the
+// recursion and the size of pathological deeply-nested payloads.
+const TOOL_OUTPUT_MAX_DEPTH = 8;
+
+/**
+ * Recursively compact a single tool output before it is persisted (and thus
+ * re-sent to the provider on later turns). Preserves the value's KIND and its
+ * keys/scalars (so the client can still extract id/title/pageId citations from
+ * `part.output`); only the large payloads (long strings, long arrays, very deep
+ * subtrees) are shrunk. Returns a plain JSON-serializable value.
+ *
+ * Exported only so the unit test can import the pure helper; exporting it does
+ * not change runtime behavior.
+ */
+export function compactToolOutput(output: unknown): unknown {
+  // Fast path: nothing to do for null/undefined or non-serializable values.
+  if (output === null || output === undefined) return output;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(output);
+  } catch {
+    // Non-serializable (e.g. circular): return unchanged, never throw here.
+    return output;
+  }
+  // JSON.stringify returns undefined for values like a bare function/symbol.
+  if (serialized === undefined) return output;
+  // Below the size threshold: return the original unchanged (by identity).
+  if (Buffer.byteLength(serialized, 'utf8') <= MAX_TOOL_OUTPUT_BYTES) {
+    return output;
+  }
+  return compactValue(output, 0);
+}
+
+/** Recursive worker for compactToolOutput; see the constants above for limits. */
+function compactValue(value: unknown, depth: number): unknown {
+  if (typeof value === 'string') {
+    if (value.length > TOOL_OUTPUT_STRING_LIMIT) {
+      return `${value.slice(0, TOOL_OUTPUT_STRING_PREVIEW)}…[truncated ${
+        value.length - TOOL_OUTPUT_STRING_PREVIEW
+      } chars]`;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const kept = value
+      .slice(0, TOOL_OUTPUT_ARRAY_LIMIT)
+      .map((el) => compactValue(el, depth + 1));
+    if (value.length > TOOL_OUTPUT_ARRAY_LIMIT) {
+      // Append a marker summarizing the dropped tail so the size is bounded
+      // while signalling that the array was longer.
+      kept.push({
+        _truncated: true,
+        omittedItems: value.length - TOOL_OUTPUT_ARRAY_LIMIT,
+      });
+    }
+    return kept;
+  }
+  if (typeof value === 'object' && value !== null) {
+    if (depth >= TOOL_OUTPUT_MAX_DEPTH) {
+      return { _truncated: true, note: 'nested content omitted for replay' };
+    }
+    // Rebuild the object preserving keys (keeps id/title/pageId), compacting
+    // each value one level deeper.
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = compactValue(v, depth + 1);
+    }
+    return out;
+  }
+  // Numbers, booleans, etc.: nothing to shrink.
+  return value;
+}
+
+/**
  * Rebuild the FULL UIMessage `parts` for an assistant turn from the SDK steps,
  * so multi-turn history replays prior tool-calls/results to the model (not just
  * the final text). Per step we emit the step's text part (if any) followed by a
@@ -467,7 +558,7 @@ function assistantParts(
           toolCallId: call.toolCallId,
           state: 'output-available',
           input: call.input,
-          output: resultsById.get(call.toolCallId),
+          output: compactToolOutput(resultsById.get(call.toolCallId)),
         });
       } else {
         // No paired result (e.g. aborted mid-step). Persisting a bare
@@ -529,7 +620,7 @@ function serializeSteps(
       calls.push({ toolName: call.toolName, input: call.input });
     }
     for (const r of step.toolResults ?? []) {
-      calls.push({ toolName: r.toolName, output: r.output });
+      calls.push({ toolName: r.toolName, output: compactToolOutput(r.output) });
     }
   }
   return calls.length > 0 ? calls : null;
