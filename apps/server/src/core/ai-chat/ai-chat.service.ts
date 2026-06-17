@@ -24,6 +24,12 @@ import { buildSystemPrompt } from './ai-chat.prompt';
  */
 export interface AiChatStreamBody {
   chatId?: string;
+  // The page the user is currently viewing (client-supplied), or null on a
+  // non-page route. Used ONLY as prompt context so the agent knows what "this
+  // page" refers to; the page itself is never fetched server-side here. The id
+  // is attacker-controllable but harmless: the agent reads/writes via its
+  // CASL-enforced page tools, which 403 on a page the user cannot access.
+  openPage?: { id?: string; title?: string } | null;
   // useChat sends the full UIMessage list; the last one is the new user turn.
   messages?: UIMessage[];
 }
@@ -140,6 +146,7 @@ export class AiChatService {
     const system = buildSystemPrompt({
       workspace,
       adminPrompt: resolved?.systemPrompt,
+      openedPage: body.openPage,
     });
 
     // Pass the resolved chatId so the write tools can mint provenance tokens
@@ -310,7 +317,22 @@ export class AiChatService {
       // UI shows a generic failure. Surface the real provider message instead.
       // AI SDK error messages / 4xx bodies never contain the API key, so this is
       // safe; we never dump the resolved config/apiKey.
+      //
+      // SSE buffering / proxy note: pipeUIMessageStreamToResponse writes the
+      // headers immediately (res.writeHead) and each chunk incrementally, and the
+      // SDK's default UI_MESSAGE_STREAM_HEADERS already include
+      // `x-accel-buffering: no` (disables nginx response buffering) plus
+      // `content-type: text/event-stream` and `cache-control: no-cache`. We pass
+      // `headers` explicitly anyway so the intent is visible here and survives any
+      // future change to the SDK defaults (prepareHeaders only fills a header when
+      // absent, so this never clobbers the SDK's content-type). DEPLOYMENT: the
+      // reverse proxy in front of this server MUST NOT buffer this route, or the
+      // whole response is released at once and nothing streams. nginx honours the
+      // `x-accel-buffering: no` header we send (and additionally set
+      // `proxy_buffering off; proxy_cache off;` for /api/ai-chat/stream); traefik
+      // does not buffer responses by default.
       result.pipeUIMessageStreamToResponse(res.raw, {
+        headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
           const e = error as { statusCode?: number; message?: string };
           return e?.statusCode
@@ -318,6 +340,13 @@ export class AiChatService {
             : (e?.message ?? 'AI stream error');
         },
       });
+
+      // Force the status line + headers onto the socket NOW (before the model's
+      // first token), so the proxy sees the response start immediately even if the
+      // provider's first chunk is delayed. writeToServerResponse already called
+      // writeHead synchronously above; flushHeaders is a belt-and-braces no-op once
+      // headers are sent, and is guarded for response-likes that lack it.
+      res.raw.flushHeaders?.();
     } catch (err) {
       // Synchronous failure before/while wiring the stream: the terminal
       // callbacks will not run, so release the leased external clients here and

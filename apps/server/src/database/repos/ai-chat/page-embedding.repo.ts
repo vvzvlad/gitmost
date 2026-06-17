@@ -9,11 +9,17 @@ import { dbOrTx } from '../../utils';
  * Repository for `page_embeddings` — the pgvector store backing the AI agent's
  * semantic search (§5.5 / §6.7 stage D).
  *
- * The `embedding` column is `vector(1536)`, which is NOT a native Kysely column
+ * The `embedding` column is a dimension-agnostic pgvector `vector` (no fixed
+ * `(N)`, see migration 20260617T140000), which is NOT a native Kysely column
  * type, so every read/write of a vector is serialized with the `pgvector` npm
  * helper (`pgvector.toSql(number[])` → a `'[1,2,3]'` text literal) and cast back
  * to `vector` via a raw `::vector` SQL cast. Reindex is a HARD delete + insert
- * (see `deleteByPage`) so the HNSW ANN index never returns stale vectors.
+ * (see `deleteByPage`) so search never returns stale vectors.
+ *
+ * TRADE-OFF: a dimension-agnostic column cannot carry an HNSW/ivfflat ANN index
+ * (those require a fixed dimension), so `searchByEmbedding` is a sequential scan
+ * with the `<=>` cosine operator. Fine at wiki scale; re-add an HNSW index if a
+ * single embedding dimension is ever pinned per deployment.
  */
 
 /** A single chunk row to persist for a page (page-body embeddings). */
@@ -66,8 +72,8 @@ export class PageEmbeddingRepo {
 
   /**
    * Bulk-insert chunk rows for a page. The `embedding` value is serialized with
-   * `pgvector.toSql` and cast to `vector` so Postgres stores it in the fixed
-   * `vector(1536)` column. No-op on an empty array.
+   * `pgvector.toSql` and cast to `vector` so Postgres stores it in the
+   * dimension-agnostic `vector` column (any dimension). No-op on an empty array.
    */
   async insertChunks(
     rows: PageEmbeddingChunkRow[],
@@ -97,10 +103,17 @@ export class PageEmbeddingRepo {
   }
 
   /**
-   * Cosine ANN search over the embeddings, scoped to a workspace AND a set of
+   * Cosine search over the embeddings, scoped to a workspace AND a set of
    * spaces the caller may read (see semanticSearch access-scoping). Orders by
    * `embedding <=> $query` (cosine distance) and joins the page title cheaply.
    * Returns [] when `spaceIds` is empty (no accessible spaces => no results).
+   *
+   * Because the column is dimension-agnostic (no ANN index), this is a seq scan
+   * with `<=>`. The query MUST only be compared against same-dimension rows —
+   * pgvector raises on a dimension mismatch, which can happen when rows from a
+   * previously configured embedding model still linger. We therefore filter by
+   * `model_dimensions = queryEmbedding.length` so the `<=>` operands always
+   * agree on dimension.
    */
   async searchByEmbedding(
     workspaceId: string,
@@ -112,6 +125,8 @@ export class PageEmbeddingRepo {
 
     // Serialized + cast query vector reused for the distance expression.
     const queryVector = sql`${pgvector.toSql(queryEmbedding)}::vector`;
+    // Compare only against rows produced by a model of the SAME dimension.
+    const queryDim = queryEmbedding.length;
 
     const rows = await this.db
       .selectFrom('pageEmbeddings as pe')
@@ -125,6 +140,9 @@ export class PageEmbeddingRepo {
       ])
       .where('pe.workspaceId', '=', workspaceId)
       .where('pe.spaceId', 'in', spaceIds)
+      // Same-dimension only: avoids a pgvector dimension-mismatch error against
+      // rows from a previously configured embedding model.
+      .where('pe.modelDimensions', '=', queryDim)
       // Exclude chunks whose page is in the trash (defence in depth).
       .where('p.deletedAt', 'is', null)
       .orderBy('distance', 'asc')

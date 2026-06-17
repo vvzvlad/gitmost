@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import { generateId } from "ai";
 import { Alert, Box, Stack } from "@mantine/core";
 import { IconAlertTriangle } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
@@ -9,11 +10,20 @@ import ChatInput from "@/features/ai-chat/components/chat-input.tsx";
 import { IAiChatMessageRow } from "@/features/ai-chat/types/ai-chat.types.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
+/** The page the user is currently viewing, sent as chat context. */
+export interface OpenPageContext {
+  id: string;
+  title: string;
+}
+
 interface ChatThreadProps {
   /** The open chat id, or null for a brand-new (not-yet-created) chat. */
   chatId: string | null;
   /** Persisted rows to seed initial messages (existing chats only). */
   initialRows?: IAiChatMessageRow[];
+  /** The page currently open in the workspace, or null on a non-page route.
+   *  Sent with each turn so the agent knows what "this page" refers to. */
+  openPage?: OpenPageContext | null;
   /** Called when a turn finishes; the parent refreshes the chat list and, for
    *  a new chat, adopts the freshly created chat id. */
   onTurnFinished: () => void;
@@ -41,6 +51,7 @@ function rowToUiMessage(row: IAiChatMessageRow): UIMessage {
 export default function ChatThread({
   chatId,
   initialRows,
+  openPage,
   onTurnFinished,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -57,23 +68,60 @@ export default function ChatThread({
   const chatIdRef = useRef<string | null>(chatId);
   chatIdRef.current = chatId;
 
+  // Keep the currently-open page in a ref, updated each render, so the LATEST
+  // open page is sent on every send WITHOUT re-creating the `useMemo([])`-stable
+  // transport (and thus without re-creating the useChat store mid-stream — see
+  // the `chatStoreId` note below). Read live inside `prepareSendMessagesRequest`.
+  const openPageRef = useRef<OpenPageContext | null>(openPage ?? null);
+  openPageRef.current = openPage ?? null;
+
+  // Stable `useChat` store key for the lifetime of THIS mount.
+  //
+  // CRITICAL: `useChat` (@ai-sdk/react) re-creates its internal `Chat` store
+  // whenever the `id` option no longer equals the store's current id
+  // (`"id" in options && chatRef.current.id !== options.id`). For a brand-new
+  // chat (`chatId === null`) we previously passed `id: undefined`; the store
+  // then generated its OWN random id internally, so `store.id !== undefined`
+  // stayed true on EVERY render and the store was re-created on every render —
+  // wiping the optimistic user message, the "submitted" status, and every
+  // streamed delta until the turn fully finished (then the parent adopts the
+  // new chat id and remounts with the persisted history, making everything
+  // "appear at once"). Passing a STABLE non-undefined id keeps one store for
+  // the whole turn, so the user message shows immediately and tokens stream
+  // live. This id is purely the client store key; the server still resolves the
+  // real chat from `chatId` in the request body (see `prepareSendMessagesRequest`).
+  // The id only needs to be stable per mount — the parent remounts this via
+  // `key` on chat switch, which re-seeds cleanly.
+  const stableIdRef = useRef<string>(chatId ?? `new-${generateId()}`);
+  const chatStoreId = chatId ?? stableIdRef.current;
+
   const transport = useMemo(
     () =>
       new DefaultChatTransport<UIMessage>({
         api: "/api/ai-chat/stream",
         credentials: "include",
-        // Inject the chat id alongside the useChat messages so the server can
-        // resolve an existing chat (or create one when null).
+        // Inject the chat id and the currently-open page alongside the useChat
+        // messages so the server can resolve an existing chat (or create one
+        // when null) and tell the agent which page "this page" refers to. Both
+        // are read live from refs so changing chats/pages does NOT recreate the
+        // transport. `openPage` is null on a non-page route.
         prepareSendMessagesRequest: ({ messages, body }) => ({
-          body: { ...body, chatId: chatIdRef.current, messages },
+          body: {
+            ...body,
+            chatId: chatIdRef.current,
+            openPage: openPageRef.current,
+            messages,
+          },
         }),
       }),
     [],
   );
 
   const { messages, sendMessage, status, stop, error } = useChat({
-    // Key the hook by the chat id so shared-id chats don't collide.
-    id: chatId ?? undefined,
+    // Stable per-mount key. Existing chats use their real id; new chats use a
+    // generated client id (never `undefined`) so the store is NOT re-created on
+    // every render mid-stream (see `chatStoreId` above).
+    id: chatStoreId,
     messages: initialMessages,
     transport,
     onFinish: () => onTurnFinished(),

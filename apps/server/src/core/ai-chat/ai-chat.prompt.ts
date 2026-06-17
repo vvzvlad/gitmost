@@ -55,6 +55,13 @@ export interface BuildSystemPromptInput {
    * used instead.
    */
   adminPrompt?: string | null;
+  /**
+   * The page the user is currently viewing (client-supplied), if any. When it
+   * has an id, a CONTEXT line is added so the agent can resolve "this page" /
+   * "the current page" to that pageId. The page is NOT fetched here — the agent
+   * uses its CASL-enforced read/write page tools with the id when needed.
+   */
+  openedPage?: { id?: string; title?: string } | null;
 }
 
 /**
@@ -65,15 +72,27 @@ export interface BuildSystemPromptInput {
 export function buildSystemPrompt({
   workspace,
   adminPrompt,
+  openedPage,
 }: BuildSystemPromptInput): string {
   const base =
     typeof adminPrompt === 'string' && adminPrompt.trim().length > 0
       ? adminPrompt.trim()
       : DEFAULT_PROMPT;
 
-  const context = workspace?.name
-    ? `\n\nWorkspace: ${workspace.name}.`
-    : '';
+  let context = workspace?.name ? `\n\nWorkspace: ${workspace.name}.` : '';
+
+  // When the user has a page open, tell the agent which page "this page" means.
+  // Context only — the agent reads/writes via its CASL-enforced page tools, so a
+  // spoofed id cannot escalate (getPage would 403). Added to the context section,
+  // never the immutable safety framework. Absent => nothing is added.
+  const pageId = openedPage?.id;
+  if (typeof pageId === 'string' && pageId.trim().length > 0) {
+    const title =
+      typeof openedPage?.title === 'string' && openedPage.title.trim().length > 0
+        ? openedPage.title.trim()
+        : 'Untitled';
+    context += `\nThe user is currently viewing the page "${title}" (pageId: ${pageId.trim()}). When they refer to "this page", "the current page", or similar, operate on that pageId — use the read/write page tools with it.`;
+  }
 
   return `${base}${context}\n${SAFETY_FRAMEWORK}`;
 }

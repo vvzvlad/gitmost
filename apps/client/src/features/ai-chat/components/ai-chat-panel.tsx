@@ -13,10 +13,13 @@ import {
 import { IconChevronDown, IconPlus, IconX } from "@tabler/icons-react";
 import { useDisclosure } from "@mantine/hooks";
 import { useAtom } from "jotai";
+import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { asideStateAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { activeAiChatIdAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { extractPageSlugId } from "@/lib";
 import {
   AI_CHATS_RQ_KEY,
   useAiChatMessagesQuery,
@@ -45,6 +48,19 @@ export default function AiChatPanel() {
   const { data: chats } = useAiChatsQuery();
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
+
+  // The page the user is currently viewing, derived from the route (same source
+  // the breadcrumb uses). On a non-page route `pageSlug` is undefined, so the
+  // query is disabled and `openPage` is null. This is passed to the chat thread
+  // as context so the agent knows what "this page"/"the current page" refers to;
+  // the agent still reads/writes via its CASL-enforced page tools using the id.
+  const { pageSlug } = useParams();
+  const { data: openPageData } = usePageQuery({
+    pageId: extractPageSlugId(pageSlug),
+  });
+  const openPage = openPageData
+    ? { id: openPageData.id, title: openPageData.title }
+    : null;
 
   const closeAside = (): void =>
     setAsideState((s) => ({ ...s, isAsideOpen: false }));
@@ -148,6 +164,7 @@ export default function AiChatPanel() {
             key={threadKey}
             chatId={activeChatId}
             initialRows={activeChatId ? messageRows : []}
+            openPage={openPage}
             onTurnFinished={onTurnFinished}
           />
         )}
