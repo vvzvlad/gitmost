@@ -324,7 +324,10 @@ export class PersistenceExtension implements Extension {
       : pageAge < HISTORY_FAST_THRESHOLD
         ? HISTORY_FAST_INTERVAL
         : HISTORY_INTERVAL;
-    const jobId = isAgent ? `${page.id}:agent` : page.id;
+    // BullMQ forbids ':' in custom job IDs (it is the Redis key separator), so
+    // use '-' here. page.id is a UUID, so `${page.id}-agent` cannot collide with
+    // any human job whose id is a bare page.id.
+    const jobId = isAgent ? `${page.id}-agent` : page.id;
 
     await this.historyQueue.add(
       QueueJob.PAGE_HISTORY,
