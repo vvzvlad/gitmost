@@ -15,13 +15,14 @@ import {
   IconPlus,
   IconX,
 } from "@tabler/icons-react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   activeAiChatIdAtom,
   aiChatWindowOpenAtom,
+  aiChatDraftAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
@@ -90,6 +91,7 @@ export default function AiChatWindow() {
   const queryClient = useQueryClient();
   const [windowOpen, setWindowOpen] = useAtom(aiChatWindowOpenAtom);
   const [activeChatId, setActiveChatId] = useAtom(activeAiChatIdAtom);
+  const setDraft = useSetAtom(aiChatDraftAtom);
 
   // History section starts collapsed (matches the former panel's behavior).
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -131,14 +133,16 @@ export default function AiChatWindow() {
   const startNewChat = useCallback((): void => {
     setActiveChatId(null);
     setHistoryOpen(false);
-  }, [setActiveChatId]);
+    setDraft("");
+  }, [setActiveChatId, setDraft]);
 
   const selectChat = useCallback(
     (chatId: string): void => {
       setActiveChatId(chatId);
       setHistoryOpen(false);
+      setDraft("");
     },
-    [setActiveChatId],
+    [setActiveChatId, setDraft],
   );
 
   // After a turn finishes, refresh the chat list. For a brand-new chat (no id

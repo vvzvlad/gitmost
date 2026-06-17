@@ -11,6 +11,7 @@ import { useSetAtom } from "jotai";
 import {
   activeAiChatIdAtom,
   aiChatWindowOpenAtom,
+  aiChatDraftAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 
@@ -43,6 +44,7 @@ function AiAgentBadge({
   const { t } = useTranslation();
   const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   const setActiveChatId = useSetAtom(activeAiChatIdAtom);
+  const setDraft = useSetAtom(aiChatDraftAtom);
   const setHistoryModalOpen = useSetAtom(historyAtoms);
 
   const tooltip = t("Edited by AI agent on behalf of {{name}}", {
@@ -54,10 +56,19 @@ function AiAgentBadge({
       event.stopPropagation();
       if (!aiChatId) return;
       setActiveChatId(aiChatId);
+      // Switching to another chat must start with a clean composer — clear any
+      // unsent draft so it does not leak from the previously open chat.
+      setDraft("");
       setAiChatWindowOpen(true);
       setHistoryModalOpen(false);
     },
-    [aiChatId, setActiveChatId, setAiChatWindowOpen, setHistoryModalOpen],
+    [
+      aiChatId,
+      setActiveChatId,
+      setDraft,
+      setAiChatWindowOpen,
+      setHistoryModalOpen,
+    ],
   );
 
   const badge = (

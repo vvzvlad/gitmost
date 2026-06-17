@@ -12,3 +12,10 @@ export const activeAiChatIdAtom = atom(null as string | null);
 
 // Whether the floating AI chat window is open. Non-persistent (resets per session).
 export const aiChatWindowOpenAtom = atom<boolean>(false);
+
+// The AI chat composer draft (text typed but not yet sent). Held here — OUTSIDE
+// ChatThread — so it survives the thread remount that happens when a brand-new
+// chat adopts its freshly created id after the first turn finishes. If it lived
+// in ChatInput's local state, that remount would wipe text the user typed while
+// the agent was still streaming. Reset on deliberate chat switches.
+export const aiChatDraftAtom = atom<string>("");

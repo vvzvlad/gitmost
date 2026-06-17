@@ -1,7 +1,9 @@
-import { useState, KeyboardEvent } from "react";
+import { KeyboardEvent } from "react";
 import { ActionIcon, Group, Textarea, Tooltip } from "@mantine/core";
 import { IconPlayerStopFilled, IconSend } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
+import { useAtom } from "jotai";
+import { aiChatDraftAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
@@ -22,7 +24,7 @@ export default function ChatInput({
   disabled,
 }: ChatInputProps) {
   const { t } = useTranslation();
-  const [value, setValue] = useState("");
+  const [value, setValue] = useAtom(aiChatDraftAtom);
 
   const send = (): void => {
     const text = value.trim();
