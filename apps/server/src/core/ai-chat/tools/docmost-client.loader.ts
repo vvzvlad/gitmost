@@ -150,12 +150,6 @@ export interface DocmostClientLike {
     commentId: string,
     resolved: boolean,
   ): Promise<Record<string, unknown>>;
-  // Edits a comment's own content. NOT version-tracked (not reversible); the
-  // server only lets the comment's author edit it.
-  updateComment(
-    commentId: string,
-    content: string,
-  ): Promise<Record<string, unknown>>;
 }
 
 export type DocmostClientConfig = {

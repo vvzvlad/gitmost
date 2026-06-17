@@ -176,11 +176,15 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
     expect(tools).not.toHaveProperty('deleteComment');
   });
 
+  it('never exposes an updateComment tool (comment edits are irreversible / not version-tracked)', async () => {
+    const tools = await buildTools();
+    expect(tools).not.toHaveProperty('updateComment');
+  });
+
   it('exposes the new read/write/comment/transform tools', async () => {
     const tools = await buildTools();
     expect(tools).toHaveProperty('listComments');
     expect(tools).toHaveProperty('getComment');
-    expect(tools).toHaveProperty('updateComment');
     expect(tools).toHaveProperty('transformPage');
     expect(tools).toHaveProperty('getPageJson');
     expect(tools).toHaveProperty('patchNode');

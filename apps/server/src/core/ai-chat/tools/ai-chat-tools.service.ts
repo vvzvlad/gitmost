@@ -852,19 +852,6 @@ export class AiChatToolsService {
           await client.restorePageVersion(historyId),
       }),
 
-      updateComment: tool({
-        description:
-          "Edit an existing comment's own content. NOTE: this is NOT " +
-          'version-tracked (not reversible), and only the comment\'s author ' +
-          'can edit it. Only do this when the user explicitly asked.',
-        inputSchema: z.object({
-          commentId: z.string().describe('The id of the comment to edit.'),
-          content: z.string().describe('The new comment body as Markdown.'),
-        }),
-        execute: async ({ commentId, content }) =>
-          await client.updateComment(commentId, content),
-      }),
-
       transformPage: tool({
         description:
           'Run a sandboxed JS transform of the form `(doc, ctx) => doc` over a ' +
