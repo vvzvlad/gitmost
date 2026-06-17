@@ -30,7 +30,7 @@ const VERSION = packageJson.version;
 // Editing guide surfaced to MCP clients in the initialize result so they can
 // pick the right tool by intent and avoid resending whole documents.
 const SERVER_INSTRUCTIONS =
-  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (place a local image file) / replace_image (swap an existing image file). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (an inline comment anchors to its selection text), list_comments, update_comment, delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
+  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (add an image from a web URL) / replace_image (swap an existing image for one from a web URL). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (an inline comment anchors to its selection text), list_comments, update_comment, delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
   "Complex/scripted rewrite (multiple coordinated edits, footnotes, renumbering) -> docmost_transform: write a JS `(doc, ctx) => doc` transform, preview the diff with dryRun (default), then apply with dryRun:false; ctx.helpers includes commentsToFootnotes for turning inline comments into numbered footnotes. " +
   "Review what changed -> diff_page_versions (compare a historyId to current, or two history versions). See a page's saved versions -> list_page_history. Undo a bad edit -> restore_page_version (writes a past version back as current; itself revertible). " +
   "Lossless markdown round-trip (download, edit, re-upload, incl. comment anchors) -> export_page_markdown / import_page_markdown.";
@@ -612,7 +612,8 @@ server.registerTool(
   "insert_image",
   {
     description:
-      "Upload a local image and insert it into a page in one step. By default " +
+      "Download an image from a web (http/https) URL and insert it into " +
+      "a page in one step. By default " +
       "appends the image at the end of the page. With replaceText, replaces the " +
       "first top-level block whose text contains that string (handy for " +
       'swapping a text placeholder like "[image: foo.png]" for the real image). ' +
@@ -620,10 +621,10 @@ server.registerTool(
       "that string. Preserves all other block ids.",
     inputSchema: {
       pageId: z.string().min(1),
-      filePath: z
+      imageUrl: z
         .string()
         .min(1)
-        .describe("Absolute local path to the image file"),
+        .describe("http(s) URL of the image to download and upload"),
       align: z.enum(["left", "center", "right"]).optional(),
       alt: z.string().optional(),
       replaceText: z
@@ -640,8 +641,8 @@ server.registerTool(
         ),
     },
   },
-  async ({ pageId, filePath, align, alt, replaceText, afterText }) => {
-    const result = await docmostClient.insertImage(pageId, filePath, {
+  async ({ pageId, imageUrl, align, alt, replaceText, afterText }) => {
+    const result = await docmostClient.insertImage(pageId, imageUrl, {
       align,
       alt,
       replaceText,
@@ -656,7 +657,8 @@ server.registerTool(
   "replace_image",
   {
     description:
-      "Replace an existing image on a page: uploads the new file as a NEW " +
+      "Replace an existing image on a page with a new image fetched from a web " +
+      "(http/https) URL: uploads the new file as a NEW " +
       "attachment (fresh clean URL that renders and busts browser caches), then " +
       "repoints every image node referencing the old attachmentId (recursively, " +
       "incl. callouts/tables) via the live document, preserving comments, " +
@@ -670,19 +672,24 @@ server.registerTool(
         .string()
         .min(1)
         .describe("attachmentId of the image currently in the page to replace"),
-      filePath: z
+      imageUrl: z
         .string()
         .min(1)
-        .describe("Absolute local path to the new image file"),
+        .describe("http(s) URL of the new image to download"),
       align: z.enum(["left", "center", "right"]).optional(),
       alt: z.string().optional(),
     },
   },
-  async ({ pageId, attachmentId, filePath, align, alt }) => {
-    const result = await docmostClient.replaceImage(pageId, attachmentId, filePath, {
-      align,
-      alt,
-    });
+  async ({ pageId, attachmentId, imageUrl, align, alt }) => {
+    const result = await docmostClient.replaceImage(
+      pageId,
+      attachmentId,
+      imageUrl,
+      {
+        align,
+        alt,
+      },
+    );
     return jsonContent(result);
   },
 );

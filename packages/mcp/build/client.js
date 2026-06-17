@@ -1,6 +1,5 @@
 import FormData from "form-data";
 import axios from "axios";
-import { readFileSync, statSync } from "fs";
 import { basename, extname } from "path";
 import { filterWorkspace, filterSpace, filterPage, filterComment, filterSearchResult, } from "./lib/filters.js";
 import { HocuspocusProvider } from "@hocuspocus/provider";
@@ -18,6 +17,23 @@ import { getCollabToken, performLogin } from "./lib/auth-utils.js";
 import { diffDocs } from "./lib/diff.js";
 import { blockText, walk, getList, insertMarkerAfter, setCalloutRange, noteItem, mdToInlineNodes, commentsToFootnotes, } from "./lib/transforms.js";
 import vm from "node:vm";
+// Supported image types, kept as two lookup tables so both a local file
+// extension and a remote Content-Type can be mapped to the same canonical set.
+const EXT_TO_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+};
+const MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+};
 export class DocmostClient {
     client;
     token = null;
@@ -1658,22 +1674,103 @@ export class DocmostClient {
         };
     }
     // --- Image upload / embedding ---
-    /** Map a file extension to a supported image MIME type (throws otherwise). */
-    imageMimeFromPath(filePath) {
-        const ext = extname(filePath).toLowerCase();
-        const map = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".svg": "image/svg+xml",
-        };
-        const mime = map[ext];
-        if (!mime) {
-            throw new Error(`unsupported image type ${ext || "(none)"}; supported: png, jpg, jpeg, gif, webp, svg`);
+    /** Map a Content-Type string to a supported MIME type, or null if unsupported. */
+    supportedImageMime(ct) {
+        return MIME_TO_EXT[ct] ? ct : null;
+    }
+    /**
+     * Download a remote image from a caller-supplied URL and resolve its bytes,
+     * MIME and a filename.
+     *
+     * SSRF / RESOURCE TRUST BOUNDARY: the URL comes from the MCP caller and is
+     * fetched BY THE SERVER, so it must be guarded before and after the request.
+     * The guards mirror the local-file trust boundary in uploadImage:
+     *   - scheme allowlist (http/https only) — rejects file:, data:, ftp:, etc.,
+     *     so the caller cannot use this path to read local files or other schemes;
+     *   - a size cap enforced both via axios maxContentLength/maxBodyLength AND a
+     *     post-download buffer.length re-check (defends against a missing/lying
+     *     Content-Length), so a huge response cannot exhaust memory;
+     *   - a 30s timeout. The timeout matters because replaceImage holds the
+     *     per-page lock across this upload, so a hung download would wedge the
+     *     lock for that page.
+     * We deliberately do NOT block private IP ranges: the MCP caller is already
+     * trusted to read arbitrary host files via the filePath path, so the marginal
+     * trust granted by fetching internal URLs is comparable, and blocking would
+     * break legitimate internal-image use.
+     */
+    async fetchRemoteImage(url, maxBytes) {
+        // Scheme allowlist first — cheapest guard, and rejects non-http(s) schemes
+        // (file:, data:, ftp:, ...) before any network request is made.
+        let parsed;
+        try {
+            parsed = new URL(url);
         }
-        return mime;
+        catch (e) {
+            throw new Error(`Invalid image URL "${url}": ${e.message}`);
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error(`unsupported image URL scheme "${parsed.protocol}"; only http and https are allowed`);
+        }
+        let response;
+        try {
+            response = await axios.get(url, {
+                responseType: "arraybuffer",
+                timeout: 30000,
+                maxContentLength: maxBytes,
+                maxBodyLength: maxBytes,
+                headers: { Accept: "image/*" },
+            });
+        }
+        catch (error) {
+            // Keep the thrown message free of the raw response body (it may echo
+            // server internals); surface only status/statusText. The full body is
+            // logged under DEBUG for diagnostics.
+            if (axios.isAxiosError(error)) {
+                if (process.env.DEBUG) {
+                    console.error("Image download failed; response body:", JSON.stringify(error.response?.data));
+                }
+                throw new Error(`Image download failed for "${url}": ${error.response?.status ?? ""} ${error.response?.statusText ?? error.message}`.trim());
+            }
+            throw error;
+        }
+        // axios returns an ArrayBuffer for responseType: "arraybuffer".
+        const buffer = Buffer.from(response.data);
+        // Re-check the size: maxContentLength relies on Content-Length, which may be
+        // absent or lie, so guard against the actual byte count too.
+        if (buffer.length === 0) {
+            throw new Error(`Empty image response from "${url}"`);
+        }
+        if (buffer.length > maxBytes) {
+            throw new Error(`Image too large: ${buffer.length} bytes exceeds the ${maxBytes}-byte cap`);
+        }
+        // Resolve MIME: prefer the response Content-Type (strip any "; charset=..."
+        // parameter, lowercase, trim) mapped through the supported set; if the
+        // header is generic/missing/unsupported, fall back to the URL path
+        // extension via the existing extension->MIME logic.
+        const rawCt = response.headers?.["content-type"];
+        let mime = null;
+        if (typeof rawCt === "string" && rawCt.length > 0) {
+            const ct = rawCt.split(";")[0].trim().toLowerCase();
+            mime = this.supportedImageMime(ct);
+        }
+        if (!mime) {
+            // Fall back to the URL path extension. Use the pathname so the query
+            // string never contaminates the extension lookup.
+            const ext = extname(parsed.pathname).toLowerCase();
+            mime = EXT_TO_MIME[ext] ?? null;
+        }
+        if (!mime) {
+            throw new Error(`cannot determine supported image type for "${url}"; supported: png, jpg, jpeg, gif, webp, svg`);
+        }
+        // Build a filename from the URL path basename (ignore the query string),
+        // defaulting to "image" when empty, and ensure it ends with the canonical
+        // extension for the resolved MIME (append it when missing/mismatched).
+        const canonicalExt = MIME_TO_EXT[mime];
+        let fileName = basename(parsed.pathname) || "image";
+        if (extname(fileName).toLowerCase() !== canonicalExt) {
+            fileName += canonicalExt;
+        }
+        return { buffer, mime, fileName };
     }
     /** Build a Docmost ProseMirror image node from an uploaded attachment. */
     buildImageNode(att, align, alt) {
@@ -1699,45 +1796,20 @@ export class DocmostClient {
         return node;
     }
     /**
-     * Upload a local image file as an attachment of a page and return the
-     * attachment metadata plus a ready-to-insert ProseMirror image node.
+     * Download a remote image from an http(s) URL and upload it as an attachment
+     * of a page, returning the attachment metadata plus a ready-to-insert
+     * ProseMirror image node. Local file paths are intentionally not supported:
+     * the MCP caller is a remote AI with no access to this server's filesystem.
      */
-    async uploadImage(pageId, filePath) {
+    async uploadImage(pageId, url) {
         await this.ensureAuthenticated();
-        // HOST-FS TRUST BOUNDARY: filePath comes from the MCP caller and points at
-        // the server host's local filesystem, so it must be validated BEFORE any
-        // bytes are read. Without these guards a caller could (a) read an arbitrary
-        // file via path traversal, (b) follow a symlink to a sensitive target, or
-        // (c) exhaust memory by reading a huge file. Order matters: validate the
-        // extension, then stat (regular-file + size cap), and only then read.
-        // (a) Extension allowlist first — cheap, and rejects non-images up front.
-        const mime = this.imageMimeFromPath(filePath);
-        // (b) Stat the path: it must be a regular file (rejects directories, FIFOs,
-        // devices, sockets) and stay under the size cap. statSync follows symlinks,
-        // so a symlink is only accepted when its TARGET is a regular file within
-        // the cap — the intended behaviour for a local image path.
         const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MiB
-        let stat;
-        try {
-            stat = statSync(filePath);
-        }
-        catch (e) {
-            throw new Error(`Cannot stat image file at "${filePath}": ${e.message}`);
-        }
-        if (!stat.isFile()) {
-            throw new Error(`Not a regular file: "${filePath}"`);
-        }
-        if (stat.size > MAX_IMAGE_BYTES) {
-            throw new Error(`Image too large: ${stat.size} bytes exceeds the ${MAX_IMAGE_BYTES}-byte cap`);
-        }
-        // (c) Only now read the bytes.
-        let fileBuffer;
-        try {
-            fileBuffer = readFileSync(filePath);
-        }
-        catch (e) {
-            throw new Error(`Cannot read image file at "${filePath}": ${e.message}`);
-        }
+        // Fetch + validate the remote image (scheme allowlist, size cap, timeout).
+        // See fetchRemoteImage for the SSRF / resource trust boundary.
+        const fetched = await this.fetchRemoteImage(url, MAX_IMAGE_BYTES);
+        const fileBuffer = fetched.buffer;
+        const mime = fetched.mime;
+        const fileName = fetched.fileName;
         // Build a FRESH FormData for every send attempt. A FormData body is a
         // single-use stream that is CONSUMED on the first send, so it cannot be
         // replayed by this.client's response interceptor (replaying a consumed
@@ -1749,12 +1821,14 @@ export class DocmostClient {
             const form = new FormData();
             form.append("pageId", pageId);
             form.append("file", fileBuffer, {
-                filename: basename(filePath),
+                filename: fileName,
                 contentType: mime,
             });
             return form;
         };
-        const url = `${this.apiUrl}/files/upload`;
+        // Local name distinct from the `url` parameter (the source image URL): this
+        // is the /files/upload endpoint we POST the multipart body to.
+        const uploadUrl = `${this.apiUrl}/files/upload`;
         let response;
         try {
             // Call buildForm() ONCE per attempt and reuse the instance for both
@@ -1767,7 +1841,7 @@ export class DocmostClient {
             // ensureAuthenticated() above guarantees login() ran, so the default
             // header exists here. A 60s timeout keeps a hung upload from wedging the
             // per-page lock (replaceImage holds withPageLock across this call).
-            response = await axios.post(url, form, {
+            response = await axios.post(uploadUrl, form, {
                 headers: {
                     ...form.getHeaders(),
                     Authorization: this.client.defaults.headers.common["Authorization"],
@@ -1782,7 +1856,7 @@ export class DocmostClient {
                 (error.response?.status === 401 || error.response?.status === 403)) {
                 await this.login();
                 const form2 = buildForm();
-                response = await axios.post(url, form2, {
+                response = await axios.post(uploadUrl, form2, {
                     headers: {
                         ...form2.getHeaders(),
                         Authorization: this.client.defaults.headers.common["Authorization"],
@@ -1809,10 +1883,9 @@ export class DocmostClient {
             throw new Error("Unexpected /files/upload response: " + JSON.stringify(response.data));
         }
         // Some Docmost versions omit fileSize from the upload response. Fall back
-        // to the local stat size (the bytes we just uploaded) so callers never get
-        // an undefined size.
-        const localSize = stat.size;
-        const resolvedSize = att.fileSize ?? localSize;
+        // to the fetched byte length (the bytes we just uploaded) so callers never
+        // get an undefined size.
+        const resolvedSize = att.fileSize ?? fileBuffer.length;
         return {
             attachmentId: att.id,
             fileName: att.fileName,
@@ -1822,14 +1895,15 @@ export class DocmostClient {
         };
     }
     /**
-     * Upload a local image and insert it into a page in one step.
+     * Upload an image from a web (http/https) URL and insert it into a page in
+     * one step.
      * By default the image is appended at the end. With replaceText, the first
      * top-level block whose text contains the string is replaced; with afterText,
      * the image is inserted right after the first matching block. All other
      * block ids are preserved (only one top-level block is added or swapped).
      */
-    async insertImage(pageId, filePath, opts = {}) {
-        const up = await this.uploadImage(pageId, filePath);
+    async insertImage(pageId, url, opts = {}) {
+        const up = await this.uploadImage(pageId, url);
         // Reuse the node from uploadImage (clean /api/files/<id>/<file> src), then
         // apply align/alt onto a shallow attrs copy.
         const node = { ...up.imageNode, attrs: { ...up.imageNode.attrs } };
@@ -1918,9 +1992,10 @@ export class DocmostClient {
         };
     }
     /**
-     * Replace an existing image in a page with a new file. Uploads the new file as
-     * a brand-new attachment, which yields a fresh clean URL that both renders
-     * correctly and busts browser caches (the URL changed). Finds every image node
+     * Replace an existing image in a page with a new image fetched from a web
+     * (http/https) URL. Uploads the new file as a brand-new attachment, which
+     * yields a fresh clean URL that both renders correctly and busts browser
+     * caches (the URL changed). Finds every image node
      * whose attrs.attachmentId === oldAttachmentId (recursively, incl. nodes nested
      * in callouts/tables) and repoints its src/attachmentId/size, preserving
      * comments, alignment and alt. Operates on the live collab document so comments
@@ -1934,7 +2009,7 @@ export class DocmostClient {
      * In-place byte overwrite is deliberately NOT used because some Docmost
      * versions corrupt the attachment (HTTP 500) when its bytes are overwritten.
      */
-    async replaceImage(pageId, oldAttachmentId, filePath, opts = {}) {
+    async replaceImage(pageId, oldAttachmentId, url, opts = {}) {
         const collabToken = await this.getCollabTokenWithReauth();
         // Hold ONE per-page lock for the WHOLE operation (scan -> upload -> write).
         // Previously the scan and the write were two separate mutatePageContent
@@ -1981,7 +2056,7 @@ export class DocmostClient {
             // id, new clean URL) and repoint every matching node in a second pass.
             // Still inside the SAME lock, so no other op can have changed the page
             // since the scan.
-            const up = await this.uploadImage(pageId, filePath);
+            const up = await this.uploadImage(pageId, url);
             let replaced = 0;
             // Swap the source of one image node, preserving align/alt/title/geometry.
             const repoint = (node) => {

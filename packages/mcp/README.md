@@ -194,10 +194,11 @@ All 38 tools, grouped by what you'd reach for them.
 
 ### Images
 
-- **`insert_image`** — Upload a local image and insert it in one step: append it, drop it
-  in place of a text placeholder (`replaceText`), or put it after a given block
-  (`afterText`). Preserves all other block ids.
-- **`replace_image`** — Swap an existing image. Uploads the new file as a **fresh
+- **`insert_image`** — Download an image from a web (http/https) URL and insert it in one
+  step: append it, drop it in place of a text placeholder (`replaceText`), or put it after
+  a given block (`afterText`). Preserves all other block ids.
+- **`replace_image`** — Swap an existing image for one fetched from a web (http/https) URL.
+  Uploads the new file as a **fresh
   attachment** (clean URL that renders and busts browser caches), then re-points every
   node referencing the old attachment (recursively, including callouts/tables) via the
   live document, preserving comments, alignment and alt text. (In-place overwrite is
