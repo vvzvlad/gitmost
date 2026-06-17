@@ -158,20 +158,46 @@ export default function ChatThread({
 
 /**
  * Turn a useChat error into a friendly inline message. The transport throws on
- * non-2xx with the response text/status in the message, so we pattern-match the
- * gating responses (403 chat disabled, 503 provider not configured) and fall
- * back to a generic message otherwise — never a crash.
+ * non-2xx with the response text/status in the message, and stream failures
+ * arrive as `"<status>: <message>"` (forwarded by the server's
+ * pipeUIMessageStreamToResponse onError). We keep the friendly mappings for the
+ * gating responses (403 chat disabled, 503 provider not configured) and
+ * otherwise surface the real provider message (e.g. 402 insufficient credits /
+ * 429 rate limit) so the actual cause is visible — never a crash.
  */
 function describeError(
   error: Error,
   t: (key: string) => string,
 ): string {
   const msg = error.message ?? "";
-  if (msg.includes("403") || /disabled/i.test(msg)) {
+  // Our own gating responses arrive PRE-stream as the raw JSON error body
+  // (NestJS default exception shape — no global filter overrides it), which
+  // carries a numeric "statusCode" field. Match that field, NOT a bare
+  // substring, so a provider stream error that merely contains "403"/"503" (or
+  // a word like "disabled") is never misclassified and its real cause hidden.
+  if (/"statusCode"\s*:\s*403\b/.test(msg)) {
     return t("AI chat is disabled for this workspace.");
   }
-  if (msg.includes("503") || /not configured/i.test(msg)) {
+  if (/"statusCode"\s*:\s*503\b/.test(msg)) {
     return t("The AI provider is not configured. Ask an administrator to set it up.");
   }
-  return t("The AI agent could not respond. Please try again.");
+  // Any other failure — including provider stream failures forwarded as
+  // "<status>: <message>" (402 credits, 429 rate limit, ...) — is surfaced
+  // verbatim so the real cause is visible. Fall back to a generic message only
+  // when there is no usable text or just an opaque placeholder.
+  return providerDetail(msg) ?? t("The AI agent could not respond. Please try again.");
+}
+
+/**
+ * Extract a human-readable provider detail from a useChat error message, or
+ * null when there is nothing useful to show. Returns null for empty strings,
+ * the AI SDK's opaque "An error occurred." placeholder, and our own post-hijack
+ * "Internal server error" fallback, so the caller can use a friendly message.
+ */
+function providerDetail(msg: string): string | null {
+  const trimmed = msg.trim();
+  if (!trimmed) return null;
+  if (/^an error occurred\.?$/i.test(trimmed)) return null;
+  if (/internal server error/i.test(trimmed)) return null;
+  return trimmed;
 }
