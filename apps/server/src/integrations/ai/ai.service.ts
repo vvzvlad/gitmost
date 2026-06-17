@@ -11,6 +11,7 @@ import { createOllama } from 'ai-sdk-ollama';
 import { AiSettingsService } from './ai-settings.service';
 import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
+import { describeProviderError } from './ai-error.util';
 
 /**
  * Builds AI SDK language models from per-workspace config and runs cheap
@@ -118,37 +119,59 @@ export class AiService {
   }
 
   /**
-   * Cheap connectivity check. Builds the model and asks for a one-word reply.
-   * On AiNotConfiguredException returns a generic "not configured" message; for
-   * any other failure surfaces the provider's own cause (e.g. AI SDK
-   * `AI_APICallError` -> `${statusCode}: ${message}`) so a 402 / wrong model /
-   * missing key is diagnosable, and logs the full error. The decrypted key is
-   * never logged or returned — AI SDK error messages/4xx bodies do not contain
-   * it, and the resolved config (which holds the key) is never dumped (§6.4/§8.3).
+   * Cheap connectivity check for the "Test connection" button. Probes the
+   * configured chat model (a one-word generation) AND the configured embeddings
+   * model (embedding a tiny string) independently:
+   *  - a probe is skipped when that capability is not configured (its
+   *    NotConfigured exception), so a chat-only or embeddings-only workspace
+   *    still tests fine;
+   *  - any real failure returns ok:false with the provider's own cause
+   *    (statusCode + truncated response body via describeProviderError),
+   *    prefixed Chat: / Embeddings: so the failing side is obvious;
+   *  - if neither capability is configured, reports "not configured".
+   *
+   * Probing embeddings here catches a misconfigured embeddings endpoint (e.g.
+   * one returning non-JSON, which the background RAG indexer would otherwise hit
+   * as an opaque "Invalid JSON response") at config time instead of silently
+   * during indexing. The decrypted key is never logged or returned — AI SDK
+   * error fields do not carry it, and the resolved config is never dumped.
    */
   async testConnection(
     workspaceId: string,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
+    let probed = false;
+
+    // Chat probe — only when a chat model is configured.
     try {
       const model = await this.getChatModel(workspaceId);
       // maxOutputTokens keeps the probe cheap and avoids providers (e.g.
       // OpenRouter) reserving/charging for the model's full max-token budget,
       // which would 402 on a key with limited credit.
       await generateText({ model, prompt: 'ping', maxOutputTokens: 16 });
-      return { ok: true };
+      probed = true;
     } catch (err) {
-      if (err instanceof AiNotConfiguredException) {
-        return { ok: false, error: 'AI provider not configured' };
+      if (!(err instanceof AiNotConfiguredException)) {
+        this.logger.error('AI chat test connection failed', err as Error);
+        return { ok: false, error: `Chat: ${describeProviderError(err)}` };
       }
-      // Surface the real provider cause so failures are diagnosable, and log the
-      // full error. AI SDK errors expose statusCode/message (and responseBody);
-      // none of these carry the key. Do NOT log/return the resolved config.
-      this.logger.error('AI test connection failed', err as Error);
-      const e = err as { statusCode?: number; message?: string };
-      const msg = e?.statusCode
-        ? `${e.statusCode}: ${e.message}`
-        : (e?.message ?? 'Unknown error');
-      return { ok: false, error: msg };
+      // Chat not configured: skip — embeddings may still be configured.
     }
+
+    // Embedding probe — only when an embedding model is configured.
+    try {
+      await this.embedTexts(workspaceId, ['ping']);
+      probed = true;
+    } catch (err) {
+      if (!(err instanceof AiEmbeddingNotConfiguredException)) {
+        this.logger.error('AI embedding test connection failed', err as Error);
+        return { ok: false, error: `Embeddings: ${describeProviderError(err)}` };
+      }
+      // Embeddings not configured: skip.
+    }
+
+    if (!probed) {
+      return { ok: false, error: 'AI provider not configured' };
+    }
+    return { ok: true };
   }
 }

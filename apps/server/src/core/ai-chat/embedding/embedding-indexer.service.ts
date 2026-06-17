@@ -10,6 +10,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
 import { AiService } from '../../../integrations/ai/ai.service';
 import { AiEmbeddingNotConfiguredException } from '../../../integrations/ai/ai-embedding-not-configured.exception';
+import { describeProviderError } from '../../../integrations/ai/ai-error.util';
 import { jsonToText } from '../../../collaboration/collaboration.util';
 
 // NOTE: the `page_embeddings.embedding` column is now dimension-agnostic
@@ -188,9 +189,9 @@ export class EmbeddingIndexerService {
         // Per-page isolation: one failure must not abort the whole batch.
         failed++;
         this.logger.error(
-          `reindexWorkspace: failed to reindex page ${pageId}: ${
-            err instanceof Error ? err.message : 'Unknown error'
-          }`,
+          `reindexWorkspace: failed to reindex page ${pageId}: ${describeProviderError(
+            err,
+          )}`,
         );
       }
     }

@@ -7,6 +7,7 @@ import {
   IWorkspaceEmbeddingsJob,
 } from '../../../integrations/queue/constants/queue.interface';
 import { EmbeddingIndexerService } from './embedding-indexer.service';
+import { describeProviderError } from '../../../integrations/ai/ai-error.util';
 
 /**
  * AI_QUEUE consumer for the vector-RAG indexer (§6.7 stage D / §14[M1]).
@@ -106,7 +107,7 @@ export class EmbeddingProcessor extends WorkerHost implements OnModuleDestroy {
   }
 
   private errMessage(err: unknown): string {
-    return err instanceof Error ? err.message : 'Unknown error';
+    return describeProviderError(err);
   }
 
   @OnWorkerEvent('failed')
