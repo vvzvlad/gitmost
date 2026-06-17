@@ -8,6 +8,7 @@ import {
   getAiSettings,
   updateAiSettings,
   testAiConnection,
+  reindexAiEmbeddings,
   IAiSettings,
   IAiSettingsUpdate,
   IAiTestResult,
@@ -50,5 +51,25 @@ export function useUpdateAiSettingsMutation() {
 export function useTestAiConnectionMutation() {
   return useMutation<IAiTestResult, Error, void>({
     mutationFn: () => testAiConnection(),
+  });
+}
+
+export function useReindexAiEmbeddingsMutation() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  return useMutation<IAiSettings, Error, void>({
+    mutationFn: () => reindexAiEmbeddings(),
+    onSuccess: () => {
+      notifications.show({ message: t("Reindexing started") });
+      queryClient.invalidateQueries({ queryKey: aiSettingsKey });
+    },
+    onError: (error) => {
+      const errorMessage = error["response"]?.data?.message;
+      notifications.show({
+        message: errorMessage ?? t("Failed to start reindexing"),
+        color: "red",
+      });
+    },
   });
 }

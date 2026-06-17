@@ -151,6 +151,61 @@ export class EmbeddingIndexerService {
     );
   }
 
+  /**
+   * (Re)build embeddings for EVERY non-deleted page in a workspace. Used by the
+   * bulk reindex (WORKSPACE_CREATE_EMBEDDINGS, fired when AI Search is enabled
+   * and by the manual "Reindex now" action).
+   *
+   * Resolves the embeddings model once up front: if the workspace has no
+   * embeddings provider configured, the whole batch is skipped (otherwise each
+   * page would no-op individually after a wasted read). Pages are processed
+   * sequentially and each is isolated in try/catch so one failure never aborts
+   * the batch.
+   */
+  async reindexWorkspace(workspaceId: string): Promise<void> {
+    try {
+      await this.aiService.getEmbeddingModel(workspaceId);
+    } catch (err) {
+      if (err instanceof AiEmbeddingNotConfiguredException) {
+        this.logger.debug(
+          `reindexWorkspace: embeddings not configured for workspace ${workspaceId}, skipping`,
+        );
+        return;
+      }
+      throw err;
+    }
+
+    const pageIds = await this.pageRepo.getIdsByWorkspace(workspaceId);
+    this.logger.debug(
+      `reindexWorkspace: reindexing ${pageIds.length} page(s) for workspace ${workspaceId}`,
+    );
+
+    let failed = 0;
+    for (const pageId of pageIds) {
+      try {
+        await this.reindexPage(pageId);
+      } catch (err) {
+        // Per-page isolation: one failure must not abort the whole batch.
+        failed++;
+        this.logger.error(
+          `reindexWorkspace: failed to reindex page ${pageId}: ${
+            err instanceof Error ? err.message : 'Unknown error'
+          }`,
+        );
+      }
+    }
+    this.logger.debug(
+      `reindexWorkspace: done for workspace ${workspaceId} (${
+        pageIds.length - failed
+      }/${pageIds.length} pages)`,
+    );
+  }
+
+  /** Purge ALL embeddings for a workspace (WORKSPACE_DELETE_EMBEDDINGS). */
+  async removeWorkspace(workspaceId: string): Promise<void> {
+    await this.pageEmbeddingRepo.deleteByWorkspace(workspaceId);
+  }
+
   /** Remove all embeddings for a deleted page (used by the delete path). */
   async removePage(pageId: string, workspaceId: string): Promise<void> {
     await this.pageEmbeddingRepo.deleteByPage(pageId, workspaceId);

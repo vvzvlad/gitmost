@@ -71,6 +71,21 @@ export class PageEmbeddingRepo {
   }
 
   /**
+   * HARD-delete every embedding row for an entire workspace. Used when AI Search
+   * is disabled for the workspace (WORKSPACE_DELETE_EMBEDDINGS).
+   */
+  async deleteByWorkspace(
+    workspaceId: string,
+    trx?: KyselyTransaction,
+  ): Promise<void> {
+    const db = dbOrTx(this.db, trx);
+    await db
+      .deleteFrom('pageEmbeddings')
+      .where('workspaceId', '=', workspaceId)
+      .execute();
+  }
+
+  /**
    * Bulk-insert chunk rows for a page. The `embedding` value is serialized with
    * `pgvector.toSql` and cast to `vector` so Postgres stores it in the
    * dimension-agnostic `vector` column (any dimension). No-op on an empty array.

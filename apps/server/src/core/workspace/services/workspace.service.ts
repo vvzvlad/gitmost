@@ -513,9 +513,24 @@ export class WorkspaceService {
     });
 
     if (after.aiSearch === true) {
-      await this.aiQueue.add(QueueJob.WORKSPACE_CREATE_EMBEDDINGS, {
-        workspaceId,
-      });
+      // Cancel any pending delayed purge from a previous disable so it can't
+      // wipe the embeddings we are about to (re)build. The purge is a delayed
+      // job, so remove() simply deletes it (returning 0 if it is absent, without
+      // throwing). The .catch only guards against transport/Redis errors.
+      await this.aiQueue
+        .remove(`ai-search-disabled-${workspaceId}`)
+        .catch(() => undefined);
+      // Stable jobId de-duplicates with the manual "Reindex now" path and with
+      // repeated enable toggles (one full reindex at a time).
+      await this.aiQueue.add(
+        QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
+        { workspaceId },
+        {
+          jobId: `ai-reindex-${workspaceId}`,
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
+      );
     } else if (after.aiSearch === false) {
       const deleteJobId = `ai-search-disabled-${workspaceId}`;
       await this.aiQueue.add(

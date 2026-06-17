@@ -195,6 +195,20 @@ export class PageRepo {
     return Number(row?.count ?? 0);
   }
 
+  /**
+   * IDs of all non-deleted pages in a workspace. Used by the RAG bulk reindex to
+   * (re)build embeddings for every existing page.
+   */
+  async getIdsByWorkspace(workspaceId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('pages')
+      .select('id')
+      .where('workspaceId', '=', workspaceId)
+      .where('deletedAt', 'is', null)
+      .execute();
+    return rows.map((r) => r.id);
+  }
+
   async deletePage(pageId: string): Promise<void> {
     let query = this.db.deleteFrom('pages');
 

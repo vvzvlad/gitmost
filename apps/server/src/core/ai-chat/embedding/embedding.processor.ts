@@ -2,7 +2,10 @@ import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { QueueJob, QueueName } from '../../../integrations/queue/constants';
-import { IPageContentUpdatedJob } from '../../../integrations/queue/constants/queue.interface';
+import {
+  IPageContentUpdatedJob,
+  IWorkspaceEmbeddingsJob,
+} from '../../../integrations/queue/constants/queue.interface';
 import { EmbeddingIndexerService } from './embedding-indexer.service';
 
 /**
@@ -30,11 +33,15 @@ export class EmbeddingProcessor extends WorkerHost implements OnModuleDestroy {
     super();
   }
 
-  async process(job: Job<IPageContentUpdatedJob, void>): Promise<void> {
-    const { pageIds, workspaceId } = job.data ?? {
-      pageIds: [],
-      workspaceId: '',
-    };
+  async process(
+    job: Job<IPageContentUpdatedJob | IWorkspaceEmbeddingsJob, void>,
+  ): Promise<void> {
+    // The workspace-wide jobs carry `{ workspaceId }` only (no `pageIds`), so
+    // read `pageIds` defensively — it is absent on the workspace payload.
+    const data: Partial<IPageContentUpdatedJob & IWorkspaceEmbeddingsJob> =
+      job.data ?? {};
+    const pageIds = data.pageIds ?? [];
+    const workspaceId = data.workspaceId ?? '';
     const ids = Array.isArray(pageIds) ? pageIds : [];
 
     switch (job.name) {
@@ -66,6 +73,28 @@ export class EmbeddingProcessor extends WorkerHost implements OnModuleDestroy {
               `Failed to remove embeddings for page ${pageId}: ${this.errMessage(err)}`,
             );
           }
+        }
+        break;
+      }
+
+      case QueueJob.WORKSPACE_CREATE_EMBEDDINGS: {
+        try {
+          await this.indexer.reindexWorkspace(workspaceId);
+        } catch (err) {
+          this.logger.error(
+            `Failed to reindex workspace ${workspaceId}: ${this.errMessage(err)}`,
+          );
+        }
+        break;
+      }
+
+      case QueueJob.WORKSPACE_DELETE_EMBEDDINGS: {
+        try {
+          await this.indexer.removeWorkspace(workspaceId);
+        } catch (err) {
+          this.logger.error(
+            `Failed to remove embeddings for workspace ${workspaceId}: ${this.errMessage(err)}`,
+          );
         }
         break;
       }

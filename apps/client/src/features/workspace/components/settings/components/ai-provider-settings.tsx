@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import useUserRole from "@/hooks/use-user-role.tsx";
 import {
   useAiSettingsQuery,
+  useReindexAiEmbeddingsMutation,
   useTestAiConnectionMutation,
   useUpdateAiSettingsMutation,
 } from "@/features/workspace/queries/ai-settings-query.ts";
@@ -50,6 +51,7 @@ export default function AiProviderSettings() {
   const { data: settings, isLoading } = useAiSettingsQuery(isAdmin);
   const updateMutation = useUpdateAiSettingsMutation();
   const testMutation = useTestAiConnectionMutation();
+  const reindexMutation = useReindexAiEmbeddingsMutation();
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -258,12 +260,24 @@ export default function AiProviderSettings() {
       )}
 
       {settings && (
-        <Text size="sm" c="dimmed" mt={-8}>
-          {t("Indexed {{indexed}} of {{total}} pages", {
-            indexed: settings.indexedPages ?? 0,
-            total: settings.totalPages ?? 0,
-          })}
-        </Text>
+        <Group justify="space-between" mt={-8}>
+          <Text size="sm" c="dimmed">
+            {t("Indexed {{indexed}} of {{total}} pages", {
+              indexed: settings.indexedPages ?? 0,
+              total: settings.totalPages ?? 0,
+            })}
+          </Text>
+          {isAdmin && (
+            <Button
+              variant="subtle"
+              size="compact-sm"
+              onClick={() => reindexMutation.mutate()}
+              loading={reindexMutation.isPending}
+            >
+              {t("Reindex now")}
+            </Button>
+          )}
+        </Group>
       )}
 
       <Textarea

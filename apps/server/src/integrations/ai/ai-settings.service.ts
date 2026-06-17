@@ -1,4 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { QueueName, QueueJob } from '../queue/constants';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
@@ -43,7 +46,48 @@ export class AiSettingsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
     private readonly secretBox: SecretBoxService,
+    @InjectQueue(QueueName.AI_QUEUE) private readonly aiQueue: Queue,
   ) {}
+
+  /**
+   * Enqueue a full workspace RAG reindex (manual "Reindex now").
+   *
+   * Uses a stable per-workspace jobId so rapid re-triggers de-duplicate instead
+   * of stacking multiple full reindex passes. A prior non-active job with that
+   * id is removed first so a lingering completed/failed/waiting entry can never
+   * block a fresh reindex (BullMQ ignores add() when the jobId already exists).
+   * If a reindex is already running, remove() is a no-op (it leaves a
+   * locked/active job in place, returning 0 without throwing), and the add()
+   * below then de-duplicates against that still-present jobId — so the running
+   * pass is kept and no duplicate is started. The .catch only guards against
+   * transport/Redis errors.
+   *
+   * Also cancels any pending delayed WORKSPACE_DELETE_EMBEDDINGS job (scheduled
+   * when AI Search was disabled) so it cannot wipe the embeddings we are about
+   * to rebuild. The job no-ops if embeddings are unconfigured.
+   */
+  async reindex(workspaceId: string): Promise<void> {
+    // A reindex means embeddings must persist: drop the delayed purge, if any.
+    await this.aiQueue
+      .remove(`ai-search-disabled-${workspaceId}`)
+      .catch(() => undefined);
+
+    const jobId = `ai-reindex-${workspaceId}`;
+    // Clear a prior non-active entry so a stale job can't block this reindex.
+    // A locked/active job is left in place (remove() no-ops) and the add() below
+    // de-duplicates against it, keeping the in-progress pass.
+    await this.aiQueue.remove(jobId).catch(() => undefined);
+
+    await this.aiQueue.add(
+      QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
+      { workspaceId },
+      {
+        jobId,
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
+  }
 
   /** Read the stored non-secret provider settings for a workspace. */
   private async readProvider(

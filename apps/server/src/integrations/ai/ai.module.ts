@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { CryptoModule } from '../crypto/crypto.module';
+import { QueueName } from '../queue/constants';
 import { AiService } from './ai.service';
 import { AiSettingsService } from './ai-settings.service';
 import { AiSettingsController } from './ai-settings.controller';
@@ -12,7 +14,10 @@ import { AiSettingsController } from './ai-settings.controller';
  * (CaslModule, global) are resolved without explicit imports.
  */
 @Module({
-  imports: [CryptoModule],
+  imports: [
+    CryptoModule,
+    BullModule.registerQueue({ name: QueueName.AI_QUEUE }),
+  ],
   controllers: [AiSettingsController],
   providers: [AiService, AiSettingsService],
   exports: [AiService, AiSettingsService],

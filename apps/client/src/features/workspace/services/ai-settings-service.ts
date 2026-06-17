@@ -60,3 +60,8 @@ export async function testAiConnection(): Promise<IAiTestResult> {
   const req = await api.post<IAiTestResult>("/workspace/ai-settings/test");
   return req.data;
 }
+
+export async function reindexAiEmbeddings(): Promise<IAiSettings> {
+  const req = await api.post<IAiSettings>("/workspace/ai-settings/reindex");
+  return req.data;
+}

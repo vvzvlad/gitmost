@@ -75,4 +75,16 @@ export class AiSettingsController {
     this.assertAdmin(user, workspace);
     return this.aiService.testConnection(workspace.id);
   }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('reindex')
+  async reindex(
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    this.assertAdmin(user, workspace);
+    await this.aiSettingsService.reindex(workspace.id);
+    // Return refreshed masked settings so the client can update the counter.
+    return this.aiSettingsService.getMasked(workspace.id);
+  }
 }

@@ -33,6 +33,14 @@ export interface IPageContentUpdatedJob {
   workspaceId: string;
 }
 
+/**
+ * AI_QUEUE payload for workspace-wide RAG embedding jobs
+ * (WORKSPACE_CREATE_EMBEDDINGS / WORKSPACE_DELETE_EMBEDDINGS).
+ */
+export interface IWorkspaceEmbeddingsJob {
+  workspaceId: string;
+}
+
 export interface INotificationCreateJob {
   userId: string;
   workspaceId: string;
