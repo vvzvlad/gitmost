@@ -124,3 +124,86 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
     expect(parsed).not.toHaveProperty('forceDelete');
   });
 });
+
+/**
+ * Toolset exposure guardrails: the expanded toolset must expose the new
+ * read/write capabilities BUT must never expose the forbidden hard-delete of a
+ * comment, and `transformPage` must not accept a `deleteComments` field (its
+ * comment-deletion path stays unreachable from the agent).
+ */
+describe('AiChatToolsService expanded toolset guardrails', () => {
+  // No client method is invoked here — every assertion is on tool presence /
+  // input schema — so an empty fake client is sufficient.
+  const fakeClient: Partial<DocmostClientLike> = {};
+
+  const tokenServiceStub = {
+    generateAccessToken: jest.fn().mockResolvedValue('access-token'),
+    generateCollabToken: jest.fn().mockResolvedValue('collab-token'),
+  };
+
+  let service: AiChatToolsService;
+
+  beforeEach(() => {
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue({
+      DocmostClient: function () {
+        return fakeClient as DocmostClientLike;
+      } as unknown as loader.DocmostClientCtor,
+    });
+    service = new AiChatToolsService(
+      tokenServiceStub as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function buildTools() {
+    return service.forUser(
+      { id: 'user-1', email: 'u@example.com', workspaceId: 'ws-1' } as never,
+      'session-1',
+      'ws-1',
+      'chat-1',
+    );
+  }
+
+  it('never exposes a hard deleteComment tool', async () => {
+    const tools = await buildTools();
+    expect(tools).not.toHaveProperty('deleteComment');
+  });
+
+  it('exposes the new read/write/comment/transform tools', async () => {
+    const tools = await buildTools();
+    expect(tools).toHaveProperty('listComments');
+    expect(tools).toHaveProperty('getComment');
+    expect(tools).toHaveProperty('updateComment');
+    expect(tools).toHaveProperty('transformPage');
+    expect(tools).toHaveProperty('getPageJson');
+    expect(tools).toHaveProperty('patchNode');
+  });
+
+  it('transformPage input schema does not accept a deleteComments field', async () => {
+    const tools = await buildTools();
+    const transformPage = tools.transformPage;
+
+    // The Zod input schema only allows pageId/transformJs/dryRun; parsing
+    // strips unknown keys, so deleteComments can never reach the client.
+    const schema = (transformPage as unknown as { inputSchema: unknown })
+      .inputSchema as {
+      parse: (v: unknown) => Record<string, unknown>;
+    };
+    const parsed = schema.parse({
+      pageId: 'p',
+      transformJs: '(d)=>d',
+      dryRun: true,
+      deleteComments: true,
+    });
+
+    expect(parsed).toHaveProperty('pageId', 'p');
+    expect(parsed).not.toHaveProperty('deleteComments');
+  });
+});

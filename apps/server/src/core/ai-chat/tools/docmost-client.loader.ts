@@ -16,6 +16,35 @@ export interface DocmostClientLike {
   getPage(
     pageId: string,
   ): Promise<{ data: Record<string, unknown>; success: boolean }>;
+  getWorkspace(): Promise<{ data: Record<string, unknown>; success: boolean }>;
+  getSpaces(): Promise<unknown[]>;
+  listPages(spaceId?: string, limit?: number): Promise<unknown[]>;
+  listSidebarPages(spaceId: string, pageId?: string): Promise<unknown[]>;
+  getOutline(pageId: string): Promise<Record<string, unknown>>;
+  getPageJson(pageId: string): Promise<Record<string, unknown>>;
+  getNode(pageId: string, nodeId: string): Promise<Record<string, unknown>>;
+  getTable(pageId: string, tableRef: string): Promise<Record<string, unknown>>;
+  listComments(pageId: string): Promise<unknown[]>;
+  getComment(
+    commentId: string,
+  ): Promise<{ data: Record<string, unknown>; success: boolean }>;
+  checkNewComments(
+    spaceId: string,
+    since: string,
+    parentPageId?: string,
+  ): Promise<unknown>;
+  listShares(): Promise<unknown[]>;
+  listPageHistory(
+    pageId: string,
+    cursor?: string,
+  ): Promise<{ items: unknown[]; nextCursor: string | null }>;
+  getPageHistory(historyId: string): Promise<Record<string, unknown>>;
+  diffPageVersions(
+    pageId: string,
+    from?: string,
+    to?: string,
+  ): Promise<Record<string, unknown>>;
+  exportPageMarkdown(pageId: string): Promise<string>;
   // --- write (page) ---
   createPage(
     title: string,
@@ -43,6 +72,72 @@ export interface DocmostClientLike {
   ): Promise<unknown>;
   // SOFT delete only (POST /pages/delete with { pageId }). NEVER permanent.
   deletePage(pageId: string): Promise<unknown>;
+  editPageText(
+    pageId: string,
+    edits: Array<{ find: string; replace: string; replaceAll?: boolean }>,
+  ): Promise<Record<string, unknown>>;
+  patchNode(
+    pageId: string,
+    nodeId: string,
+    node: unknown,
+  ): Promise<Record<string, unknown>>;
+  insertNode(
+    pageId: string,
+    node: unknown,
+    opts: {
+      position: 'before' | 'after' | 'append';
+      anchorNodeId?: string;
+      anchorText?: string;
+    },
+  ): Promise<Record<string, unknown>>;
+  deleteNode(
+    pageId: string,
+    nodeId: string,
+  ): Promise<Record<string, unknown>>;
+  updatePageJson(
+    pageId: string,
+    doc?: unknown,
+    title?: string,
+  ): Promise<Record<string, unknown>>;
+  tableInsertRow(
+    pageId: string,
+    tableRef: string,
+    cells: string[],
+    index?: number,
+  ): Promise<Record<string, unknown>>;
+  tableDeleteRow(
+    pageId: string,
+    tableRef: string,
+    index: number,
+  ): Promise<Record<string, unknown>>;
+  tableUpdateCell(
+    pageId: string,
+    tableRef: string,
+    row: number,
+    col: number,
+    text: string,
+  ): Promise<Record<string, unknown>>;
+  copyPageContent(
+    sourcePageId: string,
+    targetPageId: string,
+  ): Promise<Record<string, unknown>>;
+  importPageMarkdown(
+    pageId: string,
+    fullMarkdown: string,
+  ): Promise<Record<string, unknown>>;
+  sharePage(
+    pageId: string,
+    searchIndexing?: boolean,
+  ): Promise<Record<string, unknown>>;
+  unsharePage(pageId: string): Promise<Record<string, unknown>>;
+  restorePageVersion(historyId: string): Promise<Record<string, unknown>>;
+  // The opts type declares deleteComments? to match the real client signature,
+  // but the agent tool NEVER sets it (comment deletion stays unreachable).
+  transformPage(
+    pageId: string,
+    transformJs: string,
+    opts?: { dryRun?: boolean; deleteComments?: boolean },
+  ): Promise<Record<string, unknown>>;
   // --- write (comment) ---
   createComment(
     pageId: string,
@@ -54,6 +149,12 @@ export interface DocmostClientLike {
   resolveComment(
     commentId: string,
     resolved: boolean,
+  ): Promise<Record<string, unknown>>;
+  // Edits a comment's own content. NOT version-tracked (not reversible); the
+  // server only lets the comment's author edit it.
+  updateComment(
+    commentId: string,
+    content: string,
   ): Promise<Record<string, unknown>>;
 }
 

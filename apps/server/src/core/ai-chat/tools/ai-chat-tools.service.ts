@@ -411,6 +411,482 @@ export class AiChatToolsService {
           return { commentId, resolved };
         },
       }),
+
+      // --- READ tools (added) ---
+
+      getWorkspace: tool({
+        description:
+          'Fetch metadata about the current workspace (name, settings).',
+        inputSchema: z.object({}),
+        execute: async () => await client.getWorkspace(),
+      }),
+
+      listSpaces: tool({
+        description:
+          'List the spaces the current user can access. Returns the array ' +
+          'of spaces (id, name, slug, ...).',
+        inputSchema: z.object({}),
+        execute: async () => await client.getSpaces(),
+      }),
+
+      listPages: tool({
+        description:
+          'List the most recent pages, optionally scoped to a single space. ' +
+          'Returns a bounded list (default 50, max 100).',
+        inputSchema: z.object({
+          spaceId: z
+            .string()
+            .optional()
+            .describe('Optional space id to scope the listing to.'),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(100)
+            .optional()
+            .describe('Maximum number of pages (1-100).'),
+        }),
+        execute: async ({ spaceId, limit }) =>
+          await client.listPages(spaceId, limit),
+      }),
+
+      listSidebarPages: tool({
+        description:
+          'List sidebar pages for a space. With no pageId, returns the ' +
+          "space's ROOT pages; with a pageId, returns that page's direct " +
+          'CHILDREN.',
+        inputSchema: z.object({
+          spaceId: z.string().describe('The id of the space.'),
+          pageId: z
+            .string()
+            .optional()
+            .describe(
+              'Optional page id; when given, lists that page\'s direct children.',
+            ),
+        }),
+        execute: async ({ spaceId, pageId }) =>
+          await client.listSidebarPages(spaceId, pageId),
+      }),
+
+      getOutline: tool({
+        description:
+          "Compact outline of a page's top-level blocks, with block ids. Use " +
+          'it to locate sections/tables and grab block ids before drilling in ' +
+          'with getNode / patchNode / insertNode.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+        }),
+        execute: async ({ pageId }) => await client.getOutline(pageId),
+      }),
+
+      getPageJson: tool({
+        description:
+          'Fetch a page as lossless ProseMirror JSON (preserves block ids and ' +
+          'marks). Use this when you need exact structure for node-level edits.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+        }),
+        execute: async ({ pageId }) => await client.getPageJson(pageId),
+      }),
+
+      getNode: tool({
+        description:
+          "Fetch a single block's full ProseMirror subtree (lossless) by " +
+          'reference.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          nodeId: z
+            .string()
+            .describe(
+              'A block id from getOutline, or "#<index>" to select a ' +
+                'top-level block by its outline index (e.g. a table).',
+            ),
+        }),
+        execute: async ({ pageId, nodeId }) =>
+          await client.getNode(pageId, nodeId),
+      }),
+
+      getTable: tool({
+        description:
+          'Read a table as a matrix of cell texts (plus a parallel cellIds ' +
+          'matrix so cells can be addressed for rich edits).',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          tableRef: z
+            .string()
+            .describe(
+              '"#<index>" from getOutline, or a block id of any node inside ' +
+                'the table.',
+            ),
+        }),
+        execute: async ({ pageId, tableRef }) =>
+          await client.getTable(pageId, tableRef),
+      }),
+
+      listComments: tool({
+        description:
+          'List all comments on a page (content as Markdown).',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+        }),
+        execute: async ({ pageId }) => await client.listComments(pageId),
+      }),
+
+      getComment: tool({
+        description: 'Fetch a single comment by id (content as Markdown).',
+        inputSchema: z.object({
+          commentId: z.string().describe('The id of the comment.'),
+        }),
+        execute: async ({ commentId }) => await client.getComment(commentId),
+      }),
+
+      checkNewComments: tool({
+        description:
+          'Find new comments across a space (optionally scoped to a subtree) ' +
+          'created after a given timestamp.',
+        inputSchema: z.object({
+          spaceId: z.string().describe('The id of the space to scan.'),
+          since: z
+            .string()
+            .describe('An ISO-8601 timestamp; only comments created after it.'),
+          parentPageId: z
+            .string()
+            .optional()
+            .describe(
+              'Optional page id to scope the scan to that page and its ' +
+                'descendants.',
+            ),
+        }),
+        execute: async ({ spaceId, since, parentPageId }) =>
+          await client.checkNewComments(spaceId, since, parentPageId),
+      }),
+
+      listShares: tool({
+        description:
+          'List all public shares in the workspace, each with its public URL.',
+        inputSchema: z.object({}),
+        execute: async () => await client.listShares(),
+      }),
+
+      listPageHistory: tool({
+        description:
+          'List the saved versions (history snapshots) of a page, newest ' +
+          'first. Returns one cursor-paginated page of results.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          cursor: z
+            .string()
+            .optional()
+            .describe('Optional pagination cursor from a previous call.'),
+        }),
+        execute: async ({ pageId, cursor }) =>
+          await client.listPageHistory(pageId, cursor),
+      }),
+
+      getPageHistory: tool({
+        description:
+          'Fetch a single page-history version including its lossless ' +
+          'ProseMirror content.',
+        inputSchema: z.object({
+          historyId: z.string().describe('The id of the history version.'),
+        }),
+        execute: async ({ historyId }) =>
+          await client.getPageHistory(historyId),
+      }),
+
+      diffPageVersions: tool({
+        description:
+          'Diff two versions of a page and return the change set. from/to ' +
+          "each accept a historyId or 'current' (or omit for current).",
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          from: z
+            .string()
+            .optional()
+            .describe("A historyId, or 'current'/omit for current content."),
+          to: z
+            .string()
+            .optional()
+            .describe("A historyId, or 'current'/omit for current content."),
+        }),
+        execute: async ({ pageId, from, to }) =>
+          await client.diffPageVersions(pageId, from, to),
+      }),
+
+      exportPageMarkdown: tool({
+        description:
+          'Export a page to a single self-contained Docmost-flavoured ' +
+          'Markdown file (meta + body + comment threads). Lossless round-trip ' +
+          'with importPageMarkdown.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to export.'),
+        }),
+        execute: async ({ pageId }) => {
+          const markdown = await client.exportPageMarkdown(pageId);
+          return { markdown };
+        },
+      }),
+
+      // --- WRITE tools (added; reversible via page history/trash) ---
+
+      editPageText: tool({
+        description:
+          'Surgical find/replace inside a page\'s text, preserving all block ' +
+          'ids and marks. Each find must match exactly once unless replaceAll ' +
+          'is set. Reversible: the previous version is kept in page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to edit.'),
+          edits: z
+            .array(
+              z.object({
+                find: z.string().describe('Exact text to find.'),
+                replace: z.string().describe('Replacement text.'),
+                replaceAll: z
+                  .boolean()
+                  .optional()
+                  .describe('Replace every occurrence (default: one match).'),
+              }),
+            )
+            .min(1)
+            .describe('One or more find/replace edits.'),
+        }),
+        execute: async ({ pageId, edits }) =>
+          await client.editPageText(pageId, edits),
+      }),
+
+      patchNode: tool({
+        description:
+          'Replace a single content block (by id) with a new ProseMirror ' +
+          'node; the replacement keeps the same nodeId. Reversible: the ' +
+          'previous version is kept in page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          nodeId: z
+            .string()
+            .describe('The block id to replace (from getOutline/getPageJson).'),
+          node: z
+            .any()
+            .describe('The replacement ProseMirror node object.'),
+        }),
+        execute: async ({ pageId, nodeId, node }) =>
+          await client.patchNode(pageId, nodeId, node),
+      }),
+
+      insertNode: tool({
+        description:
+          'Insert a ProseMirror node relative to an anchor, or append it at ' +
+          'the top level. For before/after you MUST provide EXACTLY ONE of ' +
+          'anchorNodeId or anchorText. Reversible via page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          node: z.any().describe('The ProseMirror node object to insert.'),
+          position: z
+            .enum(['before', 'after', 'append'])
+            .describe('Where to insert relative to the anchor.'),
+          anchorNodeId: z
+            .string()
+            .optional()
+            .describe('Anchor block id (for before/after).'),
+          anchorText: z
+            .string()
+            .optional()
+            .describe('Anchor text fragment (for before/after).'),
+        }),
+        execute: async ({ pageId, node, position, anchorNodeId, anchorText }) =>
+          await client.insertNode(pageId, node, {
+            position,
+            anchorNodeId,
+            anchorText,
+          }),
+      }),
+
+      deleteNode: tool({
+        description:
+          'Remove a content BLOCK by its id (NOT a page). Reversible: the ' +
+          'previous version is kept in page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          nodeId: z.string().describe('The block id to remove.'),
+        }),
+        execute: async ({ pageId, nodeId }) =>
+          await client.deleteNode(pageId, nodeId),
+      }),
+
+      updatePageJson: tool({
+        description:
+          "Replace a page's body with a full ProseMirror document " +
+          "({type:'doc',content:[...]}) — a full overwrite — and/or update " +
+          'its title. Omit content for a title-only update. Reversible: the ' +
+          'previous version is kept in page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to update.'),
+          content: z
+            .any()
+            .optional()
+            .describe(
+              "Full ProseMirror doc {type:'doc',content:[...]}; omit for a " +
+                'title-only update.',
+            ),
+          title: z.string().optional().describe('Optional new title.'),
+        }),
+        execute: async ({ pageId, content, title }) =>
+          await client.updatePageJson(pageId, content, title),
+      }),
+
+      tableInsertRow: tool({
+        description:
+          'Insert a row of plain-text cells into a table. Reversible via ' +
+          'page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          tableRef: z
+            .string()
+            .describe('"#<index>" from getOutline, or a block id in the table.'),
+          cells: z.array(z.string()).describe('The cell texts for the row.'),
+          index: z
+            .number()
+            .int()
+            .optional()
+            .describe('0-based insert position (omit/out-of-range to append).'),
+        }),
+        execute: async ({ pageId, tableRef, cells, index }) =>
+          await client.tableInsertRow(pageId, tableRef, cells, index),
+      }),
+
+      tableDeleteRow: tool({
+        description:
+          'Delete a table row at a 0-based index. Reversible via page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          tableRef: z
+            .string()
+            .describe('"#<index>" from getOutline, or a block id in the table.'),
+          index: z.number().int().describe('0-based row index to delete.'),
+        }),
+        execute: async ({ pageId, tableRef, index }) =>
+          await client.tableDeleteRow(pageId, tableRef, index),
+      }),
+
+      tableUpdateCell: tool({
+        description:
+          'Set the plain-text content of a table cell at [row, col] (0-based). ' +
+          'Reversible via page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page.'),
+          tableRef: z
+            .string()
+            .describe('"#<index>" from getOutline, or a block id in the table.'),
+          row: z.number().int().describe('0-based row index.'),
+          col: z.number().int().describe('0-based column index.'),
+          text: z.string().describe('The new cell text.'),
+        }),
+        execute: async ({ pageId, tableRef, row, col, text }) =>
+          await client.tableUpdateCell(pageId, tableRef, row, col, text),
+      }),
+
+      copyPageContent: tool({
+        description:
+          "Replace the target page's BODY with the source page's body " +
+          '(title/slug are kept). Runs server-side — no document passes ' +
+          'through the model. Reversible: the target keeps page history.',
+        inputSchema: z.object({
+          sourcePageId: z.string().describe('The id of the source page.'),
+          targetPageId: z
+            .string()
+            .describe('The id of the target page to overwrite.'),
+        }),
+        execute: async ({ sourcePageId, targetPageId }) =>
+          await client.copyPageContent(sourcePageId, targetPageId),
+      }),
+
+      importPageMarkdown: tool({
+        description:
+          "Replace a page's body from Docmost-flavoured Markdown (as produced " +
+          'by exportPageMarkdown). Reversible: the previous version is kept in ' +
+          'page history.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to overwrite.'),
+          markdown: z
+            .string()
+            .describe('Docmost-flavoured Markdown for the page body.'),
+        }),
+        execute: async ({ pageId, markdown }) =>
+          await client.importPageMarkdown(pageId, markdown),
+      }),
+
+      sharePage: tool({
+        description:
+          'Make a page PUBLICLY accessible and return its public URL. ' +
+          'Reversible via unsharePage. Only share when the user explicitly ' +
+          'asked, since this exposes the page to anyone with the link.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to share.'),
+          searchIndexing: z
+            .boolean()
+            .optional()
+            .describe('Allow public search engines to index it (default true).'),
+        }),
+        execute: async ({ pageId, searchIndexing }) =>
+          await client.sharePage(pageId, searchIndexing),
+      }),
+
+      unsharePage: tool({
+        description:
+          'Remove the public share of a page (reverses sharePage).',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to unshare.'),
+        }),
+        execute: async ({ pageId }) => await client.unsharePage(pageId),
+      }),
+
+      restorePageVersion: tool({
+        description:
+          'Restore a past version by writing its content back as the current ' +
+          'page content. Itself reversible: it creates a new history snapshot.',
+        inputSchema: z.object({
+          historyId: z
+            .string()
+            .describe('The id of the history version to restore.'),
+        }),
+        execute: async ({ historyId }) =>
+          await client.restorePageVersion(historyId),
+      }),
+
+      updateComment: tool({
+        description:
+          "Edit an existing comment's own content. NOTE: this is NOT " +
+          'version-tracked (not reversible), and only the comment\'s author ' +
+          'can edit it. Only do this when the user explicitly asked.',
+        inputSchema: z.object({
+          commentId: z.string().describe('The id of the comment to edit.'),
+          content: z.string().describe('The new comment body as Markdown.'),
+        }),
+        execute: async ({ commentId, content }) =>
+          await client.updateComment(commentId, content),
+      }),
+
+      transformPage: tool({
+        description:
+          'Run a sandboxed JS transform of the form `(doc, ctx) => doc` over a ' +
+          "page's ProseMirror document for complex/scripted rewrites. dryRun " +
+          '(default true) previews a diff WITHOUT writing; set dryRun:false to ' +
+          'apply. Reversible: applying creates a new page-history snapshot.',
+        inputSchema: z.object({
+          pageId: z.string().describe('The id of the page to transform.'),
+          transformJs: z
+            .string()
+            .describe('The JS transform body: `(doc, ctx) => doc`.'),
+          dryRun: z
+            .boolean()
+            .optional()
+            .describe('Preview the diff without writing (default true).'),
+        }),
+        // GUARDRAIL: the schema deliberately omits `deleteComments`, and the
+        // execute below NEVER passes it, so the client's comment-deletion path
+        // stays unreachable from the agent.
+        execute: async ({ pageId, transformJs, dryRun }) =>
+          await client.transformPage(pageId, transformJs, { dryRun }),
+      }),
     };
   }
 }
