@@ -21,8 +21,9 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
   `apps/server/src/ee` submodule, the `apps/client/src/ee` directory (201 files) and the
   `packages/ee` package are gone. There is no license gating: every feature is available to everyone.
 - **Replacements are written from scratch.** Features that previously lived behind the enterprise
-  license (e.g. comment resolution, the `/mcp` server) were re-implemented from scratch on top of the
-  community codebase. No EE code is reused, and there is no entitlement/feature-flag wall.
+  license (e.g. comment resolution, the AI agent chat, the `/mcp` server) were re-implemented from
+  scratch on top of the community codebase. No EE code is reused, and there is no
+  entitlement/feature-flag wall.
 - **No upsell.** There are no "buy a license" / "upgrade to Enterprise" banners, trial nags, or
   locked-feature placeholders anywhere in the UI.
 - Authentication is plain email + password (no SSO/LDAP/cloud/billing flows).
@@ -34,6 +35,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | **EE code removed** | Stripped all client and server Enterprise-Edition code; ships as a clean community/AGPL build with no license checks. |
 | **Comment resolution** | Re-implemented from scratch as a community feature (resolve / re-open with Open/Resolved tabs). No EE code reused, available to anyone who can comment. |
 | **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 38 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
+| **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
 | **CI / images** | Release CI publishes container images to GHCR (`ghcr.io/vvzvlad/gitmost`) using the built-in `GITHUB_TOKEN` instead of Docker Hub. |
@@ -69,16 +71,37 @@ it doesn't make it more capable, you simply don't have to install and run a sepa
 process. An admin flips one toggle in **Workspace settings → AI & MCP** and any MCP client
 points at `${APP_URL}/mcp`.
 
+### AI agent chat
+
+Gitmost ships a **built-in AI agent chat** over your wiki — written from scratch as a
+community feature, with no enterprise license. Open it from the page header; the agent can
+**read and edit** your workspace on your behalf:
+
+- **Full read + write toolset (~40 tools).** Search and read pages, make surgical per-block
+  and table edits, create / rename / move pages, diff and restore page history, and create /
+  resolve comments — every action runs under *your* permissions (Docmost CASL), so the agent
+  can never see or change anything you couldn't.
+- **Safe by design.** The agent is given only **reversible** operations (page history +
+  trash); permanent deletion is never exposed. Agent edits are marked in page history with an
+  "AI agent" badge linking back to the chat.
+- **Search over your content.** Full-text search plus optional vector (RAG) semantic search
+  across pages.
+- **Web access via external MCP.** Admins can connect external MCP servers (e.g. Tavily) to
+  give the agent web search / internet access.
+- **Bring your own model.** Configure the provider (OpenAI, Gemini or Ollama), model and API
+  key in **Workspace settings → AI & MCP → AI / Models**. The key is encrypted and never
+  leaves the server.
+
 ## Roadmap
 
 ### Done
 
 - ✅ **MCP server** — embedded community MCP server served at `/mcp`.
 - ✅ **macOS app** — native macOS app ([docmost-app](https://github.com/vvzvlad/docmost-app)) that embeds the UI with multi-server tabs.
+- ✅ **AI chat** — built-in AI agent chat over your wiki content (read + write, RAG search, configurable provider, optional web access via external MCP).
 
 ### In progress
 
-- 🚧 **AI chat** — built-in AI agent chat over your wiki content.
 - 🚧 **Git synchronization** — two-way sync of pages with a Git repository.
 
 ### Planned
@@ -111,10 +134,12 @@ Gitmost follows the upstream Docmost setup. See the Docmost
 - Embeds (Airtable, Loom, Miro and more)
 - Translations (10+ languages)
 - Embedded MCP server (`/mcp`)
+- AI agent chat over your wiki (read + write, RAG search, external MCP / web access)
 
 ### Screenshots
 
 <p align="center">
+<img alt="AI agent chat" src="docs/screenshots/ai-chat.png" width="70%">
 <img alt="home" src="https://docmost.com/screenshots/home.png" width="70%">
 <img alt="editor" src="https://docmost.com/screenshots/editor.png" width="70%">
 </p>
