@@ -39,7 +39,12 @@ import {
   updateTableCell,
 } from "./lib/node-ops.js";
 import { withPageLock } from "./lib/page-lock.js";
-import { applyTextEdits, TextEdit, TextEditResult } from "./lib/json-edit.js";
+import {
+  applyTextEdits,
+  TextEdit,
+  TextEditResult,
+  TextEditFailure,
+} from "./lib/json-edit.js";
 import { getCollabToken, performLogin } from "./lib/auth-utils.js";
 import { diffDocs } from "./lib/diff.js";
 import {
@@ -1373,19 +1378,62 @@ export class DocmostClient {
 
     // Apply the edits against the LIVE synced document, not the debounced REST
     // snapshot, so concurrent human edits/comments are preserved. applyTextEdits
-    // throws descriptive errors on zero/multiple matches — let them propagate.
+    // records per-edit match problems in `failed` instead of throwing, and
+    // applies whatever it can; we abort the write only when nothing applied.
     let results: TextEditResult[] | undefined;
+    let failed: TextEditFailure[] | undefined;
+    // Whether we actually wrote new content. Set inside the transform: a
+    // degenerate edit (e.g. find === replace, or a batch that nets to no change)
+    // can "apply" yet leave the document byte-for-byte identical, in which case
+    // we must NOT write (no spurious history version) and must not claim a write
+    // happened.
+    let wrote = false;
     await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
+      wrote = false;
       const r = applyTextEdits(liveDoc, edits);
       results = r.results;
+      failed = r.failed;
+      // Nothing applied -> abort the write (mutatePageContent treats a null
+      // return from the transform as "write nothing").
+      if (r.results.length === 0) return null;
+      // Edits "applied" but produced an identical document: skip the write so no
+      // new history version is created. Stable structural comparison via
+      // JSON.stringify (both docs come from the same deep-copied source, so key
+      // order is stable).
+      if (JSON.stringify(r.doc) === JSON.stringify(liveDoc)) return null;
+      wrote = true;
       return r.doc;
     });
+
+    if ((results?.length ?? 0) === 0 && (failed?.length ?? 0) > 0) {
+      // No edit applied: surface an aggregated, actionable error so the caller
+      // does not mistake a no-op for a partial success.
+      throw new Error(
+        "edit_page_text: no edits were applied (nothing written). " +
+          failed!.map((f) => `"${f.find}": ${f.reason}`).join("; "),
+      );
+    }
+
+    // Edits matched but produced no content change (identical document): report
+    // a successful no-op — NOT a failure — and do not falsely claim a write.
+    if (!wrote) {
+      return {
+        success: true,
+        pageId,
+        applied: results,
+        failed,
+        message: "No changes written (edits produced identical content).",
+      };
+    }
 
     return {
       success: true,
       pageId,
-      edits: results,
-      message: "Text edits applied (node ids and formatting preserved).",
+      applied: results,
+      failed,
+      message: (failed?.length ?? 0)
+        ? `Applied ${results?.length ?? 0} edit(s); ${failed!.length} failed (see failed[]). Node ids and formatting preserved.`
+        : "Text edits applied (node ids and formatting preserved).",
     };
   }
 

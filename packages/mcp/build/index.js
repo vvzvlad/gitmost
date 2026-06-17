@@ -217,15 +217,19 @@ export function createDocmostMcpServer(config) {
             "(lossless write: preserves the block ids, callouts, tables and " +
             "attributes you pass in). Typical flow: get_page_json -> modify the " +
             "JSON -> update_page_json. Keep existing node ids intact so heading " +
-            "anchors and history stay stable. `content` is OPTIONAL: omit it to " +
-            "update only the title (though prefer rename_page for a title-only " +
-            "change). Supplying neither content nor title is an error.",
+            "anchors and history stay stable. Minimal full-doc example: " +
+            '{"type":"doc","content":[{"type":"paragraph","content":' +
+            '[{"type":"text","text":"Hi"}]}]}. `content` may be a JSON object or a ' +
+            "JSON string (both accepted), and is OPTIONAL: omit it to update only " +
+            "the title (though prefer rename_page for a title-only change). " +
+            "Supplying neither content nor title is an error.",
         inputSchema: {
             pageId: z.string().min(1).describe("ID of the page to update"),
             content: z
                 .any()
                 .optional()
-                .describe('ProseMirror document: {"type":"doc","content":[...]}. Omit to rename only.'),
+                .describe('ProseMirror document {"type":"doc","content":[...]} (JSON object or ' +
+                "JSON string). Omit to rename only."),
             title: z.string().optional().describe("Optional new title"),
         },
     }, async ({ pageId, content, title }) => {
@@ -314,11 +318,16 @@ export function createDocmostMcpServer(config) {
     // Tool: edit_page_text
     server.registerTool("edit_page_text", {
         description: "Surgical find/replace inside a page's text. Preserves ALL structure: " +
-            "block ids, marks, links, callouts, tables. Each `find` must match " +
-            "exactly once (or set replaceAll). A match must lie inside one " +
-            "formatting run; if the target text crosses bold/link boundaries the " +
-            "tool reports it — use a shorter fragment or update_page_json then. " +
-            "This is the preferred tool for fixing wording, typos, numbers, names.",
+            "block ids, marks, links, callouts, tables. A `find` MAY cross " +
+            "bold/italic/link boundaries; the replacement inherits marks from the " +
+            "unchanged common prefix/suffix (editing plain text next to a bold word " +
+            "keeps it bold; editing inside a bold word keeps the new text bold). " +
+            "Each `find` must match exactly once (or set replaceAll). The batch " +
+            "applies what it can and returns applied[] + failed[]; a fully-unmatched " +
+            "batch writes nothing and errors. Examples: edits:[{find:\"teh\"," +
+            "replace:\"the\"}]; edits:[{find:\"Hello world\",replace:\"Hello there\"}] " +
+            "(crosses a bold boundary). This is the preferred tool for fixing " +
+            "wording, typos, numbers, names.",
         inputSchema: {
             pageId: z.string().describe("ID of the page to edit"),
             edits: z
@@ -341,14 +350,21 @@ export function createDocmostMcpServer(config) {
     server.registerTool("patch_node", {
         description: "Replaces a single block identified by its attrs.id WITHOUT resending the " +
             "whole document. Get the block id from get_page_json, then pass a " +
-            "ProseMirror node to put in its place. Cheaper and safer than " +
+            "ProseMirror node to put in its place. Example node: a paragraph " +
+            '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]} or a ' +
+            'heading {"type":"heading","attrs":{"level":2},"content":' +
+            '[{"type":"text","text":"Title"}]}. Bold is a mark: ' +
+            '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node may be a ' +
+            "JSON object or a JSON string (both accepted). Cheaper and safer than " +
             "update_page_json for one-block structural edits.",
         inputSchema: {
             pageId: z.string().min(1),
             nodeId: z.string().min(1),
             node: z
                 .any()
-                .describe("ProseMirror node JSON to put in place of the node with this id"),
+                .describe("ProseMirror node to put in place of the node with this id, e.g. " +
+                '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}. ' +
+                "JSON object or JSON string both accepted."),
         },
     }, async ({ pageId, nodeId, node }) => {
         let parsedNode;
@@ -376,10 +392,19 @@ export function createDocmostMcpServer(config) {
             "anchorText matching the table; to add a tableCell/tableHeader, use " +
             "anchorNodeId of a block inside the target row (anchorText only resolves " +
             "top-level blocks, so it cannot target a row). Note: append is top-level " +
-            "only and rejects structural table nodes.",
+            "only and rejects structural table nodes. Example node: a paragraph " +
+            '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]} or a ' +
+            'heading {"type":"heading","attrs":{"level":2},"content":' +
+            '[{"type":"text","text":"Title"}]}. Bold is a mark: ' +
+            '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node may be a ' +
+            "JSON object or a JSON string (both accepted).",
         inputSchema: {
             pageId: z.string().min(1),
-            node: z.any(),
+            node: z
+                .any()
+                .describe("ProseMirror node to insert, e.g. " +
+                '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}. ' +
+                "JSON object or JSON string both accepted."),
             position: z.enum(["before", "after", "append"]),
             anchorNodeId: z.string().optional(),
             anchorText: z.string().optional(),

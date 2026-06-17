@@ -632,8 +632,15 @@ export class AiChatToolsService {
       editPageText: tool({
         description:
           'Surgical find/replace inside a page\'s text, preserving all block ' +
-          'ids and marks. Each find must match exactly once unless replaceAll ' +
-          'is set. Reversible: the previous version is kept in page history.',
+          'ids and marks. A find MAY cross bold/italic/link boundaries; the ' +
+          'replacement inherits marks from the unchanged common prefix/suffix ' +
+          '(so editing plain text next to a bold word keeps it bold, and ' +
+          'editing inside a bold word keeps the new text bold). Each find must ' +
+          'match exactly once unless replaceAll is set. The batch applies what ' +
+          'it can and returns applied[] + failed[]; a fully-unmatched batch ' +
+          'writes nothing and errors. Examples: edits:[{find:"teh",replace:"the"}]; ' +
+          'edits:[{find:"Hello world",replace:"Hello there"}] (crosses a bold ' +
+          'boundary). Reversible: the previous version is kept in page history.',
         inputSchema: z.object({
           pageId: z.string().describe('The id of the page to edit.'),
           edits: z
@@ -657,8 +664,13 @@ export class AiChatToolsService {
       patchNode: tool({
         description:
           'Replace a single content block (by id) with a new ProseMirror ' +
-          'node; the replacement keeps the same nodeId. Reversible: the ' +
-          'previous version is kept in page history.',
+          'node; the replacement keeps the same nodeId. Example node: a ' +
+          'paragraph {"type":"paragraph","content":[{"type":"text","text":"Hello"}]} ' +
+          'or a heading {"type":"heading","attrs":{"level":2},"content":' +
+          '[{"type":"text","text":"Title"}]}. Bold is a mark: ' +
+          '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node arg ' +
+          'may be a JSON object or a JSON string (both accepted). Reversible: ' +
+          'the previous version is kept in page history.',
         inputSchema: z.object({
           pageId: z.string().describe('The id of the page.'),
           nodeId: z
@@ -666,20 +678,48 @@ export class AiChatToolsService {
             .describe('The block id to replace (from getOutline/getPageJson).'),
           node: z
             .any()
-            .describe('The replacement ProseMirror node object.'),
+            .describe(
+              'The replacement ProseMirror node, e.g. ' +
+                '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}. ' +
+                'JSON object or JSON string both accepted.',
+            ),
         }),
-        execute: async ({ pageId, nodeId, node }) =>
-          await client.patchNode(pageId, nodeId, node),
+        execute: async ({ pageId, nodeId, node }) => {
+          // Parity with the standalone MCP server (index.ts patch_node): the
+          // model sometimes serializes the node as a JSON string. Parse it
+          // before the client's typeof-object guard rejects it.
+          let parsedNode = node;
+          if (typeof node === 'string') {
+            try {
+              parsedNode = JSON.parse(node);
+            } catch {
+              throw new Error('node was a string but not valid JSON');
+            }
+          }
+          return await client.patchNode(pageId, nodeId, parsedNode);
+        },
       }),
 
       insertNode: tool({
         description:
           'Insert a ProseMirror node relative to an anchor, or append it at ' +
           'the top level. For before/after you MUST provide EXACTLY ONE of ' +
-          'anchorNodeId or anchorText. Reversible via page history.',
+          'anchorNodeId or anchorText. Example node: a paragraph ' +
+          '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]} or a ' +
+          'heading {"type":"heading","attrs":{"level":2},"content":' +
+          '[{"type":"text","text":"Title"}]}. Bold is a mark: ' +
+          '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node arg ' +
+          'may be a JSON object or a JSON string (both accepted). Reversible ' +
+          'via page history.',
         inputSchema: z.object({
           pageId: z.string().describe('The id of the page.'),
-          node: z.any().describe('The ProseMirror node object to insert.'),
+          node: z
+            .any()
+            .describe(
+              'The ProseMirror node to insert, e.g. ' +
+                '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}. ' +
+                'JSON object or JSON string both accepted.',
+            ),
           position: z
             .enum(['before', 'after', 'append'])
             .describe('Where to insert relative to the anchor.'),
@@ -692,12 +732,30 @@ export class AiChatToolsService {
             .optional()
             .describe('Anchor text fragment (for before/after).'),
         }),
-        execute: async ({ pageId, node, position, anchorNodeId, anchorText }) =>
-          await client.insertNode(pageId, node, {
+        execute: async ({
+          pageId,
+          node,
+          position,
+          anchorNodeId,
+          anchorText,
+        }) => {
+          // Parity with the standalone MCP server (index.ts insert_node): the
+          // model sometimes serializes the node as a JSON string. Parse it
+          // before the client's typeof-object guard rejects it.
+          let parsedNode = node;
+          if (typeof node === 'string') {
+            try {
+              parsedNode = JSON.parse(node);
+            } catch {
+              throw new Error('node was a string but not valid JSON');
+            }
+          }
+          return await client.insertNode(pageId, parsedNode, {
             position,
             anchorNodeId,
             anchorText,
-          }),
+          });
+        },
       }),
 
       deleteNode: tool({
@@ -714,23 +772,43 @@ export class AiChatToolsService {
 
       updatePageJson: tool({
         description:
-          "Replace a page's body with a full ProseMirror document " +
-          "({type:'doc',content:[...]}) — a full overwrite — and/or update " +
-          'its title. Omit content for a title-only update. Reversible: the ' +
-          'previous version is kept in page history.',
+          "Replace a page's body with a full ProseMirror document — a full " +
+          'overwrite — and/or update its title. Minimal example content: ' +
+          '{"type":"doc","content":[{"type":"paragraph","content":' +
+          '[{"type":"text","text":"Hi"}]}]}. The content arg may be a JSON ' +
+          'object or a JSON string (both accepted). Omit content for a ' +
+          'title-only update. Reversible: the previous version is kept in page ' +
+          'history.',
         inputSchema: z.object({
           pageId: z.string().describe('The id of the page to update.'),
           content: z
             .any()
             .optional()
             .describe(
-              "Full ProseMirror doc {type:'doc',content:[...]}; omit for a " +
-                'title-only update.',
+              'Full ProseMirror doc {"type":"doc","content":[...]} (JSON ' +
+                'object or JSON string); omit for a title-only update.',
             ),
           title: z.string().optional().describe('Optional new title.'),
         }),
-        execute: async ({ pageId, content, title }) =>
-          await client.updatePageJson(pageId, content, title),
+        execute: async ({ pageId, content, title }) => {
+          // Parity with the standalone MCP server (index.ts update_page_json):
+          // undefined/null pass through as undefined (title-only / no-op); any
+          // string is JSON.parsed (so an empty string "" throws, matching the
+          // MCP server); an object is passed through unchanged.
+          let doc;
+          if (content === undefined || content === null) {
+            doc = undefined;
+          } else if (typeof content === 'string') {
+            try {
+              doc = JSON.parse(content);
+            } catch {
+              throw new Error('content was a string but not valid JSON');
+            }
+          } else {
+            doc = content;
+          }
+          return await client.updatePageJson(pageId, doc, title);
+        },
       }),
 
       tableInsertRow: tool({
