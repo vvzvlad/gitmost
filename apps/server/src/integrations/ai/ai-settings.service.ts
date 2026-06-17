@@ -13,16 +13,18 @@ import {
 
 /**
  * Shape of the partial update accepted by `update`. Mirrors the validated
- * controller DTO. `apiKey` is write-only: undefined = leave, '' = clear,
- * non-empty = encrypt + store (§6.4/§8).
+ * controller DTO. `apiKey` / `embeddingApiKey` are write-only: undefined =
+ * leave, '' = clear, non-empty = encrypt + store (§6.4/§8).
  */
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
+  embeddingBaseUrl?: string;
   systemPrompt?: string;
   apiKey?: string;
+  embeddingApiKey?: string;
 }
 
 /**
@@ -71,6 +73,11 @@ export class AiSettingsService {
       systemPrompt: provider.systemPrompt,
     };
 
+    // Effective embedding base URL: the embedding-specific value, else the chat
+    // base URL. URL is non-secret and relevant for ollama too, so set it
+    // unconditionally.
+    config.embeddingBaseUrl = provider.embeddingBaseUrl || provider.baseUrl;
+
     if (provider.driver !== 'ollama') {
       const creds = await this.aiProviderCredentialsRepo.find(
         workspaceId,
@@ -79,26 +86,34 @@ export class AiSettingsService {
       if (creds?.apiKeyEnc) {
         config.apiKey = this.secretBox.decryptSecret(creds.apiKeyEnc);
       }
+      // Effective embedding key: the embedding-specific key, else the chat key.
+      config.embeddingApiKey = creds?.embeddingApiKeyEnc
+        ? this.secretBox.decryptSecret(creds.embeddingApiKeyEnc)
+        : config.apiKey;
     }
 
     return config;
   }
 
   /**
-   * Masked settings safe for admin clients. NEVER includes the key (even
-   * encrypted); only `hasApiKey` for the current driver. Also reports RAG
-   * indexing coverage (`indexedPages`/`totalPages`) for the settings UI.
+   * Masked settings safe for admin clients. NEVER includes any key (even
+   * encrypted); only `hasApiKey` / `hasEmbeddingApiKey` for the current driver.
+   * Returns the RAW stored `embeddingBaseUrl` (empty means "uses chat value");
+   * the fallback is applied only by `resolve`. Also reports RAG indexing
+   * coverage (`indexedPages`/`totalPages`) for the settings UI.
    */
   async getMasked(workspaceId: string): Promise<MaskedAiSettings> {
     const provider = await this.readProvider(workspaceId);
 
     let hasApiKey = false;
+    let hasEmbeddingApiKey = false;
     if (provider.driver) {
       const creds = await this.aiProviderCredentialsRepo.find(
         workspaceId,
         provider.driver,
       );
       hasApiKey = !!creds?.apiKeyEnc;
+      hasEmbeddingApiKey = !!creds?.embeddingApiKeyEnc;
     }
 
     const [indexedPages, totalPages] = await Promise.all([
@@ -111,8 +126,10 @@ export class AiSettingsService {
       chatModel: provider.chatModel,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,
+      embeddingBaseUrl: provider.embeddingBaseUrl,
       systemPrompt: provider.systemPrompt,
       hasApiKey,
+      hasEmbeddingApiKey,
       indexedPages,
       totalPages,
     };
@@ -120,19 +137,20 @@ export class AiSettingsService {
 
   /**
    * Apply a partial update. Non-secret fields are persisted via
-   * `updateAiProviderSettings`; the API key is handled separately:
-   *   - apiKey === undefined → leave existing key untouched
-   *   - apiKey === ''        → clear the key for the target driver
-   *   - apiKey non-empty     → encrypt + upsert for the target driver
+   * `updateAiProviderSettings`; the chat / embedding API keys are handled
+   * separately, each write-only:
+   *   - key === undefined → leave existing key untouched
+   *   - key === ''        → clear the key for the target driver
+   *   - key non-empty     → encrypt + upsert for the target driver
    *
-   * Target driver for the key = incoming dto.driver, else the stored driver.
-   * If a key is supplied but no driver can be determined → BadRequest.
+   * Target driver for the keys = incoming dto.driver, else the stored driver.
+   * If any key is supplied but no driver can be determined → BadRequest.
    */
   async update(
     workspaceId: string,
     dto: UpdateAiSettingsInput,
   ): Promise<MaskedAiSettings> {
-    const { apiKey, ...nonSecret } = dto;
+    const { apiKey, embeddingApiKey, ...nonSecret } = dto;
 
     // Persist non-secret provider fields (only those present in the partial).
     const providerPatch: Partial<AiProviderSettings> = {};
@@ -141,6 +159,7 @@ export class AiSettingsService {
       'chatModel',
       'embeddingModel',
       'baseUrl',
+      'embeddingBaseUrl',
       'systemPrompt',
     ] as const) {
       if (nonSecret[key] !== undefined) {
@@ -154,8 +173,9 @@ export class AiSettingsService {
       );
     }
 
-    // Key handling (write-only).
-    if (apiKey !== undefined) {
+    // Key handling (write-only). Both keys share the same target driver and the
+    // same "driver required" guard, resolved once.
+    if (apiKey !== undefined || embeddingApiKey !== undefined) {
       const stored = await this.readProvider(workspaceId);
       const targetDriver = dto.driver ?? stored.driver;
       if (!targetDriver) {
@@ -164,15 +184,38 @@ export class AiSettingsService {
         );
       }
 
-      if (apiKey === '') {
-        await this.aiProviderCredentialsRepo.clearKey(workspaceId, targetDriver);
-      } else {
-        const enc = this.secretBox.encryptSecret(apiKey);
-        await this.aiProviderCredentialsRepo.upsert(
-          workspaceId,
-          targetDriver,
-          enc,
-        );
+      // Chat key.
+      if (apiKey !== undefined) {
+        if (apiKey === '') {
+          await this.aiProviderCredentialsRepo.clearKey(
+            workspaceId,
+            targetDriver,
+          );
+        } else {
+          const enc = this.secretBox.encryptSecret(apiKey);
+          await this.aiProviderCredentialsRepo.upsert(
+            workspaceId,
+            targetDriver,
+            enc,
+          );
+        }
+      }
+
+      // Embedding key.
+      if (embeddingApiKey !== undefined) {
+        if (embeddingApiKey === '') {
+          await this.aiProviderCredentialsRepo.clearEmbeddingKey(
+            workspaceId,
+            targetDriver,
+          );
+        } else {
+          const enc = this.secretBox.encryptSecret(embeddingApiKey);
+          await this.aiProviderCredentialsRepo.upsertEmbeddingKey(
+            workspaceId,
+            targetDriver,
+            enc,
+          );
+        }
       }
     }
 

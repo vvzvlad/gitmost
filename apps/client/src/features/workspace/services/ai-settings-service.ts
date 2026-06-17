@@ -4,31 +4,37 @@ import api from "@/lib/api-client";
 export type AiDriver = "openai" | "gemini" | "ollama";
 
 // Masked AI provider settings returned by the server.
-// The API key is NEVER returned; only `hasApiKey` indicates whether one is stored.
+// No API key is ever returned; only `hasApiKey` / `hasEmbeddingApiKey` indicate
+// whether one is stored. `embeddingBaseUrl` is the RAW stored value (empty means
+// "uses the chat base URL").
 export interface IAiSettings {
   driver?: AiDriver;
   chatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
+  embeddingBaseUrl?: string;
   systemPrompt?: string;
   hasApiKey: boolean;
+  hasEmbeddingApiKey: boolean;
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
   totalPages: number;
 }
 
-// Update payload. Key semantics:
-//   - omit `apiKey`        -> key unchanged
-//   - `apiKey: ''`         -> clear the stored key
-//   - `apiKey: 'non-empty'`-> set the key
+// Update payload. Key semantics (same for `apiKey` and `embeddingApiKey`):
+//   - omit the key         -> key unchanged
+//   - `key: ''`            -> clear the stored key
+//   - `key: 'non-empty'`   -> set the key
 // Non-secret fields are saved as given.
 export interface IAiSettingsUpdate {
   driver?: AiDriver;
   chatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
+  embeddingBaseUrl?: string;
   systemPrompt?: string;
   apiKey?: string;
+  embeddingApiKey?: string;
 }
 
 // Result of a connection test against the configured provider.

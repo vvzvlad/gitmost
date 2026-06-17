@@ -31,9 +31,13 @@ const formSchema = z.object({
   chatModel: z.string(),
   embeddingModel: z.string(),
   baseUrl: z.string(),
+  // Embedding-specific base URL. Empty means "use the chat base URL".
+  embeddingBaseUrl: z.string(),
   systemPrompt: z.string(),
   // Write-only key buffer. Empty string means "do not change" (unless explicitly cleared).
   apiKey: z.string(),
+  // Write-only embedding key buffer. Same semantics as `apiKey`.
+  embeddingApiKey: z.string(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -51,6 +55,9 @@ export default function AiProviderSettings() {
   const [hasApiKey, setHasApiKey] = useState(false);
   // Tracks whether the user explicitly cleared the stored key.
   const [keyCleared, setKeyCleared] = useState(false);
+  // Same, for the embedding-specific key.
+  const [hasEmbeddingApiKey, setHasEmbeddingApiKey] = useState(false);
+  const [embeddingKeyCleared, setEmbeddingKeyCleared] = useState(false);
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
@@ -59,8 +66,10 @@ export default function AiProviderSettings() {
       chatModel: "",
       embeddingModel: "",
       baseUrl: "",
+      embeddingBaseUrl: "",
       systemPrompt: "",
       apiKey: "",
+      embeddingApiKey: "",
     },
   });
 
@@ -72,12 +81,16 @@ export default function AiProviderSettings() {
       chatModel: settings.chatModel ?? "",
       embeddingModel: settings.embeddingModel ?? "",
       baseUrl: settings.baseUrl ?? "",
+      embeddingBaseUrl: settings.embeddingBaseUrl ?? "",
       systemPrompt: settings.systemPrompt ?? "",
       apiKey: "",
+      embeddingApiKey: "",
     });
     form.resetDirty();
     setHasApiKey(settings.hasApiKey);
     setKeyCleared(false);
+    setHasEmbeddingApiKey(settings.hasEmbeddingApiKey);
+    setEmbeddingKeyCleared(false);
   }, [settings]);
 
   const driver = form.values.driver as AiDriver;
@@ -91,20 +104,29 @@ export default function AiProviderSettings() {
       driver: values.driver,
       chatModel: values.chatModel,
       embeddingModel: values.embeddingModel,
-      // Send the base URL only for providers that use it.
+      // Send the base URLs only for providers that use them. The embedding base
+      // URL is optional; empty falls back to the chat base URL server-side.
       baseUrl: showBaseUrl ? values.baseUrl : "",
+      embeddingBaseUrl: showBaseUrl ? values.embeddingBaseUrl : "",
       systemPrompt: values.systemPrompt,
     };
 
     // Key semantics (never send the stored key back):
     //   - typed a value -> set it
     //   - explicitly cleared -> send '' to clear
-    //   - untouched -> omit `apiKey` entirely (leave unchanged)
+    //   - untouched -> omit the key entirely (leave unchanged)
     if (showApiKey) {
       if (values.apiKey.length > 0) {
         payload.apiKey = values.apiKey;
       } else if (keyCleared) {
         payload.apiKey = "";
+      }
+
+      // Same write-only semantics for the embedding-specific key.
+      if (values.embeddingApiKey.length > 0) {
+        payload.embeddingApiKey = values.embeddingApiKey;
+      } else if (embeddingKeyCleared) {
+        payload.embeddingApiKey = "";
       }
     }
 
@@ -113,10 +135,13 @@ export default function AiProviderSettings() {
 
   async function handleSubmit(values: FormValues) {
     const updated = await updateMutation.mutateAsync(buildPayload(values));
-    // Reflect the new key state and reset the write-only buffer.
+    // Reflect the new key state and reset the write-only buffers.
     setHasApiKey(updated.hasApiKey);
     setKeyCleared(false);
     form.setFieldValue("apiKey", "");
+    setHasEmbeddingApiKey(updated.hasEmbeddingApiKey);
+    setEmbeddingKeyCleared(false);
+    form.setFieldValue("embeddingApiKey", "");
     form.resetDirty();
   }
 
@@ -124,6 +149,12 @@ export default function AiProviderSettings() {
     setKeyCleared(true);
     setHasApiKey(false);
     form.setFieldValue("apiKey", "");
+  }
+
+  function handleClearEmbeddingKey() {
+    setEmbeddingKeyCleared(true);
+    setHasEmbeddingApiKey(false);
+    form.setFieldValue("embeddingApiKey", "");
   }
 
   const driverOptions = [
@@ -187,6 +218,44 @@ export default function AiProviderSettings() {
         readOnly={!isAdmin}
         {...form.getInputProps("embeddingModel")}
       />
+
+      {showBaseUrl && (
+        <TextInput
+          label={t("Embedding base URL")}
+          placeholder={t("Leave empty to use the chat base URL")}
+          readOnly={!isAdmin}
+          {...form.getInputProps("embeddingBaseUrl")}
+        />
+      )}
+
+      {showApiKey && (
+        <PasswordInput
+          label={t("Embedding API key")}
+          // Placeholder hints whether a dedicated key is stored and the fallback;
+          // the value is never shown.
+          placeholder={
+            hasEmbeddingApiKey
+              ? t("•••• set")
+              : t("Leave empty to use the chat API key")
+          }
+          readOnly={!isAdmin}
+          autoComplete="off"
+          {...form.getInputProps("embeddingApiKey")}
+        />
+      )}
+
+      {showApiKey && isAdmin && hasEmbeddingApiKey && (
+        <Group justify="flex-start" mt={-8}>
+          <Button
+            variant="subtle"
+            size="compact-sm"
+            color="red"
+            onClick={handleClearEmbeddingKey}
+          >
+            {t("Clear key")}
+          </Button>
+        </Group>
+      )}
 
       {settings && (
         <Text size="sm" c="dimmed" mt={-8}>

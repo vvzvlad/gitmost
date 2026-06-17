@@ -12,6 +12,8 @@ export interface AiProviderCredentials {
   workspaceId: string;
   driver: string;
   apiKeyEnc: string | null;
+  // Encrypted, embedding-specific provider key. Falls back to apiKeyEnc when null.
+  embeddingApiKeyEnc: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
 }

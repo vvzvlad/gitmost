@@ -66,34 +66,38 @@ export class AiService {
    * RAG indexer / semanticSearch (§6.7 stage D). Built PER WORKSPACE on demand,
    * same as getChatModel; the decrypted key is never logged.
    *
+   * Uses the embedding-specific endpoint/key (`embeddingBaseUrl` /
+   * `embeddingApiKey`), which fall back to the chat values when unset (resolved
+   * by AiSettingsService.resolve).
+   *
    * Throws AiEmbeddingNotConfiguredException (→ 503) when the driver,
-   * embeddingModel or (for non-ollama) the API key is missing, so RAG callers
-   * can 503 or skip independently of chat being configured.
+   * embeddingModel or (for non-ollama) the embedding API key is missing, so RAG
+   * callers can 503 or skip independently of chat being configured.
    */
   async getEmbeddingModel(workspaceId: string): Promise<EmbeddingModel> {
     const cfg = await this.aiSettings.resolve(workspaceId);
     if (
       !cfg?.driver ||
       !cfg?.embeddingModel ||
-      (cfg.driver !== 'ollama' && !cfg.apiKey)
+      (cfg.driver !== 'ollama' && !cfg.embeddingApiKey)
     ) {
       throw new AiEmbeddingNotConfiguredException();
     }
 
     switch (cfg.driver) {
       case 'openai':
-        // baseURL (when set) covers openai-compatible endpoints.
+        // embeddingBaseUrl (when set) covers openai-compatible endpoints.
         return createOpenAI({
-          apiKey: cfg.apiKey,
-          baseURL: cfg.baseUrl,
+          apiKey: cfg.embeddingApiKey,
+          baseURL: cfg.embeddingBaseUrl,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'gemini':
         return createGoogleGenerativeAI({
-          apiKey: cfg.apiKey,
+          apiKey: cfg.embeddingApiKey,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'ollama':
         // Ollama needs no API key (e.g. nomic-embed-text).
-        return createOllama({ baseURL: cfg.baseUrl }).textEmbeddingModel(
+        return createOllama({ baseURL: cfg.embeddingBaseUrl }).textEmbeddingModel(
           cfg.embeddingModel,
         );
       default:

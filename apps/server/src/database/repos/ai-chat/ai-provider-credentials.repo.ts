@@ -60,4 +60,42 @@ export class AiProviderCredentialsRepo {
       .where('driver', '=', driver)
       .execute();
   }
+
+  // Upsert the embedding-specific encrypted key. If no row exists yet this
+  // inserts one with `apiKeyEnc` left null (the column is nullable). On conflict
+  // only `embeddingApiKeyEnc` / `updatedAt` are touched, so the chat key is kept.
+  async upsertEmbeddingKey(
+    workspaceId: string,
+    driver: string,
+    embeddingApiKeyEnc: string,
+    trx?: KyselyTransaction,
+  ): Promise<AiProviderCredentials> {
+    const db = dbOrTx(this.db, trx);
+    return db
+      .insertInto('aiProviderCredentials')
+      .values({ workspaceId, driver, embeddingApiKeyEnc })
+      .onConflict((oc) =>
+        oc.columns(['workspaceId', 'driver']).doUpdateSet({
+          embeddingApiKeyEnc,
+          updatedAt: new Date(),
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+  }
+
+  // Clear only the embedding-specific key; the chat key (`apiKeyEnc`) is kept.
+  async clearEmbeddingKey(
+    workspaceId: string,
+    driver: string,
+    trx?: KyselyTransaction,
+  ): Promise<void> {
+    const db = dbOrTx(this.db, trx);
+    await db
+      .updateTable('aiProviderCredentials')
+      .set({ embeddingApiKeyEnc: null, updatedAt: new Date() })
+      .where('workspaceId', '=', workspaceId)
+      .where('driver', '=', driver)
+      .execute();
+  }
 }

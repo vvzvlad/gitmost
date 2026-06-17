@@ -19,31 +19,40 @@ export interface AiProviderSettings {
   chatModel: string;
   embeddingModel?: string;
   baseUrl?: string;
+  // Embedding-specific base URL. Falls back to `baseUrl` when empty/unset.
+  embeddingBaseUrl?: string;
   systemPrompt?: string;
 }
 
 /**
  * Fully resolved provider config, including the decrypted API key for the
- * stored driver. Returned by `AiSettingsService.resolve`. The key is held in
- * memory only while building the provider and is never logged.
+ * stored driver. Returned by `AiSettingsService.resolve`. The keys are held in
+ * memory only while building the provider and are never logged.
+ *
+ * `embeddingBaseUrl` / `embeddingApiKey` are the embedding-specific endpoint and
+ * key, already resolved with the chat-value fallback applied by `resolve`.
  */
 export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   driver?: AiDriver;
   chatModel?: string;
   apiKey?: string;
+  embeddingApiKey?: string;
 }
 
 /**
- * Masked provider settings safe to return to admin clients. NEVER includes the
- * API key (not even encrypted); only a `hasApiKey` boolean.
+ * Masked provider settings safe to return to admin clients. NEVER includes any
+ * API key (not even encrypted); only `hasApiKey` / `hasEmbeddingApiKey` booleans.
+ * `embeddingBaseUrl` reflects the RAW stored value (empty means "uses chat value").
  */
 export interface MaskedAiSettings {
   driver?: AiDriver;
   chatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
+  embeddingBaseUrl?: string;
   systemPrompt?: string;
   hasApiKey: boolean;
+  hasEmbeddingApiKey: boolean;
   // RAG indexing coverage for the settings UI.
   indexedPages: number;
   totalPages: number;
