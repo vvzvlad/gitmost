@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
+import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
+import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import {
   AiDriver,
@@ -36,6 +38,8 @@ export class AiSettingsService {
   constructor(
     private readonly workspaceRepo: WorkspaceRepo,
     private readonly aiProviderCredentialsRepo: AiProviderCredentialsRepo,
+    private readonly pageEmbeddingRepo: PageEmbeddingRepo,
+    private readonly pageRepo: PageRepo,
     private readonly secretBox: SecretBoxService,
   ) {}
 
@@ -82,7 +86,8 @@ export class AiSettingsService {
 
   /**
    * Masked settings safe for admin clients. NEVER includes the key (even
-   * encrypted); only `hasApiKey` for the current driver.
+   * encrypted); only `hasApiKey` for the current driver. Also reports RAG
+   * indexing coverage (`indexedPages`/`totalPages`) for the settings UI.
    */
   async getMasked(workspaceId: string): Promise<MaskedAiSettings> {
     const provider = await this.readProvider(workspaceId);
@@ -96,6 +101,11 @@ export class AiSettingsService {
       hasApiKey = !!creds?.apiKeyEnc;
     }
 
+    const [indexedPages, totalPages] = await Promise.all([
+      this.pageEmbeddingRepo.countIndexedPages(workspaceId),
+      this.pageRepo.countByWorkspace(workspaceId),
+    ]);
+
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
@@ -103,6 +113,8 @@ export class AiSettingsService {
       baseUrl: provider.baseUrl,
       systemPrompt: provider.systemPrompt,
       hasApiKey,
+      indexedPages,
+      totalPages,
     };
   }
 

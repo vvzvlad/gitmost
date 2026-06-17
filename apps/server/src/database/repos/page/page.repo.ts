@@ -181,6 +181,20 @@ export class PageRepo {
     return result;
   }
 
+  /**
+   * Count non-deleted pages in a workspace. Used by the AI settings page to show
+   * RAG indexing coverage ("N of M pages indexed").
+   */
+  async countByWorkspace(workspaceId: string): Promise<number> {
+    const row = await this.db
+      .selectFrom('pages')
+      .where('workspaceId', '=', workspaceId)
+      .where('deletedAt', 'is', null)
+      .select((eb) => eb.fn.countAll().as('count'))
+      .executeTakeFirst();
+    return Number(row?.count ?? 0);
+  }
+
   async deletePage(pageId: string): Promise<void> {
     let query = this.db.deleteFrom('pages');
 

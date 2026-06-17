@@ -157,4 +157,28 @@ export class PageEmbeddingRepo {
       distance: Number(row.distance),
     }));
   }
+
+  /**
+   * Count DISTINCT non-deleted pages that have at least one embedding row in this
+   * workspace — i.e. how many pages currently have stored embeddings.
+   *
+   * NOTE: this counts pages embedded by ANY model dimension, whereas
+   * `searchByEmbedding` only serves rows matching the active model's dimension.
+   * After switching the embedding model, this number can therefore exceed the
+   * set of pages actually reachable by search until those pages are re-indexed.
+   * It is an indexing-coverage indicator, not an exact searchable-page count.
+   */
+  async countIndexedPages(workspaceId: string): Promise<number> {
+    const row = await this.db
+      .selectFrom('pageEmbeddings as pe')
+      .innerJoin('pages as p', 'p.id', 'pe.pageId')
+      .where('pe.workspaceId', '=', workspaceId)
+      // Exclude trashed pages and any soft-deleted embedding rows (defence in
+      // depth: embeddings are hard-deleted, so pe.deletedAt is normally null).
+      .where('p.deletedAt', 'is', null)
+      .where('pe.deletedAt', 'is', null)
+      .select((eb) => eb.fn.count('pe.pageId').distinct().as('count'))
+      .executeTakeFirst();
+    return Number(row?.count ?? 0);
+  }
 }

@@ -188,6 +188,15 @@ export default function AiProviderSettings() {
         {...form.getInputProps("embeddingModel")}
       />
 
+      {settings && (
+        <Text size="sm" c="dimmed" mt={-8}>
+          {t("Indexed {{indexed}} of {{total}} pages", {
+            indexed: settings.indexedPages ?? 0,
+            total: settings.totalPages ?? 0,
+          })}
+        </Text>
+      )}
+
       <Textarea
         label={t("System message")}
         description={t(

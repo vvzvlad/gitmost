@@ -12,6 +12,9 @@ export interface IAiSettings {
   baseUrl?: string;
   systemPrompt?: string;
   hasApiKey: boolean;
+  // RAG indexing coverage (pages indexed for semantic search).
+  indexedPages: number;
+  totalPages: number;
 }
 
 // Update payload. Key semantics:

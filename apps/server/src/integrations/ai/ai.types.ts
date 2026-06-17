@@ -44,4 +44,7 @@ export interface MaskedAiSettings {
   baseUrl?: string;
   systemPrompt?: string;
   hasApiKey: boolean;
+  // RAG indexing coverage for the settings UI.
+  indexedPages: number;
+  totalPages: number;
 }
