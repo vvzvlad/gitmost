@@ -22,6 +22,17 @@ export interface IPageHistoryJob {
   pageId: string;
 }
 
+/**
+ * AI_QUEUE payload for a content change that should trigger a RAG reindex
+ * (§6.7 stage D / §14[M1]). Produced by the collab persistence extension on
+ * `onStoreDocument` and by the page-delete path (the delete case carries the
+ * ids of pages whose embeddings must be purged).
+ */
+export interface IPageContentUpdatedJob {
+  pageIds: string[];
+  workspaceId: string;
+}
+
 export interface INotificationCreateJob {
   userId: string;
   workspaceId: string;

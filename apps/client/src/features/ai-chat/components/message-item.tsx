@@ -21,6 +21,11 @@ function isToolPart(type: string): boolean {
  *  - `tool-*` / `dynamic-tool` parts -> an action-log card (with citations).
  * Other part kinds (reasoning, sources, files, step-start) are ignored for v1.
  * User messages render their text as a right-aligned plain bubble.
+ *
+ * This component is intentionally NOT memoized: `useChat` replaces the streaming
+ * assistant message with a freshly cloned object on every streamed delta, so the
+ * `message` prop identity (and its `parts`) changes each tick. Re-rendering the
+ * text parts on each delta is what makes the answer stream in progressively.
  */
 export default function MessageItem({ message }: MessageItemProps) {
   const { t } = useTranslation();
@@ -47,6 +52,10 @@ export default function MessageItem({ message }: MessageItemProps) {
       </Text>
       {message.parts.map((part, index) => {
         if (part.type === "text") {
+          // Skip empty/whitespace-only text parts (a streaming message often
+          // starts with an empty text part before the first token arrives); the
+          // typing indicator covers that gap until real content streams in.
+          if (!part.text.trim()) return null;
           const html = renderChatMarkdown(part.text);
           if (html) {
             return (

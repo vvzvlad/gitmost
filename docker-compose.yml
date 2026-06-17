@@ -16,7 +16,9 @@ services:
       - docmost:/app/data/storage
 
   db:
-    image: postgres:18
+    # pgvector image (same Postgres major as postgres:18) so `CREATE EXTENSION
+    # vector` succeeds for the page_embeddings RAG table.
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_DB: docmost
       POSTGRES_USER: docmost

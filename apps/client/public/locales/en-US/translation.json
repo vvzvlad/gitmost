@@ -1101,6 +1101,7 @@
   "Create subpage of {{name}}": "Create subpage of {{name}}",
   "AI chat": "AI chat",
   "AI agent": "AI agent",
+  "AI agent is typing…": "AI agent is typing…",
   "Send": "Send",
   "Stop": "Stop",
   "Chat menu": "Chat menu",
@@ -1123,5 +1124,7 @@
   "Deleted page (to trash)": "Deleted page (to trash)",
   "Commented": "Commented",
   "Resolved comment": "Resolved comment",
-  "Ran tool {{name}}": "Ran tool {{name}}"
+  "Ran tool {{name}}": "Ran tool {{name}}",
+  "AI-agent": "AI-agent",
+  "Edited by AI agent on behalf of {{name}}": "Edited by AI agent on behalf of {{name}}"
 }

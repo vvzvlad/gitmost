@@ -40,6 +40,7 @@ import {
 } from './db';
 import { PageEmbeddings } from '@docmost/db/types/embeddings.types';
 import { AiProviderCredentials as AiProviderCredentialsTable } from '@docmost/db/types/ai-provider-credentials.types';
+import { AiMcpServers as AiMcpServersTable } from '@docmost/db/types/ai-mcp-servers.types';
 
 // AI Chat
 export type AiChat = Selectable<AiChats>;
@@ -65,6 +66,13 @@ export type InsertableAiProviderCredentials =
 export type UpdatableAiProviderCredentials = Updateable<
   Omit<AiProviderCredentialsTable, 'id'>
 >;
+
+// AI MCP Servers (external MCP servers the agent may use, e.g. Tavily).
+// SECURITY (§8.10): `headersEnc` is the encrypted auth-header blob; never
+// expose this table (or that column) through any non-admin path.
+export type AiMcpServer = Selectable<AiMcpServersTable>;
+export type InsertableAiMcpServer = Insertable<AiMcpServersTable>;
+export type UpdatableAiMcpServer = Updateable<Omit<AiMcpServersTable, 'id'>>;
 
 // Workspace
 export type Workspace = Selectable<Workspaces>;

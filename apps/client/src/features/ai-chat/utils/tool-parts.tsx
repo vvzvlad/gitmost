@@ -1,5 +1,3 @@
-import { buildPageUrl } from "@/features/page/page.utils.ts";
-
 /**
  * Presentation helpers for AI SDK tool UI parts. The agent writes WITHOUT
  * confirmation (D2), so a tool part is a LOG of what already happened — never a
@@ -30,7 +28,13 @@ export type ToolRunState = "running" | "done" | "error";
 export interface ToolCitation {
   pageId: string;
   title?: string;
-  /** Internal route; `/p/{slug}-{id}` resolves via PageRedirect by slugId. */
+  /**
+   * Internal route. The server tools return the page UUID (no slugId), so we
+   * link to `/p/{uuid}` directly — `extractPageSlugId` treats a bare UUID as
+   * valid and returns it whole, which `PageRedirect` then resolves. The title
+   * is the visible label only and must NOT be folded into the slug (that would
+   * mangle the UUID via the trailing-segment split and 404 the link).
+   */
   href: string;
 }
 
@@ -89,9 +93,10 @@ function asString(value: unknown): string | undefined {
 /**
  * Resolve the page citation(s) a tool part references, from its input/output.
  * Only output-available parts (the tool returned) yield citations. Search
- * returns an array of pages; the page-ops return a single page id. We build the
- * link from the page id alone — the `/p/{slug}-{id}` route resolves the page by
- * its slugId (PageRedirect), so the space slug is not needed here.
+ * returns an array of pages; the page-ops return a single page id. We link to
+ * `/p/{id}` with the raw page UUID — `PageRedirect` resolves it via
+ * `extractPageSlugId` (which returns a bare UUID unchanged), so the space slug
+ * and a title slug are not needed here.
  */
 export function toolCitations(part: ToolUiPart): ToolCitation[] {
   if (part.state !== "output-available") return [];
@@ -101,7 +106,7 @@ export function toolCitations(part: ToolUiPart): ToolCitation[] {
 
   const push = (id: string | undefined, title?: string): void => {
     if (!id) return;
-    citations.push({ pageId: id, title, href: buildPageUrl(undefined, id, title) });
+    citations.push({ pageId: id, title, href: `/p/${id}` });
   };
 
   const toolName = getToolName(part);

@@ -1,0 +1,16 @@
+diff --git a/package.json b/package.json
+index f8d58d4b537a80a437a147f85b3929a0a1e7c4b6..de51db494e014d3e08b9108d678c8601c3129b75 100644
+--- a/package.json
++++ b/package.json
+@@ -28,8 +28,9 @@
+   "exports": {
+     ".": {
+       "types": "./dist/src/index.d.ts",
+-      "module": "./dist/yjs.mjs",
+-      "import": "./dist/yjs.mjs",
++      "browser": "./dist/yjs.mjs",
++      "module": "./dist/yjs.cjs",
++      "import": "./dist/yjs.cjs",
+       "require": "./dist/yjs.cjs"
+     },
+     "./src/index.js": "./src/index.js",

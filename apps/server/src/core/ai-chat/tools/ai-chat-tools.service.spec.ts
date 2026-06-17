@@ -42,7 +42,15 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
         return fakeClient as DocmostClientLike;
       } as unknown as loader.DocmostClientCtor,
     });
-    service = new AiChatToolsService(tokenServiceStub as never);
+    // The new semanticSearch deps (aiService + repos) are not exercised by the
+    // deletePage guardrail tests; pass stubs to satisfy the constructor arity.
+    service = new AiChatToolsService(
+      tokenServiceStub as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
   });
 
   afterEach(() => {

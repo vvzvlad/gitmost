@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.52",
+    "@ai-sdk/mcp": "^1.0.51",
     "@ai-sdk/openai": "^3.0.47",
     "@ai-sdk/openai-compatible": "^2.0.37",
     "@aws-sdk/client-s3": "3.1050.0",
@@ -81,6 +82,7 @@
     "fs-extra": "^11.3.4",
     "happy-dom": "20.8.9",
     "ioredis": "^5.10.1",
+    "ipaddr.js": "^2.2.0",
     "js-tiktoken": "^1.0.21",
     "jsonwebtoken": "^9.0.3",
     "kysely": "^0.28.17",

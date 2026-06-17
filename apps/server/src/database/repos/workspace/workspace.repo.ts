@@ -214,11 +214,16 @@ export class WorkspaceRepo {
   /**
    * Deep-merge a partial provider config into the fixed path
    * `settings.ai.provider`. Unlike `updateAiSettings` (single scalar key under
-   * `settings.ai`), this stores a nested object. The path is constant — only the
-   * provider value is parameterized (bound, not `sql.raw`) — so it cannot store
-   * a secret and is safe from injection. Sibling `settings.ai.*` keys (search /
-   * generative / chat / mcp / systemPrompt) and provider fields absent from the
-   * partial are preserved via jsonb `||` merge.
+   * `settings.ai`), this stores a nested object. The provider object is assembled
+   * IN SQL via `jsonb_build_object`: keys come from a fixed allowlist (inlined
+   * via `sql.lit`, so no injection) and values are bound params, so the result is
+   * a real jsonb object and never a double-encoded string (postgres.js would
+   * otherwise re-serialize a `JSON.stringify`'d string, yielding a jsonb string
+   * that `||` turns into an array). A `jsonb_typeof = 'object'` CASE self-heals
+   * workspaces whose `settings.ai.provider` was previously corrupted into an
+   * array/string. Sibling `settings.ai.*` keys (search / generative / chat / mcp
+   * / systemPrompt) and provider fields absent from the partial are preserved via
+   * jsonb `||` merge.
    */
   async updateAiProviderSettings(
     workspaceId: string,
@@ -226,14 +231,33 @@ export class WorkspaceRepo {
     trx?: KyselyTransaction,
   ): Promise<Workspace> {
     const db = dbOrTx(this.db, trx);
-    const providerJson = JSON.stringify(provider);
+    // Assemble the provider object IN SQL. Keys are fixed provider field names
+    // (sql.lit -> inlined literals, no injection); values are bound params cast
+    // to ::text — postgres.js sends bound params untyped, and jsonb_build_object's
+    // value args are polymorphic ("any"), so without the explicit ::text cast
+    // Postgres throws "could not determine data type of parameter $1". The result
+    // is a real jsonb object, never a double-encoded string. The CASE self-heals
+    // workspaces whose settings.ai.provider was previously corrupted into an
+    // array/string.
+    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'systemPrompt'];
+    const entries = Object.entries(provider).filter(
+      ([k, v]) => v !== undefined && ALLOWED.includes(k),
+    );
+    const patch = entries.length
+      ? sql`jsonb_build_object(${sql.join(
+          entries.flatMap(([k, v]) => [sql.lit(k), sql`${v}::text`]),
+        )})`
+      : sql`'{}'::jsonb`;
     return db
       .updateTable('workspaces')
       .set({
-        settings: sql`COALESCE(settings, '{}'::jsonb)
-                || jsonb_build_object('ai', COALESCE(settings->'ai', '{}'::jsonb)
-                || jsonb_build_object('provider', COALESCE(settings->'ai'->'provider', '{}'::jsonb)
-                || ${providerJson}::jsonb))`,
+        settings: sql`COALESCE(settings, '{}'::jsonb) || jsonb_build_object(
+          'ai', COALESCE(settings->'ai', '{}'::jsonb) || jsonb_build_object(
+            'provider',
+            (CASE WHEN jsonb_typeof(settings->'ai'->'provider') = 'object'
+                  THEN settings->'ai'->'provider' ELSE '{}'::jsonb END)
+            || ${patch}
+          ))`,
         updatedAt: new Date(),
       })
       .where('id', '=', workspaceId)

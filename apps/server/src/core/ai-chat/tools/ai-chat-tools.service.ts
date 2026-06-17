@@ -1,8 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { tool, type Tool } from 'ai';
 import { z } from 'zod';
 import { User } from '@docmost/db/types/entity.types';
 import { TokenService } from '../../auth/services/token.service';
+import { AiService } from '../../../integrations/ai/ai.service';
+import { AiEmbeddingNotConfiguredException } from '../../../integrations/ai/ai-embedding-not-configured.exception';
+import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
+import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
+import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import {
   loadDocmostMcp,
   type DocmostClientLike,
@@ -24,7 +29,15 @@ import {
  */
 @Injectable()
 export class AiChatToolsService {
-  constructor(private readonly tokenService: TokenService) {}
+  private readonly logger = new Logger(AiChatToolsService.name);
+
+  constructor(
+    private readonly tokenService: TokenService,
+    private readonly aiService: AiService,
+    private readonly pageEmbeddingRepo: PageEmbeddingRepo,
+    private readonly spaceMemberRepo: SpaceMemberRepo,
+    private readonly pagePermissionRepo: PagePermissionRepo,
+  ) {}
 
   async forUser(
     user: User,
@@ -126,6 +139,110 @@ export class AiChatToolsService {
             title: data.title ?? '',
             markdown: typeof data.content === 'string' ? data.content : '',
           };
+        },
+      }),
+
+      semanticSearch: tool({
+        description:
+          'Semantic (vector) search across the pages the current user can ' +
+          'access. Finds pages by meaning, not just keywords — use it to ' +
+          'answer conceptual questions. Returns a compact list of relevant ' +
+          'pages with a short snippet. Falls back to searchPages if semantic ' +
+          'search is unavailable.',
+        inputSchema: z.object({
+          query: z.string().describe('The natural-language search query.'),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(20)
+            .optional()
+            .describe('Maximum number of results (1-20).'),
+        }),
+        execute: async ({ query, limit }) => {
+          // ACCESS CONTROL: this tool runs IN-PROCESS (a direct pgvector query),
+          // so unlike the loopback REST tools it does NOT get CASL for free. We
+          // scope every query to the spaces the user can read, mirroring
+          // SearchService.searchPage (§6.7 / §8). We additionally post-filter by
+          // page-level permissions so restricted pages inside an accessible
+          // space are never returned.
+          const trimmed = (query ?? '').trim();
+          if (trimmed.length === 0) return [];
+
+          // 1) Embed the query (no-op fallback when embeddings are unconfigured
+          //    so the agent can fall back to searchPages instead of erroring).
+          let queryVector: number[];
+          try {
+            const [vec] = await this.aiService.embedTexts(workspaceId, [
+              trimmed,
+            ]);
+            if (!vec) return [];
+            queryVector = vec;
+          } catch (err) {
+            if (err instanceof AiEmbeddingNotConfiguredException) {
+              return {
+                unavailable: true,
+                reason:
+                  'semantic search unavailable (embeddings not configured)',
+              };
+            }
+            // Never leak provider/key details; surface a generic unavailable.
+            this.logger.warn(
+              `semanticSearch embed failed: ${
+                err instanceof Error ? err.message : 'unknown error'
+              }`,
+            );
+            return {
+              unavailable: true,
+              reason: 'semantic search unavailable',
+            };
+          }
+
+          // 2) Resolve the spaces this user can read (member spaces + groups),
+          //    mirroring SearchService's space scoping. No spaces => no results.
+          const accessibleSpaceIds =
+            await this.spaceMemberRepo.getUserSpaceIds(user.id);
+          if (accessibleSpaceIds.length === 0) return [];
+
+          // 3) Cosine ANN over the embeddings, scoped to the workspace AND the
+          //    accessible spaces. Over-fetch a little so the page-permission
+          //    post-filter still leaves enough results.
+          const cap = limit ?? 10;
+          const hits = await this.pageEmbeddingRepo.searchByEmbedding(
+            workspaceId,
+            queryVector,
+            accessibleSpaceIds,
+            cap * 3,
+          );
+          if (hits.length === 0) return [];
+
+          // 4) Page-level permission post-filter: a space being accessible does
+          //    not imply every page in it is (restricted pages). Mirror
+          //    SearchService.searchPage's filterAccessiblePageIds pass.
+          const pageIds = Array.from(new Set(hits.map((h) => h.pageId)));
+          const accessibleIds =
+            await this.pagePermissionRepo.filterAccessiblePageIds({
+              pageIds,
+              userId: user.id,
+            });
+          const accessibleSet = new Set(accessibleIds);
+
+          // Keep the best (lowest-distance) hit per page, capped to `limit`.
+          const seen = new Set<string>();
+          const results: { pageId: string; title: string; snippet: string }[] =
+            [];
+          for (const hit of hits) {
+            if (!accessibleSet.has(hit.pageId)) continue;
+            if (seen.has(hit.pageId)) continue;
+            seen.add(hit.pageId);
+            results.push({
+              pageId: hit.pageId,
+              title: hit.title ?? '',
+              snippet: snippet(hit.content),
+            });
+            if (results.length >= cap) break;
+          }
+          return results;
         },
       }),
 
