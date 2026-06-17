@@ -120,6 +120,56 @@ Gitmost follows the upstream Docmost setup. See the Docmost
 [documentation](https://docmost.com/docs) for self-hosting and development instructions; replace the
 `docmost/docmost` image with `ghcr.io/vvzvlad/gitmost` where applicable.
 
+## Migration from Docmost
+
+Gitmost's database schema is a **strict superset** of Docmost's. Every Gitmost-specific migration
+only **adds** new tables (`page_embeddings`, `ai_chats`, `ai_chat_messages`,
+`ai_provider_credentials`, `ai_mcp_servers`) and **nullable** columns — it never drops or rewrites
+existing Docmost data. Migrations run automatically on startup, so migrating an existing Docmost
+instance is essentially **two image swaps**.
+
+The only hard requirement is the database image: the AI agent's RAG storage needs the
+[pgvector](https://github.com/pgvector/pgvector) extension (`CREATE EXTENSION vector`), which the
+stock `postgres` image does not ship. Swap it for `pgvector/pgvector:pgNN` — the same vanilla
+Postgres plus pgvector bundled, built on the official `postgres` image and fully data-compatible
+with it.
+
+### From a current Docmost on Postgres 18
+
+If your Docmost already runs `postgres:18`, it's a clean **in-place** swap — no dump/restore needed,
+the existing data directory is reused as-is:
+
+```diff
+ services:
+   docmost:
+-    image: docmost/docmost:latest
++    image: ghcr.io/vvzvlad/gitmost:latest
+     ...
+   db:
+-    image: postgres:18
++    image: pgvector/pgvector:pg18
+```
+
+`APP_SECRET`, `DATABASE_URL`, `REDIS_URL` and the storage volume stay unchanged. On the first
+start the new migrations apply on top of your existing schema (`CREATE EXTENSION vector` plus the
+`page_embeddings` and AI tables); watch the logs for `Migration "..." executed successfully`.
+
+### Notes
+
+- **Back up first.** Take a `pg_dump` before swapping — migrations apply in place, and the
+  container exits if a migration fails.
+- **Volume layout is identical.** `pgvector/pgvector` is built on the official `postgres` image and
+  uses the same `PGDATA`, so keep your existing data volume and its mount path unchanged — the swap
+  reuses the directory as-is.
+- **Match the Postgres major.** A Postgres data directory is not compatible across major versions.
+  If your Docmost runs an older major (e.g. Postgres 16), use the matching `pgvector/pgvector:pg16`
+  to keep the in-place swap, or move the data with `pg_dump` / `pg_restore` into the new instance.
+- **Managed Postgres.** If you don't use the bundled `db` container, make sure pgvector is available
+  and your database role is allowed to run `CREATE EXTENSION vector`.
+- **AI is opt-in.** The `page_embeddings` table stays empty until you configure an AI provider;
+  existing pages are indexed on their next edit. pgvector is still required for the migration to
+  apply at all.
+
 ## Features
 
 - Real-time collaboration
