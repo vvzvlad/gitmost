@@ -3,6 +3,7 @@ import WorkspaceNameForm from "@/features/workspace/components/settings/componen
 import WorkspaceIcon from "@/features/workspace/components/settings/components/workspace-icon.tsx";
 import McpSettings from "@/features/workspace/components/settings/components/mcp-settings.tsx";
 import AiProviderSettings from "@/features/workspace/components/settings/components/ai-provider-settings.tsx";
+import AiChatSettings from "@/features/workspace/components/settings/components/ai-chat-settings.tsx";
 import AiMcpServers from "@/features/workspace/components/settings/components/ai-mcp-servers.tsx";
 import { useTranslation } from "react-i18next";
 import { getAppName } from "@/lib/config.ts";
@@ -33,6 +34,11 @@ export default function WorkspaceSettings() {
 
           <SettingsTitle title={t("AI / Models")} />
           <AiProviderSettings />
+
+          <Divider my="lg" />
+
+          <SettingsTitle title={t("AI / Chat")} />
+          <AiChatSettings />
 
           <Divider my="lg" />
 
