@@ -11,6 +11,7 @@
  * keeps the inserted text bold. This is the safe alternative to a full markdown
  * re-import for small wording fixes.
  */
+import { stripInlineMarkdown } from "./text-normalize.js";
 /** Placeholder code unit standing in for one opaque (non-text) inline node. */
 const ATOM_PLACEHOLDER = "￼"; // OBJECT REPLACEMENT CHARACTER
 /**
@@ -241,21 +242,66 @@ export function applyTextEdits(doc, edits) {
         // and the splicing.
         const blockChars = blocks.map((b) => flattenBlock(b));
         const blockPlain = blockChars.map((chars) => chars.map((c) => c.ch).join(""));
-        const validPerBlock = blockChars.map((chars, b) => findValidMatches(chars, blockPlain[b], edit.find));
+        // EXACT MATCH WINS: try the verbatim locator first.
+        let effectiveFind = edit.find;
+        let normalized = false;
+        let validPerBlock = blockChars.map((chars, b) => findValidMatches(chars, blockPlain[b], edit.find));
         let total = 0;
         for (const positions of validPerBlock)
             total += positions.length;
+        // FALLBACK: only if the verbatim locator matched nothing, retry with the
+        // markdown-stripped form. `edit.replace` is never touched — this only
+        // changes what we LOCATE, not what we insert.
+        const stripped = stripInlineMarkdown(edit.find);
+        if (total === 0 && stripped !== edit.find && stripped.length > 0) {
+            const strippedPerBlock = blockChars.map((chars, b) => findValidMatches(chars, blockPlain[b], stripped));
+            let strippedTotal = 0;
+            for (const positions of strippedPerBlock)
+                strippedTotal += positions.length;
+            if (strippedTotal >= 1) {
+                validPerBlock = strippedPerBlock;
+                total = strippedTotal;
+                effectiveFind = stripped;
+                normalized = true;
+            }
+        }
         if (total === 0) {
             // Distinguish "the text exists but only across an atom" from a plain
-            // not-found: if a raw substring scan (atoms included) WOULD have hit,
-            // the only thing blocking the edit is the atom, so report that.
-            const existsAcrossAtom = blockPlain.some((plain) => plain.indexOf(edit.find) !== -1);
-            failed.push({
-                find: edit.find,
-                reason: existsAcrossAtom
-                    ? "match crosses a non-text inline node (image/break/mention); use update_page_json for structural changes."
-                    : "text not found in the document.",
-            });
+            // not-found: if a raw substring scan (atoms included) WOULD have hit —
+            // for EITHER the verbatim or the stripped locator — the only thing
+            // blocking the edit is the atom, so report that.
+            const existsAcrossAtom = blockPlain.some((plain) => plain.indexOf(edit.find) !== -1 ||
+                (stripped !== edit.find && plain.indexOf(stripped) !== -1));
+            let reason;
+            if (existsAcrossAtom) {
+                reason =
+                    "match crosses a non-text inline node (image/break/mention); use update_page_json for structural changes.";
+            }
+            else {
+                // Append a bounded "closest text" hint: find the FIRST block that
+                // contains the longest whitespace-delimited token (>= 3 chars) of the
+                // (stripped, then raw) locator, and quote that block's plain text.
+                reason = "text not found in the document.";
+                const tokenSource = stripped.length > 0 ? stripped : edit.find;
+                const longestToken = tokenSource
+                    .split(/\s+/)
+                    .filter((t) => t.length >= 3)
+                    .sort((a, b) => b.length - a.length)[0];
+                if (longestToken) {
+                    const hitBlock = blockPlain.find((plain) => plain.includes(longestToken));
+                    if (hitBlock) {
+                        // Truncate by code point (spread iterates by code point) so a
+                        // surrogate pair is never split; append the ellipsis only when the
+                        // text was actually longer than the limit.
+                        const points = [...hitBlock];
+                        const snippet = points.length > 120
+                            ? points.slice(0, 120).join("") + "…"
+                            : hitBlock;
+                        reason += ` Closest block text: "${snippet}".`;
+                    }
+                }
+            }
+            failed.push({ find: edit.find, reason });
             continue;
         }
         if (total > 1 && !edit.replaceAll) {
@@ -287,16 +333,28 @@ export function applyTextEdits(doc, edits) {
             if (!edit.replaceAll && takenFirst)
                 break;
         }
-        // Apply the splices block-by-block and re-tokenize changed blocks.
+        // Apply the splices block-by-block and re-tokenize changed blocks. The
+        // local edit uses `effectiveFind` (verbatim or normalized) so the
+        // prefix/suffix diff is computed against the ACTUALLY matched text, while
+        // `edit.replace` stays literal — never stripped.
+        const effectiveEdit = {
+            find: effectiveFind,
+            replace: edit.replace,
+            replaceAll: edit.replaceAll,
+        };
         let spliced = 0;
         for (let b = 0; b < blocks.length; b++) {
             if (plannedPerBlock[b].length === 0)
                 continue;
-            const { newChars, spliced: n } = applyEditToChars(blockChars[b], edit, plannedPerBlock[b]);
+            const { newChars, spliced: n } = applyEditToChars(blockChars[b], effectiveEdit, plannedPerBlock[b]);
             spliced += n;
             blocks[b].content = tokenizeChars(newChars);
         }
-        results.push({ find: edit.find, replacements: spliced });
+        // Keep `find: edit.find` (the original) so the caller can correlate.
+        const result = { find: edit.find, replacements: spliced };
+        if (normalized)
+            result.normalized = true;
+        results.push(result);
     }
     // Safety net: drop any empty text nodes (ProseMirror forbids them). The
     // re-tokenizer never emits empty text nodes, but untouched blocks could in

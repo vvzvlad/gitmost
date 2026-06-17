@@ -318,3 +318,107 @@ test("input doc is not mutated", () => {
   assert.notEqual(out, input);
   assert.equal(out.content[0].content[0].text, "changed source");
 });
+
+// ---------------------------------------------------------------------------
+// Markdown-normalization fallback (locating only; replace is always literal)
+// ---------------------------------------------------------------------------
+
+test("markdown-wrapped find matches via normalization, preserving the mark", () => {
+  // The document renders "Hello world" with "world" bold. The model's locator
+  // "**world**" has no verbatim match, so the stripped form "world" is used.
+  const input = doc(
+    paragraph(
+      textNode("Hello "),
+      textNode("world", { marks: [{ type: "bold" }] }),
+    ),
+  );
+
+  const { doc: out, results, failed } = applyTextEdits(input, [
+    { find: "**world**", replace: "earth" },
+  ]);
+
+  assert.equal(failed.length, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].find, "**world**"); // original is reported back
+  assert.equal(results[0].replacements, 1);
+  assert.equal(results[0].normalized, true);
+
+  // The bold mark is preserved on the replacement (inherited from the match).
+  const para = out.content[0];
+  const bold = para.content.find((n) => n.text === "earth");
+  assert.deepEqual(bold.marks, [{ type: "bold" }]);
+});
+
+test("exact match wins: literal '2 * 3' matches without normalization", () => {
+  const input = doc(paragraph(textNode("compute 2 * 3 now")));
+
+  const { results, failed } = applyTextEdits(input, [
+    { find: "2 * 3", replace: "6" },
+  ]);
+
+  assert.equal(failed.length, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].replacements, 1);
+  // No normalization was needed/used.
+  assert.ok(!results[0].normalized);
+});
+
+test("normalization yielding >1 matches without replaceAll is an ambiguity failure", () => {
+  // Two bold "world" blocks. The verbatim "**world**" matches nothing; the
+  // stripped "world" matches twice -> ambiguous, must not guess.
+  const input = doc(
+    paragraph(textNode("world", { marks: [{ type: "bold" }] })),
+    paragraph(textNode("world", { marks: [{ type: "bold" }] })),
+  );
+
+  const { results, failed } = applyTextEdits(input, [
+    { find: "**world**", replace: "earth" },
+  ]);
+
+  assert.equal(results.length, 0);
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].reason, /matches/);
+});
+
+test("stripped locator that only matches across an atom is refused (atom-aware reason)", () => {
+  // paragraph: "a" <hardBreak> "b", so blockPlain is "a￼b" (U+FFFC is the
+  // atom placeholder). The locator is markdown-wrapped, so the verbatim form
+  // "**a￼b**" never matches; its stripped form "a￼b" has no atom-free
+  // valid match either, BUT a raw substring scan of the block (atoms included)
+  // DOES hit the stripped needle. That exercises the existsAcrossAtom branch on
+  // the STRIPPED needle: the edit is refused with the atom-aware reason and the
+  // document is left unchanged.
+  const input = doc(
+    paragraph(
+      textNode("a"),
+      { type: "hardBreak" },
+      textNode("b"),
+    ),
+  );
+  const snapshot = JSON.parse(JSON.stringify(input));
+
+  const { doc: out, results, failed } = applyTextEdits(input, [
+    { find: "**a￼b**", replace: "z" },
+  ]);
+
+  assert.deepEqual(results, []);
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].reason, /non-text inline node/);
+  assert.deepEqual(out, snapshot);
+});
+
+test("genuine miss appends a 'Closest block text' hint", () => {
+  const input = doc(
+    paragraph(textNode("The quick brown fox jumps over the lazy dog")),
+  );
+
+  // No verbatim/stripped match, but the longest token "jumps" exists in the
+  // block, so a bounded "closest text" hint is appended.
+  const { failed } = applyTextEdits(input, [
+    { find: "fox jumps now", replace: "x" },
+  ]);
+
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].reason, /Closest block text/);
+  assert.match(failed[0].reason, /quick brown fox/);
+});

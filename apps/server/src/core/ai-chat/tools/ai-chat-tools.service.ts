@@ -638,7 +638,10 @@ export class AiChatToolsService {
           'editing inside a bold word keeps the new text bold). Each find must ' +
           'match exactly once unless replaceAll is set. The batch applies what ' +
           'it can and returns applied[] + failed[]; a fully-unmatched batch ' +
-          'writes nothing and errors. Examples: edits:[{find:"teh",replace:"the"}]; ' +
+          'writes nothing and errors. find should be the literal rendered text ' +
+          '(no markdown). Markdown wrappers (**bold**, *italic*, `code`) and ' +
+          'trailing emoji are tolerated via a strip-and-retry fallback, but ' +
+          'plain text is preferred. Examples: edits:[{find:"teh",replace:"the"}]; ' +
           'edits:[{find:"Hello world",replace:"Hello there"}] (crosses a bold ' +
           'boundary). Reversible: the previous version is kept in page history.',
         inputSchema: z.object({
@@ -730,7 +733,12 @@ export class AiChatToolsService {
           anchorText: z
             .string()
             .optional()
-            .describe('Anchor text fragment (for before/after).'),
+            .describe(
+              'Anchor text fragment (for before/after), matched against the ' +
+                "block's literal rendered plain text (no markdown). " +
+                'Markdown/emoji are tolerated as a fallback; prefer plain text ' +
+                'or anchorNodeId.',
+            ),
         }),
         execute: async ({
           pageId,

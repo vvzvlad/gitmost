@@ -400,3 +400,90 @@ test("insertNodeRelative does NOT mutate input (deep-equal snapshot)", () => {
   assert.deepEqual(input, snap);
   assert.notEqual(out, input);
 });
+
+// ---------------------------------------------------------------------------
+// anchorText markdown-normalization fallback (locating only)
+// ---------------------------------------------------------------------------
+
+test("insertNodeRelative before by markdown-wrapped anchorText matches the plain block", () => {
+  const input = doc(
+    para("p-1", textNode("alpha")),
+    para("p-2", textNode("beta")),
+  );
+  const node = para("new", textNode("NEW"));
+  // "**beta**" has no verbatim match; the stripped "beta" matches "p-2".
+  const { doc: out, inserted } = insertNodeRelative(input, node, {
+    position: "before",
+    anchorText: "**beta**",
+  });
+  assert.equal(inserted, true);
+  assert.deepEqual(
+    out.content.map((n) => n.attrs.id),
+    ["p-1", "new", "p-2"],
+  );
+});
+
+test("insertNodeRelative after by markdown-wrapped anchorText matches the plain block", () => {
+  const input = doc(
+    para("p-1", textNode("alpha")),
+    para("p-2", textNode("beta")),
+  );
+  const node = para("new", textNode("NEW"));
+  const { doc: out, inserted } = insertNodeRelative(input, node, {
+    position: "after",
+    anchorText: "**alpha**",
+  });
+  assert.equal(inserted, true);
+  assert.deepEqual(
+    out.content.map((n) => n.attrs.id),
+    ["p-1", "new", "p-2"],
+  );
+});
+
+test("insertNodeRelative anchorText with markdown AND a trailing emoji matches the plain block", () => {
+  const input = doc(
+    para("p-1", textNode("alpha")),
+    para("p-2", textNode("beta")),
+  );
+  const node = para("new", textNode("NEW"));
+  const { doc: out, inserted } = insertNodeRelative(input, node, {
+    position: "before",
+    anchorText: "**beta** ✨",
+  });
+  assert.equal(inserted, true);
+  assert.deepEqual(
+    out.content.map((n) => n.attrs.id),
+    ["p-1", "new", "p-2"],
+  );
+});
+
+test("insertNodeRelative exact anchorText still wins (no normalization)", () => {
+  // A block literally contains "a*b"; the exact anchor must match it directly.
+  const input = doc(
+    para("p-1", textNode("a*b")),
+    para("p-2", textNode("beta")),
+  );
+  const node = para("new", textNode("NEW"));
+  const { doc: out, inserted } = insertNodeRelative(input, node, {
+    position: "after",
+    anchorText: "a*b",
+  });
+  assert.equal(inserted, true);
+  assert.deepEqual(
+    out.content.map((n) => n.attrs.id),
+    ["p-1", "new", "p-2"],
+  );
+});
+
+test("insertNodeRelative truly-missing anchor still returns inserted:false", () => {
+  const input = doc(
+    para("p-1", textNode("alpha")),
+    para("p-2", textNode("beta")),
+  );
+  const node = para("new", textNode("NEW"));
+  const { inserted } = insertNodeRelative(input, node, {
+    position: "before",
+    anchorText: "**gamma**",
+  });
+  assert.equal(inserted, false);
+});

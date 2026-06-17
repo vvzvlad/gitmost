@@ -14,6 +14,8 @@
  * `content`, non-object nodes, and absent `attrs` are tolerated.
  */
 
+import { stripInlineMarkdown } from "./text-normalize.js";
+
 /** Deep-clone a JSON-serializable value without mutating the original. */
 function clone<T>(value: T): T {
   if (typeof structuredClone === "function") {
@@ -365,6 +367,31 @@ const REQUIRED_CONTAINER: Record<string, string> = {
 };
 
 /**
+ * Find the index of the first TOP-LEVEL block whose plain text includes the
+ * anchor, with a markdown-stripping FALLBACK. Returns -1 when none matches.
+ *
+ * Two passes preserve "exact wins globally":
+ *  - Pass 1: first block containing the verbatim `anchorText`.
+ *  - Pass 2 (only if pass 1 found nothing): first block containing the
+ *    markdown-stripped anchor, when stripping actually changed it.
+ */
+function findAnchorTextIndex(content: any[], anchorText: string): number {
+  if (!Array.isArray(content)) return -1;
+  // Pass 1: exact.
+  for (let i = 0; i < content.length; i++) {
+    if (blockPlainText(content[i]).includes(anchorText)) return i;
+  }
+  // Pass 2: markdown-stripped fallback.
+  const a = stripInlineMarkdown(anchorText);
+  if (a !== anchorText && a.length > 0) {
+    for (let i = 0; i < content.length; i++) {
+      if (blockPlainText(content[i]).includes(a)) return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * Locate an anchor and return its ancestor chain (from `doc` down to and
  * including the matched node). Each chain entry is `{ node, index }` where
  * `index` is the node's position inside its parent's `content` array (the root
@@ -399,14 +426,14 @@ function findAnchorChain(
   }
 
   // By text: only top-level blocks are scanned (same rule as the JSON path).
+  // Exact match wins; a markdown-stripped fallback is tried only on a miss.
   if (opts.anchorText != null && Array.isArray(doc.content)) {
-    for (let i = 0; i < doc.content.length; i++) {
-      if (blockPlainText(doc.content[i]).includes(opts.anchorText)) {
-        return [
-          { node: doc, index: -1 },
-          { node: doc.content[i], index: i },
-        ];
-      }
+    const i = findAnchorTextIndex(doc.content, opts.anchorText);
+    if (i !== -1) {
+      return [
+        { node: doc, index: -1 },
+        { node: doc.content[i], index: i },
+      ];
     }
   }
 
@@ -540,13 +567,13 @@ export function insertNodeRelative(
     return { doc: out, inserted };
   }
 
-  // Resolve by text: only top-level doc.content blocks are scanned.
+  // Resolve by text: only top-level doc.content blocks are scanned. Exact
+  // match wins; a markdown-stripped fallback is tried only on a miss.
   if (opts.anchorText != null && isObject(out) && Array.isArray(out.content)) {
-    for (let i = 0; i < out.content.length; i++) {
-      if (blockPlainText(out.content[i]).includes(opts.anchorText)) {
-        out.content.splice(i + offset, 0, fresh);
-        return { doc: out, inserted: true };
-      }
+    const i = findAnchorTextIndex(out.content, opts.anchorText);
+    if (i !== -1) {
+      out.content.splice(i + offset, 0, fresh);
+      return { doc: out, inserted: true };
     }
   }
 

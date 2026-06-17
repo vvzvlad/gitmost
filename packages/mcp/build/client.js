@@ -1258,7 +1258,13 @@ export class DocmostClient {
             const anchorDesc = opts.anchorNodeId
                 ? `anchorNodeId "${opts.anchorNodeId}"`
                 : `anchorText "${opts.anchorText}"`;
-            throw new Error(`insert_node: anchor not found (${anchorDesc}) on page ${pageId}`);
+            // anchorText is matched against the block's literal RENDERED plain text;
+            // markdown/emoji are tolerated only as a strip-and-retry fallback, so a
+            // miss usually means the text differs from what's on the page.
+            const hint = opts.anchorText
+                ? ' anchorText must be the block\'s literal rendered plain text (no markdown wrappers or emoji); anchorNodeId from get_page_json is more reliable.'
+                : "";
+            throw new Error(`insert_node: anchor not found (${anchorDesc}) on page ${pageId}.${hint}`);
         }
         return { success: true, inserted: true, position: opts.position };
     }

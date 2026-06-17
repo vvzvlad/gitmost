@@ -461,7 +461,10 @@ server.registerTool(
       "keeps it bold; editing inside a bold word keeps the new text bold). " +
       "Each `find` must match exactly once (or set replaceAll). The batch " +
       "applies what it can and returns applied[] + failed[]; a fully-unmatched " +
-      "batch writes nothing and errors. Examples: edits:[{find:\"teh\"," +
+      "batch writes nothing and errors. `find` should be the literal rendered " +
+      "text (no markdown). Markdown wrappers (**bold**, *italic*, `code`) and " +
+      "trailing emoji are tolerated via a strip-and-retry fallback, but plain " +
+      "text is preferred. Examples: edits:[{find:\"teh\"," +
       "replace:\"the\"}]; edits:[{find:\"Hello world\",replace:\"Hello there\"}] " +
       "(crosses a bold boundary). This is the preferred tool for fixing " +
       "wording, typos, numbers, names.",
@@ -542,7 +545,10 @@ server.registerTool(
       "INSIDE the target table — anchorNodeId of any block/cell in it, or " +
       "anchorText matching the table; to add a tableCell/tableHeader, use " +
       "anchorNodeId of a block inside the target row (anchorText only resolves " +
-      "top-level blocks, so it cannot target a row). Note: append is top-level " +
+      "top-level blocks, so it cannot target a row). `anchorText` is matched " +
+      "against the block's literal rendered plain text (no markdown); " +
+      "markdown/emoji are tolerated as a fallback; prefer plain text or " +
+      "anchorNodeId. Note: append is top-level " +
       "only and rejects structural table nodes. Example node: a paragraph " +
       '{"type":"paragraph","content":[{"type":"text","text":"Hello"}]} or a ' +
       'heading {"type":"heading","attrs":{"level":2},"content":' +
