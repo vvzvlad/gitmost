@@ -1,10 +1,10 @@
 {
-  "name": "Docmost",
-  "short_name": "Docmost",
+  "name": "Gitmost",
+  "short_name": "Gitmost",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#222",
-  "theme_color": "#222",
+  "background_color": "#0E1117",
+  "theme_color": "#0E1117",
   "icons": [
     {
       "src": "icons/favicon-16x16.png",

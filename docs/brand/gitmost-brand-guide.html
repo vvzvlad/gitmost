@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sora:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#fff; -webkit-font-smoothing:antialiased; }
+  .doc { box-sizing:border-box; max-width:8.5in; margin:0 auto; background:inherit;
+         padding:48px clamp(24px,5vw,0.75in) 96px; font-family:'Sora',sans-serif;
+         color:#1F2328; font-size:15px; line-height:1.65; }
+  .doc-frame { width:100%; border-collapse:collapse; }
+  .doc-frame td { padding:0; }
+  .running-hdr, .running-ftr, .hdr-space, .ftr-space { display:none; }
+  h1,h2,h3 { text-wrap:balance; font-family:'Space Grotesk',sans-serif; }
+  p,li { text-wrap:pretty; }
+  h1 { font-size:34px; font-weight:600; letter-spacing:-0.025em; line-height:1.1; margin:0 0 6px; }
+  h2 { font-size:20px; font-weight:600; letter-spacing:-0.02em; margin:46px 0 14px; padding-top:18px; border-top:1px solid #ECEEF0; }
+  h3 { font-size:15px; font-weight:600; letter-spacing:-0.01em; margin:24px 0 8px; }
+  p { margin:0 0 14px; }
+  code,.mono { font-family:'JetBrains Mono',monospace; font-size:0.86em; }
+  .lead { font-size:17px; color:#3D444D; line-height:1.6; margin:0 0 8px; }
+  table.spec { width:100%; border-collapse:collapse; margin:10px 0 6px; font-size:14px; }
+  table.spec th { text-align:left; font-weight:600; font-family:'Space Grotesk',sans-serif; color:#6E7781; font-size:12px; letter-spacing:0.04em; text-transform:uppercase; padding:0 0 9px; border-bottom:1px solid #D9DCDF; }
+  table.spec td { padding:11px 0; border-bottom:1px solid #ECEEF0; vertical-align:middle; }
+  figure { margin:0; }
+  @page { size:letter; margin:0; }
+  @media print {
+    html { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    html,body { margin:0; padding:0; }
+    .doc { max-width:none !important; margin:0 !important; padding:0 0.75in !important; box-shadow:none !important; border:none !important; }
+    #dc-root,.sc-host { height:auto !important; }
+    .hdr-space,.ftr-space { display:table-cell; height:0.75in !important; }
+    .running-hdr,.running-ftr { display:flex !important; justify-content:space-between; align-items:baseline; position:fixed !important; left:0; right:0; margin:0 !important; font-size:11px; letter-spacing:0.05em; text-transform:uppercase; color:#9AA4AE; font-family:'Space Grotesk',sans-serif; }
+    .running-hdr { top:0; padding:0.35in 0.75in 0 !important; }
+    .running-ftr { bottom:0; padding:0 0.75in 0.35in !important; }
+    h1,h2,h3 { break-after:avoid; }
+    figure,pre,blockquote,img,svg,tr,.card { break-inside:avoid; }
+    p,li { orphans:3; widows:3; }
+    .screen-only { display:none !important; }
+  }
+</style>
+</helmet>
+
+<main class="doc">
+  <header class="running-hdr"><span>Gitmost · Logo</span><span>Brand guide v1</span></header>
+  <table class="doc-frame" role="presentation">
+  <thead><tr><td class="hdr-space"></td></tr></thead>
+  <tbody><tr><td>
+
+  <h1>Gitmost Logo</h1>
+  <p class="lead">A short guide to the mark, wordmark, color and icons. Gitmost is a fork of Docmost with git features — the visual language is built around the idea of a document under version control.</p>
+
+  <!-- primary lockup -->
+  <figure style="margin:26px 0 6px;border:1px solid #ECEEF0;border-radius:6px;padding:48px;display:flex;align-items:center;justify-content:center;gap:4px;">
+    <img src="./gitmost-mark-dark.svg" width="58" height="58" alt="Gitmost mark"/>
+    <span style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:54px;letter-spacing:-0.04em;color:#1F2328;line-height:1;">gitmost</span>
+  </figure>
+  <p style="font-size:13px;color:#9AA4AE;margin-top:10px;">Primary horizontal logo: mark + wordmark.</p>
+
+  <h2>Concept</h2>
+  <p>The mark is a <strong>git-branch</strong> pictogram: a vertical commit line and a branch that resolves into a separate node. It reads instantly as version control. The green nodes carry the “git” idea on top of a neutral structure — so the mark works both as an app icon and as a single-color favicon.</p>
+  <p>The wordmark is deliberately lowercase and calm: the product is a tool, not a billboard. The geometric grotesk Space Grotesk lends a technical feel without being cold.</p>
+
+  <h2>Construction</h2>
+  <div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;">
+    <figure style="background:#0E1117;border-radius:14px;padding:26px;flex:none;">
+      <img src="./gitmost-mark-light.svg" width="120" height="120" alt="Mark geometry"/>
+    </figure>
+    <div style="flex:1;min-width:280px;">
+      <p style="margin-bottom:10px;">The mark is built from four primitives on a 96×96 grid:</p>
+      <ul style="margin:0 0 8px;padding-left:20px;">
+        <li>vertical line — the main branch;</li>
+        <li>quarter-arc — the branch-off;</li>
+        <li>top node — the diverged commit;</li>
+        <li>bottom node — the head of the main branch.</li>
+      </ul>
+      <p style="margin:0;">Stroke weight is <span class="mono">9</span> units, node radius <span class="mono">12</span>, with round line caps. Keep these proportions at any scale; never stretch the mark non-uniformly.</p>
+    </div>
+  </div>
+
+  <h2>Clear space &amp; minimum size</h2>
+  <p>Minimum clear space around the logo equals <strong>the node diameter</strong> (≈ the x-height of the wordmark). Keep text, other logos and layout edges out of this zone.</p>
+  <table class="spec">
+    <thead><tr><th>Context</th><th>Minimum size</th></tr></thead>
+    <tbody>
+      <tr><td>Mark (icon)</td><td class="mono">16 px</td></tr>
+      <tr><td>Horizontal logo</td><td class="mono">mark height ≥ 20 px</td></tr>
+      <tr><td>Print</td><td class="mono">mark ≥ 6 mm</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Color</h2>
+  <table class="spec">
+    <thead><tr><th style="width:54px;">&nbsp;</th><th>HEX</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td><span style="display:inline-block;width:36px;height:36px;border-radius:7px;background:#3FB950;"></span></td><td class="mono">#3FB950</td><td>Accent — git green. Mark nodes, active states.</td></tr>
+      <tr><td><span style="display:inline-block;width:36px;height:36px;border-radius:7px;background:#56D364;"></span></td><td class="mono">#56D364</td><td>Light accent. Optional — highlights / gradation.</td></tr>
+      <tr><td><span style="display:inline-block;width:36px;height:36px;border-radius:7px;background:#0E1117;"></span></td><td class="mono">#0E1117</td><td>Icon tile, dark UI background.</td></tr>
+      <tr><td><span style="display:inline-block;width:36px;height:36px;border-radius:7px;background:#E6EDF3;border:1px solid #E0E2E4;"></span></td><td class="mono">#E6EDF3</td><td>Mark structure on dark backgrounds.</td></tr>
+      <tr><td><span style="display:inline-block;width:36px;height:36px;border-radius:7px;background:#1F2328;"></span></td><td class="mono">#1F2328</td><td>Mark structure and text on light backgrounds.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Wordmark</h2>
+  <figure style="border:1px solid #ECEEF0;border-radius:6px;padding:30px 34px;margin:6px 0 14px;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:52px;letter-spacing:-0.04em;color:#1F2328;line-height:1;">gitmost</div>
+  </figure>
+  <table class="spec">
+    <thead><tr><th>Property</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>Typeface</td><td class="mono">Space Grotesk</td></tr>
+      <tr><td>Weight</td><td class="mono">600 · SemiBold</td></tr>
+      <tr><td>Tracking</td><td class="mono">-0.04em</td></tr>
+      <tr><td>Case</td><td>all lowercase — never “Gitmost” or all-caps in the logo</td></tr>
+      <tr><td>Color</td><td>single color: <span class="mono">#1F2328</span> on light, <span class="mono">#E6EDF3</span> on dark</td></tr>
+    </tbody>
+  </table>
+  <p>An allowed accent variant sets “git” in <span class="mono">#3FB950</span> and leaves “most” neutral. Use sparingly (marketing, headers), never as the primary logo.</p>
+
+  <h2>App icon &amp; favicon</h2>
+  <div style="display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 6px;">
+    <figure class="card" style="flex:1;min-width:240px;border:1px solid #ECEEF0;border-radius:6px;padding:26px;">
+      <div style="font-size:12px;color:#9AA4AE;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:18px;">Icon</div>
+      <div style="display:flex;align-items:flex-end;gap:18px;">
+        <img src="./gitmost-icon.svg" width="84" height="84" alt="" style="border-radius:20px;"/>
+        <img src="./gitmost-icon.svg" width="52" height="52" alt="" style="border-radius:12px;"/>
+      </div>
+      <div class="mono" style="font-size:12px;color:#9AA4AE;margin-top:16px;">gitmost-icon.svg</div>
+    </figure>
+    <figure class="card" style="flex:1;min-width:240px;border:1px solid #ECEEF0;border-radius:6px;padding:26px;">
+      <div style="font-size:12px;color:#9AA4AE;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:18px;">Favicon</div>
+      <div style="display:flex;align-items:flex-end;gap:18px;">
+        <img src="./gitmost-favicon.svg" width="32" height="32" alt="" style="border-radius:7px;"/>
+        <img src="./gitmost-favicon.svg" width="24" height="24" alt="" style="border-radius:5px;"/>
+        <img src="./gitmost-favicon.svg" width="16" height="16" alt="" style="border-radius:4px;"/>
+      </div>
+      <div class="mono" style="font-size:12px;color:#9AA4AE;margin-top:16px;">gitmost-favicon.svg</div>
+    </figure>
+  </div>
+  <p>The icon is the mark on a <span class="mono">#0E1117</span> tile with ~23% corner radius. The favicon uses slightly heavier strokes for legibility at 16 px. On a light tile, use the inverse: green background, dark mark.</p>
+
+  <h2>Color variants</h2>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin:8px 0;">
+    <figure class="card" style="flex:1;min-width:150px;border:1px solid #ECEEF0;border-radius:6px;padding:28px;display:flex;flex-direction:column;align-items:center;gap:14px;">
+      <img src="./gitmost-mark-dark.svg" width="48" height="48" alt=""/>
+      <span style="font-size:12px;color:#6E7781;">On light</span>
+    </figure>
+    <figure class="card" style="flex:1;min-width:150px;background:#0E1117;border-radius:6px;padding:28px;display:flex;flex-direction:column;align-items:center;gap:14px;">
+      <img src="./gitmost-mark-light.svg" width="48" height="48" alt=""/>
+      <span style="font-size:12px;color:#7D8590;">On dark</span>
+    </figure>
+    <figure class="card" style="flex:1;min-width:150px;border:1px solid #ECEEF0;border-radius:6px;padding:28px;display:flex;flex-direction:column;align-items:center;gap:14px;">
+      <img src="./gitmost-mark-mono.svg" width="48" height="48" alt=""/>
+      <span style="font-size:12px;color:#6E7781;">Mono — one color</span>
+    </figure>
+  </div>
+
+  <h2>Don’ts</h2>
+  <ul style="margin:0 0 8px;padding-left:20px;">
+    <li>don’t recolor the nodes to an arbitrary color — accent is only <span class="mono">#3FB950</span>;</li>
+    <li>don’t stretch, skew or rotate the mark;</li>
+    <li>don’t capitalize or all-caps the name in the logo;</li>
+    <li>don’t swap the wordmark typeface;</li>
+    <li>don’t add shadows, outlines or gradients to the mark;</li>
+    <li>don’t place the logo on a busy background without a tile / clear space.</li>
+  </ul>
+
+  <h2>Files</h2>
+  <table class="spec">
+    <thead><tr><th>File</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">gitmost-icon.svg</td><td>App icon, dark tile (256px)</td></tr>
+      <tr><td class="mono">gitmost-favicon.svg</td><td>Favicon, heavier strokes for small sizes</td></tr>
+      <tr><td class="mono">gitmost-mark-dark.svg</td><td>Bare mark for light backgrounds</td></tr>
+      <tr><td class="mono">gitmost-mark-light.svg</td><td>Bare mark for dark backgrounds</td></tr>
+      <tr><td class="mono">gitmost-mark-mono.svg</td><td>Single-color mark (print, engraving, B/W)</td></tr>
+    </tbody>
+  </table>
+  <p style="color:#6E7781;font-size:13px;margin-top:6px;">The wordmark uses the system typeface Space Grotesk and is not embedded in the SVG. For print outside a browser, convert the logo text to outlines.</p>
+
+  </td></tr></tbody>
+  <tfoot><tr><td class="ftr-space"></td></tr></tfoot>
+  </table>
+  <footer class="running-ftr"><span>Gitmost</span><span>Logo brand guide</span></footer>
+</main>
+</x-dc>
+</body>
+</html>

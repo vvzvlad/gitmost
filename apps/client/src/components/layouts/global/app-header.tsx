@@ -1,10 +1,10 @@
 import {
   Box,
   Group,
-  Text,
   Tooltip,
 } from "@mantine/core";
 import classes from "./app-header.module.css";
+import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
 import { Link } from "react-router-dom";
 import APP_ROUTE from "@/lib/app-route.ts";
@@ -69,21 +69,11 @@ export function AppHeader() {
 
           <Link to="/home" className={classes.brand} aria-label="Gitmost">
             <Box hiddenFrom="sm" className={classes.brandIcon}>
-              <img
-                src="/icons/favicon-32x32.png"
-                alt="Gitmost"
-                width={22}
-                height={22}
-              />
+              <BrandLogo markOnly height={26} />
             </Box>
-            <Text
-              size="lg"
-              fw={600}
-              style={{ userSelect: "none" }}
-              visibleFrom="sm"
-            >
-              Gitmost
-            </Text>
+            <Box visibleFrom="sm" className={classes.brandIcon}>
+              <BrandLogo height={30} />
+            </Box>
           </Link>
 
           <Group ml={50} gap={5} className={classes.links} visibleFrom="sm">
