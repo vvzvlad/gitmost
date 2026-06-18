@@ -1191,5 +1191,9 @@
   "Transcription failed": "Transcription failed",
   "Voice dictation is not configured": "Voice dictation is not configured",
   "Microphone is unavailable or already in use": "Microphone is unavailable or already in use",
-  "Audio recording is not available in this browser/context": "Audio recording is not available in this browser/context"
+  "Audio recording is not available in this browser/context": "Audio recording is not available in this browser/context",
+  "Request format": "Request format",
+  "How transcription requests are sent to the endpoint": "How transcription requests are sent to the endpoint",
+  "OpenAI-compatible (multipart/form-data)": "OpenAI-compatible (multipart/form-data)",
+  "OpenRouter (JSON, base64 audio)": "OpenRouter (JSON, base64 audio)"
 }

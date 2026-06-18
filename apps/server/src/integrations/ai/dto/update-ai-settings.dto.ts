@@ -1,5 +1,5 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
-import { AI_DRIVERS, AiDriver } from '../ai.types';
+import { AI_DRIVERS, AiDriver, STT_API_STYLES, SttApiStyle } from '../ai.types';
 
 /**
  * Admin update payload for the workspace AI provider settings.
@@ -49,6 +49,10 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   sttBaseUrl?: string;
+
+  @IsOptional()
+  @IsIn(STT_API_STYLES)
+  sttApiStyle?: SttApiStyle;
 
   @IsOptional()
   @IsString()

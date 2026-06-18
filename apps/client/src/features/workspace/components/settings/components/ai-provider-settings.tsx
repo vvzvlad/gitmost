@@ -9,6 +9,7 @@ import {
   Modal,
   Paper,
   PasswordInput,
+  Select,
   Stack,
   Switch,
   Text,
@@ -32,7 +33,10 @@ import {
   useTestAiConnectionMutation,
   useUpdateAiSettingsMutation,
 } from "@/features/workspace/queries/ai-settings-query.ts";
-import { IAiSettingsUpdate } from "@/features/workspace/services/ai-settings-service.ts";
+import {
+  IAiSettingsUpdate,
+  SttApiStyle,
+} from "@/features/workspace/services/ai-settings-service.ts";
 import AiMcpServers from "./ai-mcp-servers.tsx";
 
 // No driver field: every endpoint is OpenAI-compatible, so the form carries only
@@ -50,6 +54,7 @@ const formSchema = z.object({
   // STT-specific fields. Empty base URL / key fall back to the chat ones.
   sttModel: z.string(),
   sttBaseUrl: z.string(),
+  sttApiStyle: z.enum(["multipart", "json"]),
   sttApiKey: z.string(),
 });
 
@@ -139,6 +144,7 @@ export default function AiProviderSettings() {
       embeddingApiKey: "",
       sttModel: "",
       sttBaseUrl: "",
+      sttApiStyle: "multipart" as SttApiStyle,
       sttApiKey: "",
     },
   });
@@ -157,6 +163,7 @@ export default function AiProviderSettings() {
       embeddingApiKey: "",
       sttModel: settings.sttModel ?? "",
       sttBaseUrl: settings.sttBaseUrl ?? "",
+      sttApiStyle: settings.sttApiStyle ?? "multipart",
       sttApiKey: "",
     });
     form.resetDirty();
@@ -184,6 +191,7 @@ export default function AiProviderSettings() {
       // server-side.
       sttModel: values.sttModel,
       sttBaseUrl: values.sttBaseUrl,
+      sttApiStyle: values.sttApiStyle,
     };
 
     // Key semantics (never send the stored key back):
@@ -670,6 +678,22 @@ export default function AiProviderSettings() {
             )}
           </Stack>
         </Group>
+
+        <Select
+          mt="sm"
+          label={t("Request format")}
+          description={t("How transcription requests are sent to the endpoint")}
+          data={[
+            {
+              value: "multipart",
+              label: t("OpenAI-compatible (multipart/form-data)"),
+            },
+            { value: "json", label: t("OpenRouter (JSON, base64 audio)") },
+          ]}
+          allowDeselect={false}
+          disabled={isLoading}
+          {...form.getInputProps("sttApiStyle")}
+        />
 
         <TextInput
           mt="sm"

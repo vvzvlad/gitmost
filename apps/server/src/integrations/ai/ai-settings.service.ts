@@ -12,6 +12,7 @@ import {
   AiProviderSettings,
   MaskedAiSettings,
   ResolvedAiConfig,
+  SttApiStyle,
 } from './ai.types';
 
 /**
@@ -30,6 +31,7 @@ export interface UpdateAiSettingsInput {
   embeddingApiKey?: string;
   sttModel?: string;
   sttBaseUrl?: string;
+  sttApiStyle?: SttApiStyle;
   sttApiKey?: string;
 }
 
@@ -117,6 +119,9 @@ export class AiSettingsService {
       chatModel: provider.chatModel,
       embeddingModel: provider.embeddingModel,
       sttModel: provider.sttModel,
+      // Plain passthrough, no fallback; the transcribe path defaults unset to
+      // 'multipart' (current behavior).
+      sttApiStyle: provider.sttApiStyle,
       baseUrl: provider.baseUrl,
       systemPrompt: provider.systemPrompt,
     };
@@ -190,6 +195,7 @@ export class AiSettingsService {
       embeddingBaseUrl: provider.embeddingBaseUrl,
       sttModel: provider.sttModel,
       sttBaseUrl: provider.sttBaseUrl,
+      sttApiStyle: provider.sttApiStyle,
       systemPrompt: provider.systemPrompt,
       hasApiKey,
       hasEmbeddingApiKey,
@@ -226,6 +232,7 @@ export class AiSettingsService {
       'embeddingBaseUrl',
       'sttModel',
       'sttBaseUrl',
+      'sttApiStyle',
       'systemPrompt',
     ] as const) {
       if (nonSecret[key] !== undefined) {

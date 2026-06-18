@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
   embedMany,
   experimental_transcribe as transcribe,
@@ -108,28 +108,14 @@ export class AiService {
     }
   }
 
-  // Some OpenAI-compatible gateways diverge on the transcription API. OpenRouter
-  // does NOT accept OpenAI's multipart /audio/transcriptions; it wants JSON
-  // { model, input_audio: { data: <base64>, format } }. Detect it by host so the
-  // standard multipart path (OpenAI, speaches, faster-whisper-server, ...) is
-  // unaffected.
-  private static isOpenRouter(baseURL?: string): boolean {
-    if (!baseURL) return false;
-    try {
-      const host = new URL(baseURL).hostname.toLowerCase();
-      // Exact host or a real subdomain — avoid matching e.g. "evil-openrouter.ai".
-      return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
-    } catch {
-      return false;
-    }
-  }
-
   /**
-   * Transcribe audio with the workspace STT model. Standard OpenAI-compatible
-   * endpoints use the AI SDK multipart path; OpenRouter uses its JSON+base64
-   * audio/transcriptions API. `format` is the audio container hint (webm / mp4 /
-   * wav / mp3 / ogg / m4a). Built PER WORKSPACE; the key is never logged. Throws
-   * AiSttNotConfiguredException (-> 503) when no STT model is configured.
+   * Transcribe audio with the workspace STT model. The request encoding is the
+   * admin-chosen `sttApiStyle`: 'json' uses the JSON+base64 audio/transcriptions
+   * API (OpenRouter); anything else (default 'multipart') uses the AI SDK
+   * multipart path (OpenAI, speaches, faster-whisper-server, ...). `format` is
+   * the audio container hint (webm / mp4 / wav / mp3 / ogg / m4a). Built PER
+   * WORKSPACE; the key is never logged. Throws AiSttNotConfiguredException
+   * (-> 503) when no STT model is configured.
    */
   async transcribe(
     workspaceId: string,
@@ -140,14 +126,11 @@ export class AiService {
     if (!cfg?.sttModel) throw new AiSttNotConfiguredException();
     const baseURL = cfg.sttBaseUrl || cfg.baseUrl;
 
-    if (AiService.isOpenRouter(baseURL)) {
-      return this.transcribeViaOpenRouter(
-        baseURL as string,
-        cfg.sttApiKey,
-        cfg.sttModel,
-        audio,
-        format,
-      );
+    // Explicit, admin-chosen request encoding (no URL guessing). 'json' is the
+    // OpenRouter style (JSON + base64 input_audio); everything else uses the
+    // OpenAI-compatible multipart path via the AI SDK.
+    if (cfg.sttApiStyle === 'json') {
+      return this.transcribeJsonBase64(baseURL, cfg.sttApiKey, cfg.sttModel, audio, format);
     }
 
     // Standard OpenAI-compatible multipart path (AI SDK). apiKey may be unused for
@@ -160,14 +143,23 @@ export class AiService {
     return text.trim();
   }
 
-  // OpenRouter transcription: JSON body with base64 audio; returns { text }.
-  private async transcribeViaOpenRouter(
-    baseURL: string,
+  /**
+   * JSON + base64 transcription body (OpenRouter-style). POSTs
+   * { model, input_audio: { data, format } } to {baseURL}/audio/transcriptions
+   * and returns { text }.
+   */
+  private async transcribeJsonBase64(
+    baseURL: string | undefined,
     apiKey: string | undefined,
     model: string,
     audio: Uint8Array,
     format: string,
   ): Promise<string> {
+    if (!baseURL) {
+      throw new BadRequestException(
+        'STT base URL is not set (required for the JSON request format)',
+      );
+    }
     const url = `${baseURL.replace(/\/$/, '')}/audio/transcriptions`;
     const res = await fetch(url, {
       method: 'POST',
@@ -187,7 +179,7 @@ export class AiService {
       // Surface status + body so the real reason reaches the user; never log the key.
       const body = await res.text().catch(() => '');
       throw new Error(
-        `OpenRouter transcription failed (${res.status}): ${body.slice(0, 500)}`,
+        `JSON transcription request failed (${res.status}): ${body.slice(0, 500)}`,
       );
     }
     const json = (await res.json()) as { text?: string };

@@ -3,6 +3,12 @@ import api from "@/lib/api-client";
 // Supported LLM providers/drivers.
 export type AiDriver = "openai" | "gemini" | "ollama";
 
+// How STT (speech-to-text) requests are encoded for the transcription endpoint.
+//   - 'multipart' -> OpenAI-compatible multipart/form-data (OpenAI, speaches,
+//     faster-whisper-server)
+//   - 'json'      -> JSON body with base64-encoded audio (OpenRouter)
+export type SttApiStyle = "multipart" | "json";
+
 // Masked AI provider settings returned by the server.
 // No API key is ever returned; only `hasApiKey` / `hasEmbeddingApiKey` indicate
 // whether one is stored. `embeddingBaseUrl` is the RAW stored value (empty means
@@ -21,6 +27,7 @@ export interface IAiSettings {
   // key is stored (empty means "uses the chat API key").
   sttModel?: string;
   sttBaseUrl?: string;
+  sttApiStyle?: SttApiStyle;
   hasSttApiKey: boolean;
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
@@ -43,6 +50,7 @@ export interface IAiSettingsUpdate {
   embeddingApiKey?: string;
   sttModel?: string;
   sttBaseUrl?: string;
+  sttApiStyle?: SttApiStyle;
   // Write-only STT key (same semantics as `apiKey` / `embeddingApiKey`).
   sttApiKey?: string;
 }

@@ -10,6 +10,12 @@ export type AiDriver = 'openai' | 'gemini' | 'ollama';
 
 export const AI_DRIVERS: AiDriver[] = ['openai', 'gemini', 'ollama'];
 
+// STT request encoding. 'multipart' = OpenAI-compatible /audio/transcriptions
+// form-data (OpenAI, speaches, faster-whisper-server). 'json' = JSON body with
+// base64 input_audio (OpenRouter). Chosen explicitly by the admin.
+export type SttApiStyle = 'multipart' | 'json';
+export const STT_API_STYLES: SttApiStyle[] = ['multipart', 'json'];
+
 /**
  * Non-secret provider settings persisted under `settings.ai.provider`.
  * The API key is intentionally absent here.
@@ -24,6 +30,7 @@ export interface AiProviderSettings {
   sttModel?: string;
   // STT-specific base URL. Falls back to baseUrl when empty/unset.
   sttBaseUrl?: string;
+  sttApiStyle?: SttApiStyle;
   systemPrompt?: string;
 }
 
@@ -58,6 +65,7 @@ export interface MaskedAiSettings {
   embeddingBaseUrl?: string;
   sttModel?: string;
   sttBaseUrl?: string;
+  sttApiStyle?: SttApiStyle;
   systemPrompt?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
