@@ -107,13 +107,15 @@ community feature, with no enterprise license. Open it from the page header; the
 
 ### Planned
 
-- 🔭 **Templates** — reusable page templates.
+- 🔭 **Page templates** — flag a page as a template and embed its whole content live into other pages; edits to the template propagate to every place it is inserted (whole-page transclusion on top of the existing synced blocks). See [docs/page-templates-plan.md](docs/page-templates-plan.md).
 - 🔭 **Viewer comments** — let read-only viewers leave comments.
+- 🔭 **Public-share AI assistant** — let anonymous visitors of a shared page ask the AI agent, scoped strictly to that share's page tree (read-only, share-scoped search), behind a workspace toggle. See [docs/public-share-assistant-plan.md](docs/public-share-assistant-plan.md).
 - 🔭 **Password-protected pages** — protect individual pages / shares with a password.
 - 🔭 **Windows / Linux app** — native desktop app for Windows and Linux.
 - 🔭 **Mobile app** — mobile apps (iOS first, Android to follow), reusing the existing responsive web UI and editor via a Capacitor wrapper, with offline planned for later. See [docs/mobile-app-plan.md](docs/mobile-app-plan.md).
 - 🔭 **Offline mode** — offline sync & PWA support.
 - 🔭 **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it. See [docs/voice-dictation-plan.md](docs/voice-dictation-plan.md).
+- 🔭 **Footnotes** — academic-style footnotes: a numbered superscript reference inline (read it in place via a hover popover), with the note text living as a real, editable block at the bottom of the page; auto-numbered, collaboration-safe, and round-trips through Markdown export/import and the AI agent / MCP. See [docs/footnotes-plan.md](docs/footnotes-plan.md).
 - 🔭 **Editor & UX improvements** — blocks inside tables (lists, to-do items), column layout, additional heading levels, highlight blocks, custom emoji in callouts, floating images, anchor links for page mentions, toggles (shared-page width, aside/sidebar, spellcheck, ligatures), sanitized space-tree export, and mentions in breadcrumbs.
 
 ## Getting started
