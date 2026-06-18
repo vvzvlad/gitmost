@@ -12,7 +12,6 @@ import {
   IconMarkdown,
   IconMessage,
   IconPrinter,
-  IconSparkles,
   IconStar,
   IconStarFilled,
   IconTrash,
@@ -20,8 +19,7 @@ import {
 } from "@tabler/icons-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { aiChatWindowOpenAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import { useAtom, useAtomValue } from "jotai";
 import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
@@ -65,7 +63,6 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const { t } = useTranslation();
   const commentsTriggerProps = useAsideTriggerProps("comments");
   const tocTriggerProps = useAsideTriggerProps("toc");
-  const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
@@ -74,8 +71,6 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const [workspace] = useAtom(workspaceAtom);
   // Community public-sharing entry point (replaces the removed EE PageShareModal)
   const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
-  // AI chat entry point: only shown when the workspace enables it (A7 gate).
-  const aiChatEnabled = workspace?.settings?.ai?.chat === true;
 
   useHotkeys(
     [
@@ -131,19 +126,6 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
           <IconList size={20} stroke={2} />
         </ActionIcon>
       </Tooltip>
-
-      {aiChatEnabled && (
-        <Tooltip label={t("AI chat")} openDelay={250} withArrow>
-          <ActionIcon
-            variant="subtle"
-            color="dark"
-            aria-label={t("AI chat")}
-            onClick={() => setAiChatWindowOpen((v) => !v)}
-          >
-            <IconSparkles size={20} stroke={2} />
-          </ActionIcon>
-        </Tooltip>
-      )}
 
       <PageActionMenu readOnly={readOnly} />
     </>

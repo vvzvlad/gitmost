@@ -1,19 +1,23 @@
 import {
+  ActionIcon,
   Box,
   Group,
   Text,
   Tooltip,
 } from "@mantine/core";
+import { IconSparkles } from "@tabler/icons-react";
 import classes from "./app-header.module.css";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
 import { Link } from "react-router-dom";
 import APP_ROUTE from "@/lib/app-route.ts";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import {
   desktopSidebarAtom,
   mobileSidebarAtom,
 } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
+import { aiChatWindowOpenAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 import SidebarToggle from "@/components/ui/sidebar-toggle-button.tsx";
 import { useTranslation } from "react-i18next";
@@ -37,6 +41,11 @@ export function AppHeader() {
 
   const [desktopOpened] = useAtom(desktopSidebarAtom);
   const toggleDesktop = useToggleSidebar(desktopSidebarAtom);
+
+  const [workspace] = useAtom(workspaceAtom);
+  const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
+  // AI chat entry point: only shown when the workspace enables it (A7 gate).
+  const aiChatEnabled = workspace?.settings?.ai?.chat === true;
 
   const items = links.map((link) => (
     <Link key={link.label} to={link.link} className={classes.link}>
@@ -105,6 +114,19 @@ export function AppHeader() {
         </div>
 
         <Group px={"xl"} wrap="nowrap">
+          {aiChatEnabled && (
+            <Tooltip label={t("AI chat")} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="dark"
+                size="sm"
+                aria-label={t("AI chat")}
+                onClick={() => setAiChatWindowOpen((v) => !v)}
+              >
+                <IconSparkles size={20} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           <NotificationPopover />
           <TopMenu />
         </Group>
