@@ -17,6 +17,7 @@ const APP_ROUTE = {
     },
     WORKSPACE: {
       GENERAL: "/settings/workspace",
+      AI: "/settings/ai",
       MEMBERS: "/settings/members",
       GROUPS: "/settings/groups",
       SPACES: "/settings/spaces",

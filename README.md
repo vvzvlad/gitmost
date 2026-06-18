@@ -68,7 +68,7 @@ every little fix. And it needs no enterprise license.
 **Same server as standalone docmost-mcp — just bundled.** This is the exact
 [docmost-mcp](https://github.com/vvzvlad/docmost-mcp) you can also run on its own; embedding
 it doesn't make it more capable, you simply don't have to install and run a separate
-process. An admin flips one toggle in **Workspace settings → AI & MCP** and any MCP client
+process. An admin flips one toggle in **Workspace settings → AI** and any MCP client
 points at `${APP_URL}/mcp`.
 
 ### AI agent chat
@@ -88,9 +88,9 @@ community feature, with no enterprise license. Open it from the page header; the
   across pages.
 - **Web access via external MCP.** Admins can connect external MCP servers (e.g. Tavily) to
   give the agent web search / internet access.
-- **Bring your own model.** Configure the provider (OpenAI, Gemini or Ollama), model and API
-  key in **Workspace settings → AI & MCP → AI / Models**. The key is encrypted and never
-  leaves the server.
+- **Bring your own model.** Configure an OpenAI-compatible endpoint — OpenAI, OpenRouter, a
+  local Ollama, or any self-hosted server — plus the model and API key in
+  **Workspace settings → AI**. The key is encrypted and never leaves the server.
 
 ## Roadmap
 

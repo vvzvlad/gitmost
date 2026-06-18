@@ -9,6 +9,7 @@ import {
   IconSpaces,
   IconBrush,
   IconWorld,
+  IconSparkles,
 } from "@tabler/icons-react";
 import { Link, useLocation } from "react-router-dom";
 import classes from "./settings.module.css";
@@ -52,6 +53,7 @@ const groupedData: DataGroup[] = [
     heading: "Workspace",
     items: [
       { label: "General", icon: IconSettings, path: "/settings/workspace" },
+      { label: "AI", icon: IconSparkles, path: "/settings/ai" },
       { label: "Members", icon: IconUsers, path: "/settings/members" },
       { label: "Groups", icon: IconUsersGroup, path: "/settings/groups" },
       { label: "Spaces", icon: IconSpaces, path: "/settings/spaces" },
