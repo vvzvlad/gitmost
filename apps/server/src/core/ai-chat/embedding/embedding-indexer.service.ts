@@ -77,9 +77,28 @@ export class EmbeddingIndexerService {
       return;
     }
 
-    const text = this.extractText(page);
-    if (!text || text.trim().length === 0) {
-      // Empty page -> remove any prior embeddings so search returns nothing.
+    // Prefer heading-breadcrumb chunks: each chunk is prefixed with its heading
+    // path ("Page Title > H1 > H2") so the breadcrumb is embedded AND stored in
+    // `content` (feeding the fts column and the agent's snippet). Walk the
+    // ProseMirror JSON — NOT the markdown text — so a `#` inside a fenced code
+    // block is never mistaken for a heading. Degrades to the plain-text path on
+    // any error / unknown structure (returns null).
+    const breadcrumbChunks = page.content
+      ? await this.safeBuildBreadcrumbChunks(page.content, page.title)
+      : null;
+
+    // Fall back to plain text when breadcrumb chunking is unavailable.
+    const fallbackText =
+      breadcrumbChunks && breadcrumbChunks.length > 0
+        ? null
+        : this.extractText(page);
+
+    // Empty page (neither path produced content) -> remove any prior embeddings
+    // so search returns nothing.
+    if (
+      (!breadcrumbChunks || breadcrumbChunks.length === 0) &&
+      (!fallbackText || fallbackText.trim().length === 0)
+    ) {
       await this.pageEmbeddingRepo.deleteByPage(pageId, workspaceId);
       return;
     }
@@ -105,12 +124,17 @@ export class EmbeddingIndexerService {
       throw err;
     }
 
-    // Chunk the plain text.
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: CHUNK_SIZE,
-      chunkOverlap: CHUNK_OVERLAP,
-    });
-    const chunks = await splitter.splitText(text);
+    // Use breadcrumb chunks when available; otherwise chunk the plain text.
+    let chunks: string[];
+    if (breadcrumbChunks && breadcrumbChunks.length > 0) {
+      chunks = breadcrumbChunks;
+    } else {
+      const splitter = new RecursiveCharacterTextSplitter({
+        chunkSize: CHUNK_SIZE,
+        chunkOverlap: CHUNK_OVERLAP,
+      });
+      chunks = await splitter.splitText(fallbackText as string);
+    }
     if (chunks.length === 0) {
       await this.pageEmbeddingRepo.deleteByPage(pageId, workspaceId);
       return;
@@ -139,7 +163,6 @@ export class EmbeddingIndexerService {
     const rows = this.buildChunkRows(
       chunks,
       vectors,
-      text,
       { pageId, workspaceId, spaceId },
       modelName,
     );
@@ -255,14 +278,16 @@ export class EmbeddingIndexerService {
   }
 
   /**
-   * Map chunk strings + vectors to insertable rows, computing chunkStart /
-   * chunkLength against the source text. A moving cursor handles repeated
-   * substrings and overlap so offsets stay monotonic.
+   * Map chunk strings + vectors to insertable rows. Breadcrumb-prefixed chunks
+   * are NOT verbatim substrings of any source text, so chunkStart is a running
+   * cumulative offset (sum of previous chunk lengths) rather than an indexOf
+   * position. These offsets are informational provenance only — search returns
+   * `content` and never slices by offset. chunkIndex stays a global monotonic
+   * index.
    */
   private buildChunkRows(
     chunks: string[],
     vectors: number[][],
-    sourceText: string,
     ids: { pageId: string; workspaceId: string; spaceId: string },
     modelName: string,
   ): PageEmbeddingChunkRow[] {
@@ -272,11 +297,8 @@ export class EmbeddingIndexerService {
       const chunk = chunks[i];
       const embedding = vectors[i];
       if (!embedding) continue;
-      const found = sourceText.indexOf(chunk, cursor);
-      const chunkStart = found >= 0 ? found : cursor;
-      // Advance the cursor past the start so later identical chunks resolve to
-      // later occurrences (overlap keeps the next search valid).
-      cursor = chunkStart + 1;
+      const chunkStart = cursor;
+      cursor += chunk.length;
       rows.push({
         pageId: ids.pageId,
         workspaceId: ids.workspaceId,
@@ -294,5 +316,107 @@ export class EmbeddingIndexerService {
       });
     }
     return rows;
+  }
+
+  /**
+   * Thin try/catch wrapper around buildBreadcrumbChunks. Any failure (malformed
+   * structure, unknown node type, etc.) returns null so the caller degrades
+   * gracefully to the plain-text chunking path.
+   */
+  private async safeBuildBreadcrumbChunks(
+    contentJson: unknown,
+    pageTitle: string | null,
+  ): Promise<string[] | null> {
+    try {
+      return await this.buildBreadcrumbChunks(contentJson, pageTitle);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Build heading-breadcrumb chunks by walking the ProseMirror JSON document.
+   *
+   * Each section (the body following a heading) is split with the same 1000/200
+   * RecursiveCharacterTextSplitter, and every resulting piece is prefixed with
+   * its heading path ("Page Title > H1 > H2"). Walking the JSON — not markdown
+   * text — means a `#` inside a fenced code block is never treated as a heading
+   * (ProseMirror heading nodes are explicit).
+   *
+   * Returns null when `contentJson` is not an object with an array `content`, so
+   * the caller falls back to plain-text chunking.
+   */
+  private async buildBreadcrumbChunks(
+    contentJson: unknown,
+    pageTitle: string | null,
+  ): Promise<string[] | null> {
+    const doc = contentJson as { content?: unknown };
+    if (
+      typeof contentJson !== 'object' ||
+      contentJson === null ||
+      !Array.isArray(doc.content)
+    ) {
+      return null;
+    }
+
+    const splitter = new RecursiveCharacterTextSplitter({
+      chunkSize: CHUNK_SIZE,
+      chunkOverlap: CHUNK_OVERLAP,
+    });
+
+    const out: string[] = [];
+    const stack: { level: number; text: string }[] = [];
+    let buffer = '';
+
+    // Flush the accumulated body as one or more chunks under the CURRENT crumb.
+    const flush = async (): Promise<void> => {
+      if (buffer.trim().length === 0) {
+        buffer = '';
+        return;
+      }
+      const crumb = [pageTitle, ...stack.map((s) => s.text)]
+        .filter((s) => typeof s === 'string' && s.trim().length > 0)
+        .join(' > ');
+      const pieces = await splitter.splitText(buffer);
+      for (const piece of pieces) {
+        out.push(crumb ? `${crumb}\n\n${piece}` : piece);
+      }
+      buffer = '';
+    };
+
+    for (const block of doc.content as Array<{
+      type?: string;
+      attrs?: { level?: number };
+    }>) {
+      if (block?.type === 'heading') {
+        // Flush the preceding body under the crumb in effect BEFORE this
+        // heading, then update the heading stack.
+        await flush();
+        const level =
+          typeof block.attrs?.level === 'number' ? block.attrs.level : 1;
+        // Pop deeper-or-equal headings: a new H2 replaces a prior H2/H3/...
+        while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+          stack.pop();
+        }
+        const headingText = jsonToText({
+          type: 'doc',
+          content: [block],
+        } as never).trim();
+        if (headingText.length > 0) {
+          stack.push({ level, text: headingText });
+        }
+      } else {
+        const blockText = jsonToText({
+          type: 'doc',
+          content: [block],
+        } as never);
+        buffer = buffer.length > 0 ? `${buffer}\n${blockText}` : blockText;
+      }
+    }
+
+    // Flush any trailing body after the last heading.
+    await flush();
+
+    return out;
   }
 }

@@ -87,37 +87,126 @@ export class AiChatToolsService {
     return {
       searchPages: tool({
         description:
-          'Full-text search across the pages the current user can access. ' +
-          'Returns a compact list of matching pages with a short snippet.',
+          'Search the wiki for pages relevant to a query. Combines exact ' +
+          'keyword/identifier matching with semantic meaning and returns the ' +
+          'most relevant pages with a short snippet, best match first. ' +
+          "Rephrase the user's question into a focused search query (key terms " +
+          'and entities), not a full sentence. If the first results look weak ' +
+          'or incomplete, search again with different wording or synonyms ' +
+          'before answering.',
         inputSchema: z.object({
           query: z.string().describe('The search query.'),
           limit: z
             .number()
             .int()
             .min(1)
-            .max(50)
+            .max(20)
             .optional()
-            .describe('Maximum number of results (1-50).'),
+            .describe('Maximum number of results (1-20).'),
         }),
         execute: async ({ query, limit }) => {
-          // search(query, spaceId?, limit?) -> { items, success }.
-          // Items are filterSearchResult(): { id, title, highlight, ... }.
-          const result = await client.search(query, undefined, limit);
-          const items = Array.isArray(result?.items) ? result.items : [];
-          // Keep the payload token-efficient: id + title + a short snippet only.
-          return items.map((raw) => {
-            const item = raw as {
-              id?: string;
-              slugId?: string;
-              title?: string;
-              highlight?: string;
-            };
-            return {
-              id: item.id ?? item.slugId,
-              title: item.title ?? '',
-              snippet: snippet(item.highlight),
-            };
-          });
+          const trimmed = (query ?? '').trim();
+          if (!trimmed) return [];
+
+          const cap = limit ?? 10;
+
+          // Loopback REST full-text fallback. Used when AI search is not
+          // configured, embedding fails, there are no accessible spaces, or the
+          // hybrid query returns nothing — so keyword search always works.
+          const fallback = async () => {
+            // search(query, spaceId?, limit?) -> { items, success }.
+            // Items are filterSearchResult(): { id, title, highlight, ... }.
+            const result = await client.search(trimmed, undefined, cap);
+            const items = Array.isArray(result?.items) ? result.items : [];
+            // Keep the payload token-efficient: id + title + a short snippet.
+            return items.map((raw) => {
+              const item = raw as {
+                id?: string;
+                slugId?: string;
+                title?: string;
+                highlight?: string;
+              };
+              return {
+                id: item.id ?? item.slugId,
+                title: item.title ?? '',
+                snippet: snippet(item.highlight),
+              };
+            });
+          };
+
+          // HYBRID path: fuse semantic (vector) + lexical (full-text) rankings
+          // via RRF. Over-fetch candidates so the page-permission post-filter
+          // still leaves enough results.
+          const candidates = Math.min(Math.max(cap * 5, 50), 200);
+
+          // 1) Embed the query. Unconfigured embeddings (or any embedding error)
+          //    routes to the REST full-text fallback instead of erroring.
+          let queryVector: number[];
+          try {
+            const [vec] = await this.aiService.embedTexts(workspaceId, [
+              trimmed,
+            ]);
+            if (!vec) return await fallback();
+            queryVector = vec;
+          } catch (err) {
+            if (!(err instanceof AiEmbeddingNotConfiguredException)) {
+              // Never leak provider/key details; log generically and fall back.
+              this.logger.warn(
+                `searchPages embed failed: ${
+                  err instanceof Error ? err.message : 'unknown error'
+                }`,
+              );
+            }
+            return await fallback();
+          }
+
+          // 2) ACCESS CONTROL: the hybrid query runs IN-PROCESS (a direct
+          //    pgvector + full-text query), so unlike the loopback REST tools it
+          //    does NOT get CASL for free. Scope to the spaces the user can read
+          //    (member spaces + groups), mirroring SearchService.searchPage. No
+          //    accessible spaces => fall back to REST (which is CASL-scoped).
+          const accessibleSpaceIds =
+            await this.spaceMemberRepo.getUserSpaceIds(user.id);
+          if (accessibleSpaceIds.length === 0) return await fallback();
+
+          // 3) Hybrid RRF retrieval, scoped to the workspace AND accessible
+          //    spaces.
+          const hits = await this.pageEmbeddingRepo.hybridSearch(
+            workspaceId,
+            queryVector,
+            trimmed,
+            accessibleSpaceIds,
+            candidates,
+          );
+          if (hits.length === 0) return await fallback();
+
+          // 4) Page-level permission post-filter: an accessible space does not
+          //    imply every page in it is accessible (restricted pages). Mirror
+          //    SearchService.searchPage's filterAccessiblePageIds pass.
+          const pageIds = Array.from(new Set(hits.map((h) => h.pageId)));
+          const accessibleIds =
+            await this.pagePermissionRepo.filterAccessiblePageIds({
+              pageIds,
+              userId: user.id,
+            });
+          const accessibleSet = new Set(accessibleIds);
+
+          // Keep the best (first — hits are ordered by fused score desc) chunk
+          // per page, capped to `cap`.
+          const seen = new Set<string>();
+          const results: { id: string; title: string; snippet: string }[] = [];
+          for (const hit of hits) {
+            if (!accessibleSet.has(hit.pageId)) continue;
+            if (seen.has(hit.pageId)) continue;
+            seen.add(hit.pageId);
+            results.push({
+              id: hit.pageId,
+              title: hit.title ?? '',
+              snippet: snippet(hit.content),
+            });
+            if (results.length >= cap) break;
+          }
+          return results;
         },
       }),
 
@@ -139,110 +228,6 @@ export class AiChatToolsService {
             title: data.title ?? '',
             markdown: typeof data.content === 'string' ? data.content : '',
           };
-        },
-      }),
-
-      semanticSearch: tool({
-        description:
-          'Semantic (vector) search across the pages the current user can ' +
-          'access. Finds pages by meaning, not just keywords — use it to ' +
-          'answer conceptual questions. Returns a compact list of relevant ' +
-          'pages with a short snippet. Falls back to searchPages if semantic ' +
-          'search is unavailable.',
-        inputSchema: z.object({
-          query: z.string().describe('The natural-language search query.'),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(20)
-            .optional()
-            .describe('Maximum number of results (1-20).'),
-        }),
-        execute: async ({ query, limit }) => {
-          // ACCESS CONTROL: this tool runs IN-PROCESS (a direct pgvector query),
-          // so unlike the loopback REST tools it does NOT get CASL for free. We
-          // scope every query to the spaces the user can read, mirroring
-          // SearchService.searchPage (§6.7 / §8). We additionally post-filter by
-          // page-level permissions so restricted pages inside an accessible
-          // space are never returned.
-          const trimmed = (query ?? '').trim();
-          if (trimmed.length === 0) return [];
-
-          // 1) Embed the query (no-op fallback when embeddings are unconfigured
-          //    so the agent can fall back to searchPages instead of erroring).
-          let queryVector: number[];
-          try {
-            const [vec] = await this.aiService.embedTexts(workspaceId, [
-              trimmed,
-            ]);
-            if (!vec) return [];
-            queryVector = vec;
-          } catch (err) {
-            if (err instanceof AiEmbeddingNotConfiguredException) {
-              return {
-                unavailable: true,
-                reason:
-                  'semantic search unavailable (embeddings not configured)',
-              };
-            }
-            // Never leak provider/key details; surface a generic unavailable.
-            this.logger.warn(
-              `semanticSearch embed failed: ${
-                err instanceof Error ? err.message : 'unknown error'
-              }`,
-            );
-            return {
-              unavailable: true,
-              reason: 'semantic search unavailable',
-            };
-          }
-
-          // 2) Resolve the spaces this user can read (member spaces + groups),
-          //    mirroring SearchService's space scoping. No spaces => no results.
-          const accessibleSpaceIds =
-            await this.spaceMemberRepo.getUserSpaceIds(user.id);
-          if (accessibleSpaceIds.length === 0) return [];
-
-          // 3) Cosine ANN over the embeddings, scoped to the workspace AND the
-          //    accessible spaces. Over-fetch a little so the page-permission
-          //    post-filter still leaves enough results.
-          const cap = limit ?? 10;
-          const hits = await this.pageEmbeddingRepo.searchByEmbedding(
-            workspaceId,
-            queryVector,
-            accessibleSpaceIds,
-            cap * 3,
-          );
-          if (hits.length === 0) return [];
-
-          // 4) Page-level permission post-filter: a space being accessible does
-          //    not imply every page in it is (restricted pages). Mirror
-          //    SearchService.searchPage's filterAccessiblePageIds pass.
-          const pageIds = Array.from(new Set(hits.map((h) => h.pageId)));
-          const accessibleIds =
-            await this.pagePermissionRepo.filterAccessiblePageIds({
-              pageIds,
-              userId: user.id,
-            });
-          const accessibleSet = new Set(accessibleIds);
-
-          // Keep the best (lowest-distance) hit per page, capped to `limit`.
-          const seen = new Set<string>();
-          const results: { pageId: string; title: string; snippet: string }[] =
-            [];
-          for (const hit of hits) {
-            if (!accessibleSet.has(hit.pageId)) continue;
-            if (seen.has(hit.pageId)) continue;
-            seen.add(hit.pageId);
-            results.push({
-              pageId: hit.pageId,
-              title: hit.title ?? '',
-              snippet: snippet(hit.content),
-            });
-            if (results.length >= cap) break;
-          }
-          return results;
         },
       }),
 
