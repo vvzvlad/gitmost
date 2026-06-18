@@ -196,6 +196,44 @@ export class PageRepo {
   }
 
   /**
+   * Count non-deleted pages in a workspace that have EMBEDDABLE content — i.e.
+   * pages the RAG indexer can actually produce embeddings for. Used as the
+   * denominator of the "Indexed N of M pages" coverage indicator so empty /
+   * text-less pages (which legitimately store zero embeddings) don't keep the
+   * bar below 100% forever.
+   *
+   * A page qualifies if it has non-empty textContent OR already has stored
+   * embeddings. The second clause covers pages whose text the indexer extracted
+   * from the content JSON when textContent was null, and guarantees this total is
+   * always >= countIndexedPages (the indexed count can never exceed it).
+   */
+  async countEmbeddablePages(workspaceId: string): Promise<number> {
+    const row = await this.db
+      .selectFrom('pages as p')
+      .where('p.workspaceId', '=', workspaceId)
+      .where('p.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          // Has extractable body text. The regex matches any non-whitespace
+          // character, mirroring the indexer's `text.trim().length === 0` check
+          // (raw SQL -> use the snake_case column name).
+          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
+          // OR already has at least one (non-deleted) embedding row.
+          eb.exists(
+            eb
+              .selectFrom('pageEmbeddings as pe')
+              .select(sql`1`.as('one'))
+              .whereRef('pe.pageId', '=', 'p.id')
+              .where('pe.deletedAt', 'is', null),
+          ),
+        ]),
+      )
+      .select((eb) => eb.fn.countAll().as('count'))
+      .executeTakeFirst();
+    return Number(row?.count ?? 0);
+  }
+
+  /**
    * IDs of all non-deleted pages in a workspace. Used by the RAG bulk reindex to
    * (re)build embeddings for every existing page.
    */

@@ -160,9 +160,12 @@ export class AiSettingsService {
       hasEmbeddingApiKey = !!creds?.embeddingApiKeyEnc;
     }
 
+    // totalPages now counts only pages with embeddable content (non-empty text
+    // or already-stored embeddings), so empty/text-less pages don't keep the
+    // "Indexed N of M pages" bar below 100% forever.
     const [indexedPages, totalPages] = await Promise.all([
       this.pageEmbeddingRepo.countIndexedPages(workspaceId),
-      this.pageRepo.countByWorkspace(workspaceId),
+      this.pageRepo.countEmbeddablePages(workspaceId),
     ]);
 
     return {
