@@ -40,9 +40,10 @@ import { useClipboard } from "@/hooks/use-clipboard";
 import { notifications } from "@mantine/notifications";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
 
-// Default window geometry (from the GitmostAgent.jsx design).
-const DEFAULT_WIDTH = 362;
-const DEFAULT_HEIGHT = 602;
+// Default window dimensions (wider default per user request); both are
+// clamped to the viewport in computeInitialGeom().
+const DEFAULT_WIDTH = 540;
+const DEFAULT_HEIGHT = 680;
 // CSS-enforced minimum window size (ai-chat-window.module.css). The geometry
 // math must respect these so the real box is clamped within the viewport.
 const MIN_WIDTH = 300;
@@ -60,7 +61,10 @@ function formatTokens(n: number): string {
 // Compute the initial top-right placement at the default size, fitted to the
 // current viewport. Reads `window` only when called (inside an effect).
 function computeInitialGeom() {
-  const width = DEFAULT_WIDTH;
+  const width = Math.max(
+    MIN_WIDTH,
+    Math.min(DEFAULT_WIDTH, window.innerWidth - 2 * EDGE_MARGIN),
+  );
   const height = Math.max(
     MIN_HEIGHT,
     Math.min(DEFAULT_HEIGHT, window.innerHeight - 2 * EDGE_MARGIN),

@@ -10,7 +10,7 @@
     min-height: 0;
     /* Smaller, denser chat text (cascades into user bubble + assistant markdown
        + tool cards; the explicit-size Mantine labels keep their own size). */
-    font-size: var(--mantine-font-size-sm);
+    font-size: var(--mantine-font-size-xs);
 }
 
 .messageRow {

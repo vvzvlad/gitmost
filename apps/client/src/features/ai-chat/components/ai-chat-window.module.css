@@ -24,9 +24,9 @@
     flex-direction: column;
     min-width: 300px;
     min-height: 400px;
-    max-width: 560px;
-    max-height: 880px;
-    font-size: 12px;
+    max-width: 900px;
+    max-height: 1100px;
+    font-size: 11px;
     color: light-dark(var(--mantine-color-black), var(--mantine-color-dark-0));
 }
 
