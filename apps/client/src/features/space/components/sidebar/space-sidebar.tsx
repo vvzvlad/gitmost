@@ -4,7 +4,6 @@ import {
   Menu,
   Text,
   Tooltip,
-  UnstyledButton,
 } from "@mantine/core";
 import {
   IconArrowDown,
@@ -12,7 +11,6 @@ import {
   IconEye,
   IconEyeOff,
   IconFileExport,
-  IconHome,
   IconPlus,
   IconSettings,
   IconStar,
@@ -27,12 +25,11 @@ import {
 import classes from "./space-sidebar.module.css";
 import React from "react";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import clsx from "clsx";
 import { useDisclosure } from "@mantine/hooks";
 import SpaceSettingsModal from "@/features/space/components/settings-modal.tsx";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
-import { getSpaceUrl } from "@/lib/config.ts";
 import SpaceTree from "@/features/page/tree/components/space-tree.tsx";
 import { useSpaceAbility } from "@/features/space/permissions/use-space-ability.ts";
 import {
@@ -51,7 +48,6 @@ import {
 
 export function SpaceSidebar() {
   const { t } = useTranslation();
-  const location = useLocation();
   const [opened, { open: openSettings, close: closeSettings }] =
     useDisclosure(false);
 
@@ -88,30 +84,6 @@ export function SpaceSidebar() {
             spaceIcon={space?.logo}
             onSettings={openSettings}
           />
-        </div>
-
-        <div className={classes.section}>
-          <div className={classes.menuItems}>
-            <UnstyledButton
-              component={Link}
-              to={getSpaceUrl(spaceSlug)}
-              className={clsx(
-                classes.menu,
-                location.pathname.toLowerCase() === getSpaceUrl(spaceSlug)
-                  ? classes.activeButton
-                  : "",
-              )}
-            >
-              <div className={classes.menuItemInner}>
-                <IconHome
-                  size={18}
-                  className={classes.menuItemIcon}
-                  stroke={2}
-                />
-                <span>{t("Overview")}</span>
-              </div>
-            </UnstyledButton>
-          </div>
         </div>
 
         <div className={clsx(classes.section, classes.sectionPages)}>
