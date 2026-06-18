@@ -106,6 +106,18 @@ Vite SPA. Code is organized by feature under `apps/client/src/features/*` (mirro
 - `.github/workflows/release.yml` — on `v*` tags (or manual dispatch), builds multi-arch (amd64 + arm64) images, pushes a manifest list to GHCR (`latest` + semver tags), and creates a draft GitHub Release with image tarballs. Uses the built-in `GITHUB_TOKEN` (not Docker Hub).
 - The `Dockerfile` is a multi-stage pnpm build; `APP_VERSION` is passed as a build arg because `.git` isn't in the build context.
 
+### Cutting a release
+
+The git tag is the source of truth for the displayed version (UI reads `git describe --tags`); the `package.json` bump is metadata only. Steps:
+
+1. Make sure `main` is clean and pushed (`git status`, `git push`).
+2. Pick `vX.Y.Z` (SemVer): **minor** bump for a batch of features, **patch** for fixes only. Review what landed with `git log <last-tag>..HEAD --no-merges`.
+3. Bump `"version"` to `X.Y.Z` in the **root** `package.json`, `apps/client/package.json`, and `apps/server/package.json` (keep all three in sync). Leave `packages/mcp` alone — it is versioned independently. Commit with the bare version as the subject, e.g. `0.91.0` (matches past bump commits).
+4. Update `CHANGELOG.md` (Keep a Changelog format): add a `## [X.Y.Z] - YYYY-MM-DD` section summarising `git log vPREV..HEAD --no-merges` grouped by type (Breaking / Added / Changed / Fixed / Removed), and add the `compare/vPREV...vX.Y.Z` link at the bottom. Fold the bump + changelog into the release commit.
+5. Tag the release commit with a **lightweight** tag (existing release tags are lightweight): `git tag vX.Y.Z`.
+6. Push commit and tag: `git push origin main && git push origin vX.Y.Z`. Pushing the `v*` tag triggers `release.yml` (multi-arch GHCR images + a draft GitHub Release).
+
+
 ## Planning docs
 
 `docs/*.md` hold design plans for in-progress / planned features (mobile app, offline sync, RAG improvements, voice dictation, arbitrary HTML embed). `docs/backlog/*.md` track known issues / follow-ups (e.g. AI-chat review follow-ups). Consult the relevant plan before working on one of those areas.
