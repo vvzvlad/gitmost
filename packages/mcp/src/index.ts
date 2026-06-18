@@ -92,7 +92,8 @@ server.registerTool(
     description:
       "List most recent pages in a space ordered by updatedAt (descending). " +
       "Returns a bounded list (default 50, max 100) — use search for lookups " +
-      "in large spaces.",
+      "in large spaces. Pass tree:true (with spaceId) to instead get the " +
+      "space's full page hierarchy as a nested tree.",
     inputSchema: {
       spaceId: z.string().optional(),
       limit: z
@@ -102,10 +103,16 @@ server.registerTool(
         .max(100)
         .optional()
         .describe("Max pages to return (default 50, max 100)"),
+      tree: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, return the space's full page hierarchy as a nested tree (each node has a children array) instead of the recent-by-updatedAt flat list. Requires spaceId; ignores limit.",
+        ),
     },
   },
-  async ({ spaceId, limit }) => {
-    const result = await docmostClient.listPages(spaceId, limit ?? 50);
+  async ({ spaceId, limit, tree }) => {
+    const result = await docmostClient.listPages(spaceId, limit ?? 50, tree ?? false);
     return jsonContent(result);
   },
 );

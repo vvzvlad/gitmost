@@ -417,7 +417,8 @@ export class AiChatToolsService {
       listPages: tool({
         description:
           'List the most recent pages, optionally scoped to a single space. ' +
-          'Returns a bounded list (default 50, max 100).',
+          'Returns a bounded list (default 50, max 100). Pass tree:true (with ' +
+          "spaceId) to instead get the space's full page hierarchy as a nested tree.",
         inputSchema: z.object({
           spaceId: z
             .string()
@@ -430,9 +431,15 @@ export class AiChatToolsService {
             .max(100)
             .optional()
             .describe('Maximum number of pages (1-100).'),
+          tree: z
+            .boolean()
+            .optional()
+            .describe(
+              'When true, return the full page hierarchy of the given space as a nested tree (children arrays) instead of the recent-pages flat list. Requires spaceId; ignores limit.',
+            ),
         }),
-        execute: async ({ spaceId, limit }) =>
-          await client.listPages(spaceId, limit),
+        execute: async ({ spaceId, limit, tree }) =>
+          await client.listPages(spaceId, limit, tree),
       }),
 
       listSidebarPages: tool({

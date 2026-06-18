@@ -23,6 +23,7 @@ import {
   MutationResult,
 } from "./lib/collaboration.js";
 import { docmostExtensions } from "./lib/docmost-schema.js";
+import { buildPageTree } from "./lib/tree.js";
 import {
   serializeDocmostMarkdown,
   parseDocmostMarkdown,
@@ -581,12 +582,37 @@ export class DocmostClient {
   }
 
   /**
-   * List most recent pages (bounded). Fetching the whole space can exceed
-   * MCP response/time limits on large instances, so a single bounded page
-   * of results is returned (default 50, max 100).
+   * List pages in one of two modes.
+   *
+   * Default (`tree` false): most recent pages by updatedAt (descending),
+   * bounded. Fetching the whole space can exceed MCP response/time limits on
+   * large instances, so a single bounded page of results is returned (default
+   * 50, max 100) via the `/pages/recent` feed.
+   *
+   * Tree (`tree` true): the space's FULL page hierarchy as a nested tree (each
+   * node has a `children` array). This mode REQUIRES `spaceId` (a page tree is
+   * scoped to one space) and IGNORES `limit` — the whole hierarchy is returned.
+   * It walks the sidebar tree via `enumerateSpacePages`, which performs N
+   * sidebar requests and is bounded by that method's 10000-node cap (and skips
+   * soft-deleted pages server-side).
    */
-  async listPages(spaceId?: string, limit: number = 50) {
+  async listPages(
+    spaceId?: string,
+    limit: number = 50,
+    tree: boolean = false,
+  ) {
     await this.ensureAuthenticated();
+
+    if (tree) {
+      if (!spaceId) {
+        throw new Error(
+          "list_pages: tree mode requires a spaceId (a page tree is scoped to one space). Pass spaceId, or omit tree to get the recent-pages list.",
+        );
+      }
+      const nodes = await this.enumerateSpacePages(spaceId);
+      return buildPageTree(nodes);
+    }
+
     const clampedLimit = Math.max(1, Math.min(100, limit));
     const payload: Record<string, any> = { limit: clampedLimit, page: 1 };
     if (spaceId) payload.spaceId = spaceId;

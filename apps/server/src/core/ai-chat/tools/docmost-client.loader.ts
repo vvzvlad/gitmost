@@ -18,7 +18,11 @@ export interface DocmostClientLike {
   ): Promise<{ data: Record<string, unknown>; success: boolean }>;
   getWorkspace(): Promise<{ data: Record<string, unknown>; success: boolean }>;
   getSpaces(): Promise<unknown[]>;
-  listPages(spaceId?: string, limit?: number): Promise<unknown[]>;
+  listPages(
+    spaceId?: string,
+    limit?: number,
+    tree?: boolean,
+  ): Promise<unknown[]>;
   listSidebarPages(spaceId: string, pageId?: string): Promise<unknown[]>;
   getOutline(pageId: string): Promise<Record<string, unknown>>;
   getPageJson(pageId: string): Promise<Record<string, unknown>>;
