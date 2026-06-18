@@ -20,6 +20,20 @@
     align-items: center;
 }
 
+.brandVersion {
+    /* Render the version smaller than before (was Mantine "xs" = 12px). */
+    font-size: rem(10px);
+    line-height: 1;
+    color: var(--mantine-color-dimmed);
+    white-space: nowrap;
+    user-select: text;
+    /* Lift the version so its text baseline sits on the logo wordmark baseline.
+       The wordmark baseline is at ~31% of the logo height above the image bottom
+       (SVG baseline y=42.689 in a -7.25..65.25 viewBox); for the 30px desktop logo
+       that is ~9.3px, minus the font descent (~2px) ≈ 7px. */
+    margin-bottom: rem(7px);
+}
+
 .link {
     display: block;
     line-height: 1;

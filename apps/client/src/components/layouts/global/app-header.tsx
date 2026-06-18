@@ -77,27 +77,26 @@ export function AppHeader() {
             />
           </Tooltip>
 
-          <Link to="/home" className={classes.brand} aria-label="Gitmost">
-            <Box hiddenFrom="sm" className={classes.brandIcon}>
-              <BrandLogo markOnly height={26} />
-            </Box>
-            <Box visibleFrom="sm" className={classes.brandIcon}>
-              <BrandLogo height={30} />
-            </Box>
-          </Link>
+          <Group gap={6} align="flex-end" wrap="nowrap">
+            <Link to="/home" className={classes.brand} aria-label="Gitmost">
+              <Box hiddenFrom="sm" className={classes.brandIcon}>
+                <BrandLogo markOnly height={26} />
+              </Box>
+              <Box visibleFrom="sm" className={classes.brandIcon}>
+                <BrandLogo height={30} />
+              </Box>
+            </Link>
 
-          <Tooltip label={t("Version")}>
-            <Text
-              size="xs"
-              c="dimmed"
-              lh={1}
-              ml="md"
-              visibleFrom="sm"
-              style={{ userSelect: "text", whiteSpace: "nowrap" }}
-            >
-              {APP_VERSION}
-            </Text>
-          </Tooltip>
+            <Tooltip label={t("Version")}>
+              <Text
+                component="span"
+                visibleFrom="sm"
+                className={classes.brandVersion}
+              >
+                {APP_VERSION}
+              </Text>
+            </Tooltip>
+          </Group>
 
           <Group ml="xl" gap={5} className={classes.links} visibleFrom="sm">
             {items}
