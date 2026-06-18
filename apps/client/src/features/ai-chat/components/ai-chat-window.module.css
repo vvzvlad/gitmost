@@ -12,7 +12,9 @@
     z-index: 105;
     background: light-dark(#fff, var(--mantine-color-dark-7));
     border: 1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
-    border-radius: 14px;
+    /* Match the rest of the UI: use the Mantine md radius token instead of an
+       oversized hard-coded value so the window corners blend with inner cards. */
+    border-radius: var(--mantine-radius-md);
     box-shadow:
         0 10px 24px rgba(0, 0, 0, 0.13),
         0 30px 64px rgba(0, 0, 0, 0.17);
