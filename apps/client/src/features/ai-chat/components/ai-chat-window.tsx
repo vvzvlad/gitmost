@@ -204,19 +204,30 @@ export default function AiChatWindow() {
   const threadKey = activeChatId ?? "new";
   const waitingForHistory = activeChatId !== null && messagesLoading;
 
-  // Sum of persisted token usage for the active chat. NOTE: this reflects the
-  // PERSISTED rows for the active chat (updates on chat open/switch); it does
-  // not tick live mid-stream — acceptable for v1.
-  const totalTokens = useMemo(() => {
+  // Current context size for the active chat: how much the conversation now
+  // occupies in the model's context window — NOT the cumulative tokens spent.
+  // We read the most recent assistant row that carries a context figure:
+  // `contextTokens` (final-step input+output) for chats recorded after this
+  // shipped; older rows fall back to that turn's `usage` total. NOTE: reflects
+  // PERSISTED rows (updates on chat open/switch); it does not tick live
+  // mid-stream — acceptable for v1.
+  const contextTokens = useMemo(() => {
     if (!activeChatId || !messageRows) return 0;
-    return messageRows.reduce((sum, row) => {
-      const usage = row.metadata?.usage;
-      if (!usage) return sum;
-      const rowTokens =
-        usage.totalTokens ??
-        (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-      return sum + rowTokens;
-    }, 0);
+    for (let i = messageRows.length - 1; i >= 0; i--) {
+      const meta = messageRows[i].metadata;
+      if (!meta) continue;
+      if (typeof meta.contextTokens === "number" && meta.contextTokens > 0) {
+        return meta.contextTokens;
+      }
+      const usage = meta.usage;
+      if (usage) {
+        const fallback =
+          usage.totalTokens ??
+          (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+        if (fallback > 0) return fallback;
+      }
+    }
+    return 0;
   }, [activeChatId, messageRows]);
 
   // On (re)open, settle the geometry before paint (useLayoutEffect → no
@@ -333,9 +344,9 @@ export default function AiChatWindow() {
         <span className={classes.title}>{t("AI chat")}</span>
 
         <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
-          {totalTokens > 0 && (
-            <Tooltip label={t("Tokens used in this chat")} withArrow>
-              <span className={classes.badge}>{formatTokens(totalTokens)}</span>
+          {contextTokens > 0 && (
+            <Tooltip label={t("Current context size")} withArrow>
+              <span className={classes.badge}>{formatTokens(contextTokens)}</span>
             </Tooltip>
           )}
         </div>

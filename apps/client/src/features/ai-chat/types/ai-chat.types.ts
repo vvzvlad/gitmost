@@ -28,13 +28,19 @@ export interface IAiChatMessageRow {
   toolCalls?: unknown;
   metadata?: {
     parts?: UIMessage["parts"];
-    // AI SDK v6 `totalUsage` persisted on assistant rows. Used to sum the token
-    // count shown in the floating window's header badge.
+    // AI SDK v6 `totalUsage` persisted on assistant rows. Legacy cumulative
+    // figure (sum of every step's usage for the turn); kept for back-compat and
+    // as the fallback for older rows that have no `contextTokens`.
     usage?: {
       inputTokens?: number;
       outputTokens?: number;
       totalTokens?: number;
     };
+    // Current context size for the turn = final-step (input+output) tokens, i.e.
+    // how much the conversation occupies in the model's context window after this
+    // turn. Distinct from `usage` (legacy cumulative totalUsage). Shown in the
+    // floating window's header badge.
+    contextTokens?: number;
     // Set on an assistant row whose turn ended in a provider/stream error; the
     // raw provider error text (e.g. "402: ...") for inline display in the thread.
     error?: string;

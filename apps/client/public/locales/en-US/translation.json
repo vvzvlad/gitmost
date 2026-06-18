@@ -1123,7 +1123,7 @@
   "Create subpage of {{name}}": "Create subpage of {{name}}",
   "AI chat": "AI chat",
   "Minimize": "Minimize",
-  "Tokens used in this chat": "Tokens used in this chat",
+  "Current context size": "Current context size",
   "AI agent": "AI agent",
   "AI agent is typing…": "AI agent is typing…",
   "Send": "Send",

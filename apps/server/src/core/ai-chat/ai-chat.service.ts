@@ -246,13 +246,19 @@ export class AiChatService {
       // something to enforce by silently breaking the agent.)
       stopWhen: stepCountIs(8),
       abortSignal: signal,
-      onFinish: async ({ text, finishReason, totalUsage, steps }) => {
+      onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
         await persistAssistant({
           text,
           toolCalls: serializeSteps(steps),
           metadata: {
             finishReason,
             usage: totalUsage,
+            // Final-step usage = the context actually fed to the model on the last LLM
+            // call (full history + tool results) plus the answer it just generated.
+            // input+output of the FINAL step ≈ the conversation's CURRENT context size,
+            // distinct from totalUsage which sums every step (cumulative tokens spent).
+            contextTokens:
+              (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) || undefined,
             // Persist the FULL set of UIMessage parts for the turn (text +
             // tool-call/result), so the rebuilt history replays prior tool
             // context to the model on later turns.
