@@ -52,6 +52,10 @@ export default function ChatInput({
         minRows={1}
         maxRows={6}
         disabled={disabled}
+        // Focus the composer whenever this input mounts. ChatThread is remounted
+        // via `key` on every chat appearance (window open, "New chat", chat
+        // switch), so a fresh chat lands with the cursor ready in the field.
+        autoFocus
       />
       {isStreaming ? (
         <Tooltip label={t("Stop")} withArrow>
