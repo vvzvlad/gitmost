@@ -1,5 +1,48 @@
-.spaceName {
+.wrapper {
   width: 100%;
-  padding: var(--mantine-spacing-sm);
+}
+
+.header {
+  padding: rem(4px) var(--mantine-spacing-sm);
+}
+
+.spaceName {
+  flex: 1;
+  min-width: 0;
   color: light-dark(var(--mantine-color-dark-4), var(--mantine-color-dark-0));
+}
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: rem(6px);
+  padding: rem(4px) var(--mantine-spacing-sm) var(--mantine-spacing-xs);
+  max-height: rem(180px);
+  overflow-y: auto;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: rem(6px);
+  width: rem(120px);
+  padding: rem(6px) rem(8px);
+  border-radius: var(--mantine-radius-sm);
+  border: rem(1px) solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-7));
+}
+
+.card:hover {
+  background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
+}
+
+.cardActive {
+  border-color: var(--mantine-primary-color-filled);
+  background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
+}
+
+.cardName {
+  flex: 1;
+  min-width: 0;
+  color: light-dark(var(--mantine-color-gray-8), var(--mantine-color-dark-0));
 }

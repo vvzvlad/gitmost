@@ -14,7 +14,6 @@ import {
   IconFileExport,
   IconHome,
   IconPlus,
-  IconSearch,
   IconSettings,
   IconStar,
   IconStarFilled,
@@ -27,7 +26,6 @@ import {
 } from "@/features/space/queries/space-watcher-query.ts";
 import classes from "./space-sidebar.module.css";
 import React from "react";
-import { useAtom } from "jotai";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import { Link, useLocation, useParams } from "react-router-dom";
 import clsx from "clsx";
@@ -50,17 +48,12 @@ import {
   useAddFavoriteMutation,
   useRemoveFavoriteMutation,
 } from "@/features/favorite/queries/favorite-query";
-import { mobileSidebarAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
-import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
-import { searchSpotlight } from "@/features/search/constants";
 
 export function SpaceSidebar() {
   const { t } = useTranslation();
   const location = useLocation();
   const [opened, { open: openSettings, close: closeSettings }] =
     useDisclosure(false);
-  const [mobileSidebarOpened] = useAtom(mobileSidebarAtom);
-  const toggleMobileSidebar = useToggleSidebar(mobileSidebarAtom);
 
   const { spaceSlug } = useParams();
   const { data: space } = useGetSpaceBySlugQuery(spaceSlug);
@@ -88,18 +81,13 @@ export function SpaceSidebar() {
             marginBottom: 3,
           }}
         >
-          <Group
-            gap={4}
-            wrap="nowrap"
-            justify="space-between"
-            style={{ width: "100%" }}
-          >
-            <SwitchSpace
-              spaceName={space?.name}
-              spaceSlug={space?.slug}
-              spaceIcon={space?.logo}
-            />
-          </Group>
+          <SwitchSpace
+            spaceId={space?.id}
+            spaceName={space?.name}
+            spaceSlug={space?.slug}
+            spaceIcon={space?.logo}
+            onSettings={openSettings}
+          />
         </div>
 
         <div className={classes.section}>
@@ -123,55 +111,6 @@ export function SpaceSidebar() {
                 <span>{t("Overview")}</span>
               </div>
             </UnstyledButton>
-
-            <UnstyledButton
-              className={classes.menu}
-              onClick={searchSpotlight.open}
-            >
-              <div className={classes.menuItemInner}>
-                <IconSearch
-                  size={18}
-                  className={classes.menuItemIcon}
-                  stroke={2}
-                />
-                <span>{t("Search")}</span>
-              </div>
-            </UnstyledButton>
-
-            <UnstyledButton className={classes.menu} onClick={openSettings}>
-              <div className={classes.menuItemInner}>
-                <IconSettings
-                  size={18}
-                  className={classes.menuItemIcon}
-                  stroke={2}
-                />
-                <span>{t("Space settings")}</span>
-              </div>
-            </UnstyledButton>
-
-            {spaceAbility.can(
-              SpaceCaslAction.Manage,
-              SpaceCaslSubject.Page,
-            ) && (
-              <UnstyledButton
-                className={classes.menu}
-                onClick={() => {
-                  handleCreatePage();
-                  if (mobileSidebarOpened) {
-                    toggleMobileSidebar();
-                  }
-                }}
-              >
-                <div className={classes.menuItemInner}>
-                  <IconPlus
-                    size={18}
-                    className={classes.menuItemIcon}
-                    stroke={2}
-                  />
-                  <span>{t("New page")}</span>
-                </div>
-              </UnstyledButton>
-            )}
           </div>
         </div>
 
