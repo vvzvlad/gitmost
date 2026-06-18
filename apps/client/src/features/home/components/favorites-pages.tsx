@@ -47,7 +47,7 @@ export default function FavoritesPages({ spaceId }: Props) {
   return favorites.length > 0 ? (
     <>
       <Table.ScrollContainer minWidth={500}>
-        <Table highlightOnHover verticalSpacing="sm">
+        <Table highlightOnHover verticalSpacing={6}>
           <Table.Tbody>
             {favorites.map((fav) =>
               fav.page ? (

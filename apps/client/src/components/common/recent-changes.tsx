@@ -39,7 +39,7 @@ export default function RecentChanges({ spaceId }: Props) {
   return pages.length > 0 ? (
     <>
       <Table.ScrollContainer minWidth={500}>
-        <Table highlightOnHover verticalSpacing="sm">
+        <Table highlightOnHover verticalSpacing={6}>
           <Table.Tbody>
             {pages.map((page) => (
               <Table.Tr key={page.id} className={rowClasses.row}>
