@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   embedMany,
+  experimental_transcribe as transcribe,
   generateText,
   type EmbeddingModel,
   type LanguageModel,
-  type TranscriptionModel,
 } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -108,24 +108,90 @@ export class AiService {
     }
   }
 
+  // Some OpenAI-compatible gateways diverge on the transcription API. OpenRouter
+  // does NOT accept OpenAI's multipart /audio/transcriptions; it wants JSON
+  // { model, input_audio: { data: <base64>, format } }. Detect it by host so the
+  // standard multipart path (OpenAI, speaches, faster-whisper-server, ...) is
+  // unaffected.
+  private static isOpenRouter(baseURL?: string): boolean {
+    if (!baseURL) return false;
+    try {
+      const host = new URL(baseURL).hostname.toLowerCase();
+      // Exact host or a real subdomain — avoid matching e.g. "evil-openrouter.ai".
+      return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Resolve the workspace config and build the transcription (STT) model.
-   * STT always speaks the OpenAI-compatible /v1/audio/transcriptions API
-   * (only @ai-sdk/openai exposes .transcription()), regardless of the chat
-   * driver. sttBaseUrl falls back to the chat baseUrl; the API key falls back
-   * to the chat key (resolved by AiSettingsService.resolve). Built PER WORKSPACE
-   * on demand; the decrypted key is never logged.
-   *
-   * Throws AiSttNotConfiguredException (-> 503) when no STT model is set.
+   * Transcribe audio with the workspace STT model. Standard OpenAI-compatible
+   * endpoints use the AI SDK multipart path; OpenRouter uses its JSON+base64
+   * audio/transcriptions API. `format` is the audio container hint (webm / mp4 /
+   * wav / mp3 / ogg / m4a). Built PER WORKSPACE; the key is never logged. Throws
+   * AiSttNotConfiguredException (-> 503) when no STT model is configured.
    */
-  async getTranscriptionModel(workspaceId: string): Promise<TranscriptionModel> {
+  async transcribe(
+    workspaceId: string,
+    audio: Uint8Array,
+    format: string,
+  ): Promise<string> {
     const cfg = await this.aiSettings.resolve(workspaceId);
     if (!cfg?.sttModel) throw new AiSttNotConfiguredException();
-    const baseURL = cfg.sttBaseUrl || cfg.baseUrl; // stt-specific, else chat
-    // apiKey may be unused for keyless self-hosted whisper; pass a placeholder.
-    return createOpenAI({ apiKey: cfg.sttApiKey ?? 'unused', baseURL }).transcription(
-      cfg.sttModel,
-    );
+    const baseURL = cfg.sttBaseUrl || cfg.baseUrl;
+
+    if (AiService.isOpenRouter(baseURL)) {
+      return this.transcribeViaOpenRouter(
+        baseURL as string,
+        cfg.sttApiKey,
+        cfg.sttModel,
+        audio,
+        format,
+      );
+    }
+
+    // Standard OpenAI-compatible multipart path (AI SDK). apiKey may be unused for
+    // keyless self-hosted whisper; pass a placeholder.
+    const model = createOpenAI({
+      apiKey: cfg.sttApiKey ?? 'unused',
+      baseURL,
+    }).transcription(cfg.sttModel);
+    const { text } = await transcribe({ model, audio });
+    return text.trim();
+  }
+
+  // OpenRouter transcription: JSON body with base64 audio; returns { text }.
+  private async transcribeViaOpenRouter(
+    baseURL: string,
+    apiKey: string | undefined,
+    model: string,
+    audio: Uint8Array,
+    format: string,
+  ): Promise<string> {
+    const url = `${baseURL.replace(/\/$/, '')}/audio/transcriptions`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        input_audio: {
+          data: Buffer.from(audio).toString('base64'),
+          format,
+        },
+      }),
+    });
+    if (!res.ok) {
+      // Surface status + body so the real reason reaches the user; never log the key.
+      const body = await res.text().catch(() => '');
+      throw new Error(
+        `OpenRouter transcription failed (${res.status}): ${body.slice(0, 500)}`,
+      );
+    }
+    const json = (await res.json()) as { text?: string };
+    return (json.text ?? '').trim();
   }
 
   /**
@@ -182,11 +248,36 @@ export class AiService {
     return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
   }
 
+  // Build a tiny valid WAV (mono, 16-bit PCM, 16 kHz, ~1s of silence), used only
+  // as a connectivity probe for the STT endpoint in testConnection.
+  private static silentWavProbe(): Uint8Array {
+    const sampleRate = 16000;
+    const numSamples = sampleRate; // ~1 second
+    const dataSize = numSamples * 2; // 16-bit mono
+    const buf = Buffer.alloc(44 + dataSize);
+    buf.write('RIFF', 0);
+    buf.writeUInt32LE(36 + dataSize, 4);
+    buf.write('WAVE', 8);
+    buf.write('fmt ', 12);
+    buf.writeUInt32LE(16, 16); // PCM fmt chunk size
+    buf.writeUInt16LE(1, 20); // audio format = PCM
+    buf.writeUInt16LE(1, 22); // channels = 1
+    buf.writeUInt32LE(sampleRate, 24);
+    buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
+    buf.writeUInt16LE(2, 32); // block align
+    buf.writeUInt16LE(16, 34); // bits per sample
+    buf.write('data', 36);
+    buf.writeUInt32LE(dataSize, 40);
+    // The PCM samples stay zero (silence).
+    return buf;
+  }
+
   /**
    * Cheap connectivity check for a single "Test endpoint" button. Probes ONLY
    * the requested capability so each card in the UI surfaces its own result:
    *  - `chat`: a one-word generation against the configured chat model;
-   *  - `embeddings`: embedding a tiny string against the embedding model.
+   *  - `embeddings`: embedding a tiny string against the embedding model;
+   *  - `stt`: transcribing a tiny silent WAV against the transcription model.
    *
    * A capability that is not configured returns a plain "… is not configured"
    * message; any real failure returns ok:false with the provider's own cause
@@ -201,7 +292,7 @@ export class AiService {
    */
   async testConnection(
     workspaceId: string,
-    capability: 'chat' | 'embeddings' = 'chat',
+    capability: 'chat' | 'embeddings' | 'stt' = 'chat',
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     if (capability === 'embeddings') {
       try {
@@ -212,6 +303,21 @@ export class AiService {
           return { ok: false, error: 'Embeddings are not configured' };
         }
         this.logger.error('AI embedding test connection failed', err as Error);
+        return { ok: false, error: describeProviderError(err) };
+      }
+    }
+
+    if (capability === 'stt') {
+      try {
+        // Probe with a tiny silent WAV; a reachable, authorized endpoint returns
+        // (usually empty) text, any failure surfaces via describeProviderError.
+        await this.transcribe(workspaceId, AiService.silentWavProbe(), 'wav');
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof AiSttNotConfiguredException) {
+          return { ok: false, error: 'STT is not configured' };
+        }
+        this.logger.error('AI STT test connection failed', err as Error);
         return { ok: false, error: describeProviderError(err) };
       }
     }

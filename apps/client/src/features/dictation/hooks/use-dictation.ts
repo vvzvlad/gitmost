@@ -90,18 +90,37 @@ export function useDictation(
     if (status !== "idle") return;
     startingRef.current = true;
 
+    if (!navigator.mediaDevices?.getUserMedia) {
+      const reason =
+        "navigator.mediaDevices.getUserMedia is unavailable in this context";
+      console.error("[dictation] " + reason);
+      notifications.show({
+        color: "red",
+        message: t("Audio recording is not available in this browser/context"),
+      });
+      setStatus("idle");
+      startingRef.current = false;
+      return;
+    }
+
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
+      // Always log the full error for diagnosis (name, message, stack).
+      console.error("[dictation] getUserMedia failed", err);
       const name = (err as { name?: string })?.name;
+      const detail = (err as { message?: string })?.message ?? String(err);
       let message: string;
       if (name === "NotAllowedError" || name === "SecurityError") {
         message = t("Microphone access denied");
       } else if (name === "NotFoundError" || name === "OverconstrainedError") {
         message = t("No microphone found");
+      } else if (name === "NotReadableError" || name === "AbortError") {
+        message = t("Microphone is unavailable or already in use");
       } else {
-        message = t("Could not start recording");
+        // Unknown failure: show the real reason instead of a generic string.
+        message = `${t("Could not start recording")}: ${name ? `${name}: ` : ""}${detail}`;
       }
       notifications.show({ color: "red", message });
       setStatus("idle");
@@ -120,13 +139,14 @@ export function useDictation(
         stream,
         mimeType ? { mimeType } : undefined,
       );
-    } catch {
+    } catch (err) {
+      console.error("[dictation] MediaRecorder failed", err);
       // The stream was acquired but the recorder failed to construct; stop the
       // tracks so the MediaStream does not leak before bailing out.
       stopTracks();
       notifications.show({
         color: "red",
-        message: t("Could not start recording"),
+        message: `${t("Could not start recording")}: ${(err as { message?: string })?.message ?? String(err)}`,
       });
       setStatus("idle");
       startingRef.current = false;
@@ -165,17 +185,23 @@ export function useDictation(
           setStatus("idle");
         })
         .catch((err: unknown) => {
-          const httpStatus = (err as { response?: { status?: number } })
-            ?.response?.status;
-          // The server returns 503 when dictation is unconfigured and 403 when
-          // it is disabled server-side; both map to the same "not configured".
-          const message =
-            httpStatus === 503 || httpStatus === 403
-              ? t("Voice dictation is not configured")
-              : t("Transcription failed");
+          // Log the full error for diagnosis (status + body + stack).
+          console.error("[dictation] transcription failed", err);
+          const resp = (
+            err as { response?: { status?: number; data?: { message?: string } } }
+          )?.response;
+          const serverMsg = resp?.data?.message;
+          let message: string;
+          if (serverMsg && serverMsg.trim().length > 0) {
+            // The server already explains the cause (e.g. provider 404, bad
+            // format, STT not configured) — show it verbatim.
+            message = serverMsg;
+          } else if (resp?.status === 503 || resp?.status === 403) {
+            message = t("Voice dictation is not configured");
+          } else {
+            message = `${t("Transcription failed")}: ${(err as { message?: string })?.message ?? String(err)}`;
+          }
           notifications.show({ color: "red", message });
-          // Surface the error state briefly, then return to idle. Store the
-          // timer so it can be cleared on unmount.
           setStatus("error");
           if (errorTimerRef.current !== null) {
             clearTimeout(errorTimerRef.current);
@@ -192,7 +218,8 @@ export function useDictation(
     try {
       optionsRef.current.onStart?.();
       recorder.start();
-    } catch {
+    } catch (err) {
+      console.error("[dictation] MediaRecorder.start failed", err);
       // recorder.start() can synchronously throw (InvalidStateError /
       // NotSupportedError); clean up so the button is not left stuck and the
       // MediaStream does not leak.
@@ -201,7 +228,7 @@ export function useDictation(
       startingRef.current = false;
       notifications.show({
         color: "red",
-        message: t("Could not start recording"),
+        message: `${t("Could not start recording")}: ${(err as { message?: string })?.message ?? String(err)}`,
       });
       setStatus("idle");
       return;

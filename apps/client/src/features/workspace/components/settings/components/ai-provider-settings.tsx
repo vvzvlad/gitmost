@@ -93,9 +93,10 @@ export default function AiProviderSettings() {
   const updateMutation = useUpdateAiSettingsMutation();
   const reindexMutation = useReindexAiEmbeddingsMutation();
 
-  // Two independent test mutations so each card has its own loading + result.
+  // Independent test mutations so each card has its own loading + result.
   const chatTest = useTestAiConnectionMutation();
   const embedTest = useTestAiConnectionMutation();
+  const sttTest = useTestAiConnectionMutation();
 
   // Workspace-level feature toggles live in the card headers.
   const [workspace, setWorkspace] = useAtom(workspaceAtom);
@@ -351,6 +352,11 @@ export default function AiProviderSettings() {
     : "idle";
   const embedStatus: CardStatus = embedTest.data
     ? embedTest.data.ok
+      ? "ok"
+      : "error"
+    : "idle";
+  const sttStatus: CardStatus = sttTest.data
+    ? sttTest.data.ok
       ? "ok"
       : "error"
     : "idle";
@@ -617,7 +623,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status="idle" />
+            <StatusDot status={sttStatus} />
             <Text fw={600}>{t("Voice / STT")}</Text>
           </Group>
           <Switch
@@ -675,6 +681,27 @@ export default function AiProviderSettings() {
         <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
           {t("Resolves to {{url}}", { url: sttResolved })}
         </Text>
+
+        <Group mt="md" align="center">
+          <Button
+            variant="default"
+            size="sm"
+            loading={sttTest.isPending}
+            onClick={() => sttTest.mutate("stt")}
+          >
+            {t("Test endpoint")}
+          </Button>
+          {sttTest.data &&
+            (sttTest.data.ok ? (
+              <Text size="sm" c="green">
+                {t("Connection successful")}
+              </Text>
+            ) : (
+              <Text size="sm" c="red">
+                {sttTest.data.error || t("Connection failed")}
+              </Text>
+            ))}
+        </Group>
       </Paper>
 
       {/* Nested: external MCP tools the agent calls out to */}

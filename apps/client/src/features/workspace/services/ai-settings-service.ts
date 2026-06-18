@@ -55,7 +55,7 @@ export interface IAiTestResult {
 }
 
 // Which endpoint a connection test probes.
-export type AiTestCapability = "chat" | "embeddings";
+export type AiTestCapability = "chat" | "embeddings" | "stt";
 
 export async function getAiSettings(): Promise<IAiSettings> {
   const req = await api.post<IAiSettings>("/workspace/ai-settings");

@@ -4,6 +4,6 @@ import { IsIn, IsOptional } from 'class-validator';
 // defaults to the chat endpoint server-side when omitted.
 export class TestAiConnectionDto {
   @IsOptional()
-  @IsIn(['chat', 'embeddings'])
-  capability?: 'chat' | 'embeddings';
+  @IsIn(['chat', 'embeddings', 'stt'])
+  capability?: 'chat' | 'embeddings' | 'stt';
 }

@@ -4,11 +4,13 @@ import {
   Controller,
   ForbiddenException,
   HttpCode,
+  HttpException,
   HttpStatus,
   Logger,
   Post,
   Req,
   Res,
+  ServiceUnavailableException,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -32,6 +34,7 @@ import {
   GetChatMessagesDto,
   RenameChatDto,
 } from './dto/ai-chat.dto';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 
 /**
  * Per-user AI chat API (§6.1). Routes are POST to match this codebase's
@@ -249,7 +252,31 @@ export class AiChatController {
       }
       throw err;
     }
-    const text = await this.aiTranscription.transcribe(workspace.id, buf);
+    // Container hint for JSON-style STT providers (e.g. OpenRouter); multipart
+    // endpoints ignore it.
+    const formatMap: Record<string, string> = {
+      'audio/webm': 'webm',
+      'audio/ogg': 'ogg',
+      'audio/mp4': 'mp4',
+      'audio/mpeg': 'mp3',
+      'audio/wav': 'wav',
+      'audio/x-wav': 'wav',
+      'audio/wave': 'wav',
+      'audio/m4a': 'm4a',
+      'audio/x-m4a': 'm4a',
+    };
+    const format = formatMap[baseMime] ?? 'webm';
+    let text: string;
+    try {
+      text = await this.aiTranscription.transcribe(workspace.id, buf, format);
+    } catch (err) {
+      // Preserve meaningful HTTP errors (e.g. AiSttNotConfiguredException -> 503).
+      if (err instanceof HttpException) throw err;
+      // Log the full error and surface the real provider/transport reason instead
+      // of an opaque 500 (e.g. "the STT endpoint returned 404 ...").
+      this.logger.error('AI transcription failed', err as Error);
+      throw new ServiceUnavailableException(describeProviderError(err));
+    }
     return { text };
   }
 
