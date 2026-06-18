@@ -25,6 +25,10 @@ import { jsonToText } from '../../../collaboration/collaboration.util';
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 
+// A single page taking longer than this during a bulk reindex is logged at
+// WARN as an early "slow page" signal before the hard embedding timeout.
+const SLOW_PAGE_MS = 30_000;
+
 /**
  * Vector-RAG indexer (§6.7 stage D / §14[M1]). Turns a page's plain text into
  * chunk embeddings and persists them so the `semanticSearch` agent tool can do
@@ -168,7 +172,7 @@ export class EmbeddingIndexerService {
       await this.aiService.getEmbeddingModel(workspaceId);
     } catch (err) {
       if (err instanceof AiEmbeddingNotConfiguredException) {
-        this.logger.debug(
+        this.logger.log(
           `reindexWorkspace: embeddings not configured for workspace ${workspaceId}, skipping`,
         );
         return;
@@ -177,28 +181,44 @@ export class EmbeddingIndexerService {
     }
 
     const pageIds = await this.pageRepo.getIdsByWorkspace(workspaceId);
-    this.logger.debug(
-      `reindexWorkspace: reindexing ${pageIds.length} page(s) for workspace ${workspaceId}`,
+    const total = pageIds.length;
+    const startedAt = Date.now();
+    this.logger.log(
+      `reindexWorkspace: starting reindex of ${total} page(s) for workspace ${workspaceId}`,
     );
 
     let failed = 0;
-    for (const pageId of pageIds) {
+    for (let i = 0; i < total; i++) {
+      const pageId = pageIds[i];
+      const position = i + 1;
+      // Log BEFORE the await: if the embedding call hangs, this is the last line
+      // in the log and it names the exact page that is stuck.
+      this.logger.log(
+        `reindexWorkspace: [${position}/${total}] indexing page ${pageId} (workspace ${workspaceId})`,
+      );
+      const pageStartedAt = Date.now();
       try {
         await this.reindexPage(pageId);
+        const elapsed = Date.now() - pageStartedAt;
+        if (elapsed >= SLOW_PAGE_MS) {
+          this.logger.warn(
+            `reindexWorkspace: [${position}/${total}] page ${pageId} took ${elapsed}ms`,
+          );
+        }
       } catch (err) {
-        // Per-page isolation: one failure must not abort the whole batch.
+        // Per-page isolation: one failure (incl. an embedding timeout) must not
+        // abort the whole batch.
         failed++;
         this.logger.error(
-          `reindexWorkspace: failed to reindex page ${pageId}: ${describeProviderError(
-            err,
-          )}`,
+          `reindexWorkspace: [${position}/${total}] failed to reindex page ${pageId} ` +
+            `after ${Date.now() - pageStartedAt}ms: ${describeProviderError(err)}`,
         );
       }
     }
-    this.logger.debug(
-      `reindexWorkspace: done for workspace ${workspaceId} (${
-        pageIds.length - failed
-      }/${pageIds.length} pages)`,
+
+    this.logger.log(
+      `reindexWorkspace: done for workspace ${workspaceId}: ` +
+        `${total - failed}/${total} indexed, ${failed} failed in ${Date.now() - startedAt}ms`,
     );
   }
 

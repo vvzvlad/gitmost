@@ -114,8 +114,50 @@ export class AiService {
   async embedTexts(workspaceId: string, texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
     const model = await this.getEmbeddingModel(workspaceId);
-    const { embeddings } = await embedMany({ model, values: texts });
-    return embeddings;
+    // Bound the embedding call: a slow/hung embeddings endpoint must fail loudly
+    // (and let the caller move on to the next page) instead of blocking forever.
+    // The single signal caps the WHOLE call, including the SDK's internal
+    // retries/backoff (embedMany defaults to maxRetries: 2).
+    const timeoutMs = AiService.embeddingTimeoutMs();
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const { embeddings } = await embedMany({
+        model,
+        values: texts,
+        abortSignal: signal,
+      });
+      return embeddings;
+    } catch (err) {
+      // AbortSignal.timeout aborts with an opaque TimeoutError; surface a clear,
+      // greppable message so a hung/slow embeddings endpoint is obvious in logs.
+      // Classify by the error itself (name) AND the signal, not the flag alone:
+      // a genuine provider error that loses a race with the timer would also see
+      // `signal.aborted === true`, and must keep its real diagnostics.
+      // Mirror the SDK's own isAbortError (@ai-sdk/provider-utils): it treats
+      // TimeoutError, AbortError and ResponseAborted (Next.js) as aborts.
+      const abortLike =
+        err instanceof Error &&
+        (err.name === 'TimeoutError' ||
+          err.name === 'AbortError' ||
+          err.name === 'ResponseAborted');
+      if (signal.aborted && abortLike) {
+        throw new Error(
+          `Embedding request timed out after ${timeoutMs}ms ` +
+            `(workspace ${workspaceId}, ${texts.length} chunk(s)). ` +
+            `Increase AI_EMBEDDING_TIMEOUT_MS or check the embeddings endpoint.`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Per-embedding-call timeout in ms. Configurable via AI_EMBEDDING_TIMEOUT_MS;
+   * falls back to 120000 (2 min) when unset or invalid.
+   */
+  private static embeddingTimeoutMs(): number {
+    const raw = Number(process.env.AI_EMBEDDING_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
   }
 
   /**
