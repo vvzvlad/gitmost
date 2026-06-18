@@ -38,6 +38,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
+| **Persistent page-tree state** | The sidebar page tree remembers which nodes you expanded/collapsed across reloads — saved in the browser (localStorage), scoped per workspace + user so accounts sharing a browser don't clash. Upstream Docmost forgets the tree on every reload. |
 | **CI / images** | Release CI publishes container images to GHCR (`ghcr.io/vvzvlad/gitmost`) using the built-in `GITHUB_TOKEN` instead of Docker Hub. |
 
 ### Embedded MCP server
