@@ -100,6 +100,7 @@ community feature, with no enterprise license. Open it from the page header; the
 - ✅ **MCP server** — embedded community MCP server served at `/mcp`.
 - ✅ **macOS app** — native macOS app ([docmost-app](https://github.com/vvzvlad/docmost-app)) that embeds the UI with multi-server tabs.
 - ✅ **AI chat** — built-in AI agent chat over your wiki content (read + write, RAG search, configurable provider, optional web access via external MCP).
+- ✅ **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it.
 
 ### In progress
 
@@ -114,7 +115,6 @@ community feature, with no enterprise license. Open it from the page header; the
 - 🔭 **Windows / Linux app** — native desktop app for Windows and Linux.
 - 🔭 **Mobile app** — mobile apps (iOS first, Android to follow), reusing the existing responsive web UI and editor via a Capacitor wrapper, with offline planned for later. See [docs/mobile-app-plan.md](docs/mobile-app-plan.md).
 - 🔭 **Offline mode** — offline sync & PWA support.
-- 🔭 **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it. See [docs/voice-dictation-plan.md](docs/voice-dictation-plan.md).
 - 🔭 **Footnotes** — academic-style footnotes: a numbered superscript reference inline (read it in place via a hover popover), with the note text living as a real, editable block at the bottom of the page; auto-numbered, collaboration-safe, and round-trips through Markdown export/import and the AI agent / MCP. See [docs/footnotes-plan.md](docs/footnotes-plan.md).
 - 🔭 **Editor & UX improvements** — blocks inside tables (lists, to-do items), column layout, additional heading levels, highlight blocks, custom emoji in callouts, floating images, anchor links for page mentions, toggles (shared-page width, aside/sidebar, spellcheck, ligatures), sanitized space-tree export, and mentions in breadcrumbs.
 
