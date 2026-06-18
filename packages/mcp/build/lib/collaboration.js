@@ -8,6 +8,7 @@ import { JSDOM } from "jsdom";
 import { docmostExtensions } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
+import { summarizeChange } from "./diff.js";
 // Setup DOM environment for Tiptap HTML parsing in Node.js
 const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>");
 global.window = dom.window;
@@ -345,7 +346,11 @@ const PERSIST_TIMEOUT_MS = 20000;
  * ProseMirror doc to write, or `null` to abort with no write (a no-op). If
  * `transform` throws, the error is propagated to the caller (not swallowed).
  *
- * Returns the doc that was written, or the live doc when the transform aborted.
+ * Resolves a `MutationResult { doc, verify }`: `doc` is the doc that was
+ * written (or the live doc when the transform aborted), and `verify` is a
+ * verifiable change report (text/block/mark deltas) of what actually changed.
+ * The report is computed AFTER the atomic read->write, so it never widens the
+ * read->write window, and it never throws (it can NEVER break a write).
  */
 export async function mutatePageContent(pageId, collabToken, baseUrl, transform) {
     return withPageLock(pageId, () => {
@@ -415,7 +420,7 @@ export async function mutatePageContent(pageId, collabToken, baseUrl, transform)
                     return;
                 }
                 if (provider.unsyncedChanges === 0) {
-                    finish(null, lastWrittenDoc);
+                    finish(null, mutationResult);
                     return;
                 }
                 persistTimer = setTimeout(() => {
@@ -427,12 +432,14 @@ export async function mutatePageContent(pageId, collabToken, baseUrl, transform)
                     // the counter back to 0 without our write being re-transmitted; in
                     // that case let the disconnect/close error win instead.
                     if (data.number === 0 && !connectionLost) {
-                        finish(null, lastWrittenDoc);
+                        finish(null, mutationResult);
                     }
                 };
                 provider.on("unsyncedChanges", unsyncedHandler);
             };
-            let lastWrittenDoc;
+            // The verifiable result resolved on every success/abort path. Set on
+            // abort (no-op report) and after a real write (computed change report).
+            let mutationResult;
             provider = new HocuspocusProvider({
                 url: wsUrl,
                 name: `page.${pageId}`,
@@ -478,6 +485,7 @@ export async function mutatePageContent(pageId, collabToken, baseUrl, transform)
                     // not yielded, no incoming remote update can interleave, so any
                     // already-synced concurrent edits are preserved in liveDoc.
                     let newDoc;
+                    let beforeDoc;
                     try {
                         let liveDoc = TiptapTransformer.fromYdoc(ydoc, "default");
                         if (!liveDoc ||
@@ -485,11 +493,25 @@ export async function mutatePageContent(pageId, collabToken, baseUrl, transform)
                             !Array.isArray(liveDoc.content)) {
                             liveDoc = { type: "doc", content: [] };
                         }
+                        // Snapshot the before-doc for the change report. Docs are
+                        // JSON-serializable, so this is a safe deep clone.
+                        beforeDoc = JSON.parse(JSON.stringify(liveDoc));
                         newDoc = transform(liveDoc);
                         if (newDoc == null) {
-                            // Transform aborted — write nothing, return the live doc.
-                            lastWrittenDoc = liveDoc;
-                            finish(null, liveDoc);
+                            // Transform aborted — write nothing, return the live doc with a
+                            // no-op change report.
+                            mutationResult = {
+                                doc: liveDoc,
+                                verify: {
+                                    changed: false,
+                                    textInserted: 0,
+                                    textDeleted: 0,
+                                    blocksChanged: 0,
+                                    marks: {},
+                                    summary: "no changes (transform aborted)",
+                                },
+                            };
+                            finish(null, mutationResult);
                             return;
                         }
                         const tempDoc = buildYDoc(newDoc);
@@ -509,7 +531,13 @@ export async function mutatePageContent(pageId, collabToken, baseUrl, transform)
                         finish(e instanceof Error ? e : new Error(String(e)));
                         return;
                     }
-                    lastWrittenDoc = newDoc;
+                    // Compute the verifiable change report AFTER the transact write: it
+                    // only needs the JSON before/after, so it cannot affect the atomic
+                    // read->write window, and summarizeChange never throws.
+                    mutationResult = {
+                        doc: newDoc,
+                        verify: summarizeChange(beforeDoc, newDoc),
+                    };
                     if (process.env.DEBUG)
                         console.error("Content written, waiting for server to persist...");
                     waitForPersistence();
@@ -540,7 +568,7 @@ export async function replacePageContent(pageId, prosemirrorDoc, collabToken, ba
         prosemirrorDoc.type !== "doc") {
         throw new Error("replacePageContent: invalid ProseMirror document");
     }
-    await mutatePageContent(pageId, collabToken, baseUrl, () => prosemirrorDoc);
+    return await mutatePageContent(pageId, collabToken, baseUrl, () => prosemirrorDoc);
 }
 /**
  * Markdown update path (kept for backwards compatibility).
@@ -549,5 +577,5 @@ export async function replacePageContent(pageId, prosemirrorDoc, collabToken, ba
  */
 export async function updatePageContentRealtime(pageId, markdownContent, collabToken, baseUrl) {
     const tiptapJson = await markdownToProseMirror(markdownContent);
-    await mutatePageContent(pageId, collabToken, baseUrl, () => tiptapJson);
+    return await mutatePageContent(pageId, collabToken, baseUrl, () => tiptapJson);
 }

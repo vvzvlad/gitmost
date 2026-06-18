@@ -622,13 +622,19 @@ export class AiChatToolsService {
           '(so editing plain text next to a bold word keeps it bold, and ' +
           'editing inside a bold word keeps the new text bold). Each find must ' +
           'match exactly once unless replaceAll is set. The batch applies what ' +
-          'it can and returns applied[] + failed[]; a fully-unmatched batch ' +
-          'writes nothing and errors. find should be the literal rendered text ' +
-          '(no markdown). Markdown wrappers (**bold**, *italic*, `code`) and ' +
-          'trailing emoji are tolerated via a strip-and-retry fallback, but ' +
-          'plain text is preferred. Examples: edits:[{find:"teh",replace:"the"}]; ' +
-          'edits:[{find:"Hello world",replace:"Hello there"}] (crosses a bold ' +
-          'boundary). Reversible: the previous version is kept in page history.',
+          'it can and returns applied[] + failed[] plus a verify change-report ' +
+          '(the text/marks/structure that ACTUALLY changed — read it to confirm ' +
+          'your edit landed; do not assume success); a fully-unmatched batch ' +
+          'writes nothing and errors. find and replace are LITERAL text, not ' +
+          'markdown. This tool edits plain text ONLY and CANNOT add or remove ' +
+          'formatting marks: a formatting change — find/replace that differ only ' +
+          'in markdown markers (e.g. find:"~~x~~", replace:"x"), or a replace ' +
+          'containing **bold**/~~strike~~/`code` wrappers — is REFUSED into ' +
+          'failed[]. To change bold/italic/strike/code/link, read the block with ' +
+          'getPageJson and use patchNode (or updatePageJson) to set its marks. ' +
+          'Examples: edits:[{find:"teh",replace:"the"}]; edits:[{find:"Hello ' +
+          'world",replace:"Hello there"}] (crosses a bold boundary). Reversible: ' +
+          'the previous version is kept in page history.',
         inputSchema: z.object({
           pageId: z.string().describe('The id of the page to edit.'),
           edits: z

@@ -20,6 +20,7 @@ import {
   mutatePageContent,
   buildCollabWsUrl,
   assertYjsEncodable,
+  MutationResult,
 } from "./lib/collaboration.js";
 import { docmostExtensions } from "./lib/docmost-schema.js";
 import {
@@ -45,7 +46,7 @@ import {
   TextEditFailure,
 } from "./lib/json-edit.js";
 import { getCollabToken, performLogin } from "./lib/auth-utils.js";
-import { diffDocs } from "./lib/diff.js";
+import { diffDocs, summarizeChange } from "./lib/diff.js";
 import {
   blockText,
   walk,
@@ -328,18 +329,23 @@ export class DocmostClient {
    * `transform` receives the live ProseMirror doc and returns the NEW full doc
    * to write, or `null` to abort with no write. Errors thrown by `transform`
    * propagate to the caller.
+   *
+   * Resolves a `MutationResult { doc, verify }` mirroring mutatePageContent, so
+   * every content mutator (including replaceImage) can return a verifiable
+   * change report. The report is computed AFTER the atomic read->write and
+   * never throws.
    */
   private mutateLiveContentUnlocked(
     pageId: string,
     collabToken: string,
     transform: (liveDoc: any) => any | null,
-  ): Promise<any> {
+  ): Promise<MutationResult> {
     const CONNECT_TIMEOUT_MS = 25000;
     const PERSIST_TIMEOUT_MS = 20000;
     const ydoc = new Y.Doc();
     const wsUrl = buildCollabWsUrl(this.apiUrl);
 
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<MutationResult>((resolve, reject) => {
       let provider: HocuspocusProvider | undefined;
       let applied = false; // onSynced may fire again on reconnect — apply once.
       let settled = false;
@@ -347,7 +353,9 @@ export class DocmostClient {
       let connectTimer: ReturnType<typeof setTimeout> | undefined;
       let persistTimer: ReturnType<typeof setTimeout> | undefined;
       let unsyncedHandler: ((data: { number: number }) => void) | undefined;
-      let lastWrittenDoc: any;
+      // The verifiable result resolved on every success/abort path. Set on abort
+      // (no-op report) and after a real write (computed change report).
+      let mutationResult: MutationResult;
 
       const cleanup = () => {
         if (connectTimer) clearTimeout(connectTimer);
@@ -364,12 +372,12 @@ export class DocmostClient {
         }
       };
 
-      const finish = (err: Error | null, value?: any) => {
+      const finish = (err: Error | null, value?: MutationResult) => {
         if (settled) return;
         settled = true;
         cleanup();
         if (err) reject(err);
-        else resolve(value);
+        else resolve(value as MutationResult);
       };
 
       connectTimer = setTimeout(() => {
@@ -383,7 +391,7 @@ export class DocmostClient {
           return;
         }
         if (provider.unsyncedChanges === 0) {
-          finish(null, lastWrittenDoc);
+          finish(null, mutationResult);
           return;
         }
         persistTimer = setTimeout(() => {
@@ -395,7 +403,7 @@ export class DocmostClient {
         }, PERSIST_TIMEOUT_MS);
         unsyncedHandler = (data: { number: number }) => {
           if (data.number === 0 && !connectionLost) {
-            finish(null, lastWrittenDoc);
+            finish(null, mutationResult);
           }
         };
         provider.on("unsyncedChanges", unsyncedHandler);
@@ -431,6 +439,7 @@ export class DocmostClient {
           // CRITICAL: keep everything between reading and writing the live doc
           // synchronous (no await) so no remote update can interleave.
           let newDoc: any;
+          let beforeDoc: any;
           try {
             let liveDoc = TiptapTransformer.fromYdoc(ydoc, "default");
             if (
@@ -441,12 +450,26 @@ export class DocmostClient {
               liveDoc = { type: "doc", content: [] };
             }
 
+            // Snapshot the before-doc for the change report (safe deep clone).
+            beforeDoc = JSON.parse(JSON.stringify(liveDoc));
+
             newDoc = transform(liveDoc);
 
             if (newDoc == null) {
-              // Transform aborted — write nothing, return the live doc.
-              lastWrittenDoc = liveDoc;
-              finish(null, liveDoc);
+              // Transform aborted — write nothing, return the live doc with a
+              // no-op change report.
+              mutationResult = {
+                doc: liveDoc,
+                verify: {
+                  changed: false,
+                  textInserted: 0,
+                  textDeleted: 0,
+                  blocksChanged: 0,
+                  marks: {},
+                  summary: "no changes (transform aborted)",
+                },
+              };
+              finish(null, mutationResult);
               return;
             }
 
@@ -467,7 +490,13 @@ export class DocmostClient {
             return;
           }
 
-          lastWrittenDoc = newDoc;
+          // Compute the verifiable change report AFTER the transact write: it
+          // only needs the JSON before/after, so it cannot affect the atomic
+          // read->write window, and summarizeChange never throws.
+          mutationResult = {
+            doc: newDoc,
+            verify: summarizeChange(beforeDoc, newDoc),
+          };
           waitForPersistence();
         },
         onAuthenticationFailed: () => {
@@ -799,25 +828,30 @@ export class DocmostClient {
     // Track insertion in an outer var, reset per-transform, so a collab retry
     // recomputes it cleanly (mirrors insertNode's pattern).
     let inserted = false;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      inserted = false;
-      const { doc: nd, inserted: ins } = insertTableRow(
-        liveDoc,
-        tableRef,
-        cells,
-        index,
-      );
-      inserted = ins;
-      if (!inserted) return null; // table not found -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        inserted = false;
+        const { doc: nd, inserted: ins } = insertTableRow(
+          liveDoc,
+          tableRef,
+          cells,
+          index,
+        );
+        inserted = ins;
+        if (!inserted) return null; // table not found -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (!inserted) {
       throw new Error(
         `table_insert_row: no table found for "${tableRef}" on page ${pageId} (use "#<index>" from get_outline, or a block id inside the table)`,
       );
     }
-    return { success: true, table: tableRef, inserted: true };
+    return { success: true, table: tableRef, inserted: true, verify: mutation.verify };
   }
 
   /**
@@ -830,20 +864,25 @@ export class DocmostClient {
     const collabToken = await this.getCollabTokenWithReauth();
 
     let deleted = false;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      deleted = false;
-      const { doc: nd, deleted: del } = deleteTableRow(liveDoc, tableRef, index);
-      deleted = del;
-      if (!deleted) return null; // table not found -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        deleted = false;
+        const { doc: nd, deleted: del } = deleteTableRow(liveDoc, tableRef, index);
+        deleted = del;
+        if (!deleted) return null; // table not found -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (!deleted) {
       throw new Error(
         `table_delete_row: no table found for "${tableRef}" on page ${pageId} (use "#<index>" from get_outline, or a block id inside the table)`,
       );
     }
-    return { success: true, table: tableRef, deleted: true };
+    return { success: true, table: tableRef, deleted: true, verify: mutation.verify };
   }
 
   /**
@@ -864,26 +903,31 @@ export class DocmostClient {
     const collabToken = await this.getCollabTokenWithReauth();
 
     let updated = false;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      updated = false;
-      const { doc: nd, updated: upd } = updateTableCell(
-        liveDoc,
-        tableRef,
-        row,
-        col,
-        text,
-      );
-      updated = upd;
-      if (!updated) return null; // table not found -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        updated = false;
+        const { doc: nd, updated: upd } = updateTableCell(
+          liveDoc,
+          tableRef,
+          row,
+          col,
+          text,
+        );
+        updated = upd;
+        if (!updated) return null; // table not found -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (!updated) {
       throw new Error(
         `table_update_cell: no table found for "${tableRef}" on page ${pageId} (use "#<index>" from get_outline, or a block id inside the table)`,
       );
     }
-    return { success: true, table: tableRef, row, col };
+    return { success: true, table: tableRef, row, col, verify: mutation.verify };
   }
 
   /**
@@ -994,9 +1038,15 @@ export class DocmostClient {
     }
 
     let collabToken = "";
+    let mutation;
     try {
       collabToken = await this.getCollabTokenWithReauth();
-      await updatePageContentRealtime(pageId, content, collabToken, this.apiUrl);
+      mutation = await updatePageContentRealtime(
+        pageId,
+        content,
+        collabToken,
+        this.apiUrl,
+      );
     } catch (error: any) {
       // Verbose diagnostics (incl. anything that could expose a token prefix)
       // are gated behind DEBUG; the thrown Error below carries no token data.
@@ -1018,6 +1068,7 @@ export class DocmostClient {
       modified: true,
       message: "Page updated successfully.",
       pageId: pageId,
+      verify: mutation.verify,
     };
   }
 
@@ -1237,13 +1288,19 @@ export class DocmostClient {
     }
 
     const collabToken = await this.getCollabTokenWithReauth();
-    await replacePageContent(pageId, doc, collabToken, this.apiUrl);
+    const mutation = await replacePageContent(
+      pageId,
+      doc,
+      collabToken,
+      this.apiUrl,
+    );
 
     return {
       success: true,
       modified: true,
       message: "Page content replaced from ProseMirror JSON.",
       pageId,
+      verify: mutation.verify,
     };
   }
 
@@ -1291,7 +1348,12 @@ export class DocmostClient {
     const { meta, body, comments } = parseDocmostMarkdown(fullMarkdown);
     const doc = await markdownToProseMirror(body);
     const collabToken = await this.getCollabTokenWithReauth();
-    await replacePageContent(pageId, doc, collabToken, this.apiUrl);
+    const mutation = await replacePageContent(
+      pageId,
+      doc,
+      collabToken,
+      this.apiUrl,
+    );
     // Collect distinct comment ids that actually became comment marks in the doc.
     const collectCommentIds = (node: any, acc: Set<string>): Set<string> => {
       if (!node || typeof node !== "object") return acc;
@@ -1316,6 +1378,7 @@ export class DocmostClient {
       pageId,
       anchoredCommentCount: anchoredIds.size,
       commentsInFile: Array.isArray(comments) ? comments.length : 0,
+      verify: mutation.verify,
     };
     // Warn (non-fatal) if the file was exported from a DIFFERENT page.
     if (meta?.pageId && meta.pageId !== pageId) {
@@ -1374,13 +1437,19 @@ export class DocmostClient {
     this.validateDocUrls(content);
 
     const collabToken = await this.getCollabTokenWithReauth();
-    await replacePageContent(targetPageId, content, collabToken, this.apiUrl);
+    const mutation = await replacePageContent(
+      targetPageId,
+      content,
+      collabToken,
+      this.apiUrl,
+    );
 
     return {
       success: true,
       sourcePageId,
       targetPageId,
       copiedNodes: content.content.length,
+      verify: mutation.verify,
     };
   }
 
@@ -1405,22 +1474,27 @@ export class DocmostClient {
     // we must NOT write (no spurious history version) and must not claim a write
     // happened.
     let wrote = false;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      wrote = false;
-      const r = applyTextEdits(liveDoc, edits);
-      results = r.results;
-      failed = r.failed;
-      // Nothing applied -> abort the write (mutatePageContent treats a null
-      // return from the transform as "write nothing").
-      if (r.results.length === 0) return null;
-      // Edits "applied" but produced an identical document: skip the write so no
-      // new history version is created. Stable structural comparison via
-      // JSON.stringify (both docs come from the same deep-copied source, so key
-      // order is stable).
-      if (JSON.stringify(r.doc) === JSON.stringify(liveDoc)) return null;
-      wrote = true;
-      return r.doc;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        wrote = false;
+        const r = applyTextEdits(liveDoc, edits);
+        results = r.results;
+        failed = r.failed;
+        // Nothing applied -> abort the write (mutatePageContent treats a null
+        // return from the transform as "write nothing").
+        if (r.results.length === 0) return null;
+        // Edits "applied" but produced an identical document: skip the write so
+        // no new history version is created. Stable structural comparison via
+        // JSON.stringify (both docs come from the same deep-copied source, so
+        // key order is stable).
+        if (JSON.stringify(r.doc) === JSON.stringify(liveDoc)) return null;
+        wrote = true;
+        return r.doc;
+      },
+    );
 
     if ((results?.length ?? 0) === 0 && (failed?.length ?? 0) > 0) {
       // No edit applied: surface an aggregated, actionable error so the caller
@@ -1440,10 +1514,11 @@ export class DocmostClient {
         applied: results,
         failed,
         message: "No changes written (edits produced identical content).",
+        verify: mutation.verify,
       };
     }
 
-    return {
+    const result: any = {
       success: true,
       pageId,
       applied: results,
@@ -1451,7 +1526,21 @@ export class DocmostClient {
       message: (failed?.length ?? 0)
         ? `Applied ${results?.length ?? 0} edit(s); ${failed!.length} failed (see failed[]). Node ids and formatting preserved.`
         : "Text edits applied (node ids and formatting preserved).",
+      verify: mutation.verify,
     };
+
+    // If any applied edit matched only after stripping markdown (the
+    // normalized fallback), warn that edit_page_text preserved existing marks
+    // and did NOT change formatting — so a caller who intended a formatting
+    // change is pointed at patch_node.
+    if (results?.some((r) => r.normalized === true)) {
+      result.warning =
+        "Some edits matched only after stripping markdown from your find string; " +
+        "edit_page_text preserved existing marks (it did not change bold/strike/etc.). " +
+        "If you intended a formatting change, use patch_node.";
+    }
+
+    return result;
   }
 
   /**
@@ -1489,13 +1578,18 @@ export class DocmostClient {
     // Track the replacement count in an outer var, reset per-transform, so a
     // collab retry recomputes it cleanly (mirrors replaceImage's pattern).
     let replaced = 0;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      replaced = 0;
-      const { doc: nd, replaced: r } = replaceNodeById(liveDoc, nodeId, target);
-      replaced = r;
-      if (replaced === 0) return null; // no match -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        replaced = 0;
+        const { doc: nd, replaced: r } = replaceNodeById(liveDoc, nodeId, target);
+        replaced = r;
+        if (replaced === 0) return null; // no match -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (replaced === 0) {
       throw new Error(
@@ -1503,7 +1597,7 @@ export class DocmostClient {
       );
     }
 
-    return { success: true, replaced, nodeId };
+    return { success: true, replaced, nodeId, verify: mutation.verify };
   }
 
   /**
@@ -1564,13 +1658,18 @@ export class DocmostClient {
     // Track insertion in an outer var, reset per-transform, so a collab retry
     // recomputes it cleanly (mirrors replaceImage's pattern).
     let inserted = false;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      inserted = false;
-      const { doc: nd, inserted: ins } = insertNodeRelative(liveDoc, node, opts);
-      inserted = ins;
-      if (!inserted) return null; // anchor not found -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        inserted = false;
+        const { doc: nd, inserted: ins } = insertNodeRelative(liveDoc, node, opts);
+        inserted = ins;
+        if (!inserted) return null; // anchor not found -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (!inserted) {
       const anchorDesc = opts.anchorNodeId
@@ -1587,7 +1686,12 @@ export class DocmostClient {
       );
     }
 
-    return { success: true, inserted: true, position: opts.position };
+    return {
+      success: true,
+      inserted: true,
+      position: opts.position,
+      verify: mutation.verify,
+    };
   }
 
   /**
@@ -1604,13 +1708,18 @@ export class DocmostClient {
     // Track the deletion count in an outer var, reset per-transform, so a
     // collab retry recomputes it cleanly (mirrors replaceImage's pattern).
     let deleted = 0;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-      deleted = 0;
-      const { doc: nd, deleted: d } = deleteNodeById(liveDoc, nodeId);
-      deleted = d;
-      if (deleted === 0) return null; // no match -> skip the write entirely
-      return nd;
-    });
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
+        deleted = 0;
+        const { doc: nd, deleted: d } = deleteNodeById(liveDoc, nodeId);
+        deleted = d;
+        if (deleted === 0) return null; // no match -> skip the write entirely
+        return nd;
+      },
+    );
 
     if (deleted === 0) {
       throw new Error(
@@ -1618,7 +1727,7 @@ export class DocmostClient {
       );
     }
 
-    return { success: true, deleted, nodeId };
+    return { success: true, deleted, nodeId, verify: mutation.verify };
   }
 
   /** Build the public share URL for a page. */
@@ -1817,7 +1926,7 @@ export class DocmostClient {
       let anchored = false;
       try {
         const collabToken = await this.getCollabTokenWithReauth();
-        await mutatePageContent(
+        const mutation = await mutatePageContent(
           pageId,
           collabToken,
           this.apiUrl,
@@ -1894,6 +2003,7 @@ export class DocmostClient {
             return null;
           },
         );
+        result.verify = mutation.verify;
       } catch (e) {
         // The comment record already exists; an anchoring failure must not turn
         // a successful create into an error. Report anchored:false instead.
@@ -2337,7 +2447,11 @@ export class DocmostClient {
     // concurrent edits/comments/images are preserved and parallel insert_image
     // calls (serialized by the per-page lock) each see the previous insertion.
     let placement: "replaced" | "after" | "appended" | undefined;
-    await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc) => {
       const doc =
         liveDoc && liveDoc.type === "doc"
           ? liveDoc
@@ -2408,7 +2522,8 @@ export class DocmostClient {
       }
 
       return doc;
-    });
+      },
+    );
 
     return {
       success: true,
@@ -2416,6 +2531,7 @@ export class DocmostClient {
       attachmentId: up.attachmentId,
       src: up.src,
       placement,
+      verify: mutation.verify,
     };
   }
 
@@ -2529,18 +2645,27 @@ export class DocmostClient {
         }
       };
 
-      await this.mutateLiveContentUnlocked(pageId, collabToken, (liveDoc) => {
-        // Reset per-transform so collab retries recompute cleanly (no double-count).
-        replaced = 0;
-        const doc =
-          liveDoc && liveDoc.type === "doc"
-            ? liveDoc
-            : { type: "doc", content: [] };
-        if (!Array.isArray(doc.content)) doc.content = [];
-        walk(doc.content);
-        if (replaced === 0) return null; // no match -> skip the write entirely
-        return doc;
-      });
+      const mutation = await this.mutateLiveContentUnlocked(
+        pageId,
+        collabToken,
+        (liveDoc) => {
+          // Reset per-transform so collab retries recompute cleanly (no double-count).
+          replaced = 0;
+          const doc =
+            liveDoc && liveDoc.type === "doc"
+              ? liveDoc
+              : { type: "doc", content: [] };
+          if (!Array.isArray(doc.content)) doc.content = [];
+          walk(doc.content);
+          if (replaced === 0) return null; // no match -> skip the write entirely
+          return doc;
+        },
+      );
+      // KNOWN LIMITATION: a same-count image SRC swap (image count unchanged, no
+      // text/mark change) may still report verify.changed === false, because the
+      // text+marks+integrity-count model in summarizeChange does not inspect
+      // image `src`/attachmentId attributes. That is acceptable here — the
+      // replace is confirmed by `replaced` below, and verify is supplementary.
 
       if (replaced === 0) {
         // The pass-1 SCAN found the target (matchFound was true) and we already
@@ -2560,6 +2685,7 @@ export class DocmostClient {
           orphanedAttachmentId: up.attachmentId,
           warning:
             "target image was removed concurrently; uploaded attachment is unreferenced",
+          verify: mutation.verify,
         };
       }
 
@@ -2570,6 +2696,7 @@ export class DocmostClient {
         oldAttachmentId,
         newAttachmentId: up.attachmentId,
         src: up.src,
+        verify: mutation.verify,
       };
     });
   }
@@ -2628,13 +2755,17 @@ export class DocmostClient {
     // JSON write path) before writing it back.
     this.validateDocUrls(version.content);
     const collabToken = await this.getCollabTokenWithReauth();
-    await mutatePageContent(
+    const mutation = await mutatePageContent(
       version.pageId,
       collabToken,
       this.apiUrl,
       () => version.content,
     );
-    return { pageId: version.pageId, restoredFrom: historyId };
+    return {
+      pageId: version.pageId,
+      restoredFrom: historyId,
+      verify: mutation.verify,
+    };
   }
 
   /**
@@ -2812,7 +2943,12 @@ export class DocmostClient {
 
     // Apply atomically against the live doc.
     const collabToken = await this.getCollabTokenWithReauth();
-    await mutatePageContent(pageId, collabToken, this.apiUrl, runTransform);
+    const mutation = await mutatePageContent(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      runTransform,
+    );
 
     // Optionally delete consumed comments (best-effort; a delete failure must
     // not undo the successful write).
@@ -2847,6 +2983,7 @@ export class DocmostClient {
       diff: diffDocs(oldDoc, newDoc),
       deletedComments,
       log: ctx.log,
+      verify: mutation.verify,
     };
   }
 }

@@ -11,7 +11,7 @@
  * keeps the inserted text bold. This is the safe alternative to a full markdown
  * re-import for small wording fixes.
  */
-import { stripInlineMarkdown } from "./text-normalize.js";
+import { stripInlineMarkdown, stripBalancedWrappers } from "./text-normalize.js";
 /** Placeholder code unit standing in for one opaque (non-text) inline node. */
 const ATOM_PLACEHOLDER = "￼"; // OBJECT REPLACEMENT CHARACTER
 /**
@@ -226,6 +226,29 @@ export function applyTextEdits(doc, edits) {
     for (const edit of edits) {
         if (!edit.find)
             throw new Error("edit.find must be a non-empty string");
+        // HARD-REFUSE formatting changes. edit_page_text edits PLAIN TEXT only and
+        // writes the replacement verbatim, so it cannot add/remove marks. We refuse
+        // only a pure formatting TOGGLE: find and replace differ ONLY by balanced
+        // markdown markers (e.g. find:"~~$69~~" / replace:"$69", or find:"M5Stack" /
+        // replace:"**M5Stack**" which would write literal `**`).
+        //
+        // The detector is the STRICT stripBalancedWrappers, NOT the lenient locator
+        // stripInlineMarkdown: the lenient one also trims whitespace/emoji and
+        // collapses lone `*`/`_` runs, which gives false positives on ordinary
+        // plain-text edits (trailing-space trim, snake_case, `2 * 3 * 4`, URLs with
+        // underscores) and wrongly refuses them. Comparing the strict strip of both
+        // sides symmetrically catches every real formatting toggle while leaving
+        // plain text alone; a typo fix wrapped in markdown still applies because its
+        // stripped find != stripped replace.
+        const formattingOnly = edit.find !== edit.replace &&
+            stripBalancedWrappers(edit.find) === stripBalancedWrappers(edit.replace);
+        if (formattingOnly) {
+            failed.push({
+                find: edit.find,
+                reason: "edit_page_text edits plain text only and cannot add or remove formatting marks (bold/italic/strike/code/link); it writes the replacement as LITERAL text. This edit looks like a formatting change (markdown markers in find/replace). To change marks, read the block with get_page_json and use patch_node (or update_page_json) to set the node's marks array.",
+            });
+            continue;
+        }
         // Gather every inline block in document order (recurse the whole tree so
         // nested containers — callouts, list items, table cells, blockquotes — are
         // all covered).

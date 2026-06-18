@@ -467,7 +467,11 @@ server.registerTool(
       "text is preferred. Examples: edits:[{find:\"teh\"," +
       "replace:\"the\"}]; edits:[{find:\"Hello world\",replace:\"Hello there\"}] " +
       "(crosses a bold boundary). This is the preferred tool for fixing " +
-      "wording, typos, numbers, names.",
+      "wording, typos, numbers, names. It edits plain text only and CANNOT " +
+      "change formatting marks: formatting changes (markdown markers in " +
+      "find/replace) are refused — use patch_node/update_page_json to change " +
+      "marks. The result includes a `verify` change-report of what actually " +
+      "changed (text/block/mark deltas).",
     inputSchema: {
       pageId: z.string().describe("ID of the page to edit"),
       edits: z

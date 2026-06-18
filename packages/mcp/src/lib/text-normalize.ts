@@ -27,6 +27,56 @@ const WRAPPER_PATTERNS: RegExp[] = [
   /`([^`]+?)`/g, // `x`
 ];
 
+/** Links/images -> their visible text. `!?` covers both `[t](u)` and `![a](s)`. */
+const LINK_IMAGE_RE = /!?\[([^\]]*)\]\([^)]*\)/g;
+
+/**
+ * Apply ONLY the two balanced/link passes shared by both normalizers: first
+ * collapse links/images to their visible text, then collapse balanced inline
+ * wrappers repeatedly until stable. Does NOT trim decoration, does NOT guard
+ * against an empty result — it returns exactly the transformed string.
+ */
+function stripWrappersAndLinks(s: string): string {
+  // 1. Links/images -> their visible text.
+  let out = s.replace(LINK_IMAGE_RE, "$1");
+
+  // 2. Strip balanced wrappers, repeating until the string is stable so nested
+  //    wrappers (`**_x_**`) and adjacent runs both collapse.
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const before = out;
+    for (const re of WRAPPER_PATTERNS) {
+      out = out.replace(re, "$1");
+    }
+    if (out === before) break;
+  }
+  return out;
+}
+
+/**
+ * STRICT formatting detector — distinct from the lenient locator
+ * normalization below. It strips ONLY what unambiguously is markdown markup:
+ *  1. links/images `[text](url)` -> `text`, `![alt](src)` -> `alt`, and
+ *  2. balanced inline `**`/`__`/`~~`/`*`/`_`/`` ` `` wrappers (repeat-until-stable),
+ * and DELIBERATELY does NOT trim leading/trailing whitespace, emoji, or lone
+ * marker chars (the lenient extras `stripInlineMarkdown` does in its step 3).
+ *
+ * It exists ONLY to recognize formatting-vs-plain INTENT in `applyTextEdits`
+ * (deciding whether find/replace differ purely by markdown markers). Because it
+ * skips the lenient trimming, ordinary plain-text edits are NOT misread as
+ * formatting: a trailing-space trim, snake_case (`my_var_name`), math (`2 * 3`),
+ * and identifiers/URLs with underscores all stay untouched here (their `_x_` /
+ * `*x*` runs are only collapsed when actually balanced, and even then they are
+ * compared symmetrically, so plain text never collapses to a different string).
+ *
+ * Do NOT use this for LOCATING — the locator fallback must keep using the
+ * lenient `stripInlineMarkdown` (it trims stray decoration so a find still
+ * matches the document's plain text).
+ */
+export function stripBalancedWrappers(s: string): string {
+  if (typeof s !== "string" || s.length === 0) return s;
+  return stripWrappersAndLinks(s);
+}
+
 /**
  * Conservatively strip inline markdown from a locator string.
  *
@@ -45,20 +95,8 @@ const WRAPPER_PATTERNS: RegExp[] = [
 export function stripInlineMarkdown(s: string): string {
   if (typeof s !== "string" || s.length === 0) return s;
 
-  let out = s;
-
-  // 1. Links/images -> their visible text. `!?` covers both forms.
-  out = out.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
-
-  // 2. Strip balanced wrappers, repeating until the string is stable so nested
-  //    wrappers (`**_x_**`) and adjacent runs both collapse.
-  for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const before = out;
-    for (const re of WRAPPER_PATTERNS) {
-      out = out.replace(re, "$1");
-    }
-    if (out === before) break;
-  }
+  // 1 + 2. Shared link/image and balanced-wrapper passes.
+  let out = stripWrappersAndLinks(s);
 
   // 3. Trim leading/trailing decoration: whitespace, leftover markdown markers,
   //    and emoji (Extended_Pictographic plus the VS16 / ZWJ joiners, plus the

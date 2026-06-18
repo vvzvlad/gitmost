@@ -271,3 +271,131 @@ export function diffDocs(oldDocJson, newDocJson, notesHeading = "Примеча�
     };
     return { ...partial, markdown: renderMarkdown(partial, fellBack) };
 }
+/**
+ * Recursively walk every `text` node and tally the count of each mark by
+ * `mark.type` (e.g. `{ bold: 5, strike: 3, link: 2 }`). Pure and never throws.
+ */
+function markCounts(doc) {
+    const counts = {};
+    const visit = (node) => {
+        if (!node || typeof node !== "object")
+            return;
+        if (node.type === "text" && Array.isArray(node.marks)) {
+            for (const m of node.marks) {
+                if (m && typeof m.type === "string") {
+                    counts[m.type] = (counts[m.type] || 0) + 1;
+                }
+            }
+        }
+        if (Array.isArray(node.content))
+            for (const c of node.content)
+                visit(c);
+    };
+    visit(doc);
+    return counts;
+}
+/**
+ * Build a VerifyReport for a content mutation. Pure and never throws — on any
+ * internal error it returns a minimal "changed (diff unavailable)" report so it
+ * can NEVER break a write.
+ *
+ * `changed` is VALUE-based, not JSON-string-based: it is derived from the actual
+ * deltas (text chars, blocks, mark counts, structural integrity counts), so two
+ * value-equal docs that differ only in JSON key order report cleanly as
+ * `changed:false` / "no content change" rather than a misleading +0/-0 change.
+ *
+ * The structural integrity delta (from diffDocs's `integrity` tuples) is what
+ * makes `changed` true for an image/table/callout/link count change that diffs
+ * to zero text — closing a verify blind spot for insert_image, delete_node on a
+ * table, etc.
+ */
+export function summarizeChange(before, after) {
+    try {
+        const diff = diffDocs(before, after);
+        // Per-mark-type delta: include a type only when its count actually changed.
+        const beforeMarks = markCounts(before);
+        const afterMarks = markCounts(after);
+        const marks = {};
+        for (const type of new Set([
+            ...Object.keys(beforeMarks),
+            ...Object.keys(afterMarks),
+        ])) {
+            const b = beforeMarks[type] || 0;
+            const a = afterMarks[type] || 0;
+            if (b !== a)
+                marks[type] = [b, a];
+        }
+        // Structural integrity delta from diffDocs: count-based [old,new] tuples for
+        // images/links/tables/callouts. Include a type only when old != new.
+        const integrity = diff.integrity;
+        const structure = {};
+        const countTypes = [
+            "images",
+            "links",
+            "tables",
+            "callouts",
+        ];
+        for (const type of countTypes) {
+            const [b, a] = integrity[type];
+            if (b !== a)
+                structure[type] = [b, a];
+        }
+        const textInserted = diff.summary.inserted;
+        const textDeleted = diff.summary.deleted;
+        const blocksChanged = diff.summary.blocksChanged;
+        const hasMarkDelta = Object.keys(marks).length > 0;
+        const hasStructureDelta = Object.keys(structure).length > 0;
+        // VALUE-based change decision: ignore JSON key-order no-ops entirely.
+        const changed = textInserted > 0 ||
+            textDeleted > 0 ||
+            blocksChanged > 0 ||
+            hasMarkDelta ||
+            hasStructureDelta;
+        if (!changed) {
+            return {
+                changed: false,
+                textInserted: 0,
+                textDeleted: 0,
+                blocksChanged: 0,
+                marks: {},
+                summary: "no content change",
+            };
+        }
+        const parts = [];
+        // Only mention text/blocks when they actually changed (avoid a misleading
+        // "+0/-0 chars, 0 block(s)" prefix on a pure mark/structure change).
+        if (textInserted > 0 || textDeleted > 0 || blocksChanged > 0) {
+            parts.push(`+${textInserted}/-${textDeleted} chars, ${blocksChanged} block(s)`);
+        }
+        const markParts = Object.entries(marks).map(([type, [b, a]]) => `${type} ${b}→${a}`);
+        if (markParts.length > 0)
+            parts.push(`marks: ${markParts.join(", ")}`);
+        const structureParts = Object.entries(structure).map(([type, [b, a]]) => `${type} ${b}→${a}`);
+        if (structureParts.length > 0)
+            parts.push(structureParts.join(", "));
+        // `changed` is true here, so at least one group is present and parts is non-empty.
+        const summary = `changed: ${parts.join("; ")}`;
+        const report = {
+            changed: true,
+            textInserted,
+            textDeleted,
+            blocksChanged,
+            marks,
+            summary,
+        };
+        if (hasStructureDelta)
+            report.structure = structure;
+        return report;
+    }
+    catch {
+        // A pathological pair must never break a write: degrade to a minimal report.
+        return {
+            changed: true,
+            textInserted: 0,
+            textDeleted: 0,
+            blocksChanged: 0,
+            marks: {},
+            summary: "changed (diff unavailable)",
+        };
+    }
+}
