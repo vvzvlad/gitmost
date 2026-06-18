@@ -124,6 +124,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
       <Menu shadow="md" width={200}>
         <Menu.Target>
           <ActionIcon
+            size={20}
             variant="subtle"
             color="gray"
             className={classes.actionIcon}

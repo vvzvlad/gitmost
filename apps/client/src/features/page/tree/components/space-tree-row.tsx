@@ -273,6 +273,7 @@ function CreateNode({
 
   return (
     <ActionIcon
+      size={20}
       variant="subtle"
       color="gray"
       className={classes.actionIcon}

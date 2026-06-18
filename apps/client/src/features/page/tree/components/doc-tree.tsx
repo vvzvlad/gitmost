@@ -510,6 +510,12 @@ function DocTreeInner<T extends object>(
                 top: 0,
                 left: 0,
                 width: '100%',
+                // Give the row slot the exact virtualizer stride height so the
+                // inner highlight can fill and vertically center within it.
+                // Without a definite height here, `.node`'s `height: 100%`
+                // collapses to content height and the selection pill ends up
+                // top-aligned (asymmetric) inside the stride.
+                height: rowHeight,
                 transform: `translateY(${virtualItem.start}px)`,
               }}
             >
