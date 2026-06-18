@@ -947,6 +947,8 @@
   "Try a different search term.": "Try a different search term.",
   "Try again": "Try again",
   "Untitled chat": "Untitled chat",
+  "Export chat": "Export chat",
+  "You": "You",
   "What can I help you with?": "What can I help you with?",
   "Are you sure you want to revoke this {{credential}}": "Are you sure you want to revoke this {{credential}}",
   "Automatically provision users and groups from your identity provider via SCIM.": "Automatically provision users and groups from your identity provider via SCIM.",

@@ -10,6 +10,7 @@ import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
   IconChevronDown,
+  IconFileExport,
   IconGripVertical,
   IconMinus,
   IconPlus,
@@ -33,6 +34,7 @@ import {
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
+import { exportChatAsMarkdown } from "@/features/ai-chat/utils/export-chat.ts";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
 
 // Default window geometry (from the GitmostAgent.jsx design).
@@ -153,6 +155,26 @@ export default function AiChatWindow() {
     if (activeChatId === null) adoptNewChat.current = true;
     queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
   }, [activeChatId, queryClient]);
+
+  // The active chat object (for its title) and an export gate: only enable the
+  // export button when an existing chat with loaded persisted rows is active.
+  const activeChat = useMemo(
+    () => chats?.items?.find((c) => c.id === activeChatId) ?? null,
+    [chats, activeChatId],
+  );
+  const canExport = !!activeChatId && !!messageRows && messageRows.length > 0;
+
+  // Build a Markdown export from the already-loaded persisted rows (no network
+  // call) and trigger a browser download. The download dialog is the feedback.
+  const handleExport = useCallback(() => {
+    if (!activeChatId || !messageRows || messageRows.length === 0) return;
+    exportChatAsMarkdown({
+      title: activeChat?.title ?? null,
+      chatId: activeChatId,
+      rows: messageRows,
+      t,
+    });
+  }, [activeChatId, messageRows, activeChat, t]);
 
   // When awaiting a new chat's id, adopt the most-recent chat (the list is
   // ordered newest-first) once it appears.
@@ -308,6 +330,17 @@ export default function AiChatWindow() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {canExport && (
+            <button
+              type="button"
+              className={classes.headerBtn}
+              title={t("Export chat")}
+              aria-label={t("Export chat")}
+              onClick={handleExport}
+            >
+              <IconFileExport size={14} />
+            </button>
+          )}
           <button
             type="button"
             className={classes.headerBtn}
