@@ -60,6 +60,8 @@ pnpm --filter server migration:codegen                   # regenerate src/databa
 ```
 Migration files live in `apps/server/src/database/migrations/` and are named `YYYYMMDDThhmmss-description.ts`. Fork-specific migrations only **add** tables (`page_embeddings`, `ai_chats`, `ai_chat_messages`, `ai_provider_credentials`, `ai_mcp_servers`) and nullable columns — never drop/rewrite Docmost data.
 
+**Migration ordering — always check when merging branches/features.** Kysely runs migrations in **alphabetical (= timestamp) order** and refuses to start if a *new* migration sorts **before** one already applied to the DB (`corrupted migrations: ... must always have a name that comes alphabetically after the last executed migration`). When you merge a branch or land a feature, verify your migration's timestamp still sorts **after every migration that may already be applied on the target** (`/bin/ls -1 apps/server/src/database/migrations | sort | tail`). Branches developed in parallel routinely break this: a feature branch adds `…T130000-…`, `main` meanwhile ships and deploys `…T150000-…`, and after the merge the older-timestamped file is rejected at boot. **Fix = rename your migration to a timestamp after the latest one already in the target** (content unchanged — the filename is the ordering key), then rebuild so the compiled `dist/database/migrations/` picks up the new name.
+
 ## Architecture — the big picture
 
 ### Two server processes
