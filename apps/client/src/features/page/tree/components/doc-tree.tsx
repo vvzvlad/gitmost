@@ -122,7 +122,11 @@ function DocTreeInner<T extends object>(
     selectedId,
     renderRow,
     indentPerLevel = 8,
-    rowHeight = 32,
+    // Compact vertical density: each virtualized row occupies exactly this
+    // many px (the virtualizer stride). Row content is ~22px (18px icon /
+    // 14px text / 20px action icons), so 26px keeps a small, even gap between
+    // nodes without clipping. Lower => denser tree.
+    rowHeight = 26,
     onMove,
     onToggle,
     onSelect,
