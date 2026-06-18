@@ -161,59 +161,53 @@ export class AiService {
   }
 
   /**
-   * Cheap connectivity check for the "Test connection" button. Probes the
-   * configured chat model (a one-word generation) AND the configured embeddings
-   * model (embedding a tiny string) independently:
-   *  - a probe is skipped when that capability is not configured (its
-   *    NotConfigured exception), so a chat-only or embeddings-only workspace
-   *    still tests fine;
-   *  - any real failure returns ok:false with the provider's own cause
-   *    (statusCode + truncated response body via describeProviderError),
-   *    prefixed Chat: / Embeddings: so the failing side is obvious;
-   *  - if neither capability is configured, reports "not configured".
+   * Cheap connectivity check for a single "Test endpoint" button. Probes ONLY
+   * the requested capability so each card in the UI surfaces its own result:
+   *  - `chat`: a one-word generation against the configured chat model;
+   *  - `embeddings`: embedding a tiny string against the embedding model.
+   *
+   * A capability that is not configured returns a plain "… is not configured"
+   * message; any real failure returns ok:false with the provider's own cause
+   * (statusCode + truncated response body via describeProviderError). The
+   * decrypted key is never logged or returned — AI SDK error fields do not carry
+   * it, and the resolved config is never dumped.
    *
    * Probing embeddings here catches a misconfigured embeddings endpoint (e.g.
    * one returning non-JSON, which the background RAG indexer would otherwise hit
    * as an opaque "Invalid JSON response") at config time instead of silently
-   * during indexing. The decrypted key is never logged or returned — AI SDK
-   * error fields do not carry it, and the resolved config is never dumped.
+   * during indexing.
    */
   async testConnection(
     workspaceId: string,
+    capability: 'chat' | 'embeddings' = 'chat',
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    let probed = false;
+    if (capability === 'embeddings') {
+      try {
+        await this.embedTexts(workspaceId, ['ping']);
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof AiEmbeddingNotConfiguredException) {
+          return { ok: false, error: 'Embeddings are not configured' };
+        }
+        this.logger.error('AI embedding test connection failed', err as Error);
+        return { ok: false, error: describeProviderError(err) };
+      }
+    }
 
-    // Chat probe — only when a chat model is configured.
+    // Default: chat probe.
     try {
       const model = await this.getChatModel(workspaceId);
       // maxOutputTokens keeps the probe cheap and avoids providers (e.g.
       // OpenRouter) reserving/charging for the model's full max-token budget,
       // which would 402 on a key with limited credit.
       await generateText({ model, prompt: 'ping', maxOutputTokens: 16 });
-      probed = true;
+      return { ok: true };
     } catch (err) {
-      if (!(err instanceof AiNotConfiguredException)) {
-        this.logger.error('AI chat test connection failed', err as Error);
-        return { ok: false, error: `Chat: ${describeProviderError(err)}` };
+      if (err instanceof AiNotConfiguredException) {
+        return { ok: false, error: 'Chat is not configured' };
       }
-      // Chat not configured: skip — embeddings may still be configured.
+      this.logger.error('AI chat test connection failed', err as Error);
+      return { ok: false, error: describeProviderError(err) };
     }
-
-    // Embedding probe — only when an embedding model is configured.
-    try {
-      await this.embedTexts(workspaceId, ['ping']);
-      probed = true;
-    } catch (err) {
-      if (!(err instanceof AiEmbeddingNotConfiguredException)) {
-        this.logger.error('AI embedding test connection failed', err as Error);
-        return { ok: false, error: `Embeddings: ${describeProviderError(err)}` };
-      }
-      // Embeddings not configured: skip.
-    }
-
-    if (!probed) {
-      return { ok: false, error: 'AI provider not configured' };
-    }
-    return { ok: true };
   }
 }

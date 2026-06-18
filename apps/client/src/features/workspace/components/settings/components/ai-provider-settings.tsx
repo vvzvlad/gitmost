@@ -1,47 +1,84 @@
 import { useEffect, useState } from "react";
 import { z } from "zod/v4";
 import {
-  Alert,
+  Anchor,
+  Badge,
+  Box,
   Button,
   Group,
+  Modal,
+  Paper,
   PasswordInput,
-  Select,
   Stack,
+  Switch,
   Text,
   Textarea,
   TextInput,
+  useMantineTheme,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
+import { useDisclosure } from "@mantine/hooks";
 import { zod4Resolver } from "mantine-form-zod-resolver";
-import { IconCheck, IconX } from "@tabler/icons-react";
+import { IconPencil } from "@tabler/icons-react";
+import { useAtom } from "jotai";
+import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
 import useUserRole from "@/hooks/use-user-role.tsx";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
+import { updateWorkspace } from "@/features/workspace/services/workspace-service.ts";
 import {
   useAiSettingsQuery,
   useReindexAiEmbeddingsMutation,
   useTestAiConnectionMutation,
   useUpdateAiSettingsMutation,
 } from "@/features/workspace/queries/ai-settings-query.ts";
-import {
-  AiDriver,
-  IAiSettingsUpdate,
-} from "@/features/workspace/services/ai-settings-service.ts";
+import { IAiSettingsUpdate } from "@/features/workspace/services/ai-settings-service.ts";
+import AiMcpServers from "./ai-mcp-servers.tsx";
 
+// No driver field: every endpoint is OpenAI-compatible, so the form carries only
+// the user-editable fields. `apiKey` / `embeddingApiKey` are write-only buffers
+// (empty means "leave unchanged" unless explicitly cleared).
 const formSchema = z.object({
-  driver: z.enum(["openai", "gemini", "ollama"]),
   chatModel: z.string(),
   embeddingModel: z.string(),
   baseUrl: z.string(),
   // Embedding-specific base URL. Empty means "use the chat base URL".
   embeddingBaseUrl: z.string(),
   systemPrompt: z.string(),
-  // Write-only key buffer. Empty string means "do not change" (unless explicitly cleared).
   apiKey: z.string(),
-  // Write-only embedding key buffer. Same semantics as `apiKey`.
   embeddingApiKey: z.string(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
+
+// Status of an endpoint card, drives the little status dot color.
+type CardStatus = "ok" | "error" | "idle";
+
+// Resolve a "Base URL + path" hint defensively: trim a single trailing slash
+// off the base, then append the path. Empty base falls back to `fallback`
+// (the chat base URL for the embedding/voice endpoints). Purely cosmetic.
+function resolveUrl(base: string, path: string, fallback = ""): string {
+  const trimmed = (base.trim() || fallback.trim()).replace(/\/$/, "");
+  return `${trimmed}${path}`;
+}
+
+// Small colored dot used in each card header.
+function StatusDot({ status }: { status: CardStatus }) {
+  const theme = useMantineTheme();
+  const color =
+    status === "ok"
+      ? theme.colors.green[6]
+      : status === "error"
+        ? theme.colors.red[6]
+        : theme.colors.gray[5];
+  return (
+    <Box
+      w={9}
+      h={9}
+      style={{ borderRadius: "50%", background: color, flex: "none" }}
+    />
+  );
+}
 
 export default function AiProviderSettings() {
   const { t } = useTranslation();
@@ -50,8 +87,22 @@ export default function AiProviderSettings() {
   // Only admins may read the (masked) AI settings; the server enforces this too.
   const { data: settings, isLoading } = useAiSettingsQuery(isAdmin);
   const updateMutation = useUpdateAiSettingsMutation();
-  const testMutation = useTestAiConnectionMutation();
   const reindexMutation = useReindexAiEmbeddingsMutation();
+
+  // Two independent test mutations so each card has its own loading + result.
+  const chatTest = useTestAiConnectionMutation();
+  const embedTest = useTestAiConnectionMutation();
+
+  // Workspace-level feature toggles live in the card headers.
+  const [workspace, setWorkspace] = useAtom(workspaceAtom);
+  const [chatEnabled, setChatEnabled] = useState<boolean>(
+    workspace?.settings?.ai?.chat ?? false,
+  );
+  const [searchEnabled, setSearchEnabled] = useState<boolean>(
+    workspace?.settings?.ai?.search ?? false,
+  );
+  const [chatToggleLoading, setChatToggleLoading] = useState(false);
+  const [searchToggleLoading, setSearchToggleLoading] = useState(false);
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -61,10 +112,12 @@ export default function AiProviderSettings() {
   const [hasEmbeddingApiKey, setHasEmbeddingApiKey] = useState(false);
   const [embeddingKeyCleared, setEmbeddingKeyCleared] = useState(false);
 
+  // Modal for the (large) system message editor.
+  const [promptOpened, promptHandlers] = useDisclosure(false);
+
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
     initialValues: {
-      driver: "openai",
       chatModel: "",
       embeddingModel: "",
       baseUrl: "",
@@ -75,11 +128,11 @@ export default function AiProviderSettings() {
     },
   });
 
-  // Hydrate the form once the masked settings load.
+  // Hydrate the form once the masked settings load. We ignore `settings.driver`
+  // entirely — the driver is always "openai".
   useEffect(() => {
     if (!settings) return;
     form.setValues({
-      driver: settings.driver ?? "openai",
       chatModel: settings.chatModel ?? "",
       embeddingModel: settings.embeddingModel ?? "",
       baseUrl: settings.baseUrl ?? "",
@@ -93,23 +146,19 @@ export default function AiProviderSettings() {
     setKeyCleared(false);
     setHasEmbeddingApiKey(settings.hasEmbeddingApiKey);
     setEmbeddingKeyCleared(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
-
-  const driver = form.values.driver as AiDriver;
-  // Ollama runs locally and needs no API key.
-  const showApiKey = driver === "openai" || driver === "gemini";
-  // OpenAI and Ollama accept a custom base URL; Gemini does not.
-  const showBaseUrl = driver === "openai" || driver === "ollama";
 
   function buildPayload(values: FormValues): IAiSettingsUpdate {
     const payload: IAiSettingsUpdate = {
-      driver: values.driver,
+      // Everything is OpenAI-compatible.
+      driver: "openai",
       chatModel: values.chatModel,
       embeddingModel: values.embeddingModel,
-      // Send the base URLs only for providers that use them. The embedding base
-      // URL is optional; empty falls back to the chat base URL server-side.
-      baseUrl: showBaseUrl ? values.baseUrl : "",
-      embeddingBaseUrl: showBaseUrl ? values.embeddingBaseUrl : "",
+      // The embedding base URL is optional; empty falls back to the chat base
+      // URL server-side.
+      baseUrl: values.baseUrl,
+      embeddingBaseUrl: values.embeddingBaseUrl,
       systemPrompt: values.systemPrompt,
     };
 
@@ -117,19 +166,17 @@ export default function AiProviderSettings() {
     //   - typed a value -> set it
     //   - explicitly cleared -> send '' to clear
     //   - untouched -> omit the key entirely (leave unchanged)
-    if (showApiKey) {
-      if (values.apiKey.length > 0) {
-        payload.apiKey = values.apiKey;
-      } else if (keyCleared) {
-        payload.apiKey = "";
-      }
+    if (values.apiKey.length > 0) {
+      payload.apiKey = values.apiKey;
+    } else if (keyCleared) {
+      payload.apiKey = "";
+    }
 
-      // Same write-only semantics for the embedding-specific key.
-      if (values.embeddingApiKey.length > 0) {
-        payload.embeddingApiKey = values.embeddingApiKey;
-      } else if (embeddingKeyCleared) {
-        payload.embeddingApiKey = "";
-      }
+    // Same write-only semantics for the embedding-specific key.
+    if (values.embeddingApiKey.length > 0) {
+      payload.embeddingApiKey = values.embeddingApiKey;
+    } else if (embeddingKeyCleared) {
+      payload.embeddingApiKey = "";
     }
 
     return payload;
@@ -159,176 +206,426 @@ export default function AiProviderSettings() {
     form.setFieldValue("embeddingApiKey", "");
   }
 
-  const driverOptions = [
-    { value: "openai", label: "OpenAI" },
-    { value: "gemini", label: "Gemini" },
-    { value: "ollama", label: "Ollama" },
-  ];
+  // Optimistic toggle for the "AI chat" feature (settings.ai.chat).
+  async function handleToggleChat(value: boolean) {
+    setChatToggleLoading(true);
+    const previous = chatEnabled;
+    setChatEnabled(value);
+    try {
+      const updated = await updateWorkspace({ aiChat: value });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, chat: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setChatEnabled(previous); // revert on failure
+      // Surface the server-side error message (e.g. missing pgvector) instead of
+      // a generic fallback, mirroring useUpdateAiSettingsMutation.
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setChatToggleLoading(false);
+    }
+  }
 
-  const testResult = testMutation.data;
+  // Optimistic toggle for the "Semantic search" feature (settings.ai.search).
+  // Enabling can fail server-side when pgvector is missing — the error
+  // notification surfaces that and we revert.
+  async function handleToggleSearch(value: boolean) {
+    setSearchToggleLoading(true);
+    const previous = searchEnabled;
+    setSearchEnabled(value);
+    try {
+      const updated = await updateWorkspace({ aiSearch: value });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, search: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setSearchEnabled(previous); // revert on failure
+      // Surface the server-side error message (e.g. missing pgvector) instead of
+      // a generic fallback, mirroring useUpdateAiSettingsMutation.
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setSearchToggleLoading(false);
+    }
+  }
+
+  // Admins only — match the previous behavior.
+  if (!isAdmin) {
+    return (
+      <Text size="sm" c="dimmed">
+        {t("Only workspace admins can manage AI provider settings.")}
+      </Text>
+    );
+  }
+
+  const chatStatus: CardStatus = chatTest.data
+    ? chatTest.data.ok
+      ? "ok"
+      : "error"
+    : "idle";
+  const embedStatus: CardStatus = embedTest.data
+    ? embedTest.data.ok
+      ? "ok"
+      : "error"
+    : "idle";
+
+  const chatResolved = resolveUrl(form.values.baseUrl, "/chat/completions");
+  const embedResolved = resolveUrl(
+    form.values.embeddingBaseUrl,
+    "/embeddings",
+    form.values.baseUrl,
+  );
+
+  const monoFont = "ui-monospace, Menlo, monospace";
 
   return (
     <Stack mt="sm">
-      <Select
-        label={t("Provider")}
-        data={driverOptions}
-        allowDeselect={false}
-        disabled={!isAdmin || isLoading}
-        {...form.getInputProps("driver")}
-      />
+      {/* Section header */}
+      <Group justify="space-between" align="center">
+        <Text fw={700} size="lg">
+          {t("Endpoints")}
+        </Text>
+        <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+          {t("where we fetch models")}
+        </Text>
+      </Group>
+      <Text size="sm" c="dimmed" mt={-8}>
+        {t(
+          "All endpoints are OpenAI-compatible. Point the Base URL at OpenAI, OpenRouter, a local Ollama, or any self-hosted server.",
+        )}
+      </Text>
 
-      {showApiKey && (
-        <PasswordInput
-          label={t("API key")}
-          // Placeholder hints whether a key is already stored; the value is never shown.
-          placeholder={hasApiKey ? t("•••• set") : ""}
-          readOnly={!isAdmin}
-          autoComplete="off"
-          {...form.getInputProps("apiKey")}
-        />
-      )}
-
-      {showApiKey && isAdmin && hasApiKey && (
-        <Group justify="flex-start" mt={-8}>
-          <Button
-            variant="subtle"
-            size="compact-sm"
-            color="red"
-            onClick={handleClearKey}
-          >
-            {t("Clear key")}
-          </Button>
+      {/* Card 1 — Chat / LLM (root endpoint) */}
+      <Paper withBorder radius="md" p="lg">
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Group gap="xs" align="center" wrap="nowrap">
+            <StatusDot status={chatStatus} />
+            <Text fw={600}>{t("Chat / LLM")}</Text>
+            <Badge size="sm" variant="light" color="gray">
+              {t("root")}
+            </Badge>
+          </Group>
+          <Switch
+            label={t("AI chat")}
+            labelPosition="left"
+            checked={chatEnabled}
+            disabled={chatToggleLoading}
+            onChange={(e) => handleToggleChat(e.currentTarget.checked)}
+          />
         </Group>
-      )}
+        <Text size="xs" c="dimmed" mt={4} mb="md">
+          {t(
+            "/v1/chat/completions · root endpoint — Embeddings and Voice inherit its URL and key",
+          )}
+        </Text>
 
-      {showBaseUrl && (
+        <Group grow align="flex-start">
+          <TextInput
+            label={t("Model")}
+            disabled={isLoading}
+            {...form.getInputProps("chatModel")}
+          />
+          <Stack gap={4}>
+            <PasswordInput
+              label={t("API key")}
+              placeholder={hasApiKey ? t("•••• set") : ""}
+              autoComplete="off"
+              {...form.getInputProps("apiKey")}
+            />
+            {hasApiKey && (
+              <Anchor component="button" type="button" c="red" size="xs" onClick={handleClearKey}>
+                {t("Clear")}
+              </Anchor>
+            )}
+          </Stack>
+        </Group>
+
         <TextInput
+          mt="sm"
           label={t("Base URL")}
-          readOnly={!isAdmin}
+          disabled={isLoading}
           {...form.getInputProps("baseUrl")}
         />
-      )}
+        <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
+          {t("Resolves to {{url}}", { url: chatResolved })}
+        </Text>
 
-      <TextInput
-        label={t("Chat model")}
-        readOnly={!isAdmin}
-        {...form.getInputProps("chatModel")}
-      />
+        <Group mt="md" align="center">
+          <Button
+            variant="default"
+            size="sm"
+            loading={chatTest.isPending}
+            onClick={() => chatTest.mutate("chat")}
+          >
+            {t("Test endpoint")}
+          </Button>
+          {chatTest.data &&
+            (chatTest.data.ok ? (
+              <Text size="sm" c="green">
+                {t("Connection successful")}
+              </Text>
+            ) : (
+              <Text size="sm" c="red">
+                {chatTest.data.error || t("Connection failed")}
+              </Text>
+            ))}
+        </Group>
 
-      <TextInput
-        label={t("Embedding model")}
-        readOnly={!isAdmin}
-        {...form.getInputProps("embeddingModel")}
-      />
+        {/* Footer: system message editor */}
+        <Box
+          mt="md"
+          mx="calc(var(--mantine-spacing-lg) * -1)"
+          mb="calc(var(--mantine-spacing-lg) * -1)"
+          px="lg"
+          py="md"
+          style={{
+            borderTop: "1px solid var(--mantine-color-default-border)",
+            background: "var(--mantine-color-default-hover)",
+            borderRadius: "0 0 var(--mantine-radius-md) var(--mantine-radius-md)",
+          }}
+        >
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Stack gap={0}>
+              <Text fw={600} size="sm">
+                {t("System message")}
+              </Text>
+              <Text size="xs" c="dimmed">
+                {t("shared prompt · safety framework appended automatically")}
+              </Text>
+            </Stack>
+            <Button
+              variant="default"
+              size="xs"
+              leftSection={<IconPencil size={14} />}
+              onClick={promptHandlers.open}
+            >
+              {t("Edit")}
+            </Button>
+          </Group>
+        </Box>
+      </Paper>
 
-      {showBaseUrl && (
+      {/* Card 2 — Embeddings */}
+      <Paper withBorder radius="md" p="lg">
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Group gap="xs" align="center" wrap="nowrap">
+            <StatusDot status={embedStatus} />
+            <Text fw={600}>{t("Embeddings")}</Text>
+          </Group>
+          <Switch
+            label={t("Semantic search")}
+            labelPosition="left"
+            checked={searchEnabled}
+            disabled={searchToggleLoading}
+            onChange={(e) => handleToggleSearch(e.currentTarget.checked)}
+          />
+        </Group>
+        <Text size="xs" c="dimmed" mt={4} mb="md">
+          {t("/v1/embeddings · embeds pages so semantic search can find them")}
+        </Text>
+
+        <Group grow align="flex-start">
+          <TextInput
+            label={t("Model")}
+            disabled={isLoading}
+            {...form.getInputProps("embeddingModel")}
+          />
+          <Stack gap={4}>
+            <PasswordInput
+              label={t("Embedding API key")}
+              placeholder={
+                hasEmbeddingApiKey
+                  ? t("•••• set")
+                  : t("Leave empty to use the chat API key")
+              }
+              autoComplete="off"
+              {...form.getInputProps("embeddingApiKey")}
+            />
+            {hasEmbeddingApiKey && (
+              <Anchor
+                component="button"
+                type="button"
+                c="red"
+                size="xs"
+                onClick={handleClearEmbeddingKey}
+              >
+                {t("Clear")}
+              </Anchor>
+            )}
+          </Stack>
+        </Group>
+
         <TextInput
-          label={t("Embedding base URL")}
+          mt="sm"
+          label={t("Base URL")}
           placeholder={t("Leave empty to use the chat base URL")}
-          readOnly={!isAdmin}
+          disabled={isLoading}
           {...form.getInputProps("embeddingBaseUrl")}
         />
-      )}
+        <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
+          {t("Resolves to {{url}}", { url: embedResolved })}
+        </Text>
 
-      {showApiKey && (
-        <PasswordInput
-          label={t("Embedding API key")}
-          // Placeholder hints whether a dedicated key is stored and the fallback;
-          // the value is never shown.
-          placeholder={
-            hasEmbeddingApiKey
-              ? t("•••• set")
-              : t("Leave empty to use the chat API key")
-          }
-          readOnly={!isAdmin}
-          autoComplete="off"
-          {...form.getInputProps("embeddingApiKey")}
-        />
-      )}
-
-      {showApiKey && isAdmin && hasEmbeddingApiKey && (
-        <Group justify="flex-start" mt={-8}>
+        <Group mt="md" align="center">
           <Button
-            variant="subtle"
-            size="compact-sm"
-            color="red"
-            onClick={handleClearEmbeddingKey}
+            variant="default"
+            size="sm"
+            loading={embedTest.isPending}
+            onClick={() => embedTest.mutate("embeddings")}
           >
-            {t("Clear key")}
+            {t("Test endpoint")}
           </Button>
+          {embedTest.data &&
+            (embedTest.data.ok ? (
+              <Text size="sm" c="green">
+                {t("Connection successful")}
+              </Text>
+            ) : (
+              <Text size="sm" c="red">
+                {embedTest.data.error || t("Connection failed")}
+              </Text>
+            ))}
         </Group>
-      )}
 
-      {settings && (
-        <Group justify="space-between" mt={-8}>
-          <Text size="sm" c="dimmed">
-            {t("Indexed {{indexed}} of {{total}} pages", {
-              indexed: settings.indexedPages ?? 0,
-              total: settings.totalPages ?? 0,
-            })}
+        {/* Footer: vector search / reindex */}
+        <Box
+          mt="md"
+          mx="calc(var(--mantine-spacing-lg) * -1)"
+          mb="calc(var(--mantine-spacing-lg) * -1)"
+          px="lg"
+          py="md"
+          style={{
+            borderTop: "1px solid var(--mantine-color-default-border)",
+            background: "var(--mantine-color-default-hover)",
+            borderRadius: "0 0 var(--mantine-radius-md) var(--mantine-radius-md)",
+          }}
+        >
+          <Text size="xs" c="dimmed" mb="xs">
+            {t("Vector search · requires pgvector")}
           </Text>
-          {isAdmin && (
+          <Group justify="space-between" align="center">
+            <Text size="sm" c="dimmed">
+              {t("Indexed {{indexed}} of {{total}} pages", {
+                indexed: settings?.indexedPages ?? 0,
+                total: settings?.totalPages ?? 0,
+              })}
+            </Text>
             <Button
               variant="subtle"
               size="compact-sm"
-              onClick={() => reindexMutation.mutate()}
               loading={reindexMutation.isPending}
+              onClick={() => reindexMutation.mutate()}
             >
               {t("Reindex now")}
             </Button>
+          </Group>
+        </Box>
+      </Paper>
+
+      {/* Card 3 — Voice / STT (disabled stub, not wired to the form/backend) */}
+      <Paper withBorder radius="md" p="lg" opacity={0.6}>
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Group gap="xs" align="center" wrap="nowrap">
+            <StatusDot status="idle" />
+            <Text fw={600}>{t("Voice / STT")}</Text>
+          </Group>
+          <Switch
+            label={t("Voice dictation")}
+            labelPosition="left"
+            checked={false}
+            disabled
+          />
+        </Group>
+        <Text size="xs" c="dimmed" mt={4} mb="md">
+          {t(
+            "/v1/audio/transcriptions · works with local whisper (speaches / faster-whisper-server)",
           )}
-        </Group>
-      )}
-
-      <Textarea
-        label={t("System message")}
-        description={t(
-          "A built-in safety framework is always appended.",
-        )}
-        autosize
-        minRows={3}
-        maxRows={10}
-        readOnly={!isAdmin}
-        {...form.getInputProps("systemPrompt")}
-      />
-
-      {testResult && (
-        <Alert
-          color={testResult.ok ? "green" : "red"}
-          icon={testResult.ok ? <IconCheck size={16} /> : <IconX size={16} />}
-        >
-          {testResult.ok
-            ? t("Connection successful")
-            : testResult.error || t("Connection failed")}
-        </Alert>
-      )}
-
-      {isAdmin && (
-        <Group>
-          <Button
-            type="button"
-            onClick={() => handleSubmit(form.values)}
-            disabled={updateMutation.isPending || !form.isValid()}
-            loading={updateMutation.isPending}
-          >
-            {t("Save")}
-          </Button>
-          <Button
-            type="button"
-            variant="default"
-            onClick={() => testMutation.mutate()}
-            loading={testMutation.isPending}
-          >
-            {t("Test connection")}
-          </Button>
-        </Group>
-      )}
-
-      {!isAdmin && (
-        <Text size="sm" c="dimmed">
-          {t("Only workspace admins can manage AI provider settings.")}
         </Text>
-      )}
+
+        <Group grow align="flex-start">
+          <TextInput label={t("Model")} value="" disabled readOnly />
+          <PasswordInput label={t("API key")} value="" disabled readOnly />
+        </Group>
+        <TextInput mt="sm" label={t("Base URL")} value="" disabled readOnly />
+
+        <Group mt="md">
+          <Button variant="default" size="sm" disabled>
+            {t("Test endpoint")}
+          </Button>
+        </Group>
+
+        <Box
+          mt="md"
+          mx="calc(var(--mantine-spacing-lg) * -1)"
+          mb="calc(var(--mantine-spacing-lg) * -1)"
+          px="lg"
+          py="md"
+          style={{
+            borderTop: "1px solid var(--mantine-color-default-border)",
+            background: "var(--mantine-color-default-hover)",
+            borderRadius: "0 0 var(--mantine-radius-md) var(--mantine-radius-md)",
+          }}
+        >
+          <Text size="xs" c="dimmed">
+            {t("Voice dictation is not available yet.")}
+          </Text>
+        </Box>
+      </Paper>
+
+      {/* Nested: external MCP tools the agent calls out to */}
+      <AiMcpServers />
+
+      {/* Save all endpoint settings */}
+      <Group>
+        <Button
+          type="button"
+          onClick={() => void handleSubmit(form.values).catch(() => {})}
+          disabled={updateMutation.isPending || !form.isValid()}
+          loading={updateMutation.isPending}
+        >
+          {t("Save endpoints")}
+        </Button>
+      </Group>
+
+      {/* System message editor modal (edits form state; persisted on Save) */}
+      <Modal
+        opened={promptOpened}
+        onClose={promptHandlers.close}
+        title={t("System message")}
+        size="lg"
+      >
+        <Stack>
+          <Textarea
+            autosize
+            minRows={6}
+            maxRows={20}
+            description={t("A built-in safety framework is always appended.")}
+            {...form.getInputProps("systemPrompt")}
+          />
+          <Group justify="flex-end">
+            <Button onClick={promptHandlers.close}>{t("Done")}</Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

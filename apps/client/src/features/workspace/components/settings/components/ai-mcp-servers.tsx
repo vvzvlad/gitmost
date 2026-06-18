@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ActionIcon,
   Badge,
+  Box,
   Button,
   Group,
   Modal,
@@ -75,71 +76,91 @@ export default function AiMcpServers() {
   }
 
   return (
-    <Stack mt="sm">
-      <Group justify="flex-start">
+    <Paper withBorder radius="md" p="lg">
+      {/* Header: status dot + title + "MCP client" badge + Add server */}
+      <Group justify="space-between" align="center" wrap="nowrap">
+        <Group gap="xs" align="center" wrap="nowrap">
+          <Box
+            w={9}
+            h={9}
+            bg="green.6"
+            style={{ borderRadius: "50%", flex: "none" }}
+          />
+          <Text fw={600}>{t("External tools")}</Text>
+          <Badge size="sm" variant="light" color="gray">
+            {t("Gitmost as MCP client")}
+          </Badge>
+        </Group>
         <Button
           leftSection={<IconPlus size={16} />}
           variant="default"
+          size="xs"
           onClick={openCreate}
         >
           {t("Add server")}
         </Button>
       </Group>
+      <Text size="xs" c="dimmed" mt={4}>
+        {t("Servers the agent calls out to.")}
+      </Text>
 
       {!isLoading && (!servers || servers.length === 0) && (
-        <Text size="sm" c="dimmed">
+        <Text size="sm" c="dimmed" mt="sm">
           {t("No external servers configured")}
         </Text>
       )}
 
-      <Stack gap="xs">
+      <Stack gap="xs" mt="sm">
         {servers?.map((server) => (
-          <Paper key={server.id} withBorder p="sm" radius="sm">
-            <Group justify="space-between" wrap="nowrap">
-              <Stack gap={2} style={{ minWidth: 0 }}>
-                <Group gap="xs">
-                  <Text fw={500} truncate>
-                    {server.name}
-                  </Text>
-                  <Badge size="xs" variant="light">
-                    {server.transport.toUpperCase()}
-                  </Badge>
-                </Group>
-                <Text size="xs" c="dimmed" truncate>
-                  {server.url}
+          <Group key={server.id} justify="space-between" wrap="nowrap">
+            <Stack gap={2} style={{ minWidth: 0 }}>
+              <Group gap="xs">
+                <Text fw={500} truncate>
+                  {server.name}
                 </Text>
-              </Stack>
-
-              <Group gap="xs" wrap="nowrap">
-                <Switch
-                  size="sm"
-                  checked={server.enabled}
-                  aria-label={t("Enabled")}
-                  onChange={(event) =>
-                    updateMutation.mutate({
-                      id: server.id,
-                      enabled: event.currentTarget.checked,
-                    })
-                  }
-                />
-                <ActionIcon
-                  variant="subtle"
-                  aria-label={t("Edit")}
-                  onClick={() => openEdit(server)}
-                >
-                  <IconPencil size={16} />
-                </ActionIcon>
-                <ActionIcon
-                  variant="subtle"
-                  color="red"
-                  aria-label={t("Delete")}
-                  onClick={() => confirmDelete(server)}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
+                <Badge size="xs" variant="light">
+                  {server.transport.toUpperCase()}
+                </Badge>
               </Group>
+              <Text
+                size="xs"
+                c="dimmed"
+                truncate
+                style={{ fontFamily: "ui-monospace, Menlo, monospace" }}
+              >
+                {server.url}
+              </Text>
+            </Stack>
+
+            <Group gap="xs" wrap="nowrap">
+              <Switch
+                size="sm"
+                checked={server.enabled}
+                aria-label={t("Enabled")}
+                onChange={(event) =>
+                  updateMutation.mutate({
+                    id: server.id,
+                    enabled: event.currentTarget.checked,
+                  })
+                }
+              />
+              <ActionIcon
+                variant="subtle"
+                aria-label={t("Edit")}
+                onClick={() => openEdit(server)}
+              >
+                <IconPencil size={16} />
+              </ActionIcon>
+              <ActionIcon
+                variant="subtle"
+                color="red"
+                aria-label={t("Delete")}
+                onClick={() => confirmDelete(server)}
+              >
+                <IconTrash size={16} />
+              </ActionIcon>
             </Group>
-          </Paper>
+          </Group>
         ))}
       </Stack>
 
@@ -156,6 +177,6 @@ export default function AiMcpServers() {
           onClose={close}
         />
       </Modal>
-    </Stack>
+    </Paper>
   );
 }

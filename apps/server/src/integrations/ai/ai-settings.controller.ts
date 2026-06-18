@@ -19,6 +19,7 @@ import {
 import { AiService } from './ai.service';
 import { AiSettingsService } from './ai-settings.service';
 import { UpdateAiSettingsDto } from './dto/update-ai-settings.dto';
+import { TestAiConnectionDto } from './dto/test-ai-connection.dto';
 
 /**
  * Admin-only AI provider settings (§6.4). Routes are POST to match the rest of
@@ -69,11 +70,12 @@ export class AiSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('test')
   async testConnection(
+    @Body() dto: TestAiConnectionDto,
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
   ) {
     this.assertAdmin(user, workspace);
-    return this.aiService.testConnection(workspace.id);
+    return this.aiService.testConnection(workspace.id, dto.capability);
   }
 
   @HttpCode(HttpStatus.OK)

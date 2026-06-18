@@ -12,6 +12,7 @@ import {
   IAiSettings,
   IAiSettingsUpdate,
   IAiTestResult,
+  AiTestCapability,
 } from "@/features/workspace/services/ai-settings-service.ts";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
@@ -49,8 +50,8 @@ export function useUpdateAiSettingsMutation() {
 }
 
 export function useTestAiConnectionMutation() {
-  return useMutation<IAiTestResult, Error, void>({
-    mutationFn: () => testAiConnection(),
+  return useMutation<IAiTestResult, Error, AiTestCapability>({
+    mutationFn: (capability) => testAiConnection(capability),
   });
 }
 
