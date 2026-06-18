@@ -1,17 +1,16 @@
 /**
- * Client-only Markdown exporter for an AI agent chat. Serializes the already
+ * Client-only Markdown builder for an AI agent chat. Serializes the already
  * persisted message rows (loaded via `useAiChatMessagesQuery`) into a single
- * Markdown document and triggers a browser download. NO network call is made
- * and NO server/DB code is touched — this reuses the rich "request internals"
- * (tool calls with input/output, per-message token usage, finish/error info)
- * that the chat already holds client-side.
+ * Markdown string suitable for copying to the clipboard. NO network call is
+ * made and NO server/DB code is touched — this reuses the rich "request
+ * internals" (tool calls with input/output, per-message token usage,
+ * finish/error info) that the chat already holds client-side.
  *
  * Only role labels and tool action labels are localized via the passed-in `t`
  * translator; the structural document words (Input/Output/Error/Tokens/...) are
- * plain English constants because the export is a technical artifact.
+ * plain English constants because the output is a technical artifact.
  */
 
-import { saveAs } from "file-saver";
 import type { IAiChatMessageRow } from "@/features/ai-chat/types/ai-chat.types.ts";
 import {
   ToolUiPart,
@@ -23,7 +22,7 @@ import {
 // Minimal translator signature compatible with react-i18next's `t`.
 type Translate = (key: string, values?: Record<string, unknown>) => string;
 
-interface ExportChatArgs {
+interface BuildChatMarkdownArgs {
   title: string | null;
   chatId: string;
   rows: IAiChatMessageRow[];
@@ -62,21 +61,6 @@ function fence(code: string, lang = ""): string {
   return `${delim}${lang}\n${code}\n${delim}`;
 }
 
-/**
- * Build a filesystem-safe slug from a chat title: lowercase, collapse any run
- * of non-alphanumeric characters to a single "-", trim stray dashes, cap the
- * length. Falls back to `chatId` when the title yields an empty slug.
- */
-function slugify(title: string | null, chatId: string): string {
-  const slug = (title ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50)
-    .replace(/-+$/g, "");
-  return slug.length > 0 ? slug : chatId;
-}
-
 /** Per-row token count, mirroring the header sum in ai-chat-window.tsx. */
 function rowTokens(usage: {
   inputTokens?: number;
@@ -92,7 +76,7 @@ function rowTokens(usage: {
  * Serialize a chat to a Markdown string. Pure (apart from `new Date()` for the
  * export timestamp), so it is straightforward to unit-test.
  */
-export function buildChatMarkdown(args: ExportChatArgs): string {
+export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
   const { title, chatId, rows, t } = args;
   const blocks: string[] = [];
 
@@ -178,17 +162,4 @@ export function buildChatMarkdown(args: ExportChatArgs): string {
 
   // Blank line between blocks so the Markdown renders cleanly.
   return blocks.join("\n\n");
-}
-
-/**
- * Build the Markdown, wrap it in a Blob, and trigger a browser download. The
- * file name is `gitmost-chat-<slug>-<YYYYMMDD>.md`.
- */
-export function exportChatAsMarkdown(args: ExportChatArgs): void {
-  const markdown = buildChatMarkdown(args);
-  const slug = slugify(args.title, args.chatId);
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const filename = `gitmost-chat-${slug}-${date}.md`;
-  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-  saveAs(blob, filename);
 }

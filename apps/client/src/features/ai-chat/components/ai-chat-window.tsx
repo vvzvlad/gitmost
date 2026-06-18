@@ -9,8 +9,9 @@ import {
 import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
+  IconCheck,
   IconChevronDown,
-  IconFileExport,
+  IconCopy,
   IconGripVertical,
   IconMinus,
   IconPlus,
@@ -34,7 +35,9 @@ import {
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
-import { exportChatAsMarkdown } from "@/features/ai-chat/utils/export-chat.ts";
+import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
+import { useClipboard } from "@/hooks/use-clipboard";
+import { notifications } from "@mantine/notifications";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
 
 // Default window geometry (from the GitmostAgent.jsx design).
@@ -90,6 +93,7 @@ function clampGeom(g: { left: number; top: number; width: number; height: number
  */
 export default function AiChatWindow() {
   const { t } = useTranslation();
+  const clipboard = useClipboard({ timeout: 500 });
   const queryClient = useQueryClient();
   const [windowOpen, setWindowOpen] = useAtom(aiChatWindowOpenAtom);
   const [activeChatId, setActiveChatId] = useAtom(activeAiChatIdAtom);
@@ -165,16 +169,19 @@ export default function AiChatWindow() {
   const canExport = !!activeChatId && !!messageRows && messageRows.length > 0;
 
   // Build a Markdown export from the already-loaded persisted rows (no network
-  // call) and trigger a browser download. The download dialog is the feedback.
-  const handleExport = useCallback(() => {
+  // call) and copy it to the clipboard. The "Copied" notification is the
+  // feedback.
+  const handleCopy = useCallback(() => {
     if (!activeChatId || !messageRows || messageRows.length === 0) return;
-    exportChatAsMarkdown({
+    const markdown = buildChatMarkdown({
       title: activeChat?.title ?? null,
       chatId: activeChatId,
       rows: messageRows,
       t,
     });
-  }, [activeChatId, messageRows, activeChat, t]);
+    clipboard.copy(markdown);
+    notifications.show({ message: t("Copied") });
+  }, [activeChatId, messageRows, activeChat, clipboard, t]);
 
   // When awaiting a new chat's id, adopt the most-recent chat (the list is
   // ordered newest-first) once it appears.
@@ -334,11 +341,11 @@ export default function AiChatWindow() {
             <button
               type="button"
               className={classes.headerBtn}
-              title={t("Export chat")}
-              aria-label={t("Export chat")}
-              onClick={handleExport}
+              title={t("Copy chat")}
+              aria-label={t("Copy chat")}
+              onClick={handleCopy}
             >
-              <IconFileExport size={14} />
+              {clipboard.copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
             </button>
           )}
           <button
