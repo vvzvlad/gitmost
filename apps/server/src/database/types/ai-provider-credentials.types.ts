@@ -14,6 +14,8 @@ export interface AiProviderCredentials {
   apiKeyEnc: string | null;
   // Encrypted, embedding-specific provider key. Falls back to apiKeyEnc when null.
   embeddingApiKeyEnc: string | null;
+  // Encrypted, STT-specific provider key. Falls back to apiKeyEnc when null.
+  sttApiKeyEnc: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
 }

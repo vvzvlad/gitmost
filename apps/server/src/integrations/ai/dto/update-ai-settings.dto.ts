@@ -4,10 +4,10 @@ import { AI_DRIVERS, AiDriver } from '../ai.types';
 /**
  * Admin update payload for the workspace AI provider settings.
  *
- * `apiKey` / `embeddingApiKey` are write-only (§8.2): provided → stored
- * encrypted, '' → cleared, absent → left untouched. They are NEVER returned by
- * any endpoint. The global ValidationPipe runs with `whitelist: true`, so
- * unknown fields are stripped.
+ * `apiKey` / `embeddingApiKey` / `sttApiKey` are write-only (§8.2): provided →
+ * stored encrypted, '' → cleared, absent → left untouched. They are NEVER
+ * returned by any endpoint. The global ValidationPipe runs with
+ * `whitelist: true`, so unknown fields are stripped.
  */
 export class UpdateAiSettingsDto {
   @IsOptional()
@@ -41,4 +41,16 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   embeddingApiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  sttModel?: string;
+
+  @IsOptional()
+  @IsString()
+  sttBaseUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  sttApiKey?: string;
 }

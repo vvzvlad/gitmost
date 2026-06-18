@@ -28,6 +28,9 @@ export interface UpdateAiSettingsInput {
   systemPrompt?: string;
   apiKey?: string;
   embeddingApiKey?: string;
+  sttModel?: string;
+  sttBaseUrl?: string;
+  sttApiKey?: string;
 }
 
 /**
@@ -113,6 +116,7 @@ export class AiSettingsService {
       driver: provider.driver,
       chatModel: provider.chatModel,
       embeddingModel: provider.embeddingModel,
+      sttModel: provider.sttModel,
       baseUrl: provider.baseUrl,
       systemPrompt: provider.systemPrompt,
     };
@@ -121,6 +125,10 @@ export class AiSettingsService {
     // base URL. URL is non-secret and relevant for ollama too, so set it
     // unconditionally.
     config.embeddingBaseUrl = provider.embeddingBaseUrl || provider.baseUrl;
+
+    // Effective STT base URL: the STT-specific value, else the chat base URL.
+    // Set unconditionally, same rationale as embeddingBaseUrl.
+    config.sttBaseUrl = provider.sttBaseUrl || provider.baseUrl;
 
     if (provider.driver !== 'ollama') {
       const creds = await this.aiProviderCredentialsRepo.find(
@@ -133,6 +141,10 @@ export class AiSettingsService {
       // Effective embedding key: the embedding-specific key, else the chat key.
       config.embeddingApiKey = creds?.embeddingApiKeyEnc
         ? this.secretBox.decryptSecret(creds.embeddingApiKeyEnc)
+        : config.apiKey;
+      // Effective STT key: the STT-specific key, else the chat key.
+      config.sttApiKey = creds?.sttApiKeyEnc
+        ? this.secretBox.decryptSecret(creds.sttApiKeyEnc)
         : config.apiKey;
     }
 
@@ -151,6 +163,7 @@ export class AiSettingsService {
 
     let hasApiKey = false;
     let hasEmbeddingApiKey = false;
+    let hasSttApiKey = false;
     if (provider.driver) {
       const creds = await this.aiProviderCredentialsRepo.find(
         workspaceId,
@@ -158,6 +171,7 @@ export class AiSettingsService {
       );
       hasApiKey = !!creds?.apiKeyEnc;
       hasEmbeddingApiKey = !!creds?.embeddingApiKeyEnc;
+      hasSttApiKey = !!creds?.sttApiKeyEnc;
     }
 
     // totalPages now counts only pages with embeddable content (non-empty text
@@ -174,9 +188,12 @@ export class AiSettingsService {
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,
       embeddingBaseUrl: provider.embeddingBaseUrl,
+      sttModel: provider.sttModel,
+      sttBaseUrl: provider.sttBaseUrl,
       systemPrompt: provider.systemPrompt,
       hasApiKey,
       hasEmbeddingApiKey,
+      hasSttApiKey,
       indexedPages,
       totalPages,
     };
@@ -197,7 +214,7 @@ export class AiSettingsService {
     workspaceId: string,
     dto: UpdateAiSettingsInput,
   ): Promise<MaskedAiSettings> {
-    const { apiKey, embeddingApiKey, ...nonSecret } = dto;
+    const { apiKey, embeddingApiKey, sttApiKey, ...nonSecret } = dto;
 
     // Persist non-secret provider fields (only those present in the partial).
     const providerPatch: Partial<AiProviderSettings> = {};
@@ -207,6 +224,8 @@ export class AiSettingsService {
       'embeddingModel',
       'baseUrl',
       'embeddingBaseUrl',
+      'sttModel',
+      'sttBaseUrl',
       'systemPrompt',
     ] as const) {
       if (nonSecret[key] !== undefined) {
@@ -222,7 +241,11 @@ export class AiSettingsService {
 
     // Key handling (write-only). Both keys share the same target driver and the
     // same "driver required" guard, resolved once.
-    if (apiKey !== undefined || embeddingApiKey !== undefined) {
+    if (
+      apiKey !== undefined ||
+      embeddingApiKey !== undefined ||
+      sttApiKey !== undefined
+    ) {
       const stored = await this.readProvider(workspaceId);
       const targetDriver = dto.driver ?? stored.driver;
       if (!targetDriver) {
@@ -258,6 +281,23 @@ export class AiSettingsService {
         } else {
           const enc = this.secretBox.encryptSecret(embeddingApiKey);
           await this.aiProviderCredentialsRepo.upsertEmbeddingKey(
+            workspaceId,
+            targetDriver,
+            enc,
+          );
+        }
+      }
+
+      // STT key.
+      if (sttApiKey !== undefined) {
+        if (sttApiKey === '') {
+          await this.aiProviderCredentialsRepo.clearSttKey(
+            workspaceId,
+            targetDriver,
+          );
+        } else {
+          const enc = this.secretBox.encryptSecret(sttApiKey);
+          await this.aiProviderCredentialsRepo.upsertSttKey(
             workspaceId,
             targetDriver,
             enc,

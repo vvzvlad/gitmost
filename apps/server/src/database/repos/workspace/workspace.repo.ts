@@ -239,7 +239,7 @@ export class WorkspaceRepo {
     // is a real jsonb object, never a double-encoded string. The CASE self-heals
     // workspaces whose settings.ai.provider was previously corrupted into an
     // array/string.
-    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'embeddingBaseUrl', 'systemPrompt'];
+    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'embeddingBaseUrl', 'sttModel', 'sttBaseUrl', 'systemPrompt'];
     const entries = Object.entries(provider).filter(
       ([k, v]) => v !== undefined && ALLOWED.includes(k),
     );

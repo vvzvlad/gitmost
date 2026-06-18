@@ -47,6 +47,10 @@ const formSchema = z.object({
   systemPrompt: z.string(),
   apiKey: z.string(),
   embeddingApiKey: z.string(),
+  // STT-specific fields. Empty base URL / key fall back to the chat ones.
+  sttModel: z.string(),
+  sttBaseUrl: z.string(),
+  sttApiKey: z.string(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -101,8 +105,12 @@ export default function AiProviderSettings() {
   const [searchEnabled, setSearchEnabled] = useState<boolean>(
     workspace?.settings?.ai?.search ?? false,
   );
+  const [dictationEnabled, setDictationEnabled] = useState<boolean>(
+    workspace?.settings?.ai?.dictation ?? false,
+  );
   const [chatToggleLoading, setChatToggleLoading] = useState(false);
   const [searchToggleLoading, setSearchToggleLoading] = useState(false);
+  const [dictationToggleLoading, setDictationToggleLoading] = useState(false);
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -111,6 +119,9 @@ export default function AiProviderSettings() {
   // Same, for the embedding-specific key.
   const [hasEmbeddingApiKey, setHasEmbeddingApiKey] = useState(false);
   const [embeddingKeyCleared, setEmbeddingKeyCleared] = useState(false);
+  // Same, for the STT-specific key.
+  const [hasSttApiKey, setHasSttApiKey] = useState(false);
+  const [sttKeyCleared, setSttKeyCleared] = useState(false);
 
   // Modal for the (large) system message editor.
   const [promptOpened, promptHandlers] = useDisclosure(false);
@@ -125,6 +136,9 @@ export default function AiProviderSettings() {
       systemPrompt: "",
       apiKey: "",
       embeddingApiKey: "",
+      sttModel: "",
+      sttBaseUrl: "",
+      sttApiKey: "",
     },
   });
 
@@ -140,12 +154,17 @@ export default function AiProviderSettings() {
       systemPrompt: settings.systemPrompt ?? "",
       apiKey: "",
       embeddingApiKey: "",
+      sttModel: settings.sttModel ?? "",
+      sttBaseUrl: settings.sttBaseUrl ?? "",
+      sttApiKey: "",
     });
     form.resetDirty();
     setHasApiKey(settings.hasApiKey);
     setKeyCleared(false);
     setHasEmbeddingApiKey(settings.hasEmbeddingApiKey);
     setEmbeddingKeyCleared(false);
+    setHasSttApiKey(settings.hasSttApiKey);
+    setSttKeyCleared(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
@@ -160,6 +179,10 @@ export default function AiProviderSettings() {
       baseUrl: values.baseUrl,
       embeddingBaseUrl: values.embeddingBaseUrl,
       systemPrompt: values.systemPrompt,
+      // The STT base URL is optional; empty falls back to the chat base URL
+      // server-side.
+      sttModel: values.sttModel,
+      sttBaseUrl: values.sttBaseUrl,
     };
 
     // Key semantics (never send the stored key back):
@@ -179,6 +202,13 @@ export default function AiProviderSettings() {
       payload.embeddingApiKey = "";
     }
 
+    // Same write-only semantics for the STT-specific key.
+    if (values.sttApiKey.length > 0) {
+      payload.sttApiKey = values.sttApiKey;
+    } else if (sttKeyCleared) {
+      payload.sttApiKey = "";
+    }
+
     return payload;
   }
 
@@ -191,6 +221,9 @@ export default function AiProviderSettings() {
     setHasEmbeddingApiKey(updated.hasEmbeddingApiKey);
     setEmbeddingKeyCleared(false);
     form.setFieldValue("embeddingApiKey", "");
+    setHasSttApiKey(updated.hasSttApiKey);
+    setSttKeyCleared(false);
+    form.setFieldValue("sttApiKey", "");
     form.resetDirty();
   }
 
@@ -204,6 +237,12 @@ export default function AiProviderSettings() {
     setEmbeddingKeyCleared(true);
     setHasEmbeddingApiKey(false);
     form.setFieldValue("embeddingApiKey", "");
+  }
+
+  function handleClearSttKey() {
+    setSttKeyCleared(true);
+    setHasSttApiKey(false);
+    form.setFieldValue("sttApiKey", "");
   }
 
   // Optimistic toggle for the "AI chat" feature (settings.ai.chat).
@@ -268,6 +307,34 @@ export default function AiProviderSettings() {
     }
   }
 
+  // Optimistic toggle for the "Voice dictation" feature (settings.ai.dictation).
+  async function handleToggleDictation(value: boolean) {
+    setDictationToggleLoading(true);
+    const previous = dictationEnabled;
+    setDictationEnabled(value);
+    try {
+      const updated = await updateWorkspace({ aiDictation: value });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, dictation: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setDictationEnabled(previous);
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setDictationToggleLoading(false);
+    }
+  }
+
   // Admins only — match the previous behavior.
   if (!isAdmin) {
     return (
@@ -292,6 +359,11 @@ export default function AiProviderSettings() {
   const embedResolved = resolveUrl(
     form.values.embeddingBaseUrl,
     "/embeddings",
+    form.values.baseUrl,
+  );
+  const sttResolved = resolveUrl(
+    form.values.sttBaseUrl,
+    "/audio/transcriptions",
     form.values.baseUrl,
   );
 
@@ -541,8 +613,8 @@ export default function AiProviderSettings() {
         </Box>
       </Paper>
 
-      {/* Card 3 — Voice / STT (disabled stub, not wired to the form/backend) */}
-      <Paper withBorder radius="md" p="lg" opacity={0.6}>
+      {/* Card 3 — Voice / STT */}
+      <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
             <StatusDot status="idle" />
@@ -551,8 +623,9 @@ export default function AiProviderSettings() {
           <Switch
             label={t("Voice dictation")}
             labelPosition="left"
-            checked={false}
-            disabled
+            checked={dictationEnabled}
+            disabled={dictationToggleLoading}
+            onChange={(e) => handleToggleDictation(e.currentTarget.checked)}
           />
         </Group>
         <Text size="xs" c="dimmed" mt={4} mb="md">
@@ -562,33 +635,46 @@ export default function AiProviderSettings() {
         </Text>
 
         <Group grow align="flex-start">
-          <TextInput label={t("Model")} value="" disabled readOnly />
-          <PasswordInput label={t("API key")} value="" disabled readOnly />
+          <TextInput
+            label={t("Model")}
+            disabled={isLoading}
+            {...form.getInputProps("sttModel")}
+          />
+          <Stack gap={4}>
+            <PasswordInput
+              label={t("API key")}
+              placeholder={
+                hasSttApiKey
+                  ? t("•••• set")
+                  : t("Leave empty to use the chat API key")
+              }
+              autoComplete="off"
+              {...form.getInputProps("sttApiKey")}
+            />
+            {hasSttApiKey && (
+              <Anchor
+                component="button"
+                type="button"
+                c="red"
+                size="xs"
+                onClick={handleClearSttKey}
+              >
+                {t("Clear")}
+              </Anchor>
+            )}
+          </Stack>
         </Group>
-        <TextInput mt="sm" label={t("Base URL")} value="" disabled readOnly />
 
-        <Group mt="md">
-          <Button variant="default" size="sm" disabled>
-            {t("Test endpoint")}
-          </Button>
-        </Group>
-
-        <Box
-          mt="md"
-          mx="calc(var(--mantine-spacing-lg) * -1)"
-          mb="calc(var(--mantine-spacing-lg) * -1)"
-          px="lg"
-          py="md"
-          style={{
-            borderTop: "1px solid var(--mantine-color-default-border)",
-            background: "var(--mantine-color-default-hover)",
-            borderRadius: "0 0 var(--mantine-radius-md) var(--mantine-radius-md)",
-          }}
-        >
-          <Text size="xs" c="dimmed">
-            {t("Voice dictation is not available yet.")}
-          </Text>
-        </Box>
+        <TextInput
+          mt="sm"
+          label={t("Base URL")}
+          placeholder={t("Leave empty to use the chat base URL")}
+          disabled={isLoading}
+          {...form.getInputProps("sttBaseUrl")}
+        />
+        <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
+          {t("Resolves to {{url}}", { url: sttResolved })}
+        </Text>
       </Paper>
 
       {/* Nested: external MCP tools the agent calls out to */}

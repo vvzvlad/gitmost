@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   ForbiddenException,
@@ -9,6 +10,7 @@ import {
   Req,
   Res,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { FastifyReply, FastifyRequest } from 'fastify';
@@ -22,7 +24,9 @@ import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
 import { UserThrottlerGuard } from '../../integrations/throttle/user-throttler.guard';
 import { AI_CHAT_THROTTLER } from '../../integrations/throttle/throttler-names';
+import { FileInterceptor } from '../../common/interceptors/file.interceptor';
 import { AiChatService, AiChatStreamBody } from './ai-chat.service';
+import { AiTranscriptionService } from './ai-transcription.service';
 import {
   ChatIdDto,
   GetChatMessagesDto,
@@ -43,6 +47,7 @@ export class AiChatController {
     private readonly aiChatService: AiChatService,
     private readonly aiChatRepo: AiChatRepo,
     private readonly aiChatMessageRepo: AiChatMessageRepo,
+    private readonly aiTranscription: AiTranscriptionService,
   ) {}
 
   /** List the requesting user's chats in this workspace (paginated). */
@@ -178,6 +183,74 @@ export class AiChatController {
         res.raw.end();
       }
     }
+  }
+
+  /**
+   * Transcribe an uploaded audio clip to text using the workspace STT model.
+   * Gated by settings.ai.dictation (403 when disabled). Returns { text }.
+   */
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, UserThrottlerGuard)
+  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 20, ttl: 60000 } })
+  @Post('transcribe')
+  @UseInterceptors(FileInterceptor)
+  async transcribe(
+    @Req() req: any,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<{ text: string }> {
+    // Gate: dictation must be explicitly enabled for the workspace.
+    const settings = (workspace.settings ?? {}) as {
+      ai?: { dictation?: boolean };
+    };
+    if (settings.ai?.dictation !== true) {
+      throw new ForbiddenException('Dictation is disabled');
+    }
+
+    let file = null;
+    try {
+      // Whisper hard-caps uploads at 25MB; allow a single file.
+      file = await req.file({ limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+    } catch (err: any) {
+      if (err?.statusCode === 413) {
+        throw new BadRequestException('Audio file too large (max 25MB)');
+      }
+      throw err;
+    }
+    if (!file) throw new BadRequestException('No audio uploaded');
+
+    // Whitelist audio container types produced by browser MediaRecorder
+    // (Chrome/FF: webm/opus, Safari: mp4) plus common STT-accepted formats.
+    const allowedMime = new Set([
+      'audio/webm',
+      'audio/ogg',
+      'audio/mp4',
+      'audio/mpeg',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/wave',
+      'audio/m4a',
+      'audio/x-m4a',
+    ]);
+    // MediaRecorder mimetypes carry parameters (e.g. "audio/webm;codecs=opus");
+    // compare only the base type.
+    const baseMime = file.mimetype.split(';')[0].trim().toLowerCase();
+    if (!allowedMime.has(baseMime)) {
+      throw new BadRequestException('Unsupported audio format');
+    }
+
+    let buf: Buffer;
+    try {
+      buf = await file.toBuffer();
+    } catch (err: any) {
+      // With @fastify/multipart throwFileSizeLimit:true, the 25MB cap is enforced
+      // when the stream is consumed (here), not at req.file().
+      if (err?.statusCode === 413) {
+        throw new BadRequestException('Audio file too large (max 25MB)');
+      }
+      throw err;
+    }
+    const text = await this.aiTranscription.transcribe(workspace.id, buf);
+    return { text };
   }
 
   /**

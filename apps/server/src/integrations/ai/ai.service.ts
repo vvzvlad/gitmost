@@ -4,6 +4,7 @@ import {
   generateText,
   type EmbeddingModel,
   type LanguageModel,
+  type TranscriptionModel,
 } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -11,6 +12,7 @@ import { createOllama } from 'ai-sdk-ollama';
 import { AiSettingsService } from './ai-settings.service';
 import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
+import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
 
 /**
@@ -104,6 +106,26 @@ export class AiService {
       default:
         throw new AiEmbeddingNotConfiguredException();
     }
+  }
+
+  /**
+   * Resolve the workspace config and build the transcription (STT) model.
+   * STT always speaks the OpenAI-compatible /v1/audio/transcriptions API
+   * (only @ai-sdk/openai exposes .transcription()), regardless of the chat
+   * driver. sttBaseUrl falls back to the chat baseUrl; the API key falls back
+   * to the chat key (resolved by AiSettingsService.resolve). Built PER WORKSPACE
+   * on demand; the decrypted key is never logged.
+   *
+   * Throws AiSttNotConfiguredException (-> 503) when no STT model is set.
+   */
+  async getTranscriptionModel(workspaceId: string): Promise<TranscriptionModel> {
+    const cfg = await this.aiSettings.resolve(workspaceId);
+    if (!cfg?.sttModel) throw new AiSttNotConfiguredException();
+    const baseURL = cfg.sttBaseUrl || cfg.baseUrl; // stt-specific, else chat
+    // apiKey may be unused for keyless self-hosted whisper; pass a placeholder.
+    return createOpenAI({ apiKey: cfg.sttApiKey ?? 'unused', baseURL }).transcription(
+      cfg.sttModel,
+    );
   }
 
   /**

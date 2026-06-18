@@ -21,6 +21,9 @@ export interface AiProviderSettings {
   baseUrl?: string;
   // Embedding-specific base URL. Falls back to `baseUrl` when empty/unset.
   embeddingBaseUrl?: string;
+  sttModel?: string;
+  // STT-specific base URL. Falls back to baseUrl when empty/unset.
+  sttBaseUrl?: string;
   systemPrompt?: string;
 }
 
@@ -31,12 +34,15 @@ export interface AiProviderSettings {
  *
  * `embeddingBaseUrl` / `embeddingApiKey` are the embedding-specific endpoint and
  * key, already resolved with the chat-value fallback applied by `resolve`.
+ * `sttBaseUrl` / `sttApiKey` are likewise the STT-specific endpoint and key,
+ * already resolved with the chat-value fallback applied by `resolve`.
  */
 export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   driver?: AiDriver;
   chatModel?: string;
   apiKey?: string;
   embeddingApiKey?: string;
+  sttApiKey?: string;
 }
 
 /**
@@ -50,9 +56,12 @@ export interface MaskedAiSettings {
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
+  sttModel?: string;
+  sttBaseUrl?: string;
   systemPrompt?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
+  hasSttApiKey: boolean;
   // RAG indexing coverage for the settings UI.
   indexedPages: number;
   totalPages: number;

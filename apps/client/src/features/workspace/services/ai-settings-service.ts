@@ -16,6 +16,12 @@ export interface IAiSettings {
   systemPrompt?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
+  // STT-specific settings. `sttBaseUrl` is the RAW stored value (empty means
+  // "uses the chat base URL"). `hasSttApiKey` indicates whether an STT-specific
+  // key is stored (empty means "uses the chat API key").
+  sttModel?: string;
+  sttBaseUrl?: string;
+  hasSttApiKey: boolean;
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
   totalPages: number;
@@ -35,6 +41,10 @@ export interface IAiSettingsUpdate {
   systemPrompt?: string;
   apiKey?: string;
   embeddingApiKey?: string;
+  sttModel?: string;
+  sttBaseUrl?: string;
+  // Write-only STT key (same semantics as `apiKey` / `embeddingApiKey`).
+  sttApiKey?: string;
 }
 
 // Result of a connection test against the configured provider.

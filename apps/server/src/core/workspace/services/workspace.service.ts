@@ -497,6 +497,20 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.aiDictation !== 'undefined') {
+        const prev = settingsBefore?.ai?.dictation ?? false;
+        if (prev !== updateWorkspaceDto.aiDictation) {
+          before.aiDictation = prev;
+          after.aiDictation = updateWorkspaceDto.aiDictation;
+        }
+        await this.workspaceRepo.updateAiSettings(
+          workspaceId,
+          'dictation',
+          updateWorkspaceDto.aiDictation,
+          trx,
+        );
+      }
+
       delete updateWorkspaceDto.restrictApiToAdmins;
       delete updateWorkspaceDto.aiSearch;
       delete updateWorkspaceDto.generativeAi;
@@ -504,6 +518,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.mcpEnabled;
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
+      delete updateWorkspaceDto.aiDictation;
 
       await this.workspaceRepo.updateWorkspace(
         updateWorkspaceDto,

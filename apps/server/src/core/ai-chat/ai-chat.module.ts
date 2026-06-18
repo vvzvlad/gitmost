@@ -3,6 +3,7 @@ import { AiModule } from '../../integrations/ai/ai.module';
 import { TokenModule } from '../auth/token.module';
 import { AiChatController } from './ai-chat.controller';
 import { AiChatService } from './ai-chat.service';
+import { AiTranscriptionService } from './ai-transcription.service';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { ExternalMcpModule } from './external-mcp/external-mcp.module';
@@ -21,6 +22,6 @@ import { ExternalMcpModule } from './external-mcp/external-mcp.module';
 @Module({
   imports: [AiModule, TokenModule, EmbeddingModule, ExternalMcpModule],
   controllers: [AiChatController],
-  providers: [AiChatService, AiChatToolsService],
+  providers: [AiChatService, AiTranscriptionService, AiChatToolsService],
 })
 export class AiChatModule {}

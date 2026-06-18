@@ -1181,5 +1181,13 @@
   "Embeddings": "Embeddings",
   "Leave empty to use the chat API key": "Leave empty to use the chat API key",
   "Leave empty to use the chat base URL": "Leave empty to use the chat base URL",
-  "Reindex now": "Reindex now"
+  "Reindex now": "Reindex now",
+  "Start dictation": "Start dictation",
+  "Stop recording": "Stop recording",
+  "Transcribing…": "Transcribing…",
+  "Microphone access denied": "Microphone access denied",
+  "No microphone found": "No microphone found",
+  "Could not start recording": "Could not start recording",
+  "Transcription failed": "Transcription failed",
+  "Voice dictation is not configured": "Voice dictation is not configured"
 }

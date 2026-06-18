@@ -2,8 +2,10 @@ import { KeyboardEvent } from "react";
 import { ActionIcon, Group, Textarea, Tooltip } from "@mantine/core";
 import { IconPlayerStopFilled, IconSend } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { aiChatDraftAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom";
+import { MicButton } from "@/features/dictation/components/mic-button";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
@@ -25,6 +27,8 @@ export default function ChatInput({
 }: ChatInputProps) {
   const { t } = useTranslation();
   const [value, setValue] = useAtom(aiChatDraftAtom);
+  const workspace = useAtomValue(workspaceAtom);
+  const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
 
   const send = (): void => {
     const text = value.trim();
@@ -57,6 +61,13 @@ export default function ChatInput({
         // switch), so a fresh chat lands with the cursor ready in the field.
         autoFocus
       />
+      {isDictationEnabled && (
+        <MicButton
+          size="lg"
+          disabled={isStreaming || disabled}
+          onText={(text) => setValue((v) => (v ? `${v} ${text}` : text))}
+        />
+      )}
       {isStreaming ? (
         <Tooltip label={t("Stop")} withArrow>
           <ActionIcon

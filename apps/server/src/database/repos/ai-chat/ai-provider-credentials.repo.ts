@@ -98,4 +98,42 @@ export class AiProviderCredentialsRepo {
       .where('driver', '=', driver)
       .execute();
   }
+
+  // Upsert the STT-specific encrypted key. If no row exists yet this inserts one
+  // with `apiKeyEnc` left null (the column is nullable). On conflict only
+  // `sttApiKeyEnc` / `updatedAt` are touched, so the chat & embedding keys are kept.
+  async upsertSttKey(
+    workspaceId: string,
+    driver: string,
+    sttApiKeyEnc: string,
+    trx?: KyselyTransaction,
+  ): Promise<AiProviderCredentials> {
+    const db = dbOrTx(this.db, trx);
+    return db
+      .insertInto('aiProviderCredentials')
+      .values({ workspaceId, driver, sttApiKeyEnc })
+      .onConflict((oc) =>
+        oc.columns(['workspaceId', 'driver']).doUpdateSet({
+          sttApiKeyEnc,
+          updatedAt: new Date(),
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+  }
+
+  // Clear only the STT-specific key; the chat & embedding keys are kept.
+  async clearSttKey(
+    workspaceId: string,
+    driver: string,
+    trx?: KyselyTransaction,
+  ): Promise<void> {
+    const db = dbOrTx(this.db, trx);
+    await db
+      .updateTable('aiProviderCredentials')
+      .set({ sttApiKeyEnc: null, updatedAt: new Date() })
+      .where('workspaceId', '=', workspaceId)
+      .where('driver', '=', driver)
+      .execute();
+  }
 }

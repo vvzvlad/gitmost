@@ -50,6 +50,10 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   aiChat: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  aiDictation: boolean;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   trashRetentionDays: number;
