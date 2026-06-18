@@ -4,7 +4,14 @@
       "dependsOn": [
         "^build"
       ],
-      "cache": true
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default",
+        {
+          "env": "APP_VERSION"
+        }
+      ]
     },
     "start:dev": {
       "dependsOn": [

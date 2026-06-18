@@ -1,6 +1,7 @@
 import {
   Box,
   Group,
+  Text,
   Tooltip,
 } from "@mantine/core";
 import classes from "./app-header.module.css";
@@ -76,7 +77,20 @@ export function AppHeader() {
             </Box>
           </Link>
 
-          <Group ml={50} gap={5} className={classes.links} visibleFrom="sm">
+          <Tooltip label={t("Version")}>
+            <Text
+              size="xs"
+              c="dimmed"
+              lh={1}
+              ml="md"
+              visibleFrom="sm"
+              style={{ userSelect: "text", whiteSpace: "nowrap" }}
+            >
+              {APP_VERSION}
+            </Text>
+          </Tooltip>
+
+          <Group ml="xl" gap={5} className={classes.links} visibleFrom="sm">
             {items}
           </Group>
         </Group>

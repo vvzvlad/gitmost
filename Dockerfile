@@ -10,6 +10,9 @@ WORKDIR /app
 COPY . .
 
 RUN pnpm install --frozen-lockfile
+# Version string shown in the UI (computed outside Docker because .git is not in the build context).
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
 RUN pnpm build
 
 FROM base AS installer

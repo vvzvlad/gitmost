@@ -50,6 +50,8 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,scope=${{ matrix.suffix }},mode=max,ignore-error=true
@@ -76,6 +78,8 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
           push: false
           tags: |
             ${{ env.IMAGE }}:latest
