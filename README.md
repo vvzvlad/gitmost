@@ -98,7 +98,7 @@ community feature, with no enterprise license. Open it from the page header; the
 ### Done
 
 - ✅ **MCP server** — embedded community MCP server served at `/mcp`.
-- ✅ **macOS app** — native macOS app ([docmost-app](https://github.com/vvzvlad/docmost-app)) that embeds the UI with multi-server tabs.
+- ✅ **macOS app** — native macOS app ([gitmost-app](https://github.com/vvzvlad/gitmost-app)) that embeds the UI with multi-server tabs.
 - ✅ **AI chat** — built-in AI agent chat over your wiki content (read + write, RAG search, configurable provider, optional web access via external MCP).
 - ✅ **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it.
 
