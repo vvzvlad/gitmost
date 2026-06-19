@@ -91,9 +91,14 @@ export class ImportService {
         );
       }
     } catch (err) {
-      const message = 'Error processing file content';
-      this.logger.error(message, err);
-      throw new BadRequestException(message);
+      // Surface the real cause instead of a generic mask, so the failure is
+      // diagnosable from the HTTP response (project convention: never swallow).
+      const reason =
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      this.logger.error(`Error processing file content: ${reason}`, err);
+      throw new BadRequestException(
+        `Error processing file content: ${reason}`,
+      );
     }
 
     if (!prosemirrorState) {
@@ -129,9 +134,12 @@ export class ImportService {
           `Successfully imported "${title}${fileExtension}. ID: ${createdPage.id} - SlugId: ${createdPage.slugId}"`,
         );
       } catch (err) {
-        const message = 'Failed to create imported page';
-        this.logger.error(message, err);
-        throw new BadRequestException(message);
+        const reason =
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        this.logger.error(`Failed to create imported page: ${reason}`, err);
+        throw new BadRequestException(
+          `Failed to create imported page: ${reason}`,
+        );
       }
     }
 
