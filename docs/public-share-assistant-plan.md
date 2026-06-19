@@ -8,7 +8,9 @@
 > Зафиксированные решения по объёму (см. раздел «Развилки»):
 > область поиска — **всё дерево шары**; движок поиска — **готовый share-scoped FTS**
 > (ветка `shareId` в `SearchService`); гейтинг — **один тумблер воркспейса**;
-> хранение диалогов — **эфемерное** (без БД, без миграций).
+> хранение диалогов — **эфемерное** (без БД, без миграций);
+> модель — **отдельная дешёвая** (не основная модель чата воркспейса);
+> ввод — **только текст** (без голосового ввода / STT).
 
 ## Зачем это нетривиально
 
@@ -48,7 +50,9 @@
 - **Публичные роуты** в [share.controller.ts](../apps/server/src/core/share/share.controller.ts)
   уже `@Public()`, воркспейс резолвит `DomainMiddleware` по хосту; новый роут под `/api/shares/*`
   ложится туда же — **правок в [main.ts](../apps/server/src/main.ts) не нужно**.
-- **Стриминг-плумбинг**: `AiService.getChatModel(workspaceId)` +
+- **Стриминг-плумбинг**: `AiService.getChatModel(workspaceId)` (нужен небольшой апгрейд —
+  опциональный override id модели, чтобы для шары взять дешёвую `publicShareChatModel`
+  вместо основной `chatModel`; драйвер/`baseUrl`/`apiKey` те же) +
   `streamText` → `pipeUIMessageStreamToResponse` (как в
   [ai-chat.service.ts](../apps/server/src/core/ai-chat/ai-chat.service.ts)).
 
@@ -56,11 +60,21 @@
 
 ### Сервер
 
-**1. Тумблер воркспейса (гейтинг).**
+**1. Тумблер воркспейса (гейтинг) + отдельная модель.**
 Новое булево поле в `workspace.settings.ai`, напр. `publicShareAssistant` (default `false`) —
 туда же, где живут остальные AI-настройки и тумблер MCP; читается/пишется через сервис
 AI-настроек (рядом с `ai-settings.service.ts`). В админке **Workspace settings → AI** —
 один свитч. Хелпер `isPublicShareAssistantEnabled(workspaceId)`.
+
+Рядом — **отдельное поле модели** `publicShareChatModel?: string` в `settings.ai.provider`
+([ai.types.ts](../apps/server/src/integrations/ai/ai.types.ts), рядом с `chatModel` /
+`embeddingModel` / `sttModel`). Это **только id модели**: драйвер, `baseUrl` и `apiKey`
+переиспользуются от основного чат-провайдера — отдельные креды не нужны. Пустое значение →
+fallback на `chatModel`. В админке Workspace settings → AI — отдельное поле «модель
+публичного ассистента». Зачем отдельная и дешёвая: за токены анонимов платит **владелец
+воркспейса**, а read-only Q&A строго по дереву шары не требует флагманской модели — это и
+анти-абьюз (дешевле цена ошибки/абьюза), и явное разделение «дорогой внутренний агент vs
+дешёвый внешний ассистент».
 
 **2. Публичный эндпоинт** `POST /api/shares/ai/stream` (`@Public()`).
 Новые `public-share-chat.controller.ts` + `public-share-chat.service.ts` в модуле `ai-chat`
@@ -104,6 +118,8 @@ in-process (никакого loopback-токена и user-identity):
 опубликованной документации; ничего не можешь менять; если ответа в страницах нет — так
 и говоришь» + неизменяемый safety-блок по образцу
 [ai-chat.prompt.ts](../apps/server/src/core/ai-chat/ai-chat.prompt.ts).
+`model` — **дешёвая `publicShareChatModel`** (override в `getChatModel`, fallback на
+`chatModel`), а не основная модель агента воркспейса.
 `streamText({ model, system, messages, tools, stopWhen: stepCountIs(5) })`.
 **Без серверного хранения** — транскрипт держит клиент; доверять присланным сообщениям
 безопасно, т.к. scope обеспечивают тулы, а не транскрипт. Это снимает проблему
@@ -123,7 +139,7 @@ in-process (никакого loopback-токена и user-identity):
   шлёт `{ shareId, pageId, messages }`, `credentials: 'omit'`. Эфемерный, in-memory —
   стрипнутая версия
   [chat-thread.tsx](../apps/client/src/features/ai-chat/components/chat-thread.tsx) без
-  списка чатов, истории и персистентности.
+  списка чатов, истории, персистентности и **голосового ввода** (только текстовое поле).
 
 ## Поток одного хода
 
@@ -131,7 +147,7 @@ in-process (никакого loopback-токена и user-identity):
 2. Воронка проверок (таблица выше); любой провал → выход без стрима.
 3. `getShareForPage(pageId)` — подтверждение принадлежности + резолв шары.
 4. Сборка `forShare(shareId, workspaceId)` — 2–3 read-only тула, scope = дерево шары.
-5. Запертый system-prompt + модель воркспейса → `streamText(stopWhen: stepCountIs(5))`.
+5. Запертый system-prompt + **отдельная дешёвая модель** (`publicShareChatModel`, fallback на `chatModel`) → `streamText(stopWhen: stepCountIs(5))`.
 6. Тулы при вызовах фильтруют по дереву шары (FTS-ветка `shareId`, `getShareForPage` для чтения).
 7. Поток уходит клиенту; на сервере ничего не персистится.
 
@@ -154,6 +170,9 @@ in-process (никакого loopback-токена и user-identity):
 - Нет серверного хранения диалогов (эфемерно).
 - Нет RAG/вектора — только share-scoped FTS.
 - Нет per-share гранулярности — один тумблер на воркспейс.
+- **Нет голосового ввода / STT-диктовки** — только текстовый ввод (виджет не тянет
+  микрофонный путь внутреннего чата).
+- Не основная модель агента — **отдельная дешёвая** `publicShareChatModel`.
 
 ## Развилки (зафиксированные решения)
 
@@ -163,6 +182,8 @@ in-process (никакого loopback-токена и user-identity):
 | Движок поиска | **Готовый share-scoped FTS** | share-scoped гибрид/RAG (`hybridSearchByPages`) — отложено |
 | Гейтинг | **Один тумблер воркспейса** | per-share флаг; тумблер + опт-ин на шару |
 | Хранение диалогов | **Эфемерно** | отдельная таблица / nullable `creator_id` |
+| Модель | **Отдельная дешёвая** (`publicShareChatModel`, fallback на `chatModel`) | основная модель чата воркспейса (дороже, незачем для read-only Q&A анонимов) |
+| Голосовой ввод | **Не нужен** (только текст) | STT-диктовка как во внутреннем чате |
 
 ## Осталось решить (не блокирует)
 
@@ -170,12 +191,16 @@ in-process (никакого loopback-токена и user-identity):
   сообщений в запросе, `stepCountIs` (старт 5).
 - UX виджета: плавающая кнопка vs боковая панель vs блок под контентом.
 - Финальная формулировка запертого промпта (персона + safety-блок).
+- Дефолт/подсказка для `publicShareChatModel`: что предлагать админу как «дешёвую» модель
+  и поведение при пустом поле (сейчас — fallback на `chatModel`).
 
 ## Объём работ
 
 ~2 новых серверных файла (controller + service) + tools-метод `forShare` + share-промпт +
-IP-троттлер + одно поле настройки и свитч в админке; на клиенте — виджет и лёгкий
-чат-компонент. **Без миграций БД.** Пользовательского агента не трогаем.
+IP-троттлер + два поля настройки (тумблер `publicShareAssistant` и модель
+`publicShareChatModel`) и свитч + поле модели в админке + небольшой override id модели в
+`getChatModel`; на клиенте — виджет и лёгкий чат-компонент (текстовый, без голосового ввода).
+**Без миграций БД.** Пользовательского агента не трогаем.
 
 ## Возможные расширения (следующие итерации)
 
