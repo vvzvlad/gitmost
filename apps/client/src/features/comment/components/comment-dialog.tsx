@@ -13,7 +13,6 @@ import CommentEditor from "@/features/comment/components/comment-editor";
 import CommentActions from "@/features/comment/components/comment-actions";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
 import { useCreateCommentMutation } from "@/features/comment/queries/comment-query";
-import { asideStateAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom";
 import { useEditor } from "@tiptap/react";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { useTranslation } from "react-i18next";
@@ -33,7 +32,6 @@ function CommentDialog({ editor, pageId, readOnly }: CommentDialogProps) {
   const [, setActiveCommentId] = useAtom(activeCommentIdAtom);
   const [draftCommentId, setDraftCommentId] = useAtom(draftCommentIdAtom);
   const [currentUser] = useAtom(currentUserAtom);
-  const [, setAsideState] = useAtom(asideStateAtom);
   const useClickOutsideRef = useClickOutside(() => {
     if (document.querySelector("#mention")) return;
     handleDialogClose();
@@ -83,17 +81,6 @@ function CommentDialog({ editor, pageId, readOnly }: CommentDialogProps) {
 
       editor.commands.setTextSelection({ from: editor.view.state.selection.from, to: editor.view.state.selection.from });
 
-      setAsideState({ tab: "comments", isAsideOpen: true });
-      setTimeout(() => {
-        const selector = `div[data-comment-id="${createdComment.id}"]`;
-        const commentElement = document.querySelector(selector);
-        commentElement?.scrollIntoView({ behavior: "smooth", block: "center" });
-
-        editor.view.dispatch(
-          editor.state.tr.scrollIntoView()
-        );
-      }, 400);
-
     } finally {
       setShowCommentPopup(false);
       setDraftCommentId("");
@@ -113,13 +100,6 @@ function CommentDialog({ editor, pageId, readOnly }: CommentDialogProps) {
       });
 
       setActiveCommentId(createdComment.id);
-      setAsideState({ tab: "comments", isAsideOpen: true });
-
-      setTimeout(() => {
-        const selector = `div[data-comment-id="${createdComment.id}"]`;
-        const commentElement = document.querySelector(selector);
-        commentElement?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 400);
     } finally {
       setShowReadOnlyCommentPopup(false);
       // @ts-ignore
