@@ -296,12 +296,87 @@ function bridgeTaskLists(html: string): string {
   return document.body.innerHTML;
 }
 
+// Mirror of packages/editor-ext footnote markdown handling. A `[^id]` inline
+// marker becomes <sup data-footnote-ref data-id="id">, and `[^id]: text`
+// definition lines are collected into a single <section data-footnotes>.
+const FOOTNOTE_DEF_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
+const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/;
+
+function escapeFootnoteAttr(value: string): string {
+  return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+const footnoteRefMarkedExtension = {
+  name: "footnoteRef",
+  level: "inline" as const,
+  start(src: string) {
+    return src.match(/\[\^/)?.index ?? -1;
+  },
+  tokenizer(src: string) {
+    const match = FOOTNOTE_REF_RE.exec(src);
+    if (match && match.index === 0) {
+      return { type: "footnoteRef", raw: match[0], id: match[1] };
+    }
+    return undefined;
+  },
+  renderer(token: any) {
+    return `<sup data-footnote-ref data-id="${escapeFootnoteAttr(
+      token.id,
+    )}"></sup>`;
+  },
+};
+
+marked.use({ extensions: [footnoteRefMarkedExtension] });
+
+/**
+ * Pull `[^id]: text` definition lines out of the body and render a single
+ * <section data-footnotes> for them (or "" when there are none).
+ */
+function extractFootnotes(markdown: string): {
+  body: string;
+  section: string;
+} {
+  const lines = markdown.split("\n");
+  const bodyLines: string[] = [];
+  const defs: Array<{ id: string; text: string }> = [];
+  // Track fenced-code state so a `[^id]: ...` line shown inside a ``` / ~~~ code
+  // block is preserved verbatim and not treated as a footnote definition.
+  let fence: string | null = null;
+  for (const line of lines) {
+    const fenceMatch = /^(\s*)(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[2][0];
+      if (fence === null) fence = marker;
+      else if (marker === fence) fence = null;
+      bodyLines.push(line);
+      continue;
+    }
+    const m = fence === null ? FOOTNOTE_DEF_RE.exec(line) : null;
+    if (m) defs.push({ id: m[1], text: m[2] });
+    else bodyLines.push(line);
+  }
+  if (defs.length === 0) return { body: markdown, section: "" };
+  const inner = defs
+    .map(
+      (d) =>
+        `<div data-footnote-def data-id="${escapeFootnoteAttr(
+          d.id,
+        )}"><p>${marked.parseInline(d.text || "")}</p></div>`,
+    )
+    .join("");
+  return {
+    body: bodyLines.join("\n"),
+    section: `<section data-footnotes>${inner}</section>`,
+  };
+}
+
 /** Convert markdown to a ProseMirror doc using the full Docmost schema. */
 export async function markdownToProseMirror(
   markdownContent: string,
 ): Promise<any> {
   const withCallouts = await preprocessCallouts(markdownContent);
-  const html = await marked.parse(withCallouts);
+  const { body, section } = extractFootnotes(withCallouts);
+  const html = (await marked.parse(body)) + section;
   const bridged = bridgeTaskLists(html);
   return generateJSON(bridged, docmostExtensions);
 }

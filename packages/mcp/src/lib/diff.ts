@@ -101,10 +101,25 @@ function countUniqueLinks(doc: any): number {
   return hrefs.size;
 }
 
+/** Count footnoteReference nodes anywhere under a node (reading order). */
+function countFootnoteRefs(node: any): number {
+  if (!node || typeof node !== "object") return 0;
+  let n = node.type === "footnoteReference" ? 1 : 0;
+  if (Array.isArray(node.content)) {
+    for (const child of node.content) n += countFootnoteRefs(child);
+  }
+  return n;
+}
+
 /**
- * Parse the ordered list of integers from `[N]` footnote markers found in the
- * BODY only (every top-level block before the first "Примечания..." notes
- * heading; if no such heading, the whole doc). Returned in reading order.
+ * Ordered list of footnote marker numbers found in the BODY only (every
+ * top-level block before the first "Примечания..." notes heading; if no such
+ * heading, the whole doc), in reading order.
+ *
+ * Supports BOTH representations:
+ *  - real `footnoteReference` nodes (the current footnote feature) — numbered
+ *    1..n by reading position, since their visible number is derived;
+ *  - legacy `[N]` text markers (older translated docs) — the literal N.
  */
 function footnoteMarkers(doc: any, notesHeading: string): number[] {
   const top: any[] = Array.isArray(doc?.content) ? doc.content : [];
@@ -115,6 +130,16 @@ function footnoteMarkers(doc: any, notesHeading: string): number[] {
       plainText(n).trim() === notesHeading,
   );
   const bodyBlocks = notesIdx >= 0 ? top.slice(0, notesIdx) : top;
+
+  // Real footnoteReference nodes take precedence: when present, number them by
+  // reading position (their displayed number is not stored).
+  let refCount = 0;
+  for (const block of bodyBlocks) refCount += countFootnoteRefs(block);
+  if (refCount > 0) {
+    return Array.from({ length: refCount }, (_, i) => i + 1);
+  }
+
+  // Fallback: legacy `[N]` text markers.
   const markers: number[] = [];
   const re = /\[(\d+)\]/g;
   for (const block of bodyBlocks) {
