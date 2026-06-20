@@ -67,6 +67,65 @@ describe('evaluateShareAssistantFunnel ordering', () => {
   });
 });
 
+describe('controller funnel: restricted opened page is graded not-in-share', () => {
+  /**
+   * Mirrors the controller's pageInShare decision for the opened page:
+   *   pageInShare = sharingAllowed && !hasRestrictedAncestor(resolvedPageId)
+   * A restricted descendant inside an includeSubPages share resolves via
+   * getShareForPage but must be graded not-in-share so the funnel returns the
+   * SAME 404 it returns for an out-of-tree page (uniform, no existence leak).
+   */
+  function decidePageInShare(
+    sharingAllowed: boolean,
+    restricted: boolean,
+  ): boolean {
+    return sharingAllowed && !restricted;
+  }
+
+  it('a restricted descendant funnels to the SAME 404 as an out-of-tree page', () => {
+    // Out-of-tree page: getShareForPage returns a different/no share => the
+    // controller never sets pageInShare (stays false).
+    const outOfTree = evaluateShareAssistantFunnel({
+      assistantEnabled: true,
+      shareUsable: true,
+      pageInShare: false,
+      providerConfigured: true,
+    });
+
+    // Restricted descendant: share resolves, sharing allowed, but the explicit
+    // restricted-ancestor gate flips pageInShare to false.
+    const restrictedPageInShare = decidePageInShare(true, /* restricted */ true);
+    const restricted = evaluateShareAssistantFunnel({
+      assistantEnabled: true,
+      shareUsable: true,
+      pageInShare: restrictedPageInShare,
+      providerConfigured: true,
+    });
+
+    expect(restrictedPageInShare).toBe(false);
+    // Same outcome, same reason, same status: indistinguishable.
+    expect(restricted).toEqual(outOfTree);
+    expect(restricted).toEqual({
+      ok: false,
+      status: 404,
+      reason: 'page-not-in-share',
+    });
+  });
+
+  it('an unrestricted page inside the share is allowed through the funnel', () => {
+    const pageInShare = decidePageInShare(true, /* restricted */ false);
+    expect(pageInShare).toBe(true);
+    expect(
+      evaluateShareAssistantFunnel({
+        assistantEnabled: true,
+        shareUsable: true,
+        pageInShare,
+        providerConfigured: true,
+      }),
+    ).toEqual({ ok: true });
+  });
+});
+
 describe('buildShareSystemPrompt locking', () => {
   it('always includes the immutable read-only / share-scope safety rules', () => {
     const prompt = buildShareSystemPrompt({ share: null, openedPage: null });
@@ -173,10 +232,12 @@ describe('PublicShareChatToolsService share scoping', () => {
       updatePublicAttachments: jest.fn(),
     };
     const pageRepo = { findById: jest.fn() };
+    const pagePermissionRepo = { hasRestrictedAncestor: jest.fn() };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       {} as never,
       pageRepo as never,
+      pagePermissionRepo as never,
     );
 
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -190,6 +251,50 @@ describe('PublicShareChatToolsService share scoping', () => {
     // It must NOT have fetched/returned any content for an out-of-share page.
     expect(pageRepo.findById).not.toHaveBeenCalled();
     expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
+    // The restricted check is never even reached for an out-of-share page.
+    expect(pagePermissionRepo.hasRestrictedAncestor).not.toHaveBeenCalled();
+  });
+
+  it('getSharePage BLOCKS a restricted descendant inside THIS share with the SAME generic error (content leak fix)', async () => {
+    const shareService = {
+      // The restricted page DOES resolve to this share (includeSubPages tree)...
+      getShareForPage: jest.fn().mockResolvedValue({ id: 'THIS-SHARE' }),
+      updatePublicAttachments: jest.fn(),
+    };
+    // ...and the page itself exists and is not deleted.
+    const pageRepo = {
+      findById: jest
+        .fn()
+        .mockResolvedValue({ id: 'p-restricted', title: 'Secret', content: {} }),
+    };
+    // ...but it has a restricted ancestor (its own page_permissions row), so the
+    // public view 404s it — the tool must NOT return its content.
+    const pagePermissionRepo = {
+      hasRestrictedAncestor: jest
+        .fn()
+        .mockImplementation(async (id: string) => id === 'p-restricted'),
+    };
+    const svc = new PublicShareChatToolsService(
+      shareService as never,
+      {} as never,
+      pageRepo as never,
+      pagePermissionRepo as never,
+    );
+
+    const tools = svc.forShare('THIS-SHARE', 'ws-1');
+    const getSharePage = tools.getSharePage as {
+      execute: (args: { pageId: string }) => Promise<unknown>;
+    };
+
+    await expect(
+      getSharePage.execute({ pageId: 'p-restricted' }),
+    ).rejects.toThrow(/not part of this published share/i);
+    // The restricted check ran on the resolved page id...
+    expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalledWith(
+      'p-restricted',
+    );
+    // ...and no content was ever sanitized/returned.
+    expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
   });
 
   it('searchSharePages forwards the share scope (shareId, no spaceId/userId) to the FTS branch', async () => {
@@ -201,6 +306,7 @@ describe('PublicShareChatToolsService share scoping', () => {
     const svc = new PublicShareChatToolsService(
       {} as never,
       searchService as never,
+      {} as never,
       {} as never,
     );
     const tools = svc.forShare('THIS-SHARE', 'ws-1');

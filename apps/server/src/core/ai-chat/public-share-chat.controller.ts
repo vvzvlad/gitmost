@@ -19,6 +19,8 @@ import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator'
 import { SkipTransform } from '../../common/decorators/skip-transform.decorator';
 import { PUBLIC_SHARE_AI_THROTTLER } from '../../integrations/throttle/throttler-names';
 import { ShareService } from '../share/share.service';
+import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
+import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { AiNotConfiguredException } from '../../integrations/ai/ai-not-configured.exception';
 import {
@@ -50,6 +52,8 @@ export class PublicShareChatController {
 
   constructor(
     private readonly shareService: ShareService,
+    private readonly pagePermissionRepo: PagePermissionRepo,
+    private readonly pageRepo: PageRepo,
     private readonly aiSettings: AiSettingsService,
     private readonly publicShareChat: PublicShareChatService,
   ) {}
@@ -78,18 +82,26 @@ export class PublicShareChatController {
     );
 
     // 2. Share usable? Resolved via the page's share membership, since the page
-    //    resolution (getShareForPage) ALSO yields the share + workspace +
-    //    restricted checks. We still need basic input to attempt it.
+    //    resolution (getShareForPage) ALSO yields the share + workspace. We
+    //    still need basic input to attempt it.
     // 3. Page in share? The same getShareForPage lookup confirms the opened page
-    //    actually resolves to THIS share tree (shareUsable + pageInShare are set
-    //    together below; the funnel grades them as distinct ordered steps).
+    //    resolves to THIS share tree, PLUS an explicit restricted-ancestor gate
+    //    (getShareForPage itself does NOT exclude restricted descendants) so a
+    //    restricted page hidden from the public view is graded not-in-share.
+    //    (shareUsable + pageInShare are set together below; the funnel grades
+    //    them as distinct ordered steps.)
     let share: Awaited<ReturnType<ShareService['getShareForPage']>> | undefined;
     let shareUsable = false;
     let pageInShare = false;
     if (assistantEnabled && shareId && pageId) {
       // getShareForPage walks up the tree to the nearest ancestor share,
       // enforces share.workspaceId === workspaceId and includeSubPages, and
-      // returns undefined when the page is not publicly reachable.
+      // returns undefined when the page is not publicly reachable. NOTE: it
+      // joins only the `shares` table — it does NOT exclude restricted
+      // descendants — so a restricted page inside an includeSubPages share
+      // still resolves here. We add an explicit restricted-ancestor gate below
+      // (same as the public view) so the opened page's title never leaks into
+      // the system prompt for a page the public view 404s.
       share = await this.shareService.getShareForPage(pageId, workspace.id);
       if (share && share.id === shareId) {
         // Confirm sharing is still allowed for the share's space (and not
@@ -99,7 +111,20 @@ export class PublicShareChatController {
           share.spaceId,
         );
         shareUsable = sharingAllowed;
-        pageInShare = sharingAllowed;
+        // A restricted descendant is hidden from the public share view; treat
+        // the opened page as not-in-share so the funnel returns the SAME 404 it
+        // returns for an out-of-tree page (uniform, no existence leak).
+        // hasRestrictedAncestor matches on the page UUID only, while the
+        // opened pageId may be a slugId, so resolve to the UUID first (cheap
+        // base-fields lookup, mirroring how getSharedPage resolves the page
+        // before its restricted check).
+        const openedPageRow = await this.pageRepo.findById(pageId);
+        const restricted = openedPageRow
+          ? await this.pagePermissionRepo.hasRestrictedAncestor(
+              openedPageRow.id,
+            )
+          : true; // unresolvable opened page => fail closed (treat as not-in-share)
+        pageInShare = sharingAllowed && !restricted;
       }
     }
 
