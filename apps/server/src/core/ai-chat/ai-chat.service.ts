@@ -38,6 +38,9 @@ const FINAL_STEP_INSTRUCTION =
 // `system` is the in-scope system prompt; we CONCATENATE so the original
 // persona/context is preserved — a bare `system` override would REPLACE the
 // whole system prompt for the step.
+//
+// NOTE: at AI SDK v7 the per-step `system` field is renamed to `instructions`.
+// On v6 (`^6.0.134`) `system` is the correct field — adjust when bumping.
 export function prepareAgentStep(
   stepNumber: number,
   system: string,

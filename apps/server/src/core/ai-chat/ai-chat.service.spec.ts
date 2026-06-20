@@ -97,4 +97,13 @@ describe('prepareAgentStep', () => {
     // The synthesis instruction is appended.
     expect(result?.system).toContain(FINAL_STEP_INSTRUCTION);
   });
+
+  it('pins the off-by-one boundary (MAX-2 is not final, MAX-1 is)', () => {
+    // Boundary expressed via the constant, not a hardcoded 18/19, so the test
+    // tracks MAX_AGENT_STEPS if the cap ever changes.
+    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
+    const atBoundary = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
+    expect(atBoundary).toBeDefined();
+    expect(atBoundary?.toolChoice).toBe('none');
+  });
 });
