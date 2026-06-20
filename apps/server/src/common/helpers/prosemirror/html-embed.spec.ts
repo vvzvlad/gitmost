@@ -106,7 +106,8 @@ describe('canAuthorHtmlEmbed', () => {
 });
 
 // Replicates the write-path decision used by every non-admin persistence guard
-// (collab store, single import, zip import, duplication, transclusion unsync):
+// (page create, collab store, single import, zip import, duplication,
+// transclusion unsync):
 //   if !canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json) -> strip, else keep.
 const applyAdminGate = (json: any, role: string | null | undefined) => {
   if (!canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json)) {
@@ -184,6 +185,55 @@ describe('admin-gate write-path decision (duplication / import / unsync)', () =>
     };
     const result = applyAdminGate(clean, 'member');
     expect(result).toBe(clean);
+  });
+});
+
+// PageService.create() now applies exactly `applyAdminGate` (above) to the
+// parsed ProseMirror JSON BEFORE deriving content/textContent/ydoc and calling
+// insertPage. The create controller only requires space Edit, so without this a
+// regular member could POST a doc (json, or the markdown/html
+// <!--html-embed:BASE64--> forms that parse to the same node) containing an
+// htmlEmbed and store XSS for every reader. These cases pin the create-path
+// decision: non-admin -> stripped, admin/owner -> kept.
+describe('admin-gate write-path decision (page create)', () => {
+  const docWithEmbed = {
+    type: 'doc',
+    content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'body' }] },
+      { type: 'htmlEmbed', attrs: { source: '<script>alert(1)</script>' } },
+    ],
+  };
+
+  it('strips the embed when a non-admin (member) creates the page', () => {
+    const result = applyAdminGate(docWithEmbed, 'member');
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].content[0].text).toBe('body');
+  });
+
+  it('strips the embed when the creator role is unknown/empty', () => {
+    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, null))).toBe(false);
+    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, undefined))).toBe(
+      false,
+    );
+  });
+
+  it('keeps the embed when an admin or owner creates the page', () => {
+    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, 'admin'))).toBe(true);
+    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, 'owner'))).toBe(true);
+  });
+
+  it('strips embeds smuggled via the markdown/html <!--html-embed--> form', () => {
+    // The markdown/html create formats decode to the same htmlEmbed node, so
+    // the gate (run on the parsed JSON) covers them identically.
+    const source = '<script>steal()</script>';
+    const encoded = encodeHtmlEmbedSource(source);
+    const html = `<div data-type="htmlEmbed" data-source="${encoded}"></div>`;
+    const parsed = htmlToJson(html);
+    expect(hasHtmlEmbedNode(parsed)).toBe(true);
+
+    const result = applyAdminGate(parsed, 'member');
+    expect(hasHtmlEmbedNode(result)).toBe(false);
   });
 });
 

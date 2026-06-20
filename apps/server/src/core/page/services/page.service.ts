@@ -98,6 +98,10 @@ export class PageService {
     userId: string,
     workspaceId: string,
     createPageDto: CreatePageDto,
+    // Workspace role of the caller. Used to enforce the htmlEmbed admin gate on
+    // the create write path (see below). Optional/typed loosely so unknown or
+    // missing roles fall through to the non-admin (strip) branch by default.
+    callerRole?: string | null,
     // Optional agent-edit provenance (from the signed access claim). When the
     // actor is 'agent', stamp the page's source marker so a freshly created page
     // shows it was created by the AI agent (§14 N2) — create goes through REST,
@@ -128,10 +132,26 @@ export class PageService {
     let ydoc = undefined;
 
     if (createPageDto?.content && createPageDto?.format) {
-      const prosemirrorJson = await this.parseProsemirrorContent(
+      let prosemirrorJson = await this.parseProsemirrorContent(
         createPageDto.content,
         createPageDto.format,
       );
+
+      // SECURITY (Variant C admin gate, plain page-create write path):
+      // create() builds content/textContent/ydoc directly and persists them via
+      // insertPage, bypassing the collab onStoreDocument strip. htmlEmbed renders
+      // raw, unsanitized JS in readers' browsers, so only workspace admins/owners
+      // may author it. The create controller requires only space Edit, so a
+      // regular member could otherwise POST a doc (json, or the markdown/html
+      // <!--html-embed:BASE64--> forms that parse to the same node) containing an
+      // htmlEmbed and store XSS for every reader. Strip every htmlEmbed node when
+      // the caller is not an admin, BEFORE deriving textContent/ydoc/insert.
+      if (!canAuthorHtmlEmbed(callerRole) && hasHtmlEmbedNode(prosemirrorJson)) {
+        this.logger.warn(
+          `Stripping htmlEmbed node(s) from non-admin page creation by user ${userId} (space ${createPageDto.spaceId})`,
+        );
+        prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+      }
 
       content = prosemirrorJson;
       textContent = jsonToText(prosemirrorJson);
