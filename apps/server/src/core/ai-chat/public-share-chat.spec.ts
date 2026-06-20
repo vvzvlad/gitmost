@@ -7,7 +7,11 @@ import {
   filterShareTranscript,
 } from './public-share-chat.service';
 import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
-import { PublicShareWorkspaceLimiter } from './public-share-workspace-limiter';
+import {
+  PublicShareWorkspaceLimiter,
+  resolveShareAiWorkspaceMax,
+  SHARE_AI_WORKSPACE_MAX_PER_WINDOW,
+} from './public-share-workspace-limiter';
 
 /**
  * Minimal in-memory fake of the slice of ioredis the sliding-window limiter
@@ -195,6 +199,54 @@ describe('buildShareSystemPrompt locking', () => {
     expect(prompt).toContain('read-only assistant');
     expect(prompt).toContain('anti prompt-injection');
   });
+
+  it('an opened page with a title injects both the pageId and the title', () => {
+    const prompt = buildShareSystemPrompt({
+      share: null,
+      openedPage: { id: 'page-123', title: 'Getting Started' },
+    });
+    expect(prompt).toContain('(pageId: page-123)');
+    expect(prompt).toContain('"Getting Started"');
+    expect(prompt).toContain('the current page');
+  });
+
+  it('an opened page with a blank/whitespace title falls back to "Untitled"', () => {
+    const prompt = buildShareSystemPrompt({
+      share: null,
+      openedPage: { id: 'page-123', title: '   ' },
+    });
+    expect(prompt).toContain('(pageId: page-123)');
+    expect(prompt).toContain('"Untitled"');
+  });
+
+  it('an empty / blank pageId omits the opened-page context line entirely', () => {
+    const emptyId = buildShareSystemPrompt({
+      share: null,
+      openedPage: { id: '', title: 'Ignored' },
+    });
+    expect(emptyId).not.toContain('pageId:');
+    expect(emptyId).not.toContain('the current page');
+
+    const blankId = buildShareSystemPrompt({
+      share: null,
+      openedPage: { id: '   ', title: 'Ignored' },
+    });
+    expect(blankId).not.toContain('pageId:');
+  });
+
+  it('a present share title is injected; a blank share title is omitted', () => {
+    const withTitle = buildShareSystemPrompt({
+      share: { sharedPageTitle: 'Product Docs' },
+      openedPage: null,
+    });
+    expect(withTitle).toContain('titled "Product Docs"');
+
+    const blankTitle = buildShareSystemPrompt({
+      share: { sharedPageTitle: '   ' },
+      openedPage: null,
+    });
+    expect(blankTitle).not.toContain('This published documentation is titled');
+  });
 });
 
 describe('PublicShareChatService model fallback', () => {
@@ -306,6 +358,44 @@ describe('PublicShareChatService model fallback', () => {
   });
 });
 
+describe('resolveShareAiWorkspaceMax (env-overridable per-workspace cap)', () => {
+  const ENV = 'SHARE_AI_WORKSPACE_MAX_PER_HOUR';
+  const original = process.env[ENV];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  });
+
+  it('uses a valid positive integer from the env', () => {
+    process.env[ENV] = '42';
+    expect(resolveShareAiWorkspaceMax()).toBe(42);
+  });
+
+  it('floors a float value', () => {
+    process.env[ENV] = '99.9';
+    expect(resolveShareAiWorkspaceMax()).toBe(99);
+  });
+
+  it('falls back to the default for an unparseable / NaN value', () => {
+    process.env[ENV] = 'not-a-number';
+    expect(resolveShareAiWorkspaceMax()).toBe(SHARE_AI_WORKSPACE_MAX_PER_WINDOW);
+    expect(SHARE_AI_WORKSPACE_MAX_PER_WINDOW).toBe(300);
+  });
+
+  it('falls back to the default when unset', () => {
+    delete process.env[ENV];
+    expect(resolveShareAiWorkspaceMax()).toBe(SHARE_AI_WORKSPACE_MAX_PER_WINDOW);
+  });
+
+  it('falls back to the default for zero or a negative value (no unlimited / negative cap)', () => {
+    process.env[ENV] = '0';
+    expect(resolveShareAiWorkspaceMax()).toBe(SHARE_AI_WORKSPACE_MAX_PER_WINDOW);
+    process.env[ENV] = '-5';
+    expect(resolveShareAiWorkspaceMax()).toBe(SHARE_AI_WORKSPACE_MAX_PER_WINDOW);
+  });
+});
+
 describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace cap)', () => {
   it('allows up to the cap within a window, then 429s (returns false)', async () => {
     const limiter = makeLimiter(3, 60_000, () => 1_000);
@@ -351,6 +441,23 @@ describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace
     // Only once the early calls truly age out (>60s after them) does budget return.
     now = 119_501; // > 59_500 + 60_000
     expect(await limiter.tryConsume('ws-1')).toBe(true);
+  });
+
+  it('consumes a distinct member slot per call at one FIXED clock value (no same-ms score-collision under-count)', async () => {
+    // All calls happen at the SAME millisecond. The limiter mints a unique member
+    // id per attempt, so distinct calls in the same ms must NOT collide on the
+    // sorted-set score and under-count: exactly `cap` calls are admitted, the
+    // rest rejected — even though every score is identical.
+    const cap = 5;
+    const limiter = makeLimiter(cap, 60_000, () => 7_000); // clock never advances
+    const results: boolean[] = [];
+    for (let i = 0; i < cap + 3; i++) {
+      results.push(await limiter.tryConsume('ws-1'));
+    }
+    // First `cap` admitted, the remaining 3 rejected.
+    expect(results.slice(0, cap)).toEqual(Array(cap).fill(true));
+    expect(results.slice(cap)).toEqual([false, false, false]);
+    expect(results.filter(Boolean)).toHaveLength(cap);
   });
 
   it('keeps separate budgets per workspace (one over-cap ws cannot starve another)', async () => {

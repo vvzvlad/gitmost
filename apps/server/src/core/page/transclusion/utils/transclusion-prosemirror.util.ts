@@ -100,6 +100,64 @@ export function collectReferencesFromPmJson(
 }
 
 /**
+ * Decide the sourcePageId a duplicated pageEmbed should point to: the copy's new
+ * id when the embedded source is part of the copied set, otherwise the original
+ * (a live embed of the original page). Pure — shared by PageService.duplicatePage
+ * (the real path) and the JSON walker below, so both stay in lockstep.
+ */
+export function remapPageEmbedSourceId(
+  sourcePageId: string | null | undefined,
+  resolveNewId: (id: string) => string | undefined,
+): string | null | undefined {
+  if (sourcePageId) {
+    const mapped = resolveNewId(sourcePageId);
+    if (mapped) return mapped;
+  }
+  return sourcePageId;
+}
+
+/**
+ * Remap the `sourcePageId` of every `pageEmbed` node in a ProseMirror JSON doc
+ * according to `idMap` (old page id -> new page id). Delegates the per-node
+ * decision to the shared `remapPageEmbedSourceId` helper that
+ * `PageService.duplicatePage` also uses, so the production path and this walker
+ * stay in lockstep: when the embedded source page is part of the copied set
+ * (present in `idMap`) the embed is pointed at its new copy; otherwise the
+ * original `sourcePageId` is preserved so it stays a live embed of the original
+ * page. Mutates `doc` in place (and returns it) to match the service's in-place
+ * ProseMirror mutation. Recurses through arbitrary block containers (columns,
+ * callouts, etc.) the same way the collectors do, but does NOT descend into a
+ * `transclusionSource` (schema-isolated).
+ */
+export function remapPageEmbedSourceIds<T>(
+  doc: T,
+  idMap: Map<string, string>,
+): T {
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+
+    if (node.type === PAGE_EMBED_TYPE) {
+      if (node.attrs) {
+        node.attrs.sourcePageId = remapPageEmbedSourceId(
+          node.attrs.sourcePageId,
+          (id) => idMap.get(id),
+        );
+      }
+      return; // atom node - no children
+    }
+
+    if (node.type === TRANSCLUSION_TYPE) return;
+
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) visit(child);
+    }
+  };
+
+  visit(doc);
+  return doc;
+}
+
+/**
  * Walks a ProseMirror JSON document and returns one snapshot per unique
  * `sourcePageId` found on `pageEmbed` nodes (whole-page live embeds). Order
  * preserved by first-seen, duplicates deduped. `pageEmbed` is an atom so it

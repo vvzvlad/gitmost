@@ -18,7 +18,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { useAtom, useSetAtom } from "jotai";
-import { useParams } from "react-router-dom";
+import { useMatch } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -38,6 +38,10 @@ import {
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
 import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
+import {
+  shouldCollapseOnOutsidePointer,
+  isHeaderClick,
+} from "@/features/ai-chat/utils/collapse-helpers.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { notifications } from "@mantine/notifications";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
@@ -110,6 +114,10 @@ export default function AiChatWindow() {
   // History section starts collapsed (matches the former panel's behavior).
   const [historyOpen, setHistoryOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  // Mirror of `minimized` for handlers wrapped in useCallback([]) (startDrag),
+  // which would otherwise close over a stale value. Kept in sync below.
+  const minimizedRef = useRef(minimized);
+  minimizedRef.current = minimized;
 
   const winRef = useRef<HTMLDivElement>(null);
   // Live window geometry (position + size); initialized lazily on first open so
@@ -140,13 +148,16 @@ export default function AiChatWindow() {
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
-  // The page the user is currently viewing, derived from the route (same
-  // source the breadcrumb uses). On a non-page route `pageSlug` is undefined,
-  // so the query is disabled and `openPage` is null. This is passed to the
-  // chat thread as context so the agent knows what "this page"/"the current
-  // page" refers to; the agent still reads/writes via its CASL-enforced page
-  // tools using the id.
-  const { pageSlug } = useParams();
+  // The page the user is currently viewing. AiChatWindow lives in a pathless
+  // parent layout route, so useParams() can't see :pageSlug. Match the full
+  // pathname against the authenticated page route instead so "the current page"
+  // resolves regardless of where this component is mounted. On a non-page route
+  // the match is null, so `pageSlug` is undefined, the query is disabled and
+  // `openPage` is null. This is passed to the chat thread as context so the
+  // agent knows what "this page"/"the current page" refers to; the agent still
+  // reads/writes via its CASL-enforced page tools using the id.
+  const pageRouteMatch = useMatch("/s/:spaceSlug/p/:pageSlug");
+  const pageSlug = pageRouteMatch?.params?.pageSlug;
   const { data: openPageData } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
   });
@@ -254,7 +265,30 @@ export default function AiChatWindow() {
   useLayoutEffect(() => {
     if (!windowOpen) return;
     setGeom((prev) => (prev ? clampGeom(prev) : computeInitialGeom()));
+    // Always show the window expanded on (re)open: a collapsed state from a
+    // previous open session must not stick. Runs before paint so the first
+    // frame is already expanded. The composer's autofocus is a focus INSIDE the
+    // window (not an outside mousedown), so it cannot self-collapse the window.
+    setMinimized(false);
   }, [windowOpen]);
+
+  // Auto-collapse the window into its header as soon as the user interacts with
+  // anything outside it (clicks the page/editor). Armed ONLY while the window is
+  // open and expanded, so it never fires repeatedly and never collapses on the
+  // open→reset transition. Capture phase so a page handler's stopPropagation in
+  // the bubble phase can't hide the event from us; the in-window/portal guards
+  // (shouldCollapseOnOutsidePointer) prevent false collapses from clicks inside
+  // the window or inside Mantine portals (kebab menu, delete-confirm modal).
+  useEffect(() => {
+    if (!windowOpen || minimized) return;
+    const onPointerDown = (e: MouseEvent): void => {
+      if (shouldCollapseOnOutsidePointer(e.target, winRef.current)) {
+        setMinimized(true);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => document.removeEventListener("mousedown", onPointerDown, true);
+  }, [windowOpen, minimized]);
 
   // Persist the user's resize into state so it survives close/reopen. Skipped
   // while minimized so the collapsed (auto) height is never captured. The
@@ -303,10 +337,21 @@ export default function AiChatWindow() {
       el.style.top = `${nt}px`;
     };
 
-    const up = (): void => {
+    const up = (ev: MouseEvent): void => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       document.body.style.userSelect = "";
+      // Treat a near-zero-movement press as a click (not a drag). When the
+      // window is minimized, a header click expands it; nothing to persist
+      // because the position did not change. minimizedRef avoids the stale
+      // `minimized` captured by useCallback([]).
+      if (
+        minimizedRef.current &&
+        isHeaderClick(sx, sy, ev.clientX, ev.clientY)
+      ) {
+        setMinimized(false);
+        return;
+      }
       const el2 = winRef.current;
       // Persist the final position back into state (preserving the size) so
       // re-renders keep it.
@@ -350,14 +395,40 @@ export default function AiChatWindow() {
         height: minimized ? undefined : geom.height,
       }}
     >
-      {/* drag bar / header */}
+      {/* drag bar / header. Mouse users expand a minimized window by clicking
+          anywhere on the bar (the click-vs-drag logic in startDrag, which
+          excludes the buttons). The keyboard/screen-reader Expand affordance
+          lives on the title element below — NOT on this container — so we never
+          nest the Minimize/Close <button>s inside an element with
+          role="button" (invalid ARIA: nested interactive controls). */}
       <div className={classes.dragBar} onMouseDown={startDrag}>
         <IconGripVertical
           size={14}
           color="var(--mantine-color-gray-4)"
           style={{ flex: "none" }}
         />
-        <span className={classes.title}>{t("AI chat")}</span>
+        {/* When minimized, the title doubles as the keyboard Expand button:
+            it carries role/tabIndex/aria-label and an Enter/Space handler, and
+            unlike the dragBar it contains no nested <button>s. When expanded it
+            is a plain, non-focusable label. */}
+        <span
+          className={classes.title}
+          role={minimized ? "button" : undefined}
+          tabIndex={minimized ? 0 : undefined}
+          aria-label={minimized ? t("Expand") : undefined}
+          onKeyDown={
+            minimized
+              ? (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setMinimized(false);
+                  }
+                }
+              : undefined
+          }
+        >
+          {t("AI chat")}
+        </span>
 
         {/* Role badge for the active chat (emoji + name). Shown only when the
             chat is bound to a role that still exists. */}

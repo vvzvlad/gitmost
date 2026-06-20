@@ -317,6 +317,7 @@ export class TransclusionService {
     if (toDelete.length > 0) {
       await this.pageTemplateReferencesRepo.deleteByReferenceAndSources(
         referencePageId,
+        workspaceId,
         toDelete,
         trx,
       );

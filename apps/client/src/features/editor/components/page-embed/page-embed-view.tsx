@@ -2,10 +2,9 @@ import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import {
   IconAlertTriangle,
-  IconArrowsMaximize,
   IconDots,
-  IconExternalLink,
   IconEyeOff,
+  IconFileText,
   IconInfoCircle,
   IconRefresh,
   IconRepeat,
@@ -21,8 +20,8 @@ import { usePageEmbedLookup } from "./page-embed-lookup-context";
 import {
   PageEmbedAncestryProvider,
   usePageEmbedAncestry,
-  PAGE_EMBED_MAX_DEPTH,
 } from "./page-embed-ancestry-context";
+import { decideEmbedState } from "./decide-embed-state";
 import PageEmbedContent from "./page-embed-content";
 
 function Placeholder({
@@ -99,13 +98,15 @@ function PageEmbedBody({
     }
   };
 
-  // --- Cycle / depth guard (evaluated before any lookup is rendered) ---------
-  // Self-embed or a source already present in the ancestor chain → cycle.
-  const isCycle =
-    !!sourcePageId &&
-    (ancestry.chain.includes(sourcePageId) ||
-      ancestry.hostPageId === sourcePageId);
-  const isTooDeep = ancestry.chain.length >= PAGE_EMBED_MAX_DEPTH;
+  // --- Cycle / depth / availability decision (pure, unit-tested) ------------
+  // Evaluated before any nested editor is rendered.
+  const embedState = decideEmbedState({
+    sourcePageId,
+    chain: ancestry.chain,
+    hostPageId: ancestry.hostPageId,
+    available,
+    result,
+  });
 
   const sourceTitle =
     result && !("status" in result) ? result.title : null;
@@ -136,20 +137,6 @@ function PageEmbedBody({
           <IconRefresh size={14} />
         </ActionIcon>
       </Tooltip>
-      {sourceHref && (
-        <Tooltip label={t("Open source page")}>
-          <ActionIcon
-            component={Link}
-            to={sourceHref}
-            variant="subtle"
-            color="gray"
-            size="sm"
-            style={{ textDecoration: "none", borderBottom: "none" }}
-          >
-            <IconExternalLink size={14} />
-          </ActionIcon>
-        </Tooltip>
-      )}
       <Menu position="bottom-end" withinPortal onChange={trackOpen}>
         <Menu.Target>
           <ActionIcon variant="subtle" color="gray" size="sm">
@@ -170,13 +157,18 @@ function PageEmbedBody({
   ) : null;
 
   const header =
-    sourceTitle || sourceIcon ? (
+    // Render the badge whenever the source resolves (sourceHref), not only when
+    // it has a title/icon — the title link is now the single way to open the
+    // source, so it must not disappear when title and icon are both empty.
+    sourceTitle || sourceIcon || sourceHref ? (
       <div className={classes.transclusionBadge}>
-        {sourceIcon ? `${sourceIcon} ` : <IconArrowsMaximize size={12} />}
+        {sourceIcon ? `${sourceIcon} ` : <IconFileText size={12} />}
         {sourceHref ? (
           <Link
             to={sourceHref}
             style={{ borderBottom: "none", textDecoration: "none" }}
+            title={t("Open source page")}
+            aria-label={t("Open source page")}
           >
             {sourceTitle || t("Untitled")}
           </Link>
@@ -187,28 +179,28 @@ function PageEmbedBody({
     ) : null;
 
   let body: React.ReactNode;
-  if (!sourcePageId) {
+  if (embedState === "no_source") {
     body = (
       <Placeholder
         icon={<IconInfoCircle size={18} stroke={1.6} />}
         label={t("No page selected")}
       />
     );
-  } else if (isCycle) {
+  } else if (embedState === "cycle") {
     body = (
       <Placeholder
         icon={<IconRepeat size={18} stroke={1.6} />}
         label={t("Circular embed: this page is already shown above")}
       />
     );
-  } else if (isTooDeep) {
+  } else if (embedState === "too_deep") {
     body = (
       <Placeholder
         icon={<IconRepeat size={18} stroke={1.6} />}
         label={t("Embed nesting limit reached")}
       />
     );
-  } else if (!available) {
+  } else if (embedState === "unavailable") {
     // No lookup context (e.g. public share) → placeholder, no fetch in MVP.
     body = (
       <Placeholder
@@ -216,18 +208,28 @@ function PageEmbedBody({
         label={t("Embedded page is not available here")}
       />
     );
-  } else if (!result) {
+  } else if (embedState === "loading") {
     body = <div style={{ minHeight: 24 }} />;
-  } else if (!("status" in result)) {
+  } else if (embedState === "ok" && result && !("status" in result)) {
     body = (
       <PageEmbedAncestryProvider
         sourcePageId={sourcePageId}
         hostPageId={hostPageId}
       >
-        <PageEmbedContent content={result.content} />
+        {/*
+          Tiptap's EditorProvider consumes `content` only at initial mount, so a
+          changed `content` prop (e.g. after Refresh re-fetches fresh content)
+          would not update the read-only sub-editor. Key on the source's
+          updatedAt to remount PageEmbedContent (and its inner EditorProvider)
+          whenever the source page changes, applying the refreshed content.
+        */}
+        <PageEmbedContent
+          key={result.sourceUpdatedAt}
+          content={result.content}
+        />
       </PageEmbedAncestryProvider>
     );
-  } else if (result.status === "no_access") {
+  } else if (embedState === "no_access") {
     body = (
       <Placeholder
         icon={<IconEyeOff size={18} stroke={1.6} />}

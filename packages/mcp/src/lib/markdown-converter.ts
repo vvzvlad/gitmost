@@ -430,6 +430,30 @@ export function convertProseMirrorToMarkdown(content: any): string {
         return `<span ${parts.join(" ")}>@${escapeHtmlText(mentionLabel)}</span>`;
       }
 
+      case "footnoteReference": {
+        // Pandoc/GFM inline marker. The number is derived (not stored), so the
+        // id is the stable anchor.
+        const fnId = node.attrs?.id || "";
+        return fnId ? `[^${fnId}]` : "";
+      }
+
+      case "footnotesList":
+        // The container renders its definitions, each on its own `[^id]: ...`
+        // line. A blank line separates the body from the notes block.
+        return nodeContent.map(processNode).join("\n");
+
+      case "footnoteDefinition": {
+        const defId = node.attrs?.id || "";
+        // Collapse the definition's paragraphs into a single line; multi-line
+        // footnotes are a v2 refinement.
+        const defText = nodeContent
+          .map(processNode)
+          .join(" ")
+          .replace(/\s*\n+\s*/g, " ")
+          .trim();
+        return defId ? `[^${defId}]: ${defText}` : "";
+      }
+
       case "attachment": {
         // BUG FIX: the old code read node.attrs.fileName / node.attrs.src, but
         // the schema stores name/url (plus mime/size/attachmentId). Emit the

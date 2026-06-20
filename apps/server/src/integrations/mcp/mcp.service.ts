@@ -25,6 +25,8 @@ import {
   sharedTokenMatches,
   clientIp,
   bindAccessJwtVerifier,
+  decideBasicGate,
+  mapAuthResultToResponse,
   DocmostMcpConfig,
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
@@ -154,6 +156,15 @@ export class McpService implements OnModuleDestroy {
   private async verifyMcpBearer(
     token: string,
   ): Promise<{ sub?: string; email?: string }> {
+    // Resolve THIS instance's workspace so verifyBearerAccess can bind the
+    // token's `workspaceId` claim to it (mirrors JwtStrategy). The community
+    // build is single-workspace (findFirst), so this is the default workspace
+    // and the check is a no-op here; it only rejects a foreign-workspace token
+    // in a multi-workspace deployment. Undefined (no workspace configured) means
+    // no check — the credentials path would already have failed with no
+    // workspace, and an undefined here keeps the helper a no-op rather than
+    // rejecting every token.
+    const instanceWorkspace = await this.workspaceRepo.findFirst();
     // The revocation/disabled decision logic lives in the framework-free
     // verifyBearerAccess helper (unit-testable without the heavy auth graph);
     // this method only wires in the concrete TokenService + repos.
@@ -163,6 +174,7 @@ export class McpService implements OnModuleDestroy {
       verifyJwt: bindAccessJwtVerifier(this.tokenService) as (
         t: string,
       ) => Promise<JwtPayload>,
+      expectedWorkspaceId: instanceWorkspace?.id,
       findUser: (sub, workspaceId) =>
         this.userRepo.findById(sub, workspaceId),
       findActiveSession: (sessionId) =>
@@ -231,49 +243,54 @@ export class McpService implements OnModuleDestroy {
     workspace: Workspace,
     creds: { email: string; password: string },
   ): Promise<void> {
-    // 1) SSO enforcement. validateSsoEnforcement throws BadRequestException; we
-    // re-surface it as Unauthorized so the /mcp 401 path is consistent and a
-    // token is never issued.
+    // 1) SSO enforcement. validateSsoEnforcement throws when the workspace
+    // enforces SSO; we only need the boolean verdict for the pure decision.
+    let ssoEnforced = false;
     try {
       validateSsoEnforcement(workspace);
     } catch {
-      throw new UnauthorizedException(
-        'This workspace has enforced SSO login. Use SSO; MCP HTTP Basic is not allowed.',
-      );
+      ssoEnforced = true;
     }
 
     // 2) MFA gate — lazy-require the EE module exactly like AuthController.login.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let MfaModule: any;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      MfaModule = require('./../../ee/mfa/services/mfa.service');
-    } catch {
-      // No EE MFA module bundled in this build: same as the controller -> no
-      // MFA gate. (A community/fork build has no MFA, so Basic is allowed.)
-      return;
+    // On a fork WITHOUT the EE module bundled, mfaResult stays undefined and the
+    // pure gate behaves exactly like the controller (no MFA module -> no MFA
+    // gate). We only LOAD the module + read the requirement flags here; the
+    // accept/reject decision lives in the framework-free decideBasicGate so the
+    // SSO/MFA logic is unit-testable without ModuleRef or the on-disk EE module.
+    let mfaResult: { userHasMfa?: boolean; requiresMfaSetup?: boolean } | undefined;
+    // Only consult the MFA module when SSO has not already disqualified the
+    // request (SSO short-circuits, and skipping the load avoids a needless
+    // require on the SSO-reject path).
+    if (!ssoEnforced) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let MfaModule: any;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        MfaModule = require('./../../ee/mfa/services/mfa.service');
+      } catch {
+        // No EE MFA module bundled in this build: same as the controller -> no
+        // MFA gate. (A community/fork build has no MFA, so Basic is allowed.)
+        MfaModule = undefined;
+      }
+
+      if (MfaModule) {
+        const mfaService = this.moduleRef.get(MfaModule.MfaService, {
+          strict: false,
+        });
+        // Same requirement check the controller uses. We pass NO FastifyReply
+        // (the controller passes `res` only to set a cookie on the no-MFA happy
+        // path, which we never take here): we only read the requirement flags.
+        mfaResult = await mfaService.checkMfaRequirements(
+          creds,
+          workspace,
+          undefined,
+        );
+      }
     }
 
-    const mfaService = this.moduleRef.get(MfaModule.MfaService, {
-      strict: false,
-    });
-    // Use the same requirement check the controller uses. We pass NO FastifyReply
-    // (the controller passes `res` only to set a cookie on the no-MFA happy path,
-    // which we never take here): we only read the requirement flags. Be tolerant
-    // of either a (loginInput, workspace) or (loginInput, workspace, res) shape.
-    const mfaResult = await mfaService.checkMfaRequirements(
-      creds,
-      workspace,
-      undefined,
-    );
-
-    if (mfaResult && (mfaResult.userHasMfa || mfaResult.requiresMfaSetup)) {
-      throw new UnauthorizedException(
-        'This account requires multi-factor authentication. MCP HTTP Basic ' +
-          'cannot complete MFA — log in normally and use a Bearer access token ' +
-          'instead.',
-      );
-    }
+    // Pure accept/reject decision (throws UnauthorizedException on rejection).
+    decideBasicGate({ ssoEnforced, mfa: mfaResult });
   }
 
   // Lazily create the HTTP handler exactly once. The import is indirected so
@@ -333,52 +350,61 @@ export class McpService implements OnModuleDestroy {
     // matching `X-MCP-Token` header. It now lives in its OWN header so it never
     // collides with `Authorization`, which carries the per-user credentials.
     const sharedToken = process.env.MCP_TOKEN;
-    if (sharedToken) {
-      const provided = req.headers['x-mcp-token'];
-      if (!sharedTokenMatches(sharedToken, provided)) {
-        res.status(401).send({ error: 'Unauthorized' });
-        return;
-      }
-    }
+    const sharedTokenOk = sharedToken
+      ? sharedTokenMatches(sharedToken, req.headers['x-mcp-token'])
+      : true;
 
-    if (!(await this.isEnabled())) {
-      res.status(403).send({ error: 'MCP is disabled for this workspace' });
-      return;
-    }
+    // Short-circuit checks (shared token, enablement) that do not need the auth
+    // resolution. Compute them up front so the response mapping is a single pure
+    // decision (mapAuthResultToResponse) that cannot leak the password/header.
+    const enabled = sharedTokenOk ? await this.isEnabled() : false;
 
     // Resolve + validate the per-session identity BEFORE hijacking the response
     // so bad credentials surface as a clean 401 JSON (never a torn response and
     // never a generic "MCP error"). The resolved config/identity is stashed on
     // the raw request for the package's resolver + identify hook to read back.
-    let resolved: ResolvedMcpAuth;
-    try {
-      resolved = await this.resolveSessionConfig(req);
-    } catch (err) {
-      if (err instanceof UnauthorizedException) {
-        // Warn once if the only thing missing is the service account, to keep
-        // the original operator hint.
-        if (
-          !this.credsConfigured() &&
-          !req.headers['authorization'] &&
-          !this.warnedMissingCreds
-        ) {
-          this.warnedMissingCreds = true;
-          this.logger.warn(
-            'MCP is enabled but received a request with no credentials and no ' +
-              'MCP_DOCMOST_EMAIL/MCP_DOCMOST_PASSWORD service account configured.',
-          );
+    let resolved: ResolvedMcpAuth | undefined;
+    let authError: unknown;
+    if (sharedTokenOk && enabled) {
+      try {
+        resolved = await this.resolveSessionConfig(req);
+      } catch (err) {
+        authError = err;
+        if (err instanceof UnauthorizedException) {
+          // Warn once if the only thing missing is the service account, to keep
+          // the original operator hint.
+          if (
+            !this.credsConfigured() &&
+            !req.headers['authorization'] &&
+            !this.warnedMissingCreds
+          ) {
+            this.warnedMissingCreds = true;
+            this.logger.warn(
+              'MCP is enabled but received a request with no credentials and no ' +
+                'MCP_DOCMOST_EMAIL/MCP_DOCMOST_PASSWORD service account configured.',
+            );
+          }
+        } else {
+          this.logger.error('MCP auth resolution failed', err as Error);
         }
-        res.status(401).send({ error: err.message });
-        return;
       }
-      this.logger.error('MCP auth resolution failed', err as Error);
-      res.status(500).send({ error: 'Internal server error' });
+    }
+
+    // Pure status/body mapping for the whole pre-hijack gauntlet.
+    const decision = mapAuthResultToResponse({
+      sharedTokenOk,
+      enabled,
+      error: authError,
+    });
+    if (decision.kind === 'respond') {
+      res.status(decision.status).send(decision.body);
       return;
     }
 
     // Stash the resolved auth on the raw request so the package's resolver +
     // identify hook (wired in getHandler) read it back instead of re-parsing.
-    (req.raw as unknown as Record<symbol, unknown>)[MCP_RESOLVED] = resolved;
+    (req.raw as unknown as Record<symbol, unknown>)[MCP_RESOLVED] =
+      resolved as ResolvedMcpAuth;
 
     // Hand the raw Node req/res to the MCP transport. hijack() tells Fastify
     // to stop managing this response so the transport can write to it directly.
