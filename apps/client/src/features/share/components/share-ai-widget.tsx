@@ -93,7 +93,10 @@ export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
 
   if (!open) {
     return (
-      <Affix position={{ bottom: 20, right: 20 }}>
+      // Offset 80px from the bottom so the FAB stacks ABOVE the bottom-right
+      // "Powered by Gitmost" branding button (share-branding.tsx) without
+      // overlapping it.
+      <Affix position={{ bottom: 80, right: 20 }}>
         <Tooltip label={t("Ask AI")} position="left">
           <ActionIcon
             size="xl"
@@ -110,7 +113,7 @@ export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
   }
 
   return (
-    <Affix position={{ bottom: 20, right: 20 }}>
+    <Affix position={{ bottom: 80, right: 20 }}>
       <Paper
         shadow="md"
         radius="md"
@@ -119,7 +122,7 @@ export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
           width: 360,
           maxWidth: "calc(100vw - 40px)",
           height: 480,
-          maxHeight: "calc(100vh - 40px)",
+          maxHeight: "calc(100vh - 100px)",
           display: "flex",
           flexDirection: "column",
         }}

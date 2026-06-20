@@ -182,25 +182,55 @@ describe('buildShareSystemPrompt locking', () => {
     // Anti prompt-injection clause is present.
     expect(prompt).toContain('anti prompt-injection');
   });
+
+  it('a selected role REPLACES the persona but still appends the safety framework', () => {
+    const prompt = buildShareSystemPrompt({
+      share: null,
+      openedPage: null,
+      roleInstructions: 'You are Captain Docs.',
+    });
+    // The role's persona replaces the built-in one...
+    expect(prompt).toContain('Captain Docs');
+    // ...but the immutable safety clauses are still appended.
+    expect(prompt).toContain('read-only assistant');
+    expect(prompt).toContain('anti prompt-injection');
+  });
 });
 
 describe('PublicShareChatService model fallback', () => {
-  function makeService(resolvePublicModel: string | undefined) {
+  // `role` (optional) drives both the resolved settings (its id is returned as
+  // publicShareAssistantRoleId) and the role repo's findById mock, so the same
+  // helper exercises the no-role fallback AND the role-override paths.
+  function makeService(
+    resolvePublicModel: string | undefined,
+    role?: {
+      id: string;
+      name: string;
+      enabled: boolean;
+      instructions?: string;
+      modelConfig?: Record<string, unknown> | null;
+    },
+  ) {
     const aiSettings = {
-      resolve: jest
-        .fn()
-        .mockResolvedValue({ publicShareChatModel: resolvePublicModel }),
+      resolve: jest.fn().mockResolvedValue({
+        publicShareChatModel: resolvePublicModel,
+        publicShareAssistantRoleId: role ? role.id : undefined,
+      }),
     };
     const getChatModel = jest.fn().mockResolvedValue('MODEL');
     const ai = { getChatModel };
+    const aiAgentRoleRepo = {
+      findById: jest.fn().mockResolvedValue(role ?? undefined),
+    };
     const redisService = { getOrThrow: () => new FakeRedis() } as never;
     const service = new PublicShareChatService(
       ai as never,
       aiSettings as never,
       {} as never,
       redisService,
+      aiAgentRoleRepo as never,
     );
-    return { service, getChatModel };
+    return { service, getChatModel, aiAgentRoleRepo };
   }
 
   it('passes the cheap publicShareChatModel as the override', async () => {
@@ -215,6 +245,64 @@ describe('PublicShareChatService model fallback', () => {
     const { service, getChatModel } = makeService(undefined);
     await service.getShareChatModel('ws-1');
     expect(getChatModel).toHaveBeenCalledWith('ws-1', { chatModel: undefined });
+  });
+
+  describe('resolveShareRole', () => {
+    it('returns null when no roleId is configured', async () => {
+      const { service } = makeService('cheap-model');
+      expect(await service.resolveShareRole('ws-1')).toBeNull();
+    });
+
+    it('returns null when the configured role is disabled', async () => {
+      const { service } = makeService('cheap-model', {
+        id: 'r-1',
+        name: 'R',
+        enabled: false,
+      });
+      expect(await service.resolveShareRole('ws-1')).toBeNull();
+    });
+
+    it('returns null when findById resolves undefined (missing/soft-deleted)', async () => {
+      const { service, aiAgentRoleRepo } = makeService('cheap-model', {
+        id: 'r-1',
+        name: 'R',
+        enabled: true,
+      });
+      // The settings point at r-1, but the repo can no longer find it.
+      aiAgentRoleRepo.findById.mockResolvedValue(undefined);
+      expect(await service.resolveShareRole('ws-1')).toBeNull();
+    });
+
+    it('returns the role when it exists and is enabled', async () => {
+      const role = { id: 'r-1', name: 'R', enabled: true };
+      const { service } = makeService('cheap-model', role);
+      expect(await service.resolveShareRole('ws-1')).toEqual(role);
+    });
+  });
+
+  describe('getShareChatModel with a role', () => {
+    it('applies the role model override (takes precedence over the cheap model)', async () => {
+      const role = {
+        id: 'r-1',
+        name: 'R',
+        enabled: true,
+        modelConfig: { chatModel: 'role-model' },
+      };
+      const { service, getChatModel } = makeService('cheap-model', role);
+      await service.getShareChatModel('ws-1', role as never);
+      expect(getChatModel).toHaveBeenCalledWith(
+        'ws-1',
+        expect.objectContaining({ chatModel: 'role-model', roleName: 'R' }),
+      );
+    });
+
+    it('falls back to the publicShareChatModel override when role is null', async () => {
+      const { service, getChatModel } = makeService('cheap-model');
+      await service.getShareChatModel('ws-1', null);
+      expect(getChatModel).toHaveBeenCalledWith('ws-1', {
+        chatModel: 'cheap-model',
+      });
+    });
   });
 });
 
@@ -315,6 +403,7 @@ describe('PublicShareChatService.tryConsumeWorkspaceQuota', () => {
       {} as never,
       {} as never,
       redisService,
+      {} as never,
     );
     // The default cap is high, so a couple of calls are allowed; this asserts
     // the service exposes the async limiter contour the controller relies on.

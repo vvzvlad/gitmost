@@ -63,4 +63,10 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   publicShareChatModel?: string;
+
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  @IsOptional()
+  @IsString()
+  publicShareAssistantRoleId?: string;
 }

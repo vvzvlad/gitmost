@@ -38,6 +38,9 @@ export interface AiProviderSettings {
   // `chatModel`. The workspace owner pays for anonymous tokens, so a cheaper
   // model is preferred for read-only Q&A over published documentation.
   publicShareChatModel?: string;
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  publicShareAssistantRoleId?: string;
 }
 
 /**
@@ -55,6 +58,9 @@ export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   chatModel?: string;
   // Cheap model id for the public-share assistant; reuses the chat creds.
   publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts (empty/unset
+  // = built-in locked persona). Re-declared for parity with the explicit fields.
+  publicShareAssistantRoleId?: string;
   apiKey?: string;
   embeddingApiKey?: string;
   sttApiKey?: string;
@@ -76,6 +82,9 @@ export interface MaskedAiSettings {
   sttApiStyle?: SttApiStyle;
   systemPrompt?: string;
   publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts; empty/unset
+  // = built-in locked persona.
+  publicShareAssistantRoleId?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
   hasSttApiKey: boolean;

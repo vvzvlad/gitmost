@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { Workspace } from '@docmost/db/types/entity.types';
+import { Workspace, AiAgentRole } from '@docmost/db/types/entity.types';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
@@ -146,10 +146,14 @@ export class PublicShareChatController {
     //    yields a clean 503 (AiNotConfiguredException) BEFORE hijack. Only
     //    attempt this once the earlier gates passed, to avoid leaking timing.
     let model: Awaited<ReturnType<PublicShareChatService['getShareChatModel']>> | undefined;
+    // Admin-selected identity (agent role) for the anonymous assistant, resolved
+    // server-authoritatively. null = built-in locked persona.
+    let role: AiAgentRole | null = null;
     let providerConfigured = false;
     if (assistantEnabled && shareUsable && pageInShare) {
       try {
-        model = await this.publicShareChat.getShareChatModel(workspace.id);
+        role = await this.publicShareChat.resolveShareRole(workspace.id);
+        model = await this.publicShareChat.getShareChatModel(workspace.id, role);
         providerConfigured = true;
       } catch (err) {
         if (err instanceof AiNotConfiguredException) {
@@ -235,6 +239,7 @@ export class PublicShareChatController {
         res,
         signal: controller.signal,
         model: model!,
+        role,
       });
     } catch (err) {
       // After hijack we can no longer send a clean JSON error.

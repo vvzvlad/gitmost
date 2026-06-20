@@ -34,6 +34,7 @@ export interface UpdateAiSettingsInput {
   sttApiStyle?: SttApiStyle;
   sttApiKey?: string;
   publicShareChatModel?: string;
+  publicShareAssistantRoleId?: string;
 }
 
 /**
@@ -135,6 +136,9 @@ export class AiSettingsService {
       // Cheap model id for the anonymous public-share assistant; reuses the chat
       // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
       publicShareChatModel: provider.publicShareChatModel,
+      // Agent-role id whose persona the public-share assistant adopts; empty/unset
+      // = built-in locked persona.
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       embeddingModel: provider.embeddingModel,
       sttModel: provider.sttModel,
       // Plain passthrough, no fallback; the transcribe path defaults unset to
@@ -216,6 +220,7 @@ export class AiSettingsService {
       sttApiStyle: provider.sttApiStyle,
       systemPrompt: provider.systemPrompt,
       publicShareChatModel: provider.publicShareChatModel,
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
@@ -254,6 +259,7 @@ export class AiSettingsService {
       'sttApiStyle',
       'systemPrompt',
       'publicShareChatModel',
+      'publicShareAssistantRoleId',
     ] as const) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];

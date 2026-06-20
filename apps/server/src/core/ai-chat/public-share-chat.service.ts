@@ -8,10 +8,13 @@ import {
   type LanguageModel,
 } from 'ai';
 import { RedisService } from '@nestjs-labs/nestjs-ioredis';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import { AiAgentRole } from '@docmost/db/types/entity.types';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
 import { buildShareSystemPrompt } from './public-share-chat.prompt';
+import { roleModelOverride } from './roles/role-model-config';
 import {
   PublicShareWorkspaceLimiter,
   createPublicShareWorkspaceLimiter,
@@ -47,6 +50,9 @@ export interface PublicShareChatStreamArgs {
   // Resolved by the controller BEFORE res.hijack() so an unconfigured provider
   // (AiNotConfiguredException -> 503) surfaces as clean JSON before streaming.
   model: LanguageModel;
+  // Pre-resolved by the controller; its instructions replace the locked persona,
+  // while the safety framework is still always appended. null = built-in persona.
+  role: AiAgentRole | null;
 }
 
 /**
@@ -103,6 +109,7 @@ export class PublicShareChatService {
     private readonly aiSettings: AiSettingsService,
     private readonly tools: PublicShareChatToolsService,
     redisService: RedisService,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
   ) {
     this.workspaceLimiter = createPublicShareWorkspaceLimiter(redisService);
   }
@@ -117,16 +124,41 @@ export class PublicShareChatService {
   }
 
   /**
-   * Resolve the public-share chat model BEFORE res.hijack() (clean 503 path).
-   * Uses the cheap `publicShareChatModel`, falling back to the workspace
-   * `chatModel` when unset.
-   *
-   * IMPORTANT: this override substitutes ONLY the model id. The driver, baseUrl
-   * and apiKey are reused from the workspace's main chat provider (see
-   * AiService.getChatModel) — the "cheap model" is NOT an isolated provider or
-   * key, just a different model on the SAME configured provider.
+   * Resolve the admin-selected agent role for the anonymous public-share
+   * assistant, scoped to the workspace and soft-delete aware. Returns null when
+   * no role is configured, or when the referenced role is missing or disabled —
+   * in which case the built-in locked persona applies. Mirrors the authenticated
+   * chat's server-authoritative role resolution.
    */
-  async getShareChatModel(workspaceId: string): Promise<LanguageModel> {
+  async resolveShareRole(workspaceId: string): Promise<AiAgentRole | null> {
+    const resolved = await this.aiSettings.resolve(workspaceId);
+    const roleId = resolved?.publicShareAssistantRoleId;
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
+    if (!role || !role.enabled) return null;
+    return role;
+  }
+
+  /**
+   * Resolve the public-share chat model BEFORE res.hijack() (clean 503 path).
+   * An admin-selected role's model override takes precedence over the cheap
+   * `publicShareChatModel`; without a role override it uses the cheap
+   * `publicShareChatModel`, falling back to the workspace `chatModel` when unset.
+   *
+   * IMPORTANT: a model override substitutes ONLY the model id (unless the role
+   * also switches the driver). The baseUrl and apiKey are reused from the
+   * workspace's main chat provider (see AiService.getChatModel) — the "cheap
+   * model" is NOT an isolated provider or key, just a different model on the SAME
+   * configured provider.
+   */
+  async getShareChatModel(
+    workspaceId: string,
+    role?: AiAgentRole | null,
+  ): Promise<LanguageModel> {
+    const override = roleModelOverride(role);
+    if (override) {
+      return this.ai.getChatModel(workspaceId, override);
+    }
     const resolved = await this.aiSettings.resolve(workspaceId);
     return this.ai.getChatModel(workspaceId, {
       chatModel: resolved?.publicShareChatModel,
@@ -142,6 +174,7 @@ export class PublicShareChatService {
     res,
     signal,
     model,
+    role,
   }: PublicShareChatStreamArgs): Promise<void> {
     // Rebuild the conversation from the client payload. The client holds the
     // transcript (ephemeral, never stored). Trusting it is safe: the share
@@ -153,6 +186,7 @@ export class PublicShareChatService {
     const system = buildShareSystemPrompt({
       share: { sharedPageTitle: share.sharedPage?.title ?? null },
       openedPage,
+      roleInstructions: role?.instructions ?? null,
     });
 
     // Tiny, READ-only, in-process toolset hard-scoped to THIS share tree.
