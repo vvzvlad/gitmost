@@ -64,6 +64,22 @@ export const MAX_SHARE_MESSAGES = 30;
 export const MAX_SHARE_MESSAGE_CHARS = 8000;
 
 /**
+ * Per-request output-token ceiling for the anonymous assistant. `streamText`
+ * runs up to `stepCountIs(5)` steps, so the worst-case output of one accepted
+ * request is bounded by (steps × this). The per-workspace cap bounds the COUNT
+ * of calls; this bounds the SIZE of each, so a single anonymous call cannot run
+ * up the provider bill even if the per-IP throttle is evaded. Env-overridable
+ * seam; a non-positive or unparseable value falls back to the default.
+ */
+export const SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT = 512;
+export function resolveShareAiMaxOutputTokens(): number {
+  const raw = Number(process.env.SHARE_AI_MAX_OUTPUT_TOKENS);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT;
+}
+
+/**
  * Keep ONLY genuine conversation turns from the client-held transcript. The
  * payload is fully attacker-controlled; a forged `system` turn could try to
  * override the locked share-scoped system prompt, and a forged `tool` turn could
@@ -204,6 +220,9 @@ export class PublicShareChatService {
         tools,
         // Bound the agent loop for anonymous callers.
         stopWhen: stepCountIs(5),
+        // Cap per-request output so one anonymous call cannot run up the provider
+        // bill even if the per-IP throttle is evaded; worst case = steps × this.
+        maxOutputTokens: resolveShareAiMaxOutputTokens(),
         abortSignal: signal,
         onError: ({ error }) => {
           const e = error as {

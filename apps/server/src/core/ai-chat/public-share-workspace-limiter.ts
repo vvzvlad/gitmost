@@ -99,9 +99,11 @@ export class PublicShareWorkspaceLimiter {
   /**
    * Account one call for `key`. Returns true if it is within the cap (allowed),
    * false if the cap over the trailing window is exceeded (caller must 429).
-   * On a Redis failure we FAIL OPEN (return true): the cap is a cost backstop,
-   * not an auth boundary, and the access funnel + per-IP throttle still apply —
-   * we never want a transient Redis blip to take the assistant fully offline.
+   * On a Redis failure we FAIL CLOSED (return false): this cap is the COST
+   * backstop for an OPTIONAL anonymous assistant, so when Redis is unavailable we
+   * cannot prove the workspace is under its cap and therefore DENY rather than
+   * admit an unmetered, billable anonymous call. A transient Redis blip briefly
+   * disabling the assistant is preferable to an unbounded provider bill.
    */
   async tryConsume(key: string): Promise<boolean> {
     const t = this.now();
@@ -120,15 +122,16 @@ export class PublicShareWorkspaceLimiter {
       );
       return admitted === 1;
     } catch (err) {
-      // Fail OPEN: this per-workspace cap is a COST backstop, not an access
-      // control — the funnel access gates and the per-IP throttle still apply.
-      // A transient Redis failure must not take the public-share assistant
-      // fully offline, so we admit the call rather than 500 the request.
+      // FAIL CLOSED: when Redis is unavailable we cannot prove the workspace is
+      // under its cap, so we DENY (the controller 429s) rather than admit an
+      // unmetered, billable anonymous call. The assistant is optional, so a
+      // transient Redis blip briefly disabling it is the safer failure mode than
+      // an unbounded provider bill.
       this.logger.error(
-        `share-ai workspace limiter Redis failure for key "${key}"; failing open`,
+        `share-ai workspace limiter Redis failure for key "${key}"; failing closed`,
         err as Error,
       );
-      return true;
+      return false;
     }
   }
 }
