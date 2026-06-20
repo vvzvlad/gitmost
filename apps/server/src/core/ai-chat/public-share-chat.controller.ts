@@ -77,142 +77,25 @@ export class PublicShareChatController {
     @AuthWorkspace() workspace: Workspace,
   ): Promise<void> {
     const body = (req.body ?? {}) as PublicShareChatStreamBody;
-    const shareId = typeof body.shareId === 'string' ? body.shareId.trim() : '';
-    const pageId = typeof body.pageId === 'string' ? body.pageId.trim() : '';
 
     // ---- Guardrail funnel (order matters; each failure exits before stream) ----
-
-    // 1. Workspace master toggle. 404 (do not reveal the feature exists).
-    const assistantEnabled = await this.aiSettings.isPublicShareAssistantEnabled(
-      workspace.id,
+    // The whole pre-hijack fact-resolution + cap-ordering block is a pure-ish
+    // helper (collaborators passed in) so every funnel branch — 404 disabled /
+    // share-mismatch / page-unresolvable / restricted, 503 unconfigured, 429
+    // over-cap, 413 too many/too long — is unit-testable against the red-team
+    // boundaries without the full Nest/DB graph. It throws the SAME HttpException
+    // the controller would, and never starts streaming.
+    const resolved = await resolveShareAssistantRequest(
+      {
+        aiSettings: this.aiSettings,
+        shareService: this.shareService,
+        pageRepo: this.pageRepo,
+        pagePermissionRepo: this.pagePermissionRepo,
+        publicShareChat: this.publicShareChat,
+      },
+      { workspaceId: workspace.id, body },
     );
-
-    // 2. Share usable? Resolved via the page's share membership, since the page
-    //    resolution (getShareForPage) ALSO yields the share + workspace. We
-    //    still need basic input to attempt it.
-    // 3. Page in share? The same getShareForPage lookup confirms the opened page
-    //    resolves to THIS share tree, PLUS an explicit restricted-ancestor gate
-    //    (getShareForPage itself does NOT exclude restricted descendants) so a
-    //    restricted page hidden from the public view is graded not-in-share.
-    //    (shareUsable + pageInShare are set together below; the funnel grades
-    //    them as distinct ordered steps.)
-    let share: Awaited<ReturnType<ShareService['getShareForPage']>> | undefined;
-    let shareUsable = false;
-    let pageInShare = false;
-    if (assistantEnabled && shareId && pageId) {
-      // getShareForPage walks up the tree to the nearest ancestor share,
-      // enforces share.workspaceId === workspaceId and includeSubPages, and
-      // returns undefined when the page is not publicly reachable. NOTE: it
-      // joins only the `shares` table — it does NOT exclude restricted
-      // descendants — so a restricted page inside an includeSubPages share
-      // still resolves here. We add an explicit restricted-ancestor gate below
-      // (same as the public view) so the opened page's title never leaks into
-      // the system prompt for a page the public view 404s.
-      share = await this.shareService.getShareForPage(pageId, workspace.id);
-      if (share && share.id === shareId) {
-        // Confirm sharing is still allowed for the share's space (and not
-        // disabled at workspace/space level) — same gate the public views use.
-        const sharingAllowed = await this.shareService.isSharingAllowed(
-          workspace.id,
-          share.spaceId,
-        );
-        // A restricted descendant is hidden from the public share view; treat
-        // the opened page as not-in-share so the funnel returns the SAME 404 it
-        // returns for an out-of-tree page (uniform, no existence leak).
-        // hasRestrictedAncestor matches on the page UUID only, while the
-        // opened pageId may be a slugId, so resolve to the UUID first (cheap
-        // base-fields lookup, mirroring how getSharedPage resolves the page
-        // before its restricted check).
-        const openedPageRow = await this.pageRepo.findById(pageId);
-        const restricted = openedPageRow
-          ? await this.pagePermissionRepo.hasRestrictedAncestor(
-              openedPageRow.id,
-            )
-          : true; // unresolvable opened page => fail closed (treat as not-in-share)
-        // The security-relevant combination (server-resolved share id ===
-        // requested shareId, + sharingAllowed, + the restricted gate) is a pure,
-        // unit-tested helper so the access join point can be exercised against
-        // the red-team boundaries without the full Nest/DB graph.
-        ({ shareUsable, pageInShare } = deriveShareAccess({
-          resolvedShareId: share.id,
-          requestedShareId: shareId,
-          sharingAllowed,
-          restricted,
-        }));
-      }
-    }
-
-    // 4. Provider configured? Resolve the model now so an unconfigured provider
-    //    yields a clean 503 (AiNotConfiguredException) BEFORE hijack. Only
-    //    attempt this once the earlier gates passed, to avoid leaking timing.
-    let model: Awaited<ReturnType<PublicShareChatService['getShareChatModel']>> | undefined;
-    // Admin-selected identity (agent role) for the anonymous assistant, resolved
-    // server-authoritatively. null = built-in locked persona.
-    let role: AiAgentRole | null = null;
-    let providerConfigured = false;
-    if (assistantEnabled && shareUsable && pageInShare) {
-      try {
-        role = await this.publicShareChat.resolveShareRole(workspace.id);
-        model = await this.publicShareChat.getShareChatModel(workspace.id, role);
-        providerConfigured = true;
-      } catch (err) {
-        if (err instanceof AiNotConfiguredException) {
-          providerConfigured = false;
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    const outcome = evaluateShareAssistantFunnel({
-      assistantEnabled,
-      shareUsable,
-      pageInShare,
-      providerConfigured,
-    });
-    if (outcome.ok === false) {
-      // 404 for everything access-shaped (feature/share/page); 503 for config.
-      if (outcome.status === 503) {
-        throw new ServiceUnavailableException('AI is not configured');
-      }
-      throw new NotFoundException('Not found');
-    }
-
-    // 5. Per-WORKSPACE anti-abuse cap (IP-independent; defense in depth). The
-    //    per-IP @Throttle above can be evaded by an attacker rotating
-    //    `X-Forwarded-For` (the app runs with trustProxy), and each evaded call
-    //    spends REAL tokens on the workspace owner's paid AI provider. This cap
-    //    is keyed by the server-resolved workspace id (never attacker-
-    //    controllable), so it bounds the owner's bill even when the per-IP limit
-    //    is fully defeated via XFF spoofing. Checked here, BEFORE res.hijack(),
-    //    so an over-cap workspace gets a clean 429 and spends nothing. NOTE:
-    //    production should ALSO front this endpoint with a trusted proxy that
-    //    REWRITES (not appends) XFF so the per-IP throttle stays meaningful.
-    if (!(await this.publicShareChat.tryConsumeWorkspaceQuota(workspace.id))) {
-      throw new HttpException(
-        'This documentation assistant is temporarily busy. Please try again later.',
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-
-    // ---- Validate / bound the payload (cheap caps; ephemeral, never stored) ----
-    const messages = Array.isArray(body.messages)
-      ? (body.messages as UIMessage[])
-      : [];
-    if (messages.length > MAX_SHARE_MESSAGES) {
-      throw new HttpException('Too many messages', 413);
-    }
-    for (const m of messages) {
-      const text = uiMessageTextLength(m);
-      if (text > MAX_SHARE_MESSAGE_CHARS) {
-        throw new HttpException('Message too long', 413);
-      }
-    }
-
-    const openedPage = {
-      id: pageId,
-      title: share?.sharedPage?.title ?? undefined,
-    };
+    const { shareId, share, model, role, messages, openedPage } = resolved;
 
     // Abort the agent loop when the client disconnects (mirrors ai-chat).
     const controller = new AbortController();
@@ -230,15 +113,15 @@ export class PublicShareChatController {
         workspaceId: workspace.id,
         shareId,
         share: {
-          id: share!.id,
-          pageId: share!.pageId,
-          sharedPage: share!.sharedPage,
+          id: share.id,
+          pageId: share.pageId,
+          sharedPage: share.sharedPage,
         },
         openedPage,
         messages,
         res,
         signal: controller.signal,
-        model: model!,
+        model,
         role,
       });
     } catch (err) {
@@ -255,8 +138,174 @@ export class PublicShareChatController {
   }
 }
 
-/** Sum of the text-part lengths of a UIMessage (cheap, for the size cap). */
-function uiMessageTextLength(message: UIMessage | undefined): number {
+/**
+ * The collaborators the pre-hijack funnel needs. Declared as the minimal slice
+ * of each injected service it actually calls, so the resolver can be unit-tested
+ * with hand-rolled mocks (no Nest module graph, no DB).
+ */
+export interface ShareAssistantDeps {
+  aiSettings: Pick<AiSettingsService, 'isPublicShareAssistantEnabled'>;
+  shareService: Pick<
+    ShareService,
+    'getShareForPage' | 'isSharingAllowed'
+  >;
+  pageRepo: Pick<PageRepo, 'findById'>;
+  pagePermissionRepo: Pick<PagePermissionRepo, 'hasRestrictedAncestor'>;
+  publicShareChat: Pick<
+    PublicShareChatService,
+    | 'resolveShareRole'
+    | 'getShareChatModel'
+    | 'tryConsumeWorkspaceQuota'
+  >;
+}
+
+/** The resolved, validated request ready to stream (everything is non-null). */
+export interface ResolvedShareAssistantRequest {
+  shareId: string;
+  share: NonNullable<Awaited<ReturnType<ShareService['getShareForPage']>>>;
+  model: Awaited<ReturnType<PublicShareChatService['getShareChatModel']>>;
+  role: AiAgentRole | null;
+  messages: UIMessage[];
+  openedPage: { id: string; title?: string };
+}
+
+/**
+ * Pre-hijack fact-resolution + cap-ordering for the anonymous public-share
+ * assistant, extracted from the controller so every funnel branch is unit-
+ * testable without the Nest/DB graph. Order is security-relevant and each
+ * failure exits BEFORE any stream/hijack:
+ *  1. assistant toggle off => 404 (no share/page/model lookups);
+ *  2. share/page access (deriveShareAccess + evaluateShareAssistantFunnel) =>
+ *     404 (uniform; restricted descendant and out-of-tree look identical);
+ *  3. provider unconfigured => 503 (AiNotConfiguredException), other errors
+ *     re-thrown;
+ *  4. per-workspace quota exhausted => 429 (BEFORE any stream/hijack);
+ *  5. payload caps => 413 (too many messages / a single message too long).
+ * Throws the SAME HttpException the controller would; returns the resolved,
+ * non-null request otherwise.
+ */
+export async function resolveShareAssistantRequest(
+  deps: ShareAssistantDeps,
+  input: { workspaceId: string; body: PublicShareChatStreamBody },
+): Promise<ResolvedShareAssistantRequest> {
+  const { workspaceId, body } = input;
+  const shareId = typeof body.shareId === 'string' ? body.shareId.trim() : '';
+  const pageId = typeof body.pageId === 'string' ? body.pageId.trim() : '';
+
+  // 1. Workspace master toggle. 404 (do not reveal the feature exists).
+  const assistantEnabled =
+    await deps.aiSettings.isPublicShareAssistantEnabled(workspaceId);
+
+  // 2/3. Share usable? Page in share? Resolved via the page's share membership,
+  //      since getShareForPage ALSO yields the share + workspace. The opened
+  //      page is then gated by an explicit restricted-ancestor check (which
+  //      getShareForPage does NOT do) so a restricted page hidden from the
+  //      public view is graded not-in-share.
+  let share: Awaited<ReturnType<ShareService['getShareForPage']>> | undefined;
+  let shareUsable = false;
+  let pageInShare = false;
+  if (assistantEnabled && shareId && pageId) {
+    share = await deps.shareService.getShareForPage(pageId, workspaceId);
+    if (share && share.id === shareId) {
+      const sharingAllowed = await deps.shareService.isSharingAllowed(
+        workspaceId,
+        share.spaceId,
+      );
+      // hasRestrictedAncestor matches on the page UUID only, while the opened
+      // pageId may be a slugId, so resolve to the UUID first (cheap base-fields
+      // lookup). An unresolvable opened page fails closed (not-in-share).
+      const openedPageRow = await deps.pageRepo.findById(pageId);
+      const restricted = openedPageRow
+        ? await deps.pagePermissionRepo.hasRestrictedAncestor(openedPageRow.id)
+        : true;
+      ({ shareUsable, pageInShare } = deriveShareAccess({
+        resolvedShareId: share.id,
+        requestedShareId: shareId,
+        sharingAllowed,
+        restricted,
+      }));
+    }
+  }
+
+  // 4. Provider configured? Resolve the model now so an unconfigured provider
+  //    yields a clean 503 BEFORE hijack. Only after the access gates pass, to
+  //    avoid leaking timing.
+  let model:
+    | Awaited<ReturnType<PublicShareChatService['getShareChatModel']>>
+    | undefined;
+  let role: AiAgentRole | null = null;
+  let providerConfigured = false;
+  if (assistantEnabled && shareUsable && pageInShare) {
+    try {
+      role = await deps.publicShareChat.resolveShareRole(workspaceId);
+      model = await deps.publicShareChat.getShareChatModel(workspaceId, role);
+      providerConfigured = true;
+    } catch (err) {
+      if (err instanceof AiNotConfiguredException) {
+        providerConfigured = false;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const outcome = evaluateShareAssistantFunnel({
+    assistantEnabled,
+    shareUsable,
+    pageInShare,
+    providerConfigured,
+  });
+  if (outcome.ok === false) {
+    // 404 for everything access-shaped (feature/share/page); 503 for config.
+    if (outcome.status === 503) {
+      throw new ServiceUnavailableException('AI is not configured');
+    }
+    throw new NotFoundException('Not found');
+  }
+
+  // 5. Per-WORKSPACE anti-abuse cap (IP-independent; defense in depth). Checked
+  //    BEFORE res.hijack(), so an over-cap workspace gets a clean 429 and spends
+  //    nothing.
+  if (!(await deps.publicShareChat.tryConsumeWorkspaceQuota(workspaceId))) {
+    throw new HttpException(
+      'This documentation assistant is temporarily busy. Please try again later.',
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  // ---- Validate / bound the payload (cheap caps; ephemeral, never stored) ----
+  const messages = Array.isArray(body.messages)
+    ? (body.messages as UIMessage[])
+    : [];
+  if (messages.length > MAX_SHARE_MESSAGES) {
+    throw new HttpException('Too many messages', 413);
+  }
+  for (const m of messages) {
+    if (uiMessageTextLength(m) > MAX_SHARE_MESSAGE_CHARS) {
+      throw new HttpException('Message too long', 413);
+    }
+  }
+
+  const openedPage = {
+    id: pageId,
+    title: share?.sharedPage?.title ?? undefined,
+  };
+
+  // The funnel passed, so share/model are guaranteed present.
+  return {
+    shareId,
+    share: share!,
+    model: model!,
+    role,
+    messages,
+    openedPage,
+  };
+}
+
+/** Sum of the text-part lengths of a UIMessage (cheap, for the size cap).
+ * Exported so the 413 size-cap logic is unit-testable without the Nest/DB graph.
+ */
+export function uiMessageTextLength(message: UIMessage | undefined): number {
   if (!message?.parts || !Array.isArray(message.parts)) return 0;
   let total = 0;
   for (const p of message.parts) {

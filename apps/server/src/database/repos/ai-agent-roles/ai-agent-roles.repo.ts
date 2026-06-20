@@ -132,7 +132,7 @@ export class AiAgentRoleRepo {
  * generated column type is the broad `JsonValue` union, which a concrete object
  * type is not structurally assignable to.
  */
-function jsonbObject(value: ModelConfigValue | undefined) {
+export function jsonbObject(value: ModelConfigValue | undefined) {
   if (value === null || value === undefined || Object.keys(value).length === 0) {
     return null;
   }

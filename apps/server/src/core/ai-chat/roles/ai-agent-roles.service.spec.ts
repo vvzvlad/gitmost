@@ -93,6 +93,56 @@ describe('AiAgentRolesService guards', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(repo.update).not.toHaveBeenCalled();
     });
+
+    it('instructions cleared to whitespace => BadRequest, repo.update NOT called', async () => {
+      const { service, repo } = makeService({ existing: makeRow() });
+      await expect(
+        service.update('ws-1', 'r1', {
+          instructions: '   ',
+        } as UpdateAgentRoleDto),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('concurrent soft-delete: row exists on the pre-update lookup but the re-fetch is undefined => BadRequest (not a TypeError)', async () => {
+      // findById returns the live row FIRST (pre-update guard passes), then the
+      // role is soft-deleted concurrently, so the POST-update re-fetch returns
+      // undefined. The service must surface a clean 400, never dereference
+      // undefined (which would throw a TypeError in toView).
+      const { service, repo } = makeService();
+      repo.findById
+        .mockResolvedValueOnce(makeRow())
+        .mockResolvedValueOnce(undefined);
+      await expect(
+        service.update('ws-1', 'r1', { name: 'X' } as UpdateAgentRoleDto),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      // The UPDATE ran (the row existed pre-update), but the re-fetch failed.
+      expect(repo.update).toHaveBeenCalled();
+      expect(repo.findById).toHaveBeenCalledTimes(2);
+    });
+
+    it('emoji/description tri-state: emoji:"" => null (clear), emoji omitted => undefined (unchanged), description:"  " => null', async () => {
+      const { service, repo } = makeService({ existing: makeRow() });
+
+      // emoji explicitly emptied => clear to null; description whitespace => null.
+      await service.update('ws-1', 'r1', {
+        emoji: '',
+        description: '  ',
+      } as UpdateAgentRoleDto);
+      const patch1 = repo.update.mock.calls[0][2];
+      expect(patch1.emoji).toBeNull();
+      expect(patch1.description).toBeNull();
+
+      repo.update.mockClear();
+
+      // emoji omitted => unchanged (undefined passed through to the repo patch).
+      await service.update('ws-1', 'r1', {
+        name: 'Renamed',
+      } as UpdateAgentRoleDto);
+      const patch2 = repo.update.mock.calls[0][2];
+      expect(patch2.emoji).toBeUndefined();
+      expect(patch2.description).toBeUndefined();
+    });
   });
 
   describe('remove', () => {
@@ -136,6 +186,51 @@ describe('AiAgentRolesService guards', () => {
       expect(repo.insert).not.toHaveBeenCalled();
     });
 
+    it('modelConfig:{chatModel} only persists {chatModel} (no driver key)', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        modelConfig: { chatModel: 'gpt-4o' },
+      } as CreateAgentRoleDto);
+      const values = repo.insert.mock.calls[0][0];
+      expect(values.modelConfig).toEqual({ chatModel: 'gpt-4o' });
+      expect('driver' in values.modelConfig).toBe(false);
+    });
+
+    it('modelConfig:{} (empty) normalizes to null', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        modelConfig: {},
+      } as CreateAgentRoleDto);
+      expect(repo.insert.mock.calls[0][0].modelConfig).toBeNull();
+    });
+
+    it('modelConfig:{chatModel:"   "} (whitespace-only) normalizes to null', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        modelConfig: { chatModel: '   ' },
+      } as CreateAgentRoleDto);
+      expect(repo.insert.mock.calls[0][0].modelConfig).toBeNull();
+    });
+
+    it('modelConfig:{driver,chatModel} round-trips both fields (trimmed)', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        modelConfig: { driver: 'gemini', chatModel: '  gemini-2.0-flash  ' },
+      } as CreateAgentRoleDto);
+      expect(repo.insert.mock.calls[0][0].modelConfig).toEqual({
+        driver: 'gemini',
+        chatModel: 'gemini-2.0-flash',
+      });
+    });
+
     it('duplicate name (Postgres 23505) => ConflictException (409), not 500', async () => {
       const { service, repo } = makeService();
       // The partial unique (workspace_id, name) index rejects the insert.
@@ -146,6 +241,28 @@ describe('AiAgentRolesService guards', () => {
           instructions: 'do',
         } as CreateAgentRoleDto),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('duplicate name 409 message contains the TRIMMED submitted name', async () => {
+      const { service, repo } = makeService();
+      repo.insert.mockRejectedValueOnce({ code: '23505' });
+      await service
+        .create('ws-1', 'u1', {
+          name: '  Researcher  ',
+          instructions: 'do',
+        } as CreateAgentRoleDto)
+        .then(
+          () => {
+            throw new Error('expected create to throw');
+          },
+          (err: unknown) => {
+            expect(err).toBeInstanceOf(ConflictException);
+            const message = (err as ConflictException).message;
+            // The trimmed name appears verbatim; the untrimmed padding does not.
+            expect(message).toContain('"Researcher"');
+            expect(message).not.toContain('  Researcher  ');
+          },
+        );
     });
 
     it('non-unique-violation error is NOT swallowed (re-thrown as-is)', async () => {

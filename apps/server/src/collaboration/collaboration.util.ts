@@ -45,6 +45,9 @@ import {
   htmlToMarkdown,
   TransclusionSource,
   TransclusionReference,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
   PageEmbed,
 } from '@docmost/editor-ext';
 import { generateText, getSchema, JSONContent } from '@tiptap/core';
@@ -115,6 +118,9 @@ export const tiptapExtensions = [
   Status,
   TransclusionSource,
   TransclusionReference,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
   PageEmbed,
 ] as any;
 

@@ -142,11 +142,17 @@ export function buildTreeWithChildren(items: SpaceTreeNode[]): SpaceTreeNode[] {
   // Build the tree array
   items.forEach((item) => {
     const node = nodeMap[item.id];
-    if (item.parentPageId !== null) {
+    // A permission-trimmed response can include a node whose `parentPageId` is
+    // not in the list (the parent was filtered out server-side). Treat such an
+    // orphan as a root instead of dereferencing an absent parent and throwing
+    // "Cannot read properties of undefined". Happy-path behaviour is unchanged:
+    // a node whose parent IS present still nests under it.
+    if (item.parentPageId !== null && nodeMap[item.parentPageId]) {
       // Find the parent node and add the current node to its children
       nodeMap[item.parentPageId].children.push(node);
     } else {
-      // If the item has no parent, it's a root node, so add it to the result array
+      // If the item has no parent (or its parent isn't loaded), it's a root
+      // node, so add it to the result array.
       result.push(node);
     }
   });
@@ -253,4 +259,31 @@ export function collectBranchIds(nodes: SpaceTreeNode[]): string[] {
   };
   walk(nodes);
   return ids;
+}
+
+// The open-state map (`openTreeNodesAtom`) is shared across spaces. Pure
+// next-map helpers for expand/collapse so the merge logic can be unit-tested
+// without rendering SpaceTree. Both return a fresh map and never mutate the
+// input — ids not in `ids` (e.g. other spaces) are carried over untouched.
+
+// Set each id in `ids` to true (open). Pre-existing entries (including other
+// spaces' open state) are preserved.
+export function openBranches(
+  prevMap: Record<string, boolean>,
+  ids: string[],
+): Record<string, boolean> {
+  const next = { ...prevMap };
+  for (const id of ids) next[id] = true;
+  return next;
+}
+
+// Set each id in `ids` to false (closed). Entries not listed (e.g. other
+// spaces' ids) are left exactly as they were.
+export function closeIds(
+  prevMap: Record<string, boolean>,
+  ids: string[],
+): Record<string, boolean> {
+  const next = { ...prevMap };
+  for (const id of ids) next[id] = false;
+  return next;
 }

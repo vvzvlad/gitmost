@@ -34,6 +34,18 @@ const li = (text) => ({
 const doc = (...children) => ({ type: "doc", content: children });
 const snapshot = (v) => JSON.parse(JSON.stringify(v));
 
+// Collect every footnoteReference id under a node, in reading order.
+const collectRefIds = (node, acc = []) => {
+  if (!node || typeof node !== "object") return acc;
+  if (node.type === "footnoteReference") acc.push(node.attrs?.id);
+  if (Array.isArray(node.content)) {
+    for (const c of node.content) collectRefIds(c, acc);
+  }
+  return acc;
+};
+// Plain text of a footnoteDefinition.
+const defText = (def) => blockText(def);
+
 // ---------------------------------------------------------------------------
 // blockText / walk / getList
 // ---------------------------------------------------------------------------
@@ -173,21 +185,30 @@ test("commentsToFootnotes anchors comments and renumbers by position", () => {
   const { doc: out, consumed } = commentsToFootnotes(d, comments);
   assert.deepEqual(consumed.sort(), ["cA", "cB"]);
 
-  // Markers in reading order: p1 "apple"->[1], p2 existing->[2], p3 "banana"->[3]
-  assert.match(blockText(out.content[1]), /\[1\]/);
-  assert.match(blockText(out.content[2]), /\[2\]/);
-  assert.match(blockText(out.content[3]), /\[3\]/);
+  // Real footnoteReference nodes were inserted at p1 (apple), p2 (existing),
+  // p3 (banana), in reading order — the old `[N]` text markers are gone.
+  const refIds = collectRefIds(out);
+  assert.equal(refIds.length, 3);
+  // Body paragraphs p1..p3 no longer carry literal [N] text markers.
+  assert.doesNotMatch(blockText(out.content[1]), /\[\d+\]/);
+  assert.doesNotMatch(blockText(out.content[2]), /\[\d+\]/);
+  assert.doesNotMatch(blockText(out.content[3]), /\[\d+\]/);
 
-  // No stray placeholders remain.
-  const allText = blockText(out);
-  assert.doesNotMatch(allText, / F\d+ /);
+  // No stray NUL placeholders remain.
+  assert.doesNotMatch(blockText(out), /\u0000/);
 
-  // Notes list reordered to [apple, existing, banana] (reading order).
-  const list = out.content.find((n) => n.type === "orderedList");
+  // The bottom footnotesList holds the definitions in reading order, each keyed
+  // by the matching reference id.
+  const list = out.content.find((n) => n.type === "footnotesList");
+  assert.ok(list, "footnotesList present");
   assert.equal(list.content.length, 3);
-  assert.equal(blockText(list.content[0]), "apple note");
-  assert.equal(blockText(list.content[1]), "existing note one");
-  assert.equal(blockText(list.content[2]), "banana note");
+  assert.deepEqual(
+    list.content.map((d) => d.attrs.id),
+    refIds,
+  );
+  assert.equal(defText(list.content[0]), "apple note");
+  assert.equal(defText(list.content[1]), "existing note one");
+  assert.equal(defText(list.content[2]), "banana note");
 
   // Callout range synced to 3 notes.
   assert.match(blockText(out.content[0]), /\[1\]…\[3\]/);
@@ -224,15 +245,16 @@ test("commentsToFootnotes leaves literal 'F1'/'FN2'/'F12' body text untouched", 
   // The literal "F1"/"FN2"/"F12" prose is preserved verbatim (no bogus
   // footnotes, no eaten spaces around them).
   assert.match(bodyText, /Press F1 for help, model FN2 and F12 for tools/);
-  // Exactly one real footnote marker was produced, at the anchored word.
-  const markerCount = (bodyText.match(/\[\d+\]/g) || []).length;
-  assert.equal(markerCount, 1);
-  assert.match(bodyText, /apple \[1\]/);
+  // Exactly one real footnoteReference node was produced, at the anchored word.
+  const refIds = collectRefIds(out);
+  assert.equal(refIds.length, 1);
 
   // Exactly one note in the list — "F1"/"FN2"/"F12" did not spawn extra notes.
-  const list = out.content.find((n) => n.type === "orderedList");
+  const list = out.content.find((n) => n.type === "footnotesList");
+  assert.ok(list, "footnotesList present");
   assert.equal(list.content.length, 1);
-  assert.equal(blockText(list.content[0]), "apple note");
+  assert.equal(list.content[0].attrs.id, refIds[0]);
+  assert.equal(defText(list.content[0]), "apple note");
 
   // No stray placeholder sentinel remains anywhere: the NUL-delimited sentinel
   // is fully consumed by the renumber pass, so no raw NUL control char persists
@@ -287,17 +309,25 @@ test("commentsToFootnotes renumbers body callouts but skips the disclaimer range
   assert.deepEqual(consumed, []);
 
   // The disclaimer's "[1]…[K]" range is NOT treated as body markers: it stays
-  // a range and is synced to the note count (2), not renumbered into [1],[2].
+  // a range and is synced to the note count (2), not turned into references.
   assert.match(blockText(out.content[0]), /\[1\]…\[2\]/);
 
-  // The body callout's [1] is renumbered as a real reading-order marker.
-  assert.match(blockText(out.content[1]), /noted \[1\] above/);
-  // The following paragraph's [2] keeps reading order.
-  assert.match(blockText(out.content[2]), /with \[2\] too/);
+  // The body callout's [1] and the paragraph's [2] became footnoteReference
+  // nodes in reading order (the literal text markers are gone).
+  const refIds = collectRefIds(out);
+  assert.equal(refIds.length, 2);
+  assert.match(blockText(out.content[1]), /noted +above/); // [1] -> node, no text
+  assert.match(blockText(out.content[2]), /with +too/); // [2] -> node, no text
 
-  // Notes list still has the two original notes in order.
-  const list = out.content.find((n) => n.type === "orderedList");
+  // The footnotesList holds the two original notes in reading order, keyed to
+  // the new reference ids.
+  const list = out.content.find((n) => n.type === "footnotesList");
+  assert.ok(list, "footnotesList present");
   assert.equal(list.content.length, 2);
-  assert.equal(blockText(list.content[0]), "first note");
-  assert.equal(blockText(list.content[1]), "second note");
+  assert.deepEqual(
+    list.content.map((d) => d.attrs.id),
+    refIds,
+  );
+  assert.equal(defText(list.content[0]), "first note");
+  assert.equal(defText(list.content[1]), "second note");
 });

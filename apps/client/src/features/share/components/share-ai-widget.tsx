@@ -7,8 +7,6 @@ import {
   Box,
   Group,
   Paper,
-  ScrollArea,
-  Stack,
   Text,
   Textarea,
   Tooltip,
@@ -22,23 +20,13 @@ import {
 import { useTranslation } from "react-i18next";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import MessageList from "@/features/ai-chat/components/message-list.tsx";
 
 interface ShareAiWidgetProps {
   /** The share id (or key) the assistant is scoped to. */
   shareId: string;
   /** The page the reader currently has open (context for "this page"). */
   pageId: string;
-}
-
-/** Concatenate the visible text parts of a UIMessage. */
-function messageText(message: UIMessage): string {
-  return (message.parts ?? [])
-    .filter(
-      (p): p is { type: "text"; text: string } =>
-        p?.type === "text" && typeof (p as { text?: string }).text === "string",
-    )
-    .map((p) => p.text)
-    .join("");
 }
 
 /**
@@ -49,6 +37,15 @@ function messageText(message: UIMessage): string {
  * memory (this component's `useChat` store) and is sent with `credentials:
  * "omit"` to the anonymous `/api/shares/ai/stream` endpoint. The server stores
  * nothing.
+ *
+ * Presentation is now shared with the internal chat: the same `MessageList`
+ * renders the streamed transcript, so the public share gets the SAME
+ * incremental markdown render, animated typing indicator, and tool-call cards
+ * as the internal chat. Only the anonymous specifics differ — no auth, no
+ * history, `credentials: "omit"`, suppressed page citations (an anonymous
+ * reader cannot open the linked internal pages), neutralized internal markdown
+ * links (so internal UUIDs/auth-gated routes in the answer don't leak as
+ * clickable links), and a documentation-focused empty state.
  */
 export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
   const { t } = useTranslation();
@@ -147,53 +144,39 @@ export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
           </ActionIcon>
         </Group>
 
-        <ScrollArea style={{ flex: 1 }} p="sm" scrollbarSize={6} type="scroll">
-          {messages.length === 0 ? (
-            <Text size="sm" c="dimmed" ta="center" mt="lg">
-              {t("Ask a question about this documentation.")}
-            </Text>
-          ) : (
-            <Stack gap="sm">
-              {messages.map((message) => (
-                <Box
-                  key={message.id}
-                  style={{
-                    alignSelf:
-                      message.role === "user" ? "flex-end" : "flex-start",
-                    maxWidth: "85%",
-                  }}
-                >
-                  <Paper
-                    p="xs"
-                    radius="md"
-                    bg={
-                      message.role === "user"
-                        ? "var(--mantine-color-blue-light)"
-                        : "var(--mantine-color-default-hover)"
-                    }
-                  >
-                    <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
-                      {messageText(message) ||
-                        (isStreaming ? t("Thinking…") : "")}
-                    </Text>
-                  </Paper>
-                </Box>
-              ))}
-            </Stack>
-          )}
+        {/* Shared transcript: same incremental streaming render, animated typing
+            indicator, markdown, and tool-call cards as the internal chat. The
+            share is anonymous, so page citation links are suppressed (an
+            anonymous reader cannot open the linked internal pages). */}
+        <Box style={{ flex: 1, minHeight: 0, display: "flex", padding: "var(--mantine-spacing-sm)" }}>
+          <MessageList
+            messages={messages}
+            isStreaming={isStreaming}
+            showCitations={false}
+            // Anonymous reader: neutralize internal/relative links in the
+            // assistant's markdown so internal UUIDs/auth-gated routes don't
+            // leak as clickable links (external http(s) links are kept).
+            neutralizeInternalLinks={true}
+            emptyState={
+              <Text size="sm" c="dimmed" ta="center">
+                {t("Ask a question about this documentation.")}
+              </Text>
+            }
+          />
+        </Box>
 
-          {error && (
-            <Alert
-              variant="light"
-              color="red"
-              icon={<IconAlertTriangle size={16} />}
-              mt="sm"
-              title={t("Something went wrong")}
-            >
-              {t("The assistant is unavailable right now. Please try again.")}
-            </Alert>
-          )}
-        </ScrollArea>
+        {error && (
+          <Alert
+            variant="light"
+            color="red"
+            icon={<IconAlertTriangle size={16} />}
+            mx="sm"
+            mb="xs"
+            title={t("Something went wrong")}
+          >
+            {t("The assistant is unavailable right now. Please try again.")}
+          </Alert>
+        )}
 
         <Group
           gap="xs"

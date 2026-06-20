@@ -257,6 +257,9 @@ export class AiChatService {
       sessionId,
       workspace.id,
       chatId,
+      // Same open-page value used by the system prompt above; exposed to the
+      // model via getCurrentPage so page identity survives prompt mangling.
+      body.openPage,
     );
 
     // Merge in admin-configured external MCP tools (web search, etc.; §6.8).
@@ -384,11 +387,7 @@ export class AiChatService {
         this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
         // Persist whatever text we have (likely empty) so the turn is recorded,
         // and record the error text in metadata so it is visible in history.
-        await persistAssistant({
-          text: '',
-          toolCalls: null,
-          metadata: { finishReason: 'error', parts: [], error: errorText },
-        });
+        await persistAssistant(buildErrorAssistantRecord(errorText));
         await closeExternalClients();
       },
       onAbort: async ({ steps }) => {
@@ -708,6 +707,26 @@ export function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
       ? meta.parts
       : textPart(row.content ?? '');
   return { id: row.id, role, parts: parts as UIMessage['parts'] };
+}
+
+/**
+ * Build the assistant-message record persisted when a turn fails before any text
+ * is produced (the streamText onError path). Pure: it takes the formatted error
+ * text and returns the exact `{ text, toolCalls, metadata }` payload handed to
+ * persistAssistant, so the first-turn-failure recording shape is unit-testable
+ * without seaming streamText. The empty text + empty parts mean the failed turn
+ * is still recorded in history, with the provider cause visible in metadata.
+ */
+export function buildErrorAssistantRecord(errorText: string): {
+  text: string;
+  toolCalls: null;
+  metadata: { finishReason: 'error'; parts: []; error: string };
+} {
+  return {
+    text: '',
+    toolCalls: null,
+    metadata: { finishReason: 'error', parts: [], error: errorText },
+  };
 }
 
 /**

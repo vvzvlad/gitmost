@@ -57,6 +57,12 @@
     display: none;
 }
 
+/* In the collapsed state the header expands the window on click, so hint that
+   it is clickable (override the drag `grab` cursor). */
+.minimized .dragBar {
+    cursor: pointer;
+}
+
 .dragBar {
     display: flex;
     align-items: center;

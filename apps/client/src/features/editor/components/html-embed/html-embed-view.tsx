@@ -15,39 +15,11 @@ import { useAtomValue } from "jotai";
 import useUserRole from "@/hooks/use-user-role.tsx";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import classes from "./html-embed-view.module.css";
-
-/**
- * Inject raw HTML (including <script> tags) into `container`, executing any
- * scripts.
- *
- * Setting `innerHTML` does NOT run inline or external <script> tags the browser
- * parses that way: the HTML spec marks scripts inserted via innerHTML as
- * "already started" so they never execute. To get the tracker/analytics
- * use-case working we walk the freshly-parsed scripts and replace each with a
- * brand-new <script> element copying its attributes and inline code. A
- * programmatically created+inserted <script> DOES execute, so this restores
- * normal script behaviour in the wiki origin (Variant C).
- */
-function renderRawHtml(container: HTMLElement, source: string) {
-  // Clear any previous render (re-render on source change).
-  container.innerHTML = "";
-  if (!source) return;
-
-  container.innerHTML = source;
-
-  const scripts = Array.from(container.querySelectorAll("script"));
-  for (const oldScript of scripts) {
-    const newScript = document.createElement("script");
-    // Copy every attribute (src, type, async, defer, data-*, etc.).
-    for (const attr of Array.from(oldScript.attributes)) {
-      newScript.setAttribute(attr.name, attr.value);
-    }
-    // Copy inline code.
-    newScript.text = oldScript.textContent ?? "";
-    // Replacing the node in place triggers execution.
-    oldScript.parentNode?.replaceChild(newScript, oldScript);
-  }
-}
+import {
+  canEdit as computeCanEdit,
+  renderRawHtml,
+  shouldExecute as computeShouldExecute,
+} from "./render-raw-html.ts";
 
 export default function HtmlEmbedView(props: NodeViewProps) {
   const { t } = useTranslation();
@@ -70,7 +42,10 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   //    here — we execute exactly the `source` the server chose to serve.
   //  - EDITABLE editor (admin authoring): keep gating on the per-workspace
   //    toggle so an admin sees the inert placeholder when the feature is OFF.
-  const shouldExecute = !editor.isEditable || htmlEmbedEnabled;
+  const shouldExecute = computeShouldExecute(
+    editor.isEditable,
+    htmlEmbedEnabled,
+  );
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -104,7 +79,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   // The edit affordance is only meaningful in edit mode, is restricted to admins
   // (the server strips the node for non-admins anyway), and is offered only when
   // the workspace feature toggle is ON.
-  const canEdit = editor.isEditable && isAdmin && htmlEmbedEnabled;
+  const canEdit = computeCanEdit(editor.isEditable, isAdmin, htmlEmbedEnabled);
 
   return (
     <NodeViewWrapper
