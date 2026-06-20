@@ -12,10 +12,17 @@ import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
-import { User, Workspace, AiChatMessage } from '@docmost/db/types/entity.types';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import {
+  User,
+  Workspace,
+  AiChatMessage,
+  AiAgentRole,
+} from '@docmost/db/types/entity.types';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
+import { roleModelOverride } from './roles/role-model-config';
 
 /**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
@@ -24,6 +31,11 @@ import { buildSystemPrompt } from './ai-chat.prompt';
  */
 export interface AiChatStreamBody {
   chatId?: string;
+  // The agent role selected by the client. Honoured ONLY when creating a new
+  // chat (no valid chatId) — it is persisted to ai_chats.role_id and is
+  // immutable afterwards. For existing chats the role is read from the chat row,
+  // never from this field, so it cannot be swapped per-turn.
+  roleId?: string | null;
   // The page the user is currently viewing (client-supplied), or null on a
   // non-page route. Used ONLY as prompt context so the agent knows what "this
   // page" refers to; the page itself is never fetched server-side here. The id
@@ -43,7 +55,13 @@ export interface AiChatStreamArgs {
   signal: AbortSignal;
   // Resolved by the controller BEFORE res.hijack(), so an unconfigured provider
   // (AiNotConfiguredException -> 503) surfaces as clean JSON before streaming.
+  // For a role with a model override this already carries the override-resolved
+  // model (or the controller threw a 503 if the override driver was unconfigured).
   model: LanguageModel;
+  // The agent role to apply this turn, pre-resolved by the controller from the
+  // chat row (existing chat) or the request body (new chat). null => universal
+  // assistant. Carried here so the turn never re-loads it.
+  role: AiAgentRole | null;
 }
 
 /**
@@ -70,15 +88,53 @@ export class AiChatService {
     private readonly aiSettings: AiSettingsService,
     private readonly tools: AiChatToolsService,
     private readonly mcpClients: McpClientsService,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
   ) {}
 
   /**
-   * Resolve the chat language model for the workspace. Exposed so the
-   * controller can resolve it BEFORE res.hijack(): an unconfigured provider
-   * throws AiNotConfiguredException there and returns a clean 503.
+   * Resolve the agent role that applies to this stream request, scoped to the
+   * workspace and soft-delete aware. For an EXISTING chat the role is read from
+   * `ai_chats.role_id` (authoritative — never from the body). For a NEW chat
+   * (no valid chatId) the role comes from the request body's `roleId`. Returns
+   * null for the universal assistant or when the referenced role is missing /
+   * soft-deleted.
    */
-  getChatModel(workspaceId: string): Promise<LanguageModel> {
-    return this.ai.getChatModel(workspaceId);
+  async resolveRoleForRequest(
+    workspace: Workspace,
+    body: AiChatStreamBody,
+  ): Promise<AiAgentRole | null> {
+    let roleId: string | null | undefined;
+    if (body.chatId) {
+      const chat = await this.aiChatRepo.findById(body.chatId, workspace.id);
+      // A valid existing chat fixes the role from its own row.
+      if (chat) roleId = chat.roleId;
+      else roleId = body.roleId; // stale chatId => treated as a new chat
+    } else {
+      roleId = body.roleId;
+    }
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspace.id);
+    // A disabled role falls back to the universal assistant: it must not apply
+    // its persona/model override even to a chat that was bound to it earlier.
+    // findById already excludes soft-deleted roles; this also drops disabled
+    // ones, server-authoritatively, for both the new-chat (body.roleId) and
+    // existing-chat (chat.role_id) paths.
+    if (!role || !role.enabled) return null;
+    return role;
+  }
+
+  /**
+   * Resolve the chat language model for the workspace, applying the role's
+   * optional model override. Exposed so the controller can resolve it BEFORE
+   * res.hijack(): an unconfigured provider (incl. a role pointing at an
+   * unconfigured driver) throws AiNotConfiguredException there and returns a
+   * clean 503 instead of breaking mid-stream.
+   */
+  getChatModel(
+    workspaceId: string,
+    role?: AiAgentRole | null,
+  ): Promise<LanguageModel> {
+    return this.ai.getChatModel(workspaceId, roleModelOverride(role));
   }
 
   async stream({
@@ -89,6 +145,7 @@ export class AiChatService {
     res,
     signal,
     model,
+    role,
   }: AiChatStreamArgs): Promise<void> {
     // Resolve / create the chat. A new chat is created when no valid chatId is
     // supplied or the supplied one does not belong to this workspace.
@@ -104,6 +161,9 @@ export class AiChatService {
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
+        // Bind the chat to the resolved role (if any) at creation time. The role
+        // is immutable afterwards (later turns read it from this column).
+        roleId: role?.id ?? null,
       });
       chatId = chat.id;
       isNewChat = true;
@@ -146,6 +206,9 @@ export class AiChatService {
     const system = buildSystemPrompt({
       workspace,
       adminPrompt: resolved?.systemPrompt,
+      // The role (pre-resolved by the controller) REPLACES the persona layer;
+      // the safety framework is still appended by buildSystemPrompt.
+      roleInstructions: role?.instructions,
       openedPage: body.openPage,
     });
 

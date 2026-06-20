@@ -13,6 +13,59 @@ export interface IAiChat {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
+  // The agent role bound to this chat, if any (immutable after creation).
+  roleId?: string | null;
+  // Denormalized via a JOIN in the chat list response (the bound role's badge).
+  // Null when the chat has no role or the role was soft-deleted.
+  roleName?: string | null;
+  roleEmoji?: string | null;
+}
+
+/** Supported model drivers (mirrors the server `AI_DRIVERS`). */
+export type AiRoleDriver = "openai" | "gemini" | "ollama";
+
+/** Optional per-role model override (mirrors `model_config`). */
+export interface IAiRoleModelConfig {
+  driver?: AiRoleDriver;
+  chatModel?: string;
+}
+
+/**
+ * An agent role (mirrors the server `AgentRoleView`). A role replaces the
+ * agent's persona (instructions) and may optionally override the model. The
+ * safety framework is always still applied server-side.
+ */
+export interface IAiRole {
+  id: string;
+  name: string;
+  emoji: string | null;
+  description: string | null;
+  instructions: string;
+  modelConfig: IAiRoleModelConfig | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Admin create payload for a role. */
+export interface IAiRoleCreate {
+  name: string;
+  emoji?: string;
+  description?: string;
+  instructions: string;
+  modelConfig?: IAiRoleModelConfig | null;
+  enabled?: boolean;
+}
+
+/** Admin update payload for a role (partial). */
+export interface IAiRoleUpdate {
+  id: string;
+  name?: string;
+  emoji?: string;
+  description?: string;
+  instructions?: string;
+  modelConfig?: IAiRoleModelConfig | null;
+  enabled?: boolean;
 }
 
 /**

@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Group, Loader, Tooltip } from "@mantine/core";
+import { Group, Loader, Select, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
   IconCheck,
@@ -25,6 +25,7 @@ import {
   activeAiChatIdAtom,
   aiChatWindowOpenAtom,
   aiChatDraftAtom,
+  selectedAiRoleIdAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
@@ -32,6 +33,7 @@ import {
   AI_CHATS_RQ_KEY,
   useAiChatMessagesQuery,
   useAiChatsQuery,
+  useAiRolesQuery,
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
@@ -102,6 +104,8 @@ export default function AiChatWindow() {
   const [windowOpen, setWindowOpen] = useAtom(aiChatWindowOpenAtom);
   const [activeChatId, setActiveChatId] = useAtom(activeAiChatIdAtom);
   const setDraft = useSetAtom(aiChatDraftAtom);
+  // The role chosen for the next new chat (null = universal assistant).
+  const [selectedRoleId, setSelectedRoleId] = useAtom(selectedAiRoleIdAtom);
 
   // History section starts collapsed (matches the former panel's behavior).
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -123,6 +127,16 @@ export default function AiChatWindow() {
   const adoptNewChat = useRef(false);
 
   const { data: chats } = useAiChatsQuery();
+  // Roles for the new-chat picker (any member may list them). Only fetched while
+  // the window is open.
+  const { data: roles } = useAiRolesQuery(windowOpen);
+  // The new-chat picker only offers ENABLED roles. The list endpoint returns
+  // all live roles (so the admin settings section can manage disabled ones), so
+  // we filter to `enabled` here, client-side, for the composer picker only.
+  const enabledRoles = useMemo(
+    () => (roles ?? []).filter((r) => r.enabled === true),
+    [roles],
+  );
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
@@ -144,7 +158,9 @@ export default function AiChatWindow() {
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
-  }, [setActiveChatId, setDraft]);
+    // Default the picker back to "Universal assistant" for the fresh chat.
+    setSelectedRoleId(null);
+  }, [setActiveChatId, setDraft, setSelectedRoleId]);
 
   const selectChat = useCallback(
     (chatId: string): void => {
@@ -343,6 +359,15 @@ export default function AiChatWindow() {
         />
         <span className={classes.title}>{t("AI chat")}</span>
 
+        {/* Role badge for the active chat (emoji + name). Shown only when the
+            chat is bound to a role that still exists. */}
+        {activeChat?.roleName && (
+          <span className={classes.badge} title={t("Agent role")}>
+            {activeChat.roleEmoji ? `${activeChat.roleEmoji} ` : ""}
+            {activeChat.roleName}
+          </span>
+        )}
+
         <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
           {contextTokens > 0 && (
             <Tooltip label={t("Current context size")} withArrow>
@@ -432,6 +457,29 @@ export default function AiChatWindow() {
           )}
         </div>
 
+        {/* Role picker — only for a NEW chat (before it is created). Once the
+            chat exists, its role is fixed and shown as a header badge instead.
+            Defaults to "Universal assistant" (no role). */}
+        {activeChatId === null && (enabledRoles?.length ?? 0) > 0 && (
+          <div style={{ padding: "4px 8px 0" }}>
+            <Select
+              size="xs"
+              label={t("Agent role")}
+              value={selectedRoleId ?? ""}
+              onChange={(value) => setSelectedRoleId(value || null)}
+              allowDeselect={false}
+              comboboxProps={{ withinPortal: true }}
+              data={[
+                { value: "", label: t("Universal assistant") },
+                ...enabledRoles.map((r) => ({
+                  value: r.id,
+                  label: `${r.emoji ? `${r.emoji} ` : ""}${r.name}`,
+                })),
+              ]}
+            />
+          </div>
+        )}
+
         {/* body: active chat thread */}
         <div className={classes.body}>
           {waitingForHistory ? (
@@ -444,6 +492,8 @@ export default function AiChatWindow() {
               chatId={activeChatId}
               initialRows={activeChatId ? messageRows : []}
               openPage={openPage}
+              // Honoured only for a new chat; null = universal assistant.
+              roleId={activeChatId === null ? selectedRoleId : null}
               onTurnFinished={onTurnFinished}
             />
           )}
