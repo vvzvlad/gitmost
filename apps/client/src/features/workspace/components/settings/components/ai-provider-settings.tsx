@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { z } from "zod/v4";
 import {
-  Anchor,
+  ActionIcon,
   Badge,
   Box,
   Button,
@@ -15,12 +15,13 @@ import {
   Text,
   Textarea,
   TextInput,
+  Tooltip,
   useMantineTheme,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useDisclosure } from "@mantine/hooks";
 import { zod4Resolver } from "mantine-form-zod-resolver";
-import { IconPencil } from "@tabler/icons-react";
+import { IconPencil, IconX } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
@@ -430,19 +431,34 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("chatModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("API key")}
-              placeholder={hasApiKey ? t("•••• set") : ""}
-              autoComplete="off"
-              {...form.getInputProps("apiKey")}
-            />
-            {hasApiKey && (
-              <Anchor component="button" type="button" c="red" size="xs" onClick={handleClearKey}>
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("API key")}
+            placeholder={hasApiKey ? t("•••• set") : ""}
+            autoComplete="off"
+            rightSection={
+              hasApiKey && form.values.apiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("apiKey")}
+          />
         </Group>
 
         <TextInput
@@ -535,29 +551,38 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("embeddingModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("Embedding API key")}
-              placeholder={
-                hasEmbeddingApiKey
-                  ? t("•••• set")
-                  : t("Leave empty to use the chat API key")
-              }
-              autoComplete="off"
-              {...form.getInputProps("embeddingApiKey")}
-            />
-            {hasEmbeddingApiKey && (
-              <Anchor
-                component="button"
-                type="button"
-                c="red"
-                size="xs"
-                onClick={handleClearEmbeddingKey}
-              >
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("Embedding API key")}
+            placeholder={
+              hasEmbeddingApiKey
+                ? t("•••• set")
+                : t("Leave empty to use the chat API key")
+            }
+            autoComplete="off"
+            rightSection={
+              hasEmbeddingApiKey && form.values.embeddingApiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearEmbeddingKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("embeddingApiKey")}
+          />
         </Group>
 
         <TextInput
@@ -654,29 +679,38 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("sttModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("API key")}
-              placeholder={
-                hasSttApiKey
-                  ? t("•••• set")
-                  : t("Leave empty to use the chat API key")
-              }
-              autoComplete="off"
-              {...form.getInputProps("sttApiKey")}
-            />
-            {hasSttApiKey && (
-              <Anchor
-                component="button"
-                type="button"
-                c="red"
-                size="xs"
-                onClick={handleClearSttKey}
-              >
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("API key")}
+            placeholder={
+              hasSttApiKey
+                ? t("•••• set")
+                : t("Leave empty to use the chat API key")
+            }
+            autoComplete="off"
+            rightSection={
+              hasSttApiKey && form.values.sttApiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearSttKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("sttApiKey")}
+          />
         </Group>
 
         <Select
