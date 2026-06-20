@@ -30,6 +30,7 @@ import {
   MAX_SHARE_MESSAGE_CHARS,
 } from './public-share-chat.service';
 import { evaluateShareAssistantFunnel } from './public-share-chat.funnel';
+import { deriveShareAccess } from './public-share-chat.access';
 import type { UIMessage } from 'ai';
 
 /**
@@ -62,6 +63,11 @@ export class PublicShareChatController {
   @SkipTransform()
   // IP-keyed throttle (default ThrottlerGuard tracker = client IP): ~5/min.
   // Runs FIRST, so an over-limit anonymous caller gets 429 before any work.
+  // DEFENSE IN DEPTH ONLY: the app runs with trustProxy, so the "client IP" is
+  // taken from X-Forwarded-For. This layer is only meaningful when a TRUSTED
+  // reverse proxy REWRITES (not appends) XFF with the real client IP; otherwise
+  // an attacker rotates XFF to evade it. The cluster-wide per-workspace cap
+  // below is the backstop that holds even when this layer is fully evaded.
   @UseGuards(ThrottlerGuard)
   @Throttle({ [PUBLIC_SHARE_AI_THROTTLER]: { limit: 5, ttl: 60000 } })
   @Post('stream')
@@ -110,7 +116,6 @@ export class PublicShareChatController {
           workspace.id,
           share.spaceId,
         );
-        shareUsable = sharingAllowed;
         // A restricted descendant is hidden from the public share view; treat
         // the opened page as not-in-share so the funnel returns the SAME 404 it
         // returns for an out-of-tree page (uniform, no existence leak).
@@ -124,7 +129,16 @@ export class PublicShareChatController {
               openedPageRow.id,
             )
           : true; // unresolvable opened page => fail closed (treat as not-in-share)
-        pageInShare = sharingAllowed && !restricted;
+        // The security-relevant combination (server-resolved share id ===
+        // requested shareId, + sharingAllowed, + the restricted gate) is a pure,
+        // unit-tested helper so the access join point can be exercised against
+        // the red-team boundaries without the full Nest/DB graph.
+        ({ shareUsable, pageInShare } = deriveShareAccess({
+          resolvedShareId: share.id,
+          requestedShareId: shareId,
+          sharingAllowed,
+          restricted,
+        }));
       }
     }
 
@@ -170,7 +184,7 @@ export class PublicShareChatController {
     //    so an over-cap workspace gets a clean 429 and spends nothing. NOTE:
     //    production should ALSO front this endpoint with a trusted proxy that
     //    REWRITES (not appends) XFF so the per-IP throttle stays meaningful.
-    if (!this.publicShareChat.tryConsumeWorkspaceQuota(workspace.id)) {
+    if (!(await this.publicShareChat.tryConsumeWorkspaceQuota(workspace.id))) {
       throw new HttpException(
         'This documentation assistant is temporarily busy. Please try again later.',
         HttpStatus.TOO_MANY_REQUESTS,

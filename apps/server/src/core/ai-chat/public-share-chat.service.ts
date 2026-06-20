@@ -7,14 +7,14 @@ import {
   type UIMessage,
   type LanguageModel,
 } from 'ai';
+import { RedisService } from '@nestjs-labs/nestjs-ioredis';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
 import { buildShareSystemPrompt } from './public-share-chat.prompt';
 import {
   PublicShareWorkspaceLimiter,
-  resolveShareAiWorkspaceMax,
-  SHARE_AI_WORKSPACE_WINDOW_MS,
+  createPublicShareWorkspaceLimiter,
 } from './public-share-workspace-limiter';
 
 /**
@@ -58,6 +58,22 @@ export const MAX_SHARE_MESSAGES = 30;
 export const MAX_SHARE_MESSAGE_CHARS = 8000;
 
 /**
+ * Keep ONLY genuine conversation turns from the client-held transcript. The
+ * payload is fully attacker-controlled; a forged `system` turn could try to
+ * override the locked share-scoped system prompt, and a forged `tool` turn could
+ * try to fake tool results (claiming content the share never returned). We admit
+ * only `user` / `assistant` text turns — the real tools re-derive their scope
+ * server-side regardless, but dropping the forged roles keeps the injected text
+ * out of the model context entirely. Exported pure so the filter is directly
+ * unit-testable.
+ */
+export function filterShareTranscript(messages: UIMessage[]): UIMessage[] {
+  return (messages ?? []).filter(
+    (m) => m?.role === 'user' || m?.role === 'assistant',
+  );
+}
+
+/**
  * Anonymous, read-only AI assistant for a single PUBLIC share tree.
  *
  * Mirrors the streaming plumbing of `AiChatService` (streamText ->
@@ -70,30 +86,33 @@ export class PublicShareChatService {
   private readonly logger = new Logger(PublicShareChatService.name);
 
   /**
-   * IP-INDEPENDENT per-workspace cap on anonymous share-AI calls. This is the
-   * second limiter contour: the per-IP @Throttle on the route can be evaded by
-   * an attacker rotating `X-Forwarded-For` (the app runs with trustProxy), but
-   * the workspace id is server-resolved from the host, so this bounds the
-   * owner's token bill even when the per-IP limit is defeated. In production the
-   * endpoint should ALSO sit behind a trusted proxy that rewrites XFF.
+   * IP-INDEPENDENT, CLUSTER-WIDE per-workspace cap on anonymous share-AI calls.
+   * This is the second limiter contour: the per-IP @Throttle on the route can be
+   * evaded by an attacker rotating `X-Forwarded-For` (the app runs with
+   * trustProxy), but the workspace id is server-resolved from the host, so this
+   * bounds the owner's token bill even when the per-IP limit is defeated. It is
+   * a SLIDING window backed by the shared Redis, so the cap holds across window
+   * boundaries AND is shared by all app instances (one budget, not K x cap). In
+   * production the endpoint should ALSO sit behind a trusted proxy that rewrites
+   * (not appends) XFF so the per-IP throttle stays meaningful.
    */
-  private readonly workspaceLimiter = new PublicShareWorkspaceLimiter(
-    resolveShareAiWorkspaceMax(),
-    SHARE_AI_WORKSPACE_WINDOW_MS,
-  );
+  private readonly workspaceLimiter: PublicShareWorkspaceLimiter;
 
   constructor(
     private readonly ai: AiService,
     private readonly aiSettings: AiSettingsService,
     private readonly tools: PublicShareChatToolsService,
-  ) {}
+    redisService: RedisService,
+  ) {
+    this.workspaceLimiter = createPublicShareWorkspaceLimiter(redisService);
+  }
 
   /**
    * Account one anonymous share-AI call against the per-workspace cap. Returns
    * true if allowed; false once the workspace has hit its hourly cap (the
    * controller must then 429 BEFORE starting the stream / spending any tokens).
    */
-  tryConsumeWorkspaceQuota(workspaceId: string): boolean {
+  async tryConsumeWorkspaceQuota(workspaceId: string): Promise<boolean> {
     return this.workspaceLimiter.tryConsume(workspaceId);
   }
 
@@ -127,9 +146,7 @@ export class PublicShareChatService {
     // Rebuild the conversation from the client payload. The client holds the
     // transcript (ephemeral, never stored). Trusting it is safe: the share
     // scope is enforced by the tools, not by the messages.
-    const uiMessages = (messages ?? []).filter(
-      (m) => m?.role === 'user' || m?.role === 'assistant',
-    );
+    const uiMessages = filterShareTranscript(messages);
     // convertToModelMessages is async in ai@6.x (Promise<ModelMessage[]>).
     const modelMessages = await convertToModelMessages(uiMessages);
 
