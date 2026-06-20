@@ -6,6 +6,7 @@ import { IconFileText, IconSearch } from "@tabler/icons-react";
 import type { Editor, Range } from "@tiptap/core";
 import { searchSuggestions } from "@/features/search/services/search-service";
 import type { IPage } from "@/features/page/types/page.types";
+import { buildPickerQuery, excludeHost } from "./page-embed-picker.utils";
 
 export const PAGE_EMBED_PICKER_EVENT = "open-page-embed-picker";
 
@@ -43,21 +44,13 @@ export default function PageEmbedPicker() {
 
   const { data, isFetching } = useQuery({
     queryKey: ["page-embed-template-picker", query],
-    queryFn: () =>
-      searchSuggestions({
-        query,
-        includePages: true,
-        onlyTemplates: true,
-        limit: 20,
-      }),
+    queryFn: () => searchSuggestions(buildPickerQuery(query)),
     enabled: opened,
     staleTime: 30 * 1000,
   });
 
   const hostPageId = detailRef.current?.hostPageId;
-  const pages = ((data?.pages ?? []) as IPage[]).filter(
-    (p) => p && p.id !== hostPageId,
-  );
+  const pages = excludeHost((data?.pages ?? []) as IPage[], hostPageId);
 
   const handleSelect = (page: IPage) => {
     const detail = detailRef.current;

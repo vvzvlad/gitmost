@@ -359,6 +359,111 @@ export function isInitializeRequestBody(body: unknown): boolean {
   return (body as { method?: unknown }).method === 'initialize';
 }
 
+/**
+ * The outcome of McpService.handle's pre-hijack gauntlet, as a pure value the
+ * caller acts on. Either send a JSON error with a fixed status (`respond`), or
+ * proceed to hijack the response and delegate to the MCP transport (`hijack`).
+ * Keeping this a pure decision (no FastifyReply, no res.hijack) makes the
+ * status/body mapping unit-testable, and guarantees no error path can leak the
+ * password or Authorization header — the body is only ever a fixed string or the
+ * UnauthorizedException's own message.
+ */
+export type McpHandleDecision =
+  | { kind: 'respond'; status: number; body: { error: string } }
+  | { kind: 'hijack' };
+
+/**
+ * Pure mapping of McpService.handle's auth/enablement gauntlet to a response
+ * decision. Precedence mirrors handle():
+ *   1. shared X-MCP-Token mismatch -> 401 {error:'Unauthorized'} (no hijack).
+ *   2. workspace MCP disabled      -> 403 {error:'MCP is disabled ...'}.
+ *   3. resolveSessionConfig threw:
+ *        - an UnauthorizedException -> 401 with err.message (a SPECIFIC reason;
+ *          never the password/header — the message is the only thing surfaced).
+ *        - any other error          -> 500 generic 'Internal server error'.
+ *   4. otherwise (auth resolved)   -> hijack and delegate to the transport.
+ */
+export function mapAuthResultToResponse(input: {
+  sharedTokenOk: boolean;
+  enabled: boolean;
+  error?: unknown;
+}): McpHandleDecision {
+  if (!input.sharedTokenOk) {
+    return { kind: 'respond', status: 401, body: { error: 'Unauthorized' } };
+  }
+
+  if (!input.enabled) {
+    return {
+      kind: 'respond',
+      status: 403,
+      body: { error: 'MCP is disabled for this workspace' },
+    };
+  }
+
+  if (input.error !== undefined) {
+    if (input.error instanceof UnauthorizedException) {
+      return {
+        kind: 'respond',
+        status: 401,
+        body: { error: input.error.message },
+      };
+    }
+    return {
+      kind: 'respond',
+      status: 500,
+      body: { error: 'Internal server error' },
+    };
+  }
+
+  return { kind: 'hijack' };
+}
+
+// Result of the EE MFA module's requirement check for the Basic gate. Both
+// flags absent/false means MFA does not block the password login.
+export interface BasicGateMfaResult {
+  userHasMfa?: boolean;
+  requiresMfaSetup?: boolean;
+}
+
+/**
+ * Pure decision logic for the /mcp HTTP-Basic pre-token gate, replicating EXACTLY
+ * what AuthController.login enforces before issuing a token, so the Basic path is
+ * not an SSO/MFA bypass. Framework-free (no ModuleRef, no on-disk EE MFA module)
+ * so the SSO/MFA decision is unit-testable in isolation:
+ *
+ *   - `ssoEnforced` true  -> throw Unauthorized ("enforced SSO"); a password
+ *      login is not allowed on an SSO-enforced workspace.
+ *   - otherwise, `mfa` is the EE MFA module's requirement result (or undefined
+ *      when no EE MFA module is bundled — a community/fork build). If MFA is
+ *      present and the user has MFA enabled OR needs MFA setup, throw Unauthorized
+ *      telling the caller to use a Bearer access token (Basic cannot complete MFA).
+ *   - no SSO + no MFA gate -> resolve (the Basic login is allowed to proceed).
+ *
+ * McpService.enforceBasicLoginGate wires the concrete `validateSsoEnforcement`
+ * result and the lazily-loaded MFA module result into this, so the gate decision
+ * itself carries no framework dependencies. Throws UnauthorizedException on
+ * rejection (surfaced as a clean 401); never logs the password.
+ */
+export function decideBasicGate(input: {
+  ssoEnforced: boolean;
+  mfa?: BasicGateMfaResult;
+}): void {
+  if (input.ssoEnforced) {
+    throw new UnauthorizedException(
+      'This workspace has enforced SSO login. Use SSO; MCP HTTP Basic is not allowed.',
+    );
+  }
+
+  const mfa = input.mfa;
+  if (mfa && (mfa.userHasMfa || mfa.requiresMfaSetup)) {
+    throw new UnauthorizedException(
+      'This account requires multi-factor authentication. MCP HTTP Basic ' +
+        'cannot complete MFA — log in normally and use a Bearer access token ' +
+        'instead.',
+    );
+  }
+}
+
 /** Extract a Bearer token from an Authorization header (case-insensitive). */
 export function extractBearer(
   authHeader: string | undefined,

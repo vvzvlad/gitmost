@@ -1,7 +1,10 @@
 import { Test } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { PageTemplateController } from '../page-template.controller';
 import { TransclusionService } from '../transclusion.service';
+import { TemplateLookupDto } from '../dto/template-lookup.dto';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PageAccessService } from '../../page-access/page-access.service';
 import { JwtAuthGuard } from '../../../../common/guards/jwt-auth.guard';
@@ -89,5 +92,53 @@ describe('PageTemplateController.toggleTemplate', () => {
       'p1',
     );
     expect(out).toEqual({ pageId: 'p1', isTemplate: false });
+  });
+
+  it('lookup forwards dto.sourcePageIds + user.id + user.workspaceId to the service', async () => {
+    const expected = { items: [] };
+    (transclusionService.lookupTemplate as jest.Mock).mockResolvedValue(
+      expected,
+    );
+
+    const dto = { sourcePageIds: ['s1', 's2'] } as any;
+    const out = await controller.lookup(dto, user);
+
+    expect(transclusionService.lookupTemplate).toHaveBeenCalledWith(
+      ['s1', 's2'],
+      'u1', // user.id
+      'w1', // user.workspaceId
+    );
+    expect(out).toBe(expected);
+  });
+});
+
+describe('TemplateLookupDto validation (class-validator)', () => {
+  const uuid = (n: number) =>
+    `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+  it('accepts an array of <=50 valid UUIDs', async () => {
+    const dto = plainToInstance(TemplateLookupDto, {
+      sourcePageIds: [uuid(1), uuid(2)],
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects an over-cap array (ArrayMaxSize 50)', async () => {
+    const dto = plainToInstance(TemplateLookupDto, {
+      sourcePageIds: Array.from({ length: 51 }, (_, i) => uuid(i)),
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].constraints).toHaveProperty('arrayMaxSize');
+  });
+
+  it('rejects a non-UUID member (IsUUID each)', async () => {
+    const dto = plainToInstance(TemplateLookupDto, {
+      sourcePageIds: [uuid(1), 'not-a-uuid'],
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].constraints).toHaveProperty('isUuid');
   });
 });

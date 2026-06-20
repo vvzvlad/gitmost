@@ -4,6 +4,7 @@ import {
   serializeSteps,
   rowToUiMessage,
   prepareAgentStep,
+  buildErrorAssistantRecord,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -227,5 +228,34 @@ describe('prepareAgentStep', () => {
     const atBoundary = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
     expect(atBoundary).toBeDefined();
     expect(atBoundary?.toolChoice).toBe('none');
+  });
+});
+
+/**
+ * Unit test for buildErrorAssistantRecord: the pure helper that shapes the
+ * assistant-message record persisted on a first-turn (or any) stream failure.
+ * The streamText onError callback builds the formatted error text via
+ * describeProviderError (tested separately) and hands it to this helper; pinning
+ * the record shape here covers the persist-assistant-on-error logic without
+ * having to seam streamText itself.
+ */
+describe('buildErrorAssistantRecord', () => {
+  it('records an empty turn with the error text in metadata (finishReason=error)', () => {
+    const rec = buildErrorAssistantRecord('401: Unauthorized');
+    expect(rec).toEqual({
+      text: '',
+      toolCalls: null,
+      metadata: { finishReason: 'error', parts: [], error: '401: Unauthorized' },
+    });
+  });
+
+  it('always produces empty text + empty parts so a failed turn is still recorded', () => {
+    const rec = buildErrorAssistantRecord('boom');
+    // No partial text and no UI parts: the turn exists in history but renders as
+    // an error, with the cause preserved in metadata.error.
+    expect(rec.text).toBe('');
+    expect(rec.metadata.parts).toEqual([]);
+    expect(rec.toolCalls).toBeNull();
+    expect(rec.metadata.error).toBe('boom');
   });
 });
