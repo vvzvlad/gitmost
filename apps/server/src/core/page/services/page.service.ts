@@ -62,6 +62,7 @@ import { markdownToHtml } from '@docmost/editor-ext';
 import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
+import { remapPageEmbedSourceId } from '../transclusion/utils/transclusion-prosemirror.util';
 import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
@@ -713,12 +714,11 @@ export class PageService {
           // source page is also part of the copied set, point at its new copy;
           // otherwise leave it pointing at the original (live embed of original).
           if (node.type.name === 'pageEmbed') {
-            const sourcePageId = node.attrs.sourcePageId;
-            if (sourcePageId && pageMap.has(sourcePageId)) {
-              const mappedPage = pageMap.get(sourcePageId);
-              // @ts-expect-error ProseMirror Attrs is read-only typed; reassigning sourcePageId to the duplicated page copy is intentional here
-              node.attrs.sourcePageId = mappedPage.newPageId;
-            }
+            // @ts-expect-error ProseMirror Attrs is read-only typed; intentional remap to the duplicated copy
+            node.attrs.sourcePageId = remapPageEmbedSourceId(
+              node.attrs.sourcePageId,
+              (id) => pageMap.get(id)?.newPageId,
+            );
           }
 
           // Update internal page links in link marks
