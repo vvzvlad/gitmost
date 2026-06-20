@@ -511,6 +511,20 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.htmlEmbed !== 'undefined') {
+        const prev = settingsBefore?.htmlEmbed ?? false;
+        if (prev !== updateWorkspaceDto.htmlEmbed) {
+          before.htmlEmbed = prev;
+          after.htmlEmbed = updateWorkspaceDto.htmlEmbed;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'htmlEmbed',
+          updateWorkspaceDto.htmlEmbed,
+          trx,
+        );
+      }
+
       if (typeof updateWorkspaceDto.aiPublicShareAssistant !== 'undefined') {
         const prev = settingsBefore?.ai?.publicShareAssistant ?? false;
         if (prev !== updateWorkspaceDto.aiPublicShareAssistant) {
@@ -534,6 +548,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
+      delete updateWorkspaceDto.htmlEmbed;
       delete updateWorkspaceDto.aiPublicShareAssistant;
 
       await this.workspaceRepo.updateWorkspace(

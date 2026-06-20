@@ -39,6 +39,13 @@ import {
   HISTORY_INTERVAL,
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
+import {
+  hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
+  stripHtmlEmbedNodes,
+} from '../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
 @Injectable()
 export class PersistenceExtension implements Extension {
@@ -59,6 +66,7 @@ export class PersistenceExtension implements Extension {
     @InjectQueue(QueueName.NOTIFICATION_QUEUE) private notificationQueue: Queue,
     private readonly collabHistory: CollabHistoryService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async onLoadDocument(data: onLoadDocumentPayload) {
@@ -112,7 +120,62 @@ export class PersistenceExtension implements Extension {
 
     const pageId = getPageId(documentName);
 
-    const tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
+    let tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
+
+    // SECURITY (Variant C admin gate, collab WebSocket write path):
+    // The persisted snapshot is the merged ydoc, which may contain an htmlEmbed
+    // node inserted by ANY connected editor. htmlEmbed renders raw, unsanitized
+    // JS in every reader's browser, so only workspace admins/owners may author
+    // it. When the user whose store triggers this persist is not an admin, strip
+    // every htmlEmbed node before it is written to the page row AND before the
+    // ydoc state is re-encoded, so the node cannot be reintroduced by a
+    // non-admin via the collab socket.
+    // NOTE (residual risk): the gate is keyed to the storing connection's user.
+    // If an admin already authored an htmlEmbed and a non-admin's later store
+    // does not touch it, this strip would remove the admin's embed on that
+    // non-admin store. This is intentionally conservative (fail closed): the
+    // admin re-adds/keeps the node on their own next edit. A future refinement
+    // could diff against the previously persisted admin-authored embeds.
+    //
+    // ACCEPTED RESIDUAL RISK (pre-persist broadcast window): this strip runs in
+    // the debounced onStoreDocument, but hocuspocus broadcasts each inbound Yjs
+    // update to connected clients immediately, so a non-admin's transient
+    // htmlEmbed can execute in OTHER open editors' browsers in the brief window
+    // before this persist strips it. The exposure is limited to concurrent
+    // AUTHENTICATED space members who have the doc open with Edit rights
+    // (semi-trusted) — anonymous public-share/readonly viewers do NOT open a
+    // collab socket (ReadonlyPageEditor renders fetched, already-stripped
+    // content; HocuspocusProvider is only used by the authenticated editable
+    // page-editor), and the PERSISTED page row plus every share/readonly read
+    // path are protected by this strip. The window is therefore accepted rather
+    // than mitigated with an inbound beforeBroadcast strip.
+    // Toggle-AND-admin gate: htmlEmbed survives only when the workspace feature
+    // toggle is ON and the storing user is an admin/owner. OFF (default) =>
+    // stripped for everyone (existing embeds get cleaned up on next save).
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(context?.user?.workspaceId))?.settings,
+    );
+    if (!htmlEmbedAllowed(htmlEmbedEnabled, context?.user?.role)) {
+      if (hasHtmlEmbedNode(tiptapJson)) {
+        this.logger.warn(
+          `Stripping htmlEmbed node(s) from collab store by user ${context?.user?.id} on ${documentName}`,
+        );
+        tiptapJson = stripHtmlEmbedNodes(tiptapJson);
+        // Reflect the stripped content back into the shared ydoc so the node is
+        // removed for all connected clients, not just the persisted row.
+        const fragment = document.getXmlFragment('default');
+        if (fragment.length > 0) {
+          fragment.delete(0, fragment.length);
+        }
+        const cleanDoc = TiptapTransformer.toYdoc(
+          tiptapJson,
+          'default',
+          tiptapExtensions,
+        );
+        Y.applyUpdate(document, Y.encodeStateAsUpdate(cleanDoc));
+      }
+    }
+
     const ydocState = Buffer.from(Y.encodeStateAsUpdate(document));
 
     let textContent = null;

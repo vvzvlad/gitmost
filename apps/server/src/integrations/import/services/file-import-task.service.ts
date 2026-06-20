@@ -20,6 +20,14 @@ import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { FileTask, InsertablePage } from '@docmost/db/types/entity.types';
 import { markdownToHtml } from '@docmost/editor-ext';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
+import {
+  hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
+  stripHtmlEmbedNodes,
+} from '../../../common/helpers/prosemirror/html-embed.util';
+import { UserRepo } from '@docmost/db/repos/user/user.repo';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { formatImportHtml } from '../utils/import-formatter';
 import {
   buildAttachmentCandidates,
@@ -53,6 +61,8 @@ export class FileImportTaskService {
     private readonly backlinkRepo: BacklinkRepo,
     @InjectKysely() private readonly db: KyselyDB,
     private readonly importAttachmentService: ImportAttachmentService,
+    private readonly userRepo: UserRepo,
+    private readonly workspaceRepo: WorkspaceRepo,
     private eventEmitter: EventEmitter2,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
@@ -148,6 +158,29 @@ export class FileImportTaskService {
       .select(['slug'])
       .where('id', '=', fileTask.spaceId)
       .executeTakeFirst();
+
+    // SECURITY (Variant C admin gate, zip/multi-file import write path):
+    // An imported .html/.md file can carry an htmlEmbed marker (the node's
+    // serialized form), which would execute raw, unsanitized JS in readers'
+    // browsers. Only workspace admins/owners may author it. Resolve the
+    // importer's role ONCE here; each page's prosemirror JSON is run through the
+    // strip below before textContent/ydoc/insert when the importer is not an
+    // admin, so a non-admin cannot smuggle the node in via a zip import (which
+    // requires only space Edit).
+    const importingUser = await this.userRepo.findById(
+      fileTask.creatorId,
+      fileTask.workspaceId,
+    );
+    // Toggle-AND-admin gate, resolved ONCE for the whole import: htmlEmbed
+    // survives only when the workspace feature toggle is ON and the importer is
+    // an admin/owner. OFF (default) => stripped for everyone.
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(fileTask.workspaceId))?.settings,
+    );
+    const importerCanAuthorHtmlEmbed = htmlEmbedAllowed(
+      htmlEmbedEnabled,
+      importingUser?.role,
+    );
 
     const pagesMap = new Map<string, ImportPageNode>();
 
@@ -496,8 +529,20 @@ export class FileImportTaskService {
               await this.importService.processHTML(html),
             );
 
-            const { title, prosemirrorJson } =
+            let { title, prosemirrorJson } =
               this.importService.extractTitleAndRemoveHeading(pmState);
+
+            // SECURITY (Variant C admin gate): strip htmlEmbed nodes from pages
+            // imported by a non-admin BEFORE computing textContent/ydoc/insert.
+            if (
+              !importerCanAuthorHtmlEmbed &&
+              hasHtmlEmbedNode(prosemirrorJson)
+            ) {
+              this.logger.warn(
+                `Stripping htmlEmbed node(s) from non-admin import by user ${fileTask.creatorId} (page ${page.id}, file ${filePath})`,
+              );
+              prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+            }
 
             const insertablePage: InsertablePage = {
               id: page.id,

@@ -30,6 +30,9 @@ export interface IWorkspace {
   restrictApiToAdmins?: boolean;
   allowMemberTemplates?: boolean;
   isScimEnabled?: boolean;
+  // Write-only field for updateWorkspace({ htmlEmbed }). Read state lives at
+  // settings.htmlEmbed.
+  htmlEmbed?: boolean;
 }
 
 export interface IWorkspaceSettings {
@@ -37,6 +40,8 @@ export interface IWorkspaceSettings {
   sharing?: IWorkspaceSharingSettings;
   api?: IWorkspaceApiSettings;
   templates?: IWorkspaceTemplateSettings;
+  // Admin-only HTML embed feature toggle. ABSENT/false => OFF (default).
+  htmlEmbed?: boolean;
 }
 
 export interface IWorkspaceApiSettings {

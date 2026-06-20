@@ -265,6 +265,32 @@ export class WorkspaceRepo {
       .executeTakeFirst();
   }
 
+  /**
+   * Set a single scalar key at the TOP LEVEL of `settings` (e.g.
+   * `settings.htmlEmbed`). Mirrors `updateAiSettings`/`updateSharingSettings`
+   * but without a nested namespace object. `prefKey` comes from a fixed
+   * allowlist at the call site (inlined via `sql.raw`, never user input); the
+   * value is inlined via `sql.lit`.
+   */
+  async updateSetting(
+    workspaceId: string,
+    prefKey: string,
+    prefValue: string | boolean,
+    trx?: KyselyTransaction,
+  ) {
+    const db = dbOrTx(this.db, trx);
+    return db
+      .updateTable('workspaces')
+      .set({
+        settings: sql`COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object('${sql.raw(prefKey)}', ${sql.lit(prefValue)})`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', workspaceId)
+      .returning(this.baseFields)
+      .executeTakeFirst();
+  }
+
   async updateSharingSettings(
     workspaceId: string,
     prefKey: string,
