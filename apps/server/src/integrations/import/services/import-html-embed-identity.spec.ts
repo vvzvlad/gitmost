@@ -1,123 +1,266 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
-  stripHtmlEmbedNodes,
-} from '../../../common/helpers/prosemirror/html-embed.util';
+// Exercises the REAL htmlEmbed admin gate on the two import write paths:
+//
+//   (1) ImportService.importPage()            — single .html/.md upload
+//   (2) FileImportTaskService.processGenericImport() — zip / multi-file import
+//
+// Both build content/textContent/ydoc directly and persist (bypassing the
+// collab onStoreDocument strip), so each must run the imported document through
+// the toggle-AND-admin gate: resolve the importer via userRepo.findById, read
+// the workspace toggle, then `htmlEmbedAllowed(enabled, role)` -> if not allowed,
+// `stripHtmlEmbedNodes` BEFORE persisting.
+//
+// This spec constructs the REAL services with deps mocked, feeds an imported
+// HTML document that contains an `htmlEmbed` div (parsed into a real htmlEmbed
+// node by the REAL htmlToJson), runs the real method, and asserts the PERSISTED
+// content (captured at the insert boundary) is stripped for a non-admin /
+// missing user and preserved for admin/owner + toggle ON. Mirrors the GOOD
+// pattern in transclusion/spec/transclusion-unsync-html-embed.spec.ts.
+//
+// Three modules are mocked away because they pull transitive ESM deps that
+// jest's transformIgnorePatterns does not transpile (`lib0/decoding.js` via the
+// collab gateway, `@sindresorhus/slugify` via import-formatter, `p-limit` via
+// import-attachment). None of them participate in the gate decision:
+//   - import-formatter: contextless HTML cleanup + link rewriting; replaced with
+//     faithful passthroughs (the embed div has no href/iframe, so the real
+//     normalizer would leave it untouched anyway).
+//   - import-attachment: attachment rewriting; passthrough returns html as-is.
+jest.mock('../../../collaboration/collaboration.gateway', () => ({
+  CollaborationGateway: class {},
+}));
+jest.mock('../utils/import-formatter', () => ({
+  normalizeImportHtml: () => {},
+  formatImportHtml: async (opts: any) => ({
+    html: opts.html,
+    backlinks: [],
+    pageIcon: undefined,
+  }),
+}));
+jest.mock('./import-attachment.service', () => ({
+  ImportAttachmentService: class {},
+}));
 
-// FAIL-CLOSED IDENTITY for the import write paths.
-//
-// import.service / file-import-task.service cannot be unit-LOADED under the
-// server's jest config (a transitive ESM dep, @sindresorhus/slugify, is not in
-// transformIgnorePatterns). So we cover the two load-bearing properties at the
-// strongest feasible layer:
-//
-//  (1) BEHAVIOR — using the REAL html-embed helpers, replay the exact gate
-//      predicate each entrypoint runs against the role resolved from
-//      userRepo.findById(...): a MISSING user (findById -> undefined) must fail
-//      closed (strip), and only 'admin'/'owner' keep the embed.
-//
-//  (2) IDENTITY — source-pin which identity governs the gate so a refactor that
-//      swaps the lookup to the wrong user (e.g. the queue worker's caller) is
-//      caught: zip import resolves the role from `fileTask.creatorId`; single
-//      import from the request `userId`. NOT some ambient caller.
-//
-// If a guard is deleted/misplaced or the identity field changes, these break.
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ImportService } from './import.service';
+import { FileImportTaskService } from './file-import-task.service';
+import { hasHtmlEmbedNode } from '../../../common/helpers/prosemirror/html-embed.util';
 
-const docWithEmbed = () => ({
-  type: 'doc',
-  content: [
-    { type: 'paragraph', content: [{ type: 'text', text: 'imported body' }] },
-    { type: 'htmlEmbed', attrs: { source: '<script>x</script>' } },
-  ],
-});
+const WS = 'ws-1';
+const SPACE = 'space-1';
+const USER = 'importer-1';
 
-// The real predicate both import entrypoints apply (see the SECURITY blocks in
-// import.service.ts and file-import-task.service.ts): resolve the importer via
-// userRepo.findById, then `!canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json)`.
-function applyImportGate(
-  json: any,
-  featureEnabled: boolean,
-  importingUser: { role?: string } | undefined,
-) {
-  if (
-    !htmlEmbedAllowed(featureEnabled, importingUser?.role) &&
-    hasHtmlEmbedNode(json)
-  ) {
-    return stripHtmlEmbedNodes(json);
-  }
-  return json;
+// HTML carrying the serialized htmlEmbed node. The REAL htmlToJson parses
+// `<div data-type="htmlEmbed" data-source="BASE64">` into an htmlEmbed PM node
+// (base64 below decodes to `<script>x</script>`).
+const HTML_WITH_EMBED =
+  '<p>imported body</p>' +
+  '<div data-type="htmlEmbed" data-source="PHNjcmlwdD54PC9zY3JpcHQ+"></div>';
+
+function workspaceRepoFor(featureEnabled: boolean) {
+  return {
+    findById: jest.fn(async () => ({
+      id: WS,
+      settings: { htmlEmbed: featureEnabled },
+    })),
+  };
 }
 
-describe('import gate fail-closed by toggle AND resolved-user role (real helpers)', () => {
-  it('toggle ON + missing user (userRepo.findById -> undefined) strips the embed', () => {
-    // findById returns undefined when the user/workspace pair does not resolve;
-    // undefined?.role is undefined -> htmlEmbedAllowed(true, undefined) === false.
-    const result = applyImportGate(docWithEmbed(), true, undefined);
-    expect(hasHtmlEmbedNode(result)).toBe(false);
+// userRepo.findById resolves the importer's role (or undefined for a missing
+// user -> fail closed).
+function userRepoFor(user: { role?: string } | undefined) {
+  return { findById: jest.fn(async () => user) };
+}
+
+describe('ImportService.importPage htmlEmbed admin gate (real code)', () => {
+  // Run importPage with a single uploaded .html and return the persisted content
+  // captured at pageRepo.insertPage.
+  async function persistedContent(
+    featureEnabled: boolean,
+    user: { role?: string } | undefined,
+  ) {
+    const captured: any[] = [];
+    const pageRepo: any = {
+      insertPage: jest.fn(async (row: any) => {
+        captured.push(row);
+        return { id: 'p1', slugId: 's1', ...row };
+      }),
+    };
+    // db is only used for getNewPagePosition (a select chain).
+    const selectChain: any = {
+      select: () => selectChain,
+      where: () => selectChain,
+      orderBy: () => selectChain,
+      limit: () => selectChain,
+      executeTakeFirst: async () => undefined,
+    };
+    const db: any = { selectFrom: () => selectChain };
+
+    const service = new ImportService(
+      pageRepo,
+      userRepoFor(user) as any,
+      { putBuffer: jest.fn() } as any, // storageService (unused on this path)
+      db,
+      { add: jest.fn() } as any, // fileTaskQueue (unused)
+      workspaceRepoFor(featureEnabled) as any,
+    );
+
+    const file: any = {
+      filename: 'doc.html',
+      toBuffer: async () => Buffer.from(HTML_WITH_EMBED, 'utf-8'),
+    };
+    await service.importPage(Promise.resolve(file), USER, SPACE, WS);
+    expect(captured).toHaveLength(1);
+    return captured[0].content;
+  }
+
+  it('toggle ON + member: persisted content has htmlEmbed stripped', async () => {
+    const content = await persistedContent(true, { role: 'member' });
+    expect(hasHtmlEmbedNode(content)).toBe(false);
+    expect(JSON.stringify(content)).toContain('imported body');
   });
 
-  it("toggle ON + resolved role 'member' strips", () => {
+  it('toggle ON + missing user (findById -> undefined): fails closed (stripped)', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, undefined))).toBe(
+      false,
+    );
+  });
+
+  it('toggle ON + admin: persisted content keeps the htmlEmbed', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, { role: 'admin' }))).toBe(
+      true,
+    );
+  });
+
+  it('toggle ON + owner: persisted content keeps the htmlEmbed', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, { role: 'owner' }))).toBe(
+      true,
+    );
+  });
+
+  it('toggle OFF + admin: stripped (feature disabled for everyone)', async () => {
     expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'member' })),
+      hasHtmlEmbedNode(await persistedContent(false, { role: 'admin' })),
     ).toBe(false);
-  });
-
-  it("toggle ON + resolved role 'admin' keeps the embed", () => {
-    expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'admin' })),
-    ).toBe(true);
-  });
-
-  it("toggle ON + resolved role 'owner' keeps the embed", () => {
-    expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'owner' })),
-    ).toBe(true);
-  });
-
-  it('toggle OFF strips for every role (admin/owner/member)', () => {
-    for (const role of ['admin', 'owner', 'member'] as const) {
-      expect(
-        hasHtmlEmbedNode(applyImportGate(docWithEmbed(), false, { role })),
-      ).toBe(false);
-    }
   });
 });
 
-// Source-pin the identity each entrypoint feeds to userRepo.findById. These are
-// the lines that decide WHOSE role governs the gate; pinning them means a
-// refactor that points the lookup at the wrong user trips the test.
-const SRC_DIR = join(__dirname);
+describe('FileImportTaskService.processGenericImport htmlEmbed admin gate (real code)', () => {
+  let extractDir: string;
 
-describe('import gate identity is pinned to the importer (source contract)', () => {
-  it('single import resolves the role from the request userId', () => {
-    const src = readFileSync(join(SRC_DIR, 'import.service.ts'), 'utf-8');
-    // The role lookup must key on the request `userId`, then gate on the role.
-    expect(src).toMatch(
-      /this\.userRepo\.findById\(\s*userId\s*,\s*workspaceId\s*\)/,
-    );
-    expect(src).toMatch(
-      /htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*importingUser\?\.role\s*\)/,
-    );
-    // And the toggle is resolved from the workspace settings.
-    expect(src).toContain('isHtmlEmbedFeatureEnabled(');
-    // And the gate uses the real strip helper.
-    expect(src).toContain('stripHtmlEmbedNodes(prosemirrorJson)');
+  beforeEach(async () => {
+    // Real temp dir holding a single .html page that carries the embed; the
+    // method reads it from disk via fs.readFile.
+    extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'html-embed-import-'));
+    await fs.writeFile(path.join(extractDir, 'page.html'), HTML_WITH_EMBED);
   });
 
-  it('zip import resolves the role from fileTask.creatorId (NOT the queue caller)', () => {
-    const src = readFileSync(
-      join(SRC_DIR, 'file-import-task.service.ts'),
-      'utf-8',
+  afterEach(async () => {
+    await fs.rm(extractDir, { recursive: true, force: true });
+  });
+
+  // Run processGenericImport over the temp dir and return the content persisted
+  // for the imported page (captured at trx.insertInto('pages').values(...)).
+  async function persistedContent(
+    featureEnabled: boolean,
+    user: { role?: string } | undefined,
+  ) {
+    const captured: any[] = [];
+    const trxInsertChain = (table: string) => ({
+      values: (row: any) => {
+        if (table === 'pages') captured.push(row);
+        return { execute: async () => undefined };
+      },
+    });
+    const trx: any = { insertInto: trxInsertChain };
+    const db: any = {
+      // spaces lookup at the top of processGenericImport
+      selectFrom: () => ({
+        select: () => ({
+          where: () => ({ executeTakeFirst: async () => ({ slug: 'sp' }) }),
+        }),
+      }),
+      // executeTx -> db.transaction().execute(cb)
+      transaction: () => ({ execute: async (cb: any) => cb(trx) }),
+    };
+
+    // importService stub: only the real, gate-relevant helpers are used. We give
+    // it the REAL implementations by delegating to a real ImportService for
+    // processHTML/extractTitleAndRemoveHeading/createYdoc so the embed parse and
+    // strip path runs for real.
+    const realImport = new ImportService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
     );
-    expect(src).toMatch(
-      /this\.userRepo\.findById\(\s*fileTask\.creatorId\s*,\s*fileTask\.workspaceId\s*,?\s*\)/,
+    const importService: any = {
+      processHTML: (html: string) => realImport.processHTML(html),
+      extractTitleAndRemoveHeading: (s: any) =>
+        realImport.extractTitleAndRemoveHeading(s),
+      createYdoc: (j: any) => realImport.createYdoc(j),
+    };
+
+    const importAttachmentService: any = {
+      // passthrough: no attachment rewriting, return html unchanged
+      processAttachments: jest.fn(async (opts: any) => opts.html),
+    };
+
+    const service = new FileImportTaskService(
+      { putBuffer: jest.fn() } as any, // storageService
+      importService,
+      { nextPagePosition: jest.fn(async () => 'a0') } as any, // pageService (position only)
+      { insertBacklink: jest.fn() } as any, // backlinkRepo
+      db,
+      importAttachmentService,
+      userRepoFor(user) as any,
+      workspaceRepoFor(featureEnabled) as any,
+      { emit: jest.fn() } as any, // eventEmitter
+      { logBatchWithContext: jest.fn() } as any, // auditService
     );
-    expect(src).toMatch(
-      /importerCanAuthorHtmlEmbed\s*=\s*htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*importingUser\?\.role\s*,?\s*\)/,
+
+    const fileTask: any = {
+      id: 'task-1',
+      creatorId: USER,
+      workspaceId: WS,
+      spaceId: SPACE,
+      source: 'generic',
+    };
+
+    await service.processGenericImport({ extractDir, fileTask });
+    expect(captured.length).toBeGreaterThanOrEqual(1);
+    return captured[0].content;
+  }
+
+  it('toggle ON + member: persisted page has htmlEmbed stripped', async () => {
+    const content = await persistedContent(true, { role: 'member' });
+    expect(hasHtmlEmbedNode(content)).toBe(false);
+    expect(JSON.stringify(content)).toContain('imported body');
+  });
+
+  it('toggle ON + missing user (creatorId resolves to undefined): fails closed', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, undefined))).toBe(
+      false,
     );
-    expect(src).toContain('isHtmlEmbedFeatureEnabled(');
-    expect(src).toContain('stripHtmlEmbedNodes(prosemirrorJson)');
+  });
+
+  it('toggle ON + admin: persisted page keeps the htmlEmbed', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, { role: 'admin' }))).toBe(
+      true,
+    );
+  });
+
+  it('toggle ON + owner: persisted page keeps the htmlEmbed', async () => {
+    expect(hasHtmlEmbedNode(await persistedContent(true, { role: 'owner' }))).toBe(
+      true,
+    );
+  });
+
+  it('toggle OFF + admin: stripped (feature disabled for everyone)', async () => {
+    expect(
+      hasHtmlEmbedNode(await persistedContent(false, { role: 'admin' })),
+    ).toBe(false);
   });
 });
