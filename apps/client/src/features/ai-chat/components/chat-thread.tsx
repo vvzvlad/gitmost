@@ -134,6 +134,13 @@ export default function ChatThread({
     messages: initialMessages,
     transport,
     onFinish: () => onTurnFinished(),
+    // In AI SDK v6 `onFinish` does NOT fire when the stream errors, so a brand
+    // new chat that fails on its first turn would never invalidate the chat list
+    // nor adopt the server-created chat id (the server still creates the row and
+    // saves the error message). Run the same post-turn path on error so the
+    // failed chat appears in history immediately instead of after a manual
+    // refresh. The error itself is still surfaced via `error` below.
+    onError: () => onTurnFinished(),
   });
 
   const isStreaming = status === "submitted" || status === "streaming";
