@@ -22,21 +22,6 @@ export class PageTemplateReferencesRepo {
       .execute();
   }
 
-  async findReferencePageIdsBySource(
-    sourcePageId: string,
-    workspaceId: string,
-    trx?: KyselyTransaction,
-  ): Promise<string[]> {
-    const rows = await dbOrTx(this.db, trx)
-      .selectFrom('pageTemplateReferences')
-      .select('referencePageId')
-      .distinct()
-      .where('workspaceId', '=', workspaceId)
-      .where('sourcePageId', '=', sourcePageId)
-      .execute();
-    return rows.map((r) => r.referencePageId);
-  }
-
   async insertMany(
     rows: InsertablePageTemplateReference[],
     trx?: KyselyTransaction,
