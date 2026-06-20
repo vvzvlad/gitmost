@@ -116,8 +116,8 @@ function CommentListItem({
   }
 
   return (
-    <Box ref={ref} pb="xs">
-      <Group>
+    <Box ref={ref} pb={6}>
+      <Group gap="xs">
         <CustomAvatar
           size="sm"
           avatarUrl={comment.creator.avatarUrl}
@@ -126,7 +126,7 @@ function CommentListItem({
 
         <div style={{ flex: 1 }}>
           <Group justify="space-between" wrap="nowrap">
-            <Text size="sm" fw={500} lineClamp={1}>
+            <Text size="xs" fw={500} lineClamp={1}>
               {comment.creator.name}
             </Text>
 
@@ -177,7 +177,7 @@ function CommentListItem({
             tabIndex={0}
             aria-label={t("Jump to comment selection")}
           >
-            <Text size="sm">{comment?.selection}</Text>
+            <Text size="xs">{comment?.selection}</Text>
           </Box>
         )}
 

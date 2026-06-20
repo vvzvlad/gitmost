@@ -8,6 +8,7 @@ import {
   AUTH_THROTTLER,
   AI_CHAT_THROTTLER,
   PAGE_TEMPLATE_THROTTLER,
+  PUBLIC_SHARE_AI_THROTTLER,
 } from './throttler-names';
 import Redis from 'ioredis';
 
@@ -27,6 +28,8 @@ import Redis from 'ioredis';
             // a scripted client could drive heavy content fan-out. 30 req/min
             // per user is plenty for legitimate render-time batched lookups.
             { name: PAGE_TEMPLATE_THROTTLER, ttl: 60_000, limit: 30 },
+            // Anonymous public-share assistant: ~5 req/min per IP.
+            { name: PUBLIC_SHARE_AI_THROTTLER, ttl: 60_000, limit: 5 },
           ],
           errorMessage: 'Too many requests',
           storage: new ThrottlerStorageRedisService(

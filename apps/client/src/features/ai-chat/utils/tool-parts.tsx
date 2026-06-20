@@ -5,9 +5,11 @@
  *
  * A tool part's `type` is `tool-${toolName}` (AI SDK v6 static tool parts) and
  * its `state` is one of input-streaming / input-available / output-available /
- * output-error (we only surface running / done / error). The server tools are:
- * searchPages, getPage, createPage, updatePageContent, renamePage, movePage,
- * deletePage, createComment, resolveComment — see ai-chat-tools.service.ts.
+ * output-error (we only surface running / done / error). The full toolset the
+ * server exposes lives in `ai-chat-tools.service.ts` (the agent now exposes the
+ * complete Docmost toolset); friendly action-log labels exist ONLY for the
+ * tools listed in `toolLabelKey` below — every other tool falls through to the
+ * generic "Ran tool {{name}}" label.
  */
 
 /** A tool UI part as it arrives from `useChat` / persisted history. */
@@ -36,6 +38,11 @@ export interface ToolCitation {
    * mangle the UUID via the trailing-segment split and 404 the link).
    */
   href: string;
+}
+
+/** True for AI SDK tool parts (static `tool-*` or `dynamic-tool`). */
+export function isToolPart(type: string): boolean {
+  return type.startsWith("tool-") || type === "dynamic-tool";
 }
 
 /** Extract the tool name from a part `type` of `tool-${name}` (or dynamic). */

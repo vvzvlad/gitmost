@@ -176,9 +176,23 @@ export class PageRepo {
       .returning(this.baseFields)
       .executeTakeFirst();
 
+    // Enrich the event with a thin node snapshot (variant A) so the WS tree
+    // listener can broadcast `addTreeNode` without re-reading the DB. `result`
+    // already comes from `returning(this.baseFields)`, so no extra query.
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: [result.id],
       workspaceId: result.workspaceId,
+      pages: [
+        {
+          id: result.id,
+          slugId: result.slugId,
+          title: result.title,
+          icon: result.icon,
+          position: result.position,
+          spaceId: result.spaceId,
+          parentPageId: result.parentPageId,
+        },
+      ],
     });
 
     return result;
@@ -269,6 +283,25 @@ export class PageRepo {
   ): Promise<void> {
     const currentDate = new Date();
 
+    // Read the root snapshot up front so PAGE_SOFT_DELETED can carry it without
+    // a post-commit DB read (variant A). Only the root of the deleted subtree is
+    // needed for the tree broadcast — the client `treeModel.remove` drops all
+    // descendants, so we don't snapshot/broadcast every descendant.
+    const rootSnapshot = await this.db
+      .selectFrom('pages')
+      .select([
+        'id',
+        'slugId',
+        'title',
+        'icon',
+        'position',
+        'spaceId',
+        'parentPageId',
+      ])
+      .where('id', '=', pageId)
+      .where('deletedAt', 'is', null)
+      .executeTakeFirst();
+
     const descendants = await this.db
       .withRecursive('page_descendants', (db) =>
         db
@@ -308,6 +341,21 @@ export class PageRepo {
       this.eventEmitter.emit(EventName.PAGE_SOFT_DELETED, {
         pageIds: pageIds,
         workspaceId,
+        // Root-only snapshot: one `deleteTreeNode` is enough, the client removes
+        // the whole subtree. Skip if the root vanished between the two reads.
+        pages: rootSnapshot
+          ? [
+              {
+                id: rootSnapshot.id,
+                slugId: rootSnapshot.slugId,
+                title: rootSnapshot.title,
+                icon: rootSnapshot.icon,
+                position: rootSnapshot.position,
+                spaceId: rootSnapshot.spaceId,
+                parentPageId: rootSnapshot.parentPageId,
+              },
+            ]
+          : [],
       });
     }
   }
@@ -316,7 +364,7 @@ export class PageRepo {
     // First, check if the page being restored has a deleted parent
     const pageToRestore = await this.db
       .selectFrom('pages')
-      .select(['id', 'parentPageId'])
+      .select(['id', 'parentPageId', 'spaceId'])
       .where('id', '=', pageId)
       .executeTakeFirst();
 
@@ -375,6 +423,10 @@ export class PageRepo {
     this.eventEmitter.emit(EventName.PAGE_RESTORED, {
       pageIds: pageIds,
       workspaceId: workspaceId,
+      // spaceId lets the WS listener send a space-scoped refetchRootTreeNodeEvent.
+      // Restore can re-attach a whole subtree, so a root refetch is simpler and
+      // more robust than N pointwise addTreeNode events.
+      spaceId: pageToRestore.spaceId,
     });
   }
 
@@ -674,5 +726,59 @@ export class PageRepo {
         .where('isRestricted', '=', false)
         .execute()
     );
+  }
+
+  /**
+   * Whole space tree (all root pages and their descendants) in a single
+   * recursive query. Mirrors getPageAndDescendants but seeded by every root
+   * page of the space (parentPageId IS NULL) instead of a single parent.
+   */
+  async getSpaceDescendants(
+    spaceId: string,
+    opts: { includeContent: boolean },
+  ) {
+    return this.db
+      .withRecursive('page_hierarchy', (db) =>
+        db
+          .selectFrom('pages')
+          .select([
+            'id',
+            'slugId',
+            'title',
+            'icon',
+            'position',
+            'parentPageId',
+            'spaceId',
+            'workspaceId',
+            'createdAt',
+            'updatedAt',
+          ])
+          .$if(opts?.includeContent, (qb) => qb.select('content'))
+          .where('spaceId', '=', spaceId)
+          .where('parentPageId', 'is', null)
+          .where('deletedAt', 'is', null)
+          .unionAll((exp) =>
+            exp
+              .selectFrom('pages as p')
+              .select([
+                'p.id',
+                'p.slugId',
+                'p.title',
+                'p.icon',
+                'p.position',
+                'p.parentPageId',
+                'p.spaceId',
+                'p.workspaceId',
+                'p.createdAt',
+                'p.updatedAt',
+              ])
+              .$if(opts?.includeContent, (qb) => qb.select('p.content'))
+              .innerJoin('page_hierarchy as ph', 'p.parentPageId', 'ph.id')
+              .where('p.deletedAt', 'is', null),
+          ),
+      )
+      .selectFrom('page_hierarchy')
+      .selectAll()
+      .execute();
   }
 }

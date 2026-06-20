@@ -32,6 +32,15 @@ export interface AiProviderSettings {
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
   systemPrompt?: string;
+  // Cheap chat model id used ONLY by the anonymous public-share assistant. The
+  // driver / baseUrl / apiKey of the main chat provider are reused; this is the
+  // model id only. Empty/unset → the public-share assistant falls back to
+  // `chatModel`. The workspace owner pays for anonymous tokens, so a cheaper
+  // model is preferred for read-only Q&A over published documentation.
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  publicShareAssistantRoleId?: string;
 }
 
 /**
@@ -47,6 +56,11 @@ export interface AiProviderSettings {
 export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   driver?: AiDriver;
   chatModel?: string;
+  // Cheap model id for the public-share assistant; reuses the chat creds.
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts (empty/unset
+  // = built-in locked persona). Re-declared for parity with the explicit fields.
+  publicShareAssistantRoleId?: string;
   apiKey?: string;
   embeddingApiKey?: string;
   sttApiKey?: string;
@@ -67,6 +81,10 @@ export interface MaskedAiSettings {
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
   systemPrompt?: string;
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts; empty/unset
+  // = built-in locked persona.
+  publicShareAssistantRoleId?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
   hasSttApiKey: boolean;
