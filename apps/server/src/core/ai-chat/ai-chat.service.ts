@@ -17,6 +17,42 @@ import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
 
+// Max agent steps per turn. One step = one model generation; a step that calls
+// tools is followed by another step carrying the tool results. Raised from 8 so
+// multi-search research questions are not cut off mid-investigation.
+const MAX_AGENT_STEPS = 20;
+
+// System-prompt addendum injected ONLY on the final step (see prepareAgentStep).
+// It forbids further tool calls and tells the model to synthesize the best
+// answer it can from what it already gathered, so a tool-heavy turn never ends
+// empty.
+const FINAL_STEP_INSTRUCTION =
+  'You have reached the maximum number of tool-use steps for this turn. ' +
+  'Do NOT call any more tools. Using only the information already gathered, ' +
+  "write the most complete, useful final answer you can now, in the user's " +
+  'language. If the information is incomplete, say so explicitly: summarize ' +
+  'what you found, what is still missing, and give your best partial conclusion.';
+
+// Pure, unit-testable: decide per-step overrides. Returns undefined for normal
+// steps; on the final allowed step forces a text-only synthesis answer.
+// `system` is the in-scope system prompt; we CONCATENATE so the original
+// persona/context is preserved — a bare `system` override would REPLACE the
+// whole system prompt for the step.
+//
+// NOTE: at AI SDK v7 the per-step `system` field is renamed to `instructions`.
+// On v6 (`^6.0.134`) `system` is the correct field — adjust when bumping.
+export function prepareAgentStep(
+  stepNumber: number,
+  system: string,
+): { toolChoice: 'none'; system: string } | undefined {
+  if (stepNumber >= MAX_AGENT_STEPS - 1) {
+    return { toolChoice: 'none', system: `${system}\n\n${FINAL_STEP_INSTRUCTION}` };
+  }
+  return undefined;
+}
+
+export { MAX_AGENT_STEPS, FINAL_STEP_INSTRUCTION };
+
 /**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
  * DTO (the global ValidationPipe whitelist would strip the useChat-specific
@@ -244,7 +280,13 @@ export class AiChatService {
       // cap would truncate complex tool calls mid-argument. Let the model use its
       // natural per-step budget. (Cost/credit limits are an account concern, not
       // something to enforce by silently breaking the agent.)
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(MAX_AGENT_STEPS),
+      // Forced finalization: reserve the LAST allowed step for a text-only
+      // answer. Without this, a turn that spends all its steps on tool calls
+      // ends with no assistant text (an empty turn). prepareAgentStep forbids
+      // further tool calls and appends a synthesis instruction on that step,
+      // concatenated onto the original `system` so the persona is preserved.
+      prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
       abortSignal: signal,
       onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
         await persistAssistant({
