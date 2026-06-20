@@ -6,9 +6,46 @@ import { QueueJob, QueueName } from '../../integrations/queue/constants';
 import { Queue } from 'bullmq';
 import { EnvironmentService } from '../../integrations/environment/environment.service';
 
+/**
+ * Thin snapshot of a page node carried inside domain events so the WebSocket
+ * tree listener can broadcast a tree update WITHOUT reading the DB. This is
+ * "variant A" of the realtime-tree design: enriching the event avoids the
+ * in-transaction visibility race where a separate SELECT in the listener could
+ * run before the emitting `trx` has committed and therefore not see the row.
+ */
+export interface TreeNodeSnapshot {
+  id: string;
+  slugId: string;
+  title: string | null;
+  icon: string | null;
+  position: string;
+  spaceId: string;
+  parentPageId: string | null;
+}
+
 export class PageEvent {
   pageIds: string[];
   workspaceId: string;
+  // Optional tree snapshots so the WS listener can broadcast without a DB read
+  // (avoids the in-transaction visibility race on PAGE_CREATED /
+  // PAGE_SOFT_DELETED / PAGE_DELETED). The existing search/AI listeners ignore
+  // this field — they only enqueue work keyed by pageIds.
+  pages?: TreeNodeSnapshot[];
+  // Set on PAGE_RESTORED so the WS listener can scope a refetchRootTreeNodeEvent
+  // to the affected space (restore can re-attach a whole subtree).
+  spaceId?: string;
+}
+
+/**
+ * Emitted by `PageService.movePage` after a successful re-parent / reorder.
+ * Carries both the old and new parent plus the new position so the WS listener
+ * can build a `moveTreeNode` broadcast without a DB read.
+ */
+export class PageMovedEvent {
+  workspaceId: string;
+  oldParentId: string | null;
+  node: TreeNodeSnapshot;
+  hasChildren: boolean;
 }
 
 @Injectable()

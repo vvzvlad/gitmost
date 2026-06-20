@@ -758,9 +758,14 @@ export class PageService {
     }
 
     const insertedPageIds = insertablePages.map((page) => page.id);
+    // `spaceId` is the single destination space for the whole copy/duplicate
+    // (every inserted page above gets `spaceId: spaceId`). It lets the WS
+    // listener trigger a root refetch for the bulk subtree (no `pages` snapshot
+    // here on purpose — we want the refetch fallback, not per-node addTreeNode).
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: insertedPageIds,
       workspaceId: authUser.workspaceId,
+      spaceId,
     });
 
     //TODO: best to handle this in a queue
@@ -887,6 +892,35 @@ export class PageService {
       },
       dto.pageId,
     );
+
+    // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
+    // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
+    // content-save and carries neither oldParentId nor the new position. Emit a
+    // dedicated PAGE_MOVED so the WS listener can build a precise moveTreeNode
+    // without a DB read (variant A: snapshot in the event).
+    //
+    // `parentPageId` is `undefined` when only the position changed (same
+    // parent); resolve it back to the page's actual parent for the snapshot.
+    const newParentPageId =
+      parentPageId === undefined ? movedPage.parentPageId : parentPageId;
+
+    this.eventEmitter.emit(EventName.PAGE_MOVED, {
+      workspaceId: movedPage.workspaceId,
+      oldParentId: movedPage.parentPageId ?? null,
+      // `hasChildren` is selected by findById({ includeHasChildren: true }) in
+      // the controller; it isn't on the base Page type, hence the cast.
+      hasChildren:
+        (movedPage as Page & { hasChildren?: boolean }).hasChildren ?? false,
+      node: {
+        id: movedPage.id,
+        slugId: movedPage.slugId,
+        title: movedPage.title,
+        icon: movedPage.icon,
+        position: dto.position,
+        spaceId: movedPage.spaceId,
+        parentPageId: newParentPageId ?? null,
+      },
+    });
   }
 
   async getPageBreadCrumbs(childPageId: string) {

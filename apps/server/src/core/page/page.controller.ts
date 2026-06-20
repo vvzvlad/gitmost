@@ -767,7 +767,11 @@ export class PageController {
     @AuthUser() user: User,
     @AuthProvenance() provenance: AuthProvenanceData,
   ) {
-    const movedPage = await this.pageRepo.findById(dto.pageId);
+    // includeHasChildren so movePage's PAGE_MOVED snapshot carries an accurate
+    // hasChildren — receivers need it to keep the moved node's chevron correct.
+    const movedPage = await this.pageRepo.findById(dto.pageId, {
+      includeHasChildren: true,
+    });
     if (!movedPage) {
       throw new NotFoundException('Moved page not found');
     }
