@@ -11,7 +11,9 @@ import {
 } from "@mantine/core";
 import { IconCode, IconEdit } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
+import { useAtomValue } from "jotai";
 import useUserRole from "@/hooks/use-user-role.tsx";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import classes from "./html-embed-view.module.css";
 
 /**
@@ -53,18 +55,29 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   const { source } = node.attrs as { source: string };
   const { isAdmin } = useUserRole();
 
+  // Defense in depth: only execute the raw HTML/JS when the workspace HTML embed
+  // feature toggle is ON. When OFF (the default), we render a neutral disabled
+  // placeholder and inject nothing — so turning the feature off neutralizes
+  // existing embeds at render time as well as on the next server-side save.
+  const workspace = useAtomValue(workspaceAtom);
+  const htmlEmbedEnabled = workspace?.settings?.htmlEmbed === true;
+
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [draft, setDraft] = useState<string>(source || "");
 
   // (Re)render the raw source whenever it changes. This runs in BOTH the
   // editable editor and the read-only / public-share editor (same NodeView),
-  // so trackers fire for readers too — that is the intended behaviour.
+  // so trackers fire for readers too — that is the intended behaviour. When the
+  // feature toggle is OFF we clear the container and inject/execute nothing.
   useEffect(() => {
-    if (contentRef.current) {
+    if (!contentRef.current) return;
+    if (htmlEmbedEnabled) {
       renderRawHtml(contentRef.current, source || "");
+    } else {
+      contentRef.current.innerHTML = "";
     }
-  }, [source]);
+  }, [source, htmlEmbedEnabled]);
 
   const openEditor = useCallback(() => {
     setDraft(source || "");
@@ -78,9 +91,10 @@ export default function HtmlEmbedView(props: NodeViewProps) {
     setModalOpen(false);
   }, [draft, editor.isEditable, updateAttributes]);
 
-  // The edit affordance is only meaningful in edit mode, and authoring is
-  // restricted to admins (the server strips the node for non-admins anyway).
-  const canEdit = editor.isEditable && isAdmin;
+  // The edit affordance is only meaningful in edit mode, is restricted to admins
+  // (the server strips the node for non-admins anyway), and is offered only when
+  // the workspace feature toggle is ON.
+  const canEdit = editor.isEditable && isAdmin && htmlEmbedEnabled;
 
   return (
     <NodeViewWrapper
@@ -102,7 +116,16 @@ export default function HtmlEmbedView(props: NodeViewProps) {
         </div>
       )}
 
-      {source ? (
+      {!htmlEmbedEnabled ? (
+        // Feature disabled for this workspace: never inject/execute the source.
+        // Show a neutral placeholder so an existing embed is visibly inert.
+        <div className={classes.htmlEmbedPlaceholder}>
+          <IconCode size={18} />
+          <Text size="sm">
+            {t("HTML embed is disabled in this workspace")}
+          </Text>
+        </div>
+      ) : source ? (
         // Raw HTML/CSS/JS rendered into the wiki origin. Scripts are re-created
         // in renderRawHtml so they execute.
         <div ref={contentRef} className={classes.htmlEmbedContent} />

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 
@@ -29,49 +29,74 @@ const docWithEmbed = () => ({
   ],
 });
 
-// The real predicate both paths apply (see SECURITY blocks in page.service.ts).
-function applyGate(json: any, role: string | null | undefined) {
-  if (!canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json)) {
+// The real predicate both paths apply (see SECURITY blocks in page.service.ts):
+// toggle AND admin.
+function applyGate(
+  json: any,
+  featureEnabled: boolean,
+  role: string | null | undefined,
+) {
+  if (!htmlEmbedAllowed(featureEnabled, role) && hasHtmlEmbedNode(json)) {
     return stripHtmlEmbedNodes(json);
   }
   return json;
 }
 
 describe('page create/duplicate gate decision (real helpers)', () => {
-  it('non-admin (member) strips', () => {
-    const result = applyGate(docWithEmbed(), 'member');
+  it('toggle ON + non-admin (member) strips', () => {
+    const result = applyGate(docWithEmbed(), true, 'member');
     expect(hasHtmlEmbedNode(result)).toBe(false);
     expect(result.content).toHaveLength(1);
     expect(result.content[0].content[0].text).toBe('body');
   });
 
-  it('unknown/empty role fails closed (strips)', () => {
+  it('toggle ON + unknown/empty role fails closed (strips)', () => {
     for (const role of [null, undefined, 'viewer'] as const) {
-      expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), role))).toBe(false);
+      expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), true, role))).toBe(
+        false,
+      );
     }
   });
 
-  it('admin/owner keep', () => {
-    expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), 'admin'))).toBe(true);
-    expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), 'owner'))).toBe(true);
+  it('toggle ON + admin/owner keep', () => {
+    expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), true, 'admin'))).toBe(
+      true,
+    );
+    expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), true, 'owner'))).toBe(
+      true,
+    );
+  });
+
+  it('toggle OFF strips for everyone (admin/owner/member)', () => {
+    for (const role of ['admin', 'owner', 'member'] as const) {
+      expect(hasHtmlEmbedNode(applyGate(docWithEmbed(), false, role))).toBe(
+        false,
+      );
+    }
   });
 });
 
 const SRC = readFileSync(join(__dirname, 'page.service.ts'), 'utf-8');
 
 describe('page create/duplicate gate identity is pinned (source contract)', () => {
-  it('create() gates on the caller role param before deriving content/ydoc', () => {
+  it('create() gates on toggle AND the caller role param before deriving content/ydoc', () => {
     // create() receives the caller's workspace role as `callerRole` and gates on
-    // it; the embed must be stripped BEFORE insertPage.
+    // the combined toggle-AND-admin predicate; the embed must be stripped BEFORE
+    // insertPage.
     expect(SRC).toMatch(
-      /!canAuthorHtmlEmbed\(\s*callerRole\s*\)\s*&&\s*hasHtmlEmbedNode\(\s*prosemirrorJson\s*\)/,
+      /!htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*callerRole\s*\)\s*&&\s*hasHtmlEmbedNode\(\s*prosemirrorJson\s*\)/,
     );
     expect(SRC).toContain('prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson)');
   });
 
-  it('duplicatePage() gates on the duplicating user role (authUser.role)', () => {
+  it('duplicatePage() gates on toggle AND the duplicating user role (authUser.role)', () => {
     expect(SRC).toMatch(
-      /!canAuthorHtmlEmbed\(\s*authUser\.role\s*\)\s*&&\s*hasHtmlEmbedNode\(\s*prosemirrorJson\s*\)/,
+      /!htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*authUser\.role\s*\)\s*&&\s*hasHtmlEmbedNode\(\s*prosemirrorJson\s*\)/,
     );
+  });
+
+  it('both paths resolve the toggle from the workspace settings', () => {
+    expect(SRC).toContain('isHtmlEmbedFeatureEnabled(');
+    expect(SRC).toContain('this.workspaceRepo.findById(');
   });
 });

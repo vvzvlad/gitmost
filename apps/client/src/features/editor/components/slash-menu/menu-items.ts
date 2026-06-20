@@ -593,6 +593,7 @@ const CommandGroups: SlashMenuGroupedItemsType = {
       searchTerms: ["html", "css", "js", "javascript", "script", "tracker", "analytics", "raw", "embed"],
       icon: IconCode,
       adminOnly: true,
+      requiresHtmlEmbedFeature: true,
       command: ({ editor, range }: CommandProps) => {
         editor
           .chain()
@@ -777,6 +778,25 @@ function isCurrentUserAdmin(): boolean {
   }
 }
 
+/**
+ * Read the workspace-level HTML embed feature toggle from the persisted
+ * `currentUser` payload (the same localStorage entry `currentUserAtom` writes,
+ * carrying `workspace.settings`). ABSENT/false => OFF (the default). The slash
+ * `getSuggestionItems` is a plain function (no React/atom context), so we read
+ * the persisted state the same way `isCurrentUserAdmin()` does. UI gate only;
+ * the server independently strips htmlEmbed from every non-allowed write.
+ */
+function isHtmlEmbedFeatureEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed?.workspace?.settings?.htmlEmbed === true;
+  } catch {
+    return false;
+  }
+}
+
 export const getSuggestionItems = ({
   query,
   excludeItems,
@@ -787,6 +807,7 @@ export const getSuggestionItems = ({
   const search = query.toLowerCase();
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const isAdmin = isCurrentUserAdmin();
+  const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
   const fuzzyMatch = (query: string, target: string) => {
     let queryIndex = 0;
@@ -803,6 +824,9 @@ export const getSuggestionItems = ({
       if (excludeItems?.has(item.title)) return false;
       // Hide admin-only items (raw HTML embed) from non-admins.
       if (item.adminOnly && !isAdmin) return false;
+      // Hide HTML-embed-gated items unless the workspace feature toggle is ON.
+      if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
+        return false;
       return (
         fuzzyMatch(search, item.title) ||
         item.description.toLowerCase().includes(search) ||

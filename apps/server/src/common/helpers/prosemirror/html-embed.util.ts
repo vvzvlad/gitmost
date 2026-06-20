@@ -66,3 +66,37 @@ export function hasHtmlEmbedNode(pmJson: unknown): boolean {
 export function canAuthorHtmlEmbed(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin';
 }
+
+/**
+ * Combined write-path gate for the htmlEmbed feature.
+ *
+ * htmlEmbed is allowed in a document only when the workspace feature toggle is
+ * ON and the authoring/saving user is a workspace admin/owner. OFF (default) =>
+ * stripped for EVERYONE, including admins (the feature is disabled).
+ *
+ * `featureEnabled` is read from the workspace settings for the relevant write
+ * (`workspace.settings?.htmlEmbed === true`). Every WRITE path that may persist
+ * htmlEmbed content must gate on this combined predicate, so that turning the
+ * toggle OFF strips existing embeds on the next save and prevents new ones from
+ * being persisted regardless of role.
+ */
+export function htmlEmbedAllowed(
+  featureEnabled: boolean,
+  role: string | null | undefined,
+): boolean {
+  return featureEnabled === true && canAuthorHtmlEmbed(role);
+}
+
+/**
+ * Read the workspace-level htmlEmbed feature toggle from a workspace's settings
+ * jsonb. ABSENT/non-true => OFF (the default). Kept here so every server write
+ * path resolves the toggle the same way.
+ */
+export function isHtmlEmbedFeatureEnabled(
+  settings: unknown | null | undefined,
+): boolean {
+  if (!settings || typeof settings !== 'object') {
+    return false;
+  }
+  return (settings as Record<string, unknown>).htmlEmbed === true;
+}

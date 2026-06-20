@@ -2,10 +2,12 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { MultipartFile } from '@fastify/multipart';
 import * as path from 'path';
 import {
@@ -48,6 +50,7 @@ export class ImportService {
     @InjectKysely() private readonly db: KyselyDB,
     @InjectQueue(QueueName.FILE_TASK_QUEUE)
     private readonly fileTaskQueue: Queue,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async importPage(
@@ -101,9 +104,15 @@ export class ImportService {
     // imports performed by a non-admin user.
     if (prosemirrorJson && hasHtmlEmbedNode(prosemirrorJson)) {
       const importingUser = await this.userRepo.findById(userId, workspaceId);
-      if (!canAuthorHtmlEmbed(importingUser?.role)) {
+      // Toggle-AND-admin gate: htmlEmbed survives only when the workspace
+      // feature toggle is ON and the importer is an admin/owner. OFF (default)
+      // => stripped for everyone.
+      const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+        (await this.workspaceRepo.findById(workspaceId))?.settings,
+      );
+      if (!htmlEmbedAllowed(htmlEmbedEnabled, importingUser?.role)) {
         this.logger.warn(
-          `Stripping htmlEmbed node(s) from non-admin import by user ${userId}`,
+          `Stripping htmlEmbed node(s) from import by user ${userId}`,
         );
         prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
       }

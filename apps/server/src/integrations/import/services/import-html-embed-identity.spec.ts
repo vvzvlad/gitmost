@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 
@@ -36,38 +36,52 @@ const docWithEmbed = () => ({
 // The real predicate both import entrypoints apply (see the SECURITY blocks in
 // import.service.ts and file-import-task.service.ts): resolve the importer via
 // userRepo.findById, then `!canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json)`.
-function applyImportGate(json: any, importingUser: { role?: string } | undefined) {
-  if (!canAuthorHtmlEmbed(importingUser?.role) && hasHtmlEmbedNode(json)) {
+function applyImportGate(
+  json: any,
+  featureEnabled: boolean,
+  importingUser: { role?: string } | undefined,
+) {
+  if (
+    !htmlEmbedAllowed(featureEnabled, importingUser?.role) &&
+    hasHtmlEmbedNode(json)
+  ) {
     return stripHtmlEmbedNodes(json);
   }
   return json;
 }
 
-describe('import gate fail-closed by resolved-user role (real helpers)', () => {
-  it('missing user (userRepo.findById -> undefined) strips the embed', () => {
+describe('import gate fail-closed by toggle AND resolved-user role (real helpers)', () => {
+  it('toggle ON + missing user (userRepo.findById -> undefined) strips the embed', () => {
     // findById returns undefined when the user/workspace pair does not resolve;
-    // undefined?.role is undefined -> canAuthorHtmlEmbed(undefined) === false.
-    const importingUser = undefined;
-    const result = applyImportGate(docWithEmbed(), importingUser);
+    // undefined?.role is undefined -> htmlEmbedAllowed(true, undefined) === false.
+    const result = applyImportGate(docWithEmbed(), true, undefined);
     expect(hasHtmlEmbedNode(result)).toBe(false);
   });
 
-  it("resolved role 'member' strips", () => {
+  it("toggle ON + resolved role 'member' strips", () => {
     expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), { role: 'member' })),
+      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'member' })),
     ).toBe(false);
   });
 
-  it("resolved role 'admin' keeps the embed", () => {
+  it("toggle ON + resolved role 'admin' keeps the embed", () => {
     expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), { role: 'admin' })),
+      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'admin' })),
     ).toBe(true);
   });
 
-  it("resolved role 'owner' keeps the embed", () => {
+  it("toggle ON + resolved role 'owner' keeps the embed", () => {
     expect(
-      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), { role: 'owner' })),
+      hasHtmlEmbedNode(applyImportGate(docWithEmbed(), true, { role: 'owner' })),
     ).toBe(true);
+  });
+
+  it('toggle OFF strips for every role (admin/owner/member)', () => {
+    for (const role of ['admin', 'owner', 'member'] as const) {
+      expect(
+        hasHtmlEmbedNode(applyImportGate(docWithEmbed(), false, { role })),
+      ).toBe(false);
+    }
   });
 });
 
@@ -83,7 +97,11 @@ describe('import gate identity is pinned to the importer (source contract)', () 
     expect(src).toMatch(
       /this\.userRepo\.findById\(\s*userId\s*,\s*workspaceId\s*\)/,
     );
-    expect(src).toMatch(/canAuthorHtmlEmbed\(\s*importingUser\?\.role\s*\)/);
+    expect(src).toMatch(
+      /htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*importingUser\?\.role\s*\)/,
+    );
+    // And the toggle is resolved from the workspace settings.
+    expect(src).toContain('isHtmlEmbedFeatureEnabled(');
     // And the gate uses the real strip helper.
     expect(src).toContain('stripHtmlEmbedNodes(prosemirrorJson)');
   });
@@ -97,8 +115,9 @@ describe('import gate identity is pinned to the importer (source contract)', () 
       /this\.userRepo\.findById\(\s*fileTask\.creatorId\s*,\s*fileTask\.workspaceId\s*,?\s*\)/,
     );
     expect(src).toMatch(
-      /importerCanAuthorHtmlEmbed\s*=\s*canAuthorHtmlEmbed\(\s*importingUser\?\.role\s*\)/,
+      /importerCanAuthorHtmlEmbed\s*=\s*htmlEmbedAllowed\(\s*htmlEmbedEnabled\s*,\s*importingUser\?\.role\s*,?\s*\)/,
     );
+    expect(src).toContain('isHtmlEmbedFeatureEnabled(');
     expect(src).toContain('stripHtmlEmbedNodes(prosemirrorJson)');
   });
 });

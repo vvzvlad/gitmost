@@ -53,6 +53,12 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsBoolean()
   aiDictation: boolean;
 
+  // Workspace feature toggle for the admin-only HTML embed feature. Persisted at
+  // settings.htmlEmbed. ABSENT/false => OFF (default).
+  @IsOptional()
+  @IsBoolean()
+  htmlEmbed: boolean;
+
   @IsOptional()
   @IsInt()
   @Min(1)

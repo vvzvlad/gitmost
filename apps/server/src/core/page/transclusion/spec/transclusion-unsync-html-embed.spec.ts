@@ -21,7 +21,7 @@ const sourceContentWithEmbed = () => ({
   ],
 });
 
-function buildService() {
+function buildService(featureEnabled = true) {
   const pageRepo = {
     findById: jest.fn(async (id: string) => ({
       id,
@@ -44,6 +44,13 @@ function buildService() {
     validateCanEdit: jest.fn(async () => undefined),
     validateCanView: jest.fn(async () => undefined),
   };
+  // Workspace settings read used by the toggle-AND-admin gate.
+  const workspaceRepo = {
+    findById: jest.fn(async () => ({
+      id: WS,
+      settings: { htmlEmbed: featureEnabled },
+    })),
+  };
 
   const service = new TransclusionService(
     {} as any, // db (unused on this path)
@@ -55,6 +62,7 @@ function buildService() {
     attachmentRepo as any,
     storageService as any,
     pageAccessService as any,
+    workspaceRepo as any,
   );
   return service;
 }
@@ -90,8 +98,8 @@ describe('TransclusionService.unsyncReference htmlEmbed admin gate (real code)',
     }
   });
 
-  it('admin: returned content keeps the htmlEmbed', async () => {
-    const service = buildService();
+  it('toggle ON + admin: returned content keeps the htmlEmbed', async () => {
+    const service = buildService(true);
     const { content } = await service.unsyncReference(
       REF_PAGE,
       SRC_PAGE,
@@ -101,8 +109,8 @@ describe('TransclusionService.unsyncReference htmlEmbed admin gate (real code)',
     expect(hasHtmlEmbedNode(content)).toBe(true);
   });
 
-  it('owner: returned content keeps the htmlEmbed', async () => {
-    const service = buildService();
+  it('toggle ON + owner: returned content keeps the htmlEmbed', async () => {
+    const service = buildService(true);
     const { content } = await service.unsyncReference(
       REF_PAGE,
       SRC_PAGE,
@@ -110,5 +118,27 @@ describe('TransclusionService.unsyncReference htmlEmbed admin gate (real code)',
       userWithRole('owner'),
     );
     expect(hasHtmlEmbedNode(content)).toBe(true);
+  });
+
+  it('toggle OFF + admin: stripped (feature disabled for everyone)', async () => {
+    const service = buildService(false);
+    const { content } = await service.unsyncReference(
+      REF_PAGE,
+      SRC_PAGE,
+      TX_ID,
+      userWithRole('admin'),
+    );
+    expect(hasHtmlEmbedNode(content)).toBe(false);
+  });
+
+  it('toggle OFF + member: stripped', async () => {
+    const service = buildService(false);
+    const { content } = await service.unsyncReference(
+      REF_PAGE,
+      SRC_PAGE,
+      TX_ID,
+      userWithRole('member'),
+    );
+    expect(hasHtmlEmbedNode(content)).toBe(false);
   });
 });

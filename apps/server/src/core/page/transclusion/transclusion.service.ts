@@ -24,10 +24,12 @@ import { TransclusionLookup } from './transclusion.types';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
 type ReferencingPageInfo = {
   id: string;
@@ -52,6 +54,7 @@ export class TransclusionService {
     private readonly attachmentRepo: AttachmentRepo,
     private readonly storageService: StorageService,
     private readonly pageAccessService: PageAccessService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async syncPageTransclusions(
@@ -528,9 +531,12 @@ export class TransclusionService {
     // non-admin can never receive an embed payload to re-persist (the collab
     // strip on the subsequent save is debounced/race-prone and must not be the
     // only guard). Admin behavior is unchanged.
-    if (!canAuthorHtmlEmbed(user.role) && hasHtmlEmbedNode(content)) {
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(user.workspaceId))?.settings,
+    );
+    if (!htmlEmbedAllowed(htmlEmbedEnabled, user.role) && hasHtmlEmbedNode(content)) {
       this.logger.warn(
-        `Stripping htmlEmbed node(s) from non-admin transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
+        `Stripping htmlEmbed node(s) from transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
       );
       content = stripHtmlEmbedNodes(content);
     }

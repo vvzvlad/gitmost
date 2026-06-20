@@ -21,11 +21,13 @@ import { FileTask, InsertablePage } from '@docmost/db/types/entity.types';
 import { markdownToHtml } from '@docmost/editor-ext';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { formatImportHtml } from '../utils/import-formatter';
 import {
   buildAttachmentCandidates,
@@ -60,6 +62,7 @@ export class FileImportTaskService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly importAttachmentService: ImportAttachmentService,
     private readonly userRepo: UserRepo,
+    private readonly workspaceRepo: WorkspaceRepo,
     private eventEmitter: EventEmitter2,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
@@ -168,7 +171,16 @@ export class FileImportTaskService {
       fileTask.creatorId,
       fileTask.workspaceId,
     );
-    const importerCanAuthorHtmlEmbed = canAuthorHtmlEmbed(importingUser?.role);
+    // Toggle-AND-admin gate, resolved ONCE for the whole import: htmlEmbed
+    // survives only when the workspace feature toggle is ON and the importer is
+    // an admin/owner. OFF (default) => stripped for everyone.
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(fileTask.workspaceId))?.settings,
+    );
+    const importerCanAuthorHtmlEmbed = htmlEmbedAllowed(
+      htmlEmbedEnabled,
+      importingUser?.role,
+    );
 
     const pagesMap = new Map<string, ImportPageNode>();
 

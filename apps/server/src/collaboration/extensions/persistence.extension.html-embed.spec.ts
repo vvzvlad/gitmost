@@ -121,7 +121,7 @@ function nodeTypeCounts(json: any): Record<string, number> {
  * onStoreDocument to reach the strip + persist branch, and capture the content
  * that would be written to the page row.
  */
-function buildExtension() {
+function buildExtension(featureEnabled = true) {
   const captured: { content?: any } = {};
 
   const existingPage = {
@@ -159,6 +159,14 @@ function buildExtension() {
     syncPageReferences: jest.fn(async () => undefined),
   } as any;
 
+  // Workspace settings read used by the toggle-AND-admin gate.
+  const workspaceRepo = {
+    findById: jest.fn(async () => ({
+      id: 'ws-1',
+      settings: { htmlEmbed: featureEnabled },
+    })),
+  };
+
   const ext = new PersistenceExtension(
     pageRepo as any,
     pageHistoryRepo as any,
@@ -168,13 +176,18 @@ function buildExtension() {
     noopQueue,
     collabHistory,
     transclusionService,
+    workspaceRepo as any,
   );
 
   return { ext, captured, pageRepo };
 }
 
-async function runStore(role: string | null | undefined, doc: Y.Doc) {
-  const { ext, captured } = buildExtension();
+async function runStore(
+  role: string | null | undefined,
+  doc: Y.Doc,
+  featureEnabled = true,
+) {
+  const { ext, captured } = buildExtension(featureEnabled);
   // hocuspocus augments the Y.Doc with broadcastStateless; a bare Y.Doc has
   // none, so stub it (the post-persist broadcast is not under test here).
   (doc as any).broadcastStateless = () => undefined;
@@ -216,16 +229,31 @@ describe('PersistenceExtension.onStoreDocument htmlEmbed admin gate (real code)'
     expect(hasHtmlEmbedNode(reDecoded)).toBe(false);
   });
 
-  it('admin store: htmlEmbed preserved in persisted content', async () => {
-    const captured = await runStore('admin', buildYdoc(RICH_DOC));
+  it('toggle ON + admin store: htmlEmbed preserved in persisted content', async () => {
+    const captured = await runStore('admin', buildYdoc(RICH_DOC), true);
     expect(captured.content).toBeDefined();
     expect(hasHtmlEmbedNode(captured.content)).toBe(true);
     expect(nodeTypeCounts(captured.content)[HTML_EMBED_NODE_NAME]).toBe(2);
   });
 
-  it('owner store: htmlEmbed preserved', async () => {
-    const captured = await runStore('owner', buildYdoc(RICH_DOC));
+  it('toggle ON + owner store: htmlEmbed preserved', async () => {
+    const captured = await runStore('owner', buildYdoc(RICH_DOC), true);
     expect(hasHtmlEmbedNode(captured.content)).toBe(true);
+  });
+
+  it('toggle OFF + admin store: stripped (feature disabled for everyone)', async () => {
+    const captured = await runStore('admin', buildYdoc(RICH_DOC), false);
+    expect(hasHtmlEmbedNode(captured.content)).toBe(false);
+  });
+
+  it('toggle OFF + owner store: stripped', async () => {
+    const captured = await runStore('owner', buildYdoc(RICH_DOC), false);
+    expect(hasHtmlEmbedNode(captured.content)).toBe(false);
+  });
+
+  it('toggle OFF + member store: stripped', async () => {
+    const captured = await runStore('member', buildYdoc(RICH_DOC), false);
+    expect(hasHtmlEmbedNode(captured.content)).toBe(false);
   });
 
   it('unknown/empty role: fails closed (stripped)', async () => {

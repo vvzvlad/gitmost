@@ -9,10 +9,12 @@ import { setYjsMark, updateYjsMarkAttribute, YjsSelection } from './yjs.util';
 import * as Y from 'yjs';
 import { User } from '@docmost/db/types/entity.types';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
 export type CollabEventHandlers = ReturnType<
   CollaborationHandler['getHandlers']
@@ -22,7 +24,7 @@ export type CollabEventHandlers = ReturnType<
 export class CollaborationHandler {
   private readonly logger = new Logger(CollaborationHandler.name);
 
-  constructor() {}
+  constructor(private readonly workspaceRepo: WorkspaceRepo) {}
 
   getHandlers(hocuspocus: Hocuspocus) {
     return {
@@ -98,10 +100,16 @@ export class CollaborationHandler {
         // arbitrary JS in every reader's browser, so a NON-admin caller must not
         // be able to persist them here. If the editing user is not a workspace
         // admin/owner, strip every htmlEmbed node before it reaches the ydoc.
-        if (!canAuthorHtmlEmbed(user?.role)) {
+        // Toggle-AND-admin gate: htmlEmbed survives only when the workspace
+        // feature toggle is ON and the editing user is an admin/owner. OFF
+        // (default) => stripped for everyone.
+        const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+          (await this.workspaceRepo.findById(user?.workspaceId))?.settings,
+        );
+        if (!htmlEmbedAllowed(htmlEmbedEnabled, user?.role)) {
           if (hasHtmlEmbedNode(prosemirrorJson)) {
             this.logger.warn(
-              `Stripping htmlEmbed node(s) from non-admin update by user ${user?.id} on ${documentName}`,
+              `Stripping htmlEmbed node(s) from update by user ${user?.id} on ${documentName}`,
             );
             prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
           }

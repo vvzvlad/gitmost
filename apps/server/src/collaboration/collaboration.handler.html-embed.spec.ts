@@ -48,8 +48,18 @@ const docWithEmbed = () => ({
  * TiptapTransformer.toYdoc(<gated json>) and applies it to the doc, so decoding
  * the doc afterward yields exactly the gated content.
  */
-async function gatedContentFor(role: string | null | undefined) {
-  const handler = new CollaborationHandler();
+async function gatedContentFor(
+  role: string | null | undefined,
+  featureEnabled = true,
+) {
+  // Workspace settings read used by the toggle-AND-admin gate.
+  const workspaceRepo = {
+    findById: jest.fn(async () => ({
+      id: 'ws-1',
+      settings: { htmlEmbed: featureEnabled },
+    })),
+  };
+  const handler = new CollaborationHandler(workspaceRepo as any);
   const captureDoc = new Y.Doc();
 
   jest
@@ -70,7 +80,7 @@ async function gatedContentFor(role: string | null | undefined) {
   await handlers.updatePageContent('page-1', {
     prosemirrorJson: docWithEmbed(),
     operation: 'replace',
-    user: { id: 'u1', role } as any,
+    user: { id: 'u1', role, workspaceId: 'ws-1' } as any,
   });
 
   return TiptapTransformer.fromYdoc(captureDoc, 'default');
@@ -92,11 +102,19 @@ describe('CollaborationHandler.updatePageContent htmlEmbed admin gate (real code
     }
   });
 
-  it('admin: htmlEmbed preserved', async () => {
-    expect(hasHtmlEmbedNode(await gatedContentFor('admin'))).toBe(true);
+  it('toggle ON + admin: htmlEmbed preserved', async () => {
+    expect(hasHtmlEmbedNode(await gatedContentFor('admin', true))).toBe(true);
   });
 
-  it('owner: htmlEmbed preserved', async () => {
-    expect(hasHtmlEmbedNode(await gatedContentFor('owner'))).toBe(true);
+  it('toggle ON + owner: htmlEmbed preserved', async () => {
+    expect(hasHtmlEmbedNode(await gatedContentFor('owner', true))).toBe(true);
+  });
+
+  it('toggle OFF + admin: stripped (feature disabled for everyone)', async () => {
+    expect(hasHtmlEmbedNode(await gatedContentFor('admin', false))).toBe(false);
+  });
+
+  it('toggle OFF + member: stripped', async () => {
+    expect(hasHtmlEmbedNode(await gatedContentFor('member', false))).toBe(false);
   });
 });

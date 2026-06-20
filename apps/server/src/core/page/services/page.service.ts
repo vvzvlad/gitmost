@@ -31,10 +31,12 @@ import {
   removeMarkTypeFromDoc,
 } from '../../../common/helpers/prosemirror/utils';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import {
   htmlToJson,
   jsonToNode,
@@ -79,6 +81,7 @@ export class PageService {
     private collaborationGateway: CollaborationGateway,
     private readonly watcherService: WatcherService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async findById(
@@ -146,9 +149,18 @@ export class PageService {
       // <!--html-embed:BASE64--> forms that parse to the same node) containing an
       // htmlEmbed and store XSS for every reader. Strip every htmlEmbed node when
       // the caller is not an admin, BEFORE deriving textContent/ydoc/insert.
-      if (!canAuthorHtmlEmbed(callerRole) && hasHtmlEmbedNode(prosemirrorJson)) {
+      // The gate is toggle-AND-admin: htmlEmbed survives only when the workspace
+      // feature toggle is ON and the caller is an admin/owner. OFF (default) =>
+      // stripped for everyone. Cheap settings read keyed to the workspace.
+      const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+        (await this.workspaceRepo.findById(workspaceId))?.settings,
+      );
+      if (
+        !htmlEmbedAllowed(htmlEmbedEnabled, callerRole) &&
+        hasHtmlEmbedNode(prosemirrorJson)
+      ) {
         this.logger.warn(
-          `Stripping htmlEmbed node(s) from non-admin page creation by user ${userId} (space ${createPageDto.spaceId})`,
+          `Stripping htmlEmbed node(s) from page creation by user ${userId} (space ${createPageDto.spaceId})`,
         );
         prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
       }
@@ -614,6 +626,12 @@ export class PageService {
 
     const attachmentMap = new Map<string, ICopyPageAttachment>();
 
+    // Resolve the htmlEmbed toggle ONCE for the workspace; the per-page gate
+    // below is toggle-AND-admin (OFF default => stripped for everyone).
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(rootPage.workspaceId))?.settings,
+    );
+
     const insertablePages: InsertablePage[] = await Promise.all(
       pages.map(async (page) => {
         const pageContent = getProsemirrorContent(page.content);
@@ -724,11 +742,11 @@ export class PageService {
         // htmlEmbed node from each duplicated page when the duplicating user is
         // not an admin, BEFORE computing textContent/ydoc/insert.
         if (
-          !canAuthorHtmlEmbed(authUser.role) &&
+          !htmlEmbedAllowed(htmlEmbedEnabled, authUser.role) &&
           hasHtmlEmbedNode(prosemirrorJson)
         ) {
           this.logger.warn(
-            `Stripping htmlEmbed node(s) from non-admin page duplication by user ${authUser.id} (source page ${page.id})`,
+            `Stripping htmlEmbed node(s) from page duplication by user ${authUser.id} (source page ${page.id})`,
           );
           prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
         }

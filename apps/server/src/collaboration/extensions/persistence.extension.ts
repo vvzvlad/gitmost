@@ -40,10 +40,12 @@ import {
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from '../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
 @Injectable()
 export class PersistenceExtension implements Extension {
@@ -64,6 +66,7 @@ export class PersistenceExtension implements Extension {
     @InjectQueue(QueueName.NOTIFICATION_QUEUE) private notificationQueue: Queue,
     private readonly collabHistory: CollabHistoryService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async onLoadDocument(data: onLoadDocumentPayload) {
@@ -146,10 +149,16 @@ export class PersistenceExtension implements Extension {
     // page-editor), and the PERSISTED page row plus every share/readonly read
     // path are protected by this strip. The window is therefore accepted rather
     // than mitigated with an inbound beforeBroadcast strip.
-    if (!canAuthorHtmlEmbed(context?.user?.role)) {
+    // Toggle-AND-admin gate: htmlEmbed survives only when the workspace feature
+    // toggle is ON and the storing user is an admin/owner. OFF (default) =>
+    // stripped for everyone (existing embeds get cleaned up on next save).
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(context?.user?.workspaceId))?.settings,
+    );
+    if (!htmlEmbedAllowed(htmlEmbedEnabled, context?.user?.role)) {
       if (hasHtmlEmbedNode(tiptapJson)) {
         this.logger.warn(
-          `Stripping htmlEmbed node(s) from non-admin collab store by user ${context?.user?.id} on ${documentName}`,
+          `Stripping htmlEmbed node(s) from collab store by user ${context?.user?.id} on ${documentName}`,
         );
         tiptapJson = stripHtmlEmbedNodes(tiptapJson);
         // Reflect the stripped content back into the shared ydoc so the node is

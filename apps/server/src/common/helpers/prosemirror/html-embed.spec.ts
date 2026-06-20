@@ -1,6 +1,8 @@
 import {
   canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from './html-embed.util';
 import { htmlToJson, jsonToHtml } from '../../../collaboration/collaboration.util';
@@ -102,6 +104,40 @@ describe('canAuthorHtmlEmbed', () => {
     expect(canAuthorHtmlEmbed(null)).toBe(false);
     expect(canAuthorHtmlEmbed(undefined)).toBe(false);
     expect(canAuthorHtmlEmbed('viewer')).toBe(false);
+  });
+});
+
+describe('isHtmlEmbedFeatureEnabled', () => {
+  it('is true only when settings.htmlEmbed === true', () => {
+    expect(isHtmlEmbedFeatureEnabled({ htmlEmbed: true })).toBe(true);
+  });
+  it('defaults to false (absent / false / non-object)', () => {
+    expect(isHtmlEmbedFeatureEnabled({})).toBe(false);
+    expect(isHtmlEmbedFeatureEnabled({ htmlEmbed: false })).toBe(false);
+    expect(isHtmlEmbedFeatureEnabled(null)).toBe(false);
+    expect(isHtmlEmbedFeatureEnabled(undefined)).toBe(false);
+    // Truthy-but-not-true values must NOT enable the feature.
+    expect(isHtmlEmbedFeatureEnabled({ htmlEmbed: 'true' as any })).toBe(false);
+  });
+});
+
+describe('htmlEmbedAllowed (toggle AND admin)', () => {
+  it('toggle OFF + admin/owner => not allowed (feature disabled for everyone)', () => {
+    expect(htmlEmbedAllowed(false, 'admin')).toBe(false);
+    expect(htmlEmbedAllowed(false, 'owner')).toBe(false);
+  });
+  it('toggle OFF + member => not allowed', () => {
+    expect(htmlEmbedAllowed(false, 'member')).toBe(false);
+  });
+  it('toggle ON + admin/owner => allowed', () => {
+    expect(htmlEmbedAllowed(true, 'admin')).toBe(true);
+    expect(htmlEmbedAllowed(true, 'owner')).toBe(true);
+  });
+  it('toggle ON + member/unknown => not allowed', () => {
+    expect(htmlEmbedAllowed(true, 'member')).toBe(false);
+    expect(htmlEmbedAllowed(true, null)).toBe(false);
+    expect(htmlEmbedAllowed(true, undefined)).toBe(false);
+    expect(htmlEmbedAllowed(true, 'viewer')).toBe(false);
   });
 });
 

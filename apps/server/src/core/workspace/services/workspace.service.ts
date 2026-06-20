@@ -511,6 +511,20 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.htmlEmbed !== 'undefined') {
+        const prev = settingsBefore?.htmlEmbed ?? false;
+        if (prev !== updateWorkspaceDto.htmlEmbed) {
+          before.htmlEmbed = prev;
+          after.htmlEmbed = updateWorkspaceDto.htmlEmbed;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'htmlEmbed',
+          updateWorkspaceDto.htmlEmbed,
+          trx,
+        );
+      }
+
       delete updateWorkspaceDto.restrictApiToAdmins;
       delete updateWorkspaceDto.aiSearch;
       delete updateWorkspaceDto.generativeAi;
@@ -519,6 +533,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
+      delete updateWorkspaceDto.htmlEmbed;
 
       await this.workspaceRepo.updateWorkspace(
         updateWorkspaceDto,
