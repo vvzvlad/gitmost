@@ -22,6 +22,15 @@ export function stripHtmlEmbedNodes<T = JSONContent>(pmJson: T): T {
 
   const node = pmJson as unknown as JSONContent;
 
+  // Defensive root-type check: if the ROOT node is itself an htmlEmbed, the
+  // children-filtering below could never drop it, so a bare htmlEmbed would be
+  // returned as-is. This branch is unreachable in normal use (the PM document
+  // root is always a `doc`) and exists only to make the helper total — a bare
+  // htmlEmbed can never be returned by this function.
+  if (node.type === HTML_EMBED_NODE_NAME) {
+    return { type: 'doc', content: [] } as unknown as T;
+  }
+
   if (Array.isArray(node.content)) {
     const filtered: JSONContent[] = [];
     for (const child of node.content) {

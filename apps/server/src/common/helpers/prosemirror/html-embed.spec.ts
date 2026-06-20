@@ -92,6 +92,17 @@ describe('stripHtmlEmbedNodes', () => {
     const result = stripHtmlEmbedNodes(doc);
     expect(result).toEqual(doc);
   });
+
+  it('neutralizes a root node that is itself an htmlEmbed', () => {
+    // Defensive: the PM root is always a `doc`, so this is unreachable in normal
+    // use, but the helper must still never return a bare htmlEmbed.
+    const root = {
+      type: 'htmlEmbed',
+      attrs: { source: '<script>alert(1)</script>' },
+    };
+    const result = stripHtmlEmbedNodes(root);
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
 });
 
 describe('canAuthorHtmlEmbed', () => {
