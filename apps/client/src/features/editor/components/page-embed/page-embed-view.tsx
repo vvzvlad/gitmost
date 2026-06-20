@@ -214,7 +214,17 @@ function PageEmbedBody({
         sourcePageId={sourcePageId}
         hostPageId={hostPageId}
       >
-        <PageEmbedContent content={result.content} />
+        {/*
+          Tiptap's EditorProvider consumes `content` only at initial mount, so a
+          changed `content` prop (e.g. after Refresh re-fetches fresh content)
+          would not update the read-only sub-editor. Key on the source's
+          updatedAt to remount PageEmbedContent (and its inner EditorProvider)
+          whenever the source page changes, applying the refreshed content.
+        */}
+        <PageEmbedContent
+          key={result.sourceUpdatedAt}
+          content={result.content}
+        />
       </PageEmbedAncestryProvider>
     );
   } else if (result.status === "no_access") {
