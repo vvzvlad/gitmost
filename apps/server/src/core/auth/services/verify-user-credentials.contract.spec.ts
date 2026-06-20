@@ -100,4 +100,40 @@ describe('AuthService no-side-effect contract (item 4)', () => {
       expect(verifyBody.includes(effect)).toBe(false);
     }
   });
+
+  // Item 4: user-enumeration timing-oracle fix. When the email is missing or the
+  // user is disabled, verifyUserCredentials must still run ONE bcrypt comparison
+  // (against a dummy hash) BEFORE throwing, so the missing/disabled path takes
+  // about the same time as the real-user wrong-password path. Asserted at the
+  // source level for the same reason as the rest of this file: AuthService cannot
+  // be imported under this jest config to spy on comparePasswordHash live.
+  describe('constant-time missing/disabled branch (item 4)', () => {
+    // Isolate the body of the `if (!user || isUserDisabled(user)) { ... }` guard.
+    const guardMatch = verifyBody.match(
+      /if \(!user \|\| isUserDisabled\(user\)\) \{([\s\S]*?)\n {4}\}/,
+    );
+
+    it('the missing/disabled guard runs a bcrypt compare before throwing', () => {
+      expect(guardMatch).not.toBeNull();
+      const guardBody = guardMatch![1];
+      // It performs the dummy bcrypt comparison...
+      expect(guardBody).toContain('comparePasswordHash');
+      // ...and only AFTER that throws the credentials error (compare precedes
+      // the throw STATEMENT — match `throw new`, not the word "throw" in a comment).
+      const compareIdx = guardBody.indexOf('comparePasswordHash');
+      const throwIdx = guardBody.indexOf('throw new');
+      expect(compareIdx).toBeGreaterThanOrEqual(0);
+      expect(throwIdx).toBeGreaterThan(compareIdx);
+    });
+
+    it('uses a module-level dummy hash constant (never a real credential)', () => {
+      // The dummy hash is a module-level constant referenced in the guard, not an
+      // inline literal recomputed per call.
+      expect(verifyBody).toContain('DUMMY_PASSWORD_HASH');
+      // Cost factor MUST be 12 to match production saltRounds, otherwise the
+      // dummy compare is faster than a real wrong-password compare and the
+      // timing oracle survives.
+      expect(source).toMatch(/const DUMMY_PASSWORD_HASH =\s*'\$2b\$12\$/);
+    });
+  });
 });

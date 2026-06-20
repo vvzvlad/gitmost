@@ -5,6 +5,7 @@
 // the Authorization header.
 import { UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
 import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
 
@@ -291,6 +292,14 @@ export interface BearerVerifyDeps {
     workspaceId?: string;
     sessionId?: string;
   }>;
+  // The workspace id of THIS MCP instance, when the caller can resolve it (the
+  // community build is single-workspace, so McpService passes its default
+  // workspace's id). When provided, the token's `workspaceId` claim MUST equal
+  // it, mirroring JwtStrategy's `req.raw.workspaceId !== payload.workspaceId`
+  // guard so a valid ACCESS token from a DIFFERENT workspace cannot be replayed
+  // against this instance in a multi-workspace deployment. Optional so callers /
+  // tests that genuinely cannot resolve an instance workspace are unchanged.
+  expectedWorkspaceId?: string;
   // Load the user (or undefined) for the disabled check.
   findUser: (
     sub: string,
@@ -321,6 +330,19 @@ export async function verifyBearerAccess(
     throw new UnauthorizedException(generic);
   }
 
+  // Bind the token to THIS instance's workspace (mirrors JwtStrategy). When the
+  // caller resolved an instance workspace id, a token whose `workspaceId` claim
+  // points at another workspace is rejected, so a valid ACCESS token minted in
+  // workspace B cannot be replayed against an MCP instance serving workspace A.
+  // In the single-workspace community build expectedWorkspaceId equals the only
+  // workspace, so this is a no-op there; it only bites a multi-workspace deploy.
+  if (
+    deps.expectedWorkspaceId &&
+    payload.workspaceId !== deps.expectedWorkspaceId
+  ) {
+    throw new UnauthorizedException(generic);
+  }
+
   const user = await deps.findUser(payload.sub, payload.workspaceId);
   if (!user || user.deactivatedAt || user.deletedAt) {
     throw new UnauthorizedException(generic);
@@ -342,21 +364,24 @@ export async function verifyBearerAccess(
 
 /**
  * Detect a genuine JSON-RPC `initialize` request from an already-parsed body.
- * Mirrors the @modelcontextprotocol/sdk `isInitializeRequest` signal that
- * packages/mcp/src/http.ts uses to decide whether to mint a session, but
- * framework/SDK-free so it is unit-testable and usable from the CommonJS
- * McpService. An initialize request is a single JSON-RPC object whose `method`
- * is exactly 'initialize'; a batch (array) body is never an initialize request.
+ * Delegates to the @modelcontextprotocol/sdk `isInitializeRequest` predicate —
+ * the SAME predicate packages/mcp/src/http.ts uses to decide whether to mint a
+ * session — so the session-minting side (this server) and the session-creating
+ * side (http.ts) agree EXACTLY on what counts as an initialize request. The SDK
+ * predicate validates the full InitializeRequest shape (jsonrpc, id, method ===
+ * 'initialize', params incl. protocolVersion); a bare `{ method: 'initialize' }`
+ * with no params, a batch (array) body, etc. are NOT initialize requests.
  *
  * This is the second half of the session-INIT decision: `isSessionInit` is
- * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Using it
- * ensures the side-effecting login() (user_sessions insert + USER_LOGIN audit +
- * lastLoginAt) only runs for a real initialize, never for an arbitrary
- * header-less request that http.ts will subsequently 400.
+ * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Matching the
+ * SDK predicate exactly ensures the side-effecting login() (user_sessions insert
+ * + USER_LOGIN audit + lastLoginAt) only runs for a request http.ts will also
+ * accept as an initialize — never for an arbitrary header-less request that
+ * http.ts would subsequently 400 (which would otherwise spam the audit log /
+ * grow user_sessions without ever creating an MCP session).
  */
 export function isInitializeRequestBody(body: unknown): boolean {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-  return (body as { method?: unknown }).method === 'initialize';
+  return isInitializeRequest(body);
 }
 
 /**
