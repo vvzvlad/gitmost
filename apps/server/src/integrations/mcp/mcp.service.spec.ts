@@ -9,6 +9,9 @@ import {
   sharedTokenMatches,
   clientIp,
   bindAccessJwtVerifier,
+  extractBearer,
+  decideBasicGate,
+  mapAuthResultToResponse,
   McpAuthDeps,
 } from './mcp-auth.helpers';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
@@ -76,6 +79,26 @@ describe('parseBasicAuth', () => {
     expect(
       parseBasicAuth('Basic ' + Buffer.from(':pw').toString('base64')),
     ).toBeNull();
+  });
+});
+
+describe('extractBearer', () => {
+  it('extracts the token from a "Bearer <token>" header', () => {
+    expect(extractBearer('Bearer abc.def.ghi')).toBe('abc.def.ghi');
+  });
+
+  it('is case-insensitive on the scheme (lowercase + uppercase)', () => {
+    // The split keeps the token as-is; only the scheme is compared lowercased.
+    expect(extractBearer('bearer abc')).toBe('abc');
+    expect(extractBearer('BEARER abc')).toBe('abc');
+  });
+
+  it('returns undefined for a non-Bearer scheme (e.g. Basic)', () => {
+    expect(extractBearer('Basic abc')).toBeUndefined();
+  });
+
+  it('returns undefined for an undefined header', () => {
+    expect(extractBearer(undefined)).toBeUndefined();
   });
 });
 
@@ -184,6 +207,43 @@ describe('FailedLoginLimiter', () => {
     lim.recordFailure(k, 0);
     expect(lim.isBlocked(k, 0)).toBe(true);
     expect(lim.isBlocked(k, 1000)).toBe(false);
+  });
+
+  describe('sweep (expired-bucket eviction, injectable clock)', () => {
+    // sweep() drops buckets whose windowStart is older than windowMs so
+    // never-revisited keys cannot accumulate forever. It takes an injectable
+    // `now` so the behaviour is deterministic without faking timers.
+    it('drops a bucket strictly older than windowMs', () => {
+      const lim = new FailedLoginLimiter(5, 1000);
+      // Seed a bucket at t=0 (windowStart=0).
+      lim.recordFailure('stale', 0);
+      // Sweep well past the window: now - windowStart = 5000 >= 1000 -> dropped.
+      lim.sweep(5000);
+      // A dropped bucket means a brand-new bucket is created on next touch, so
+      // the prior failure count is gone (a single fresh failure is far from 5).
+      lim.recordFailure('stale', 5001);
+      expect(lim.isBlocked('stale', 5001)).toBe(false);
+    });
+
+    it('drops a bucket exactly at the windowMs boundary (>= is inclusive)', () => {
+      const lim = new FailedLoginLimiter(1, 1000);
+      lim.recordFailure('boundary', 0); // windowStart=0, blocked at threshold 1
+      expect(lim.isBlocked('boundary', 0)).toBe(true);
+      // now - windowStart = 1000 == windowMs -> the >= check evicts it.
+      lim.sweep(1000);
+      // Re-touch at the same instant: a fresh bucket (count 0) is created, so the
+      // key is no longer blocked, proving the boundary bucket was swept.
+      expect(lim.isBlocked('boundary', 1000)).toBe(false);
+    });
+
+    it('retains a fresh bucket still within the window', () => {
+      const lim = new FailedLoginLimiter(1, 1000);
+      lim.recordFailure('fresh', 0); // windowStart=0
+      // now - windowStart = 999 < 1000 -> the bucket survives the sweep.
+      lim.sweep(999);
+      // Still blocked because the bucket (and its count) was retained.
+      expect(lim.isBlocked('fresh', 999)).toBe(true);
+    });
   });
 });
 
@@ -823,5 +883,140 @@ describe('bindAccessJwtVerifier enforces JwtType.ACCESS (item 3)', () => {
     });
     expect(verifyJwt).toHaveBeenCalledWith('t', JwtType.ACCESS);
     expect(res).toEqual({ sub: 'user-1', email: undefined });
+  });
+});
+
+describe('decideBasicGate (pure SSO/MFA pre-token gate, refactor R1)', () => {
+  // The pure decision extracted out of McpService.enforceBasicLoginGate. It is
+  // tested WITHOUT ModuleRef and WITHOUT an on-disk EE MFA module: the SSO verdict
+  // and the MFA requirement result are passed in as plain values.
+
+  it('SSO enforced -> throws Unauthorized ("enforced SSO")', () => {
+    expect(() => decideBasicGate({ ssoEnforced: true })).toThrow(
+      UnauthorizedException,
+    );
+    expect(() => decideBasicGate({ ssoEnforced: true })).toThrow(/enforced SSO/);
+    // SSO takes precedence even if MFA flags are also set.
+    expect(() =>
+      decideBasicGate({ ssoEnforced: true, mfa: { userHasMfa: true } }),
+    ).toThrow(/enforced SSO/);
+  });
+
+  it('no SSO + no MFA module (mfa undefined) -> resolves (Basic allowed)', () => {
+    // A community/fork build with no EE MFA module passes mfa: undefined and the
+    // gate must allow the password login (same as the controller with no MFA).
+    expect(() => decideBasicGate({ ssoEnforced: false })).not.toThrow();
+    expect(() =>
+      decideBasicGate({ ssoEnforced: false, mfa: undefined }),
+    ).not.toThrow();
+  });
+
+  it('MFA present + userHasMfa -> rejects ("use a Bearer access token")', () => {
+    expect(() =>
+      decideBasicGate({ ssoEnforced: false, mfa: { userHasMfa: true } }),
+    ).toThrow(/use a Bearer access token/);
+    expect(() =>
+      decideBasicGate({ ssoEnforced: false, mfa: { userHasMfa: true } }),
+    ).toThrow(UnauthorizedException);
+  });
+
+  it('MFA present + requiresMfaSetup -> rejects', () => {
+    expect(() =>
+      decideBasicGate({ ssoEnforced: false, mfa: { requiresMfaSetup: true } }),
+    ).toThrow(/use a Bearer access token/);
+  });
+
+  it('MFA present but none required (both flags false) -> resolves', () => {
+    expect(() =>
+      decideBasicGate({
+        ssoEnforced: false,
+        mfa: { userHasMfa: false, requiresMfaSetup: false },
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('mapAuthResultToResponse (handle status/body mapping, refactor R2)', () => {
+  // The pure response decision extracted out of McpService.handle. It maps the
+  // pre-hijack gauntlet (shared token, enablement, auth error) to either a fixed
+  // JSON error response or the hijack path — never leaking the password/header.
+
+  it('wrong X-MCP-Token -> 401 {error:"Unauthorized"} and NOT the hijack path', () => {
+    const d = mapAuthResultToResponse({ sharedTokenOk: false, enabled: true });
+    expect(d).toEqual({
+      kind: 'respond',
+      status: 401,
+      body: { error: 'Unauthorized' },
+    });
+  });
+
+  it('workspace MCP disabled -> 403', () => {
+    const d = mapAuthResultToResponse({ sharedTokenOk: true, enabled: false });
+    expect(d.kind).toBe('respond');
+    if (d.kind === 'respond') {
+      expect(d.status).toBe(403);
+      expect(d.body).toEqual({ error: 'MCP is disabled for this workspace' });
+    }
+  });
+
+  it('an UnauthorizedException -> 401 with err.message; no password/header leaked', () => {
+    // Construct an UnauthorizedException whose message is the SPECIFIC auth reason.
+    const err = new UnauthorizedException('Email or password does not match');
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: true,
+      enabled: true,
+      error: err,
+    });
+    expect(d).toEqual({
+      kind: 'respond',
+      status: 401,
+      body: { error: 'Email or password does not match' },
+    });
+    // The surfaced body is ONLY the exception message — never the raw secret.
+    if (d.kind === 'respond') {
+      const serialized = JSON.stringify(d.body);
+      expect(serialized).not.toContain('password=');
+      expect(serialized).not.toContain('Authorization');
+      expect(serialized).not.toContain('Basic ');
+      expect(serialized).not.toContain('Bearer ');
+    }
+  });
+
+  it('a non-Unauthorized error -> 500 generic (no error detail surfaced)', () => {
+    const err = new Error('db blew up: connection string secret');
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: true,
+      enabled: true,
+      error: err,
+    });
+    expect(d).toEqual({
+      kind: 'respond',
+      status: 500,
+      body: { error: 'Internal server error' },
+    });
+    // The generic body must NOT echo the underlying error message.
+    if (d.kind === 'respond') {
+      expect(d.body.error).not.toContain('secret');
+    }
+  });
+
+  it('happy path (auth resolved, no error) -> hijack', () => {
+    const d = mapAuthResultToResponse({ sharedTokenOk: true, enabled: true });
+    expect(d).toEqual({ kind: 'hijack' });
+  });
+
+  it('shared-token failure takes precedence over disabled/error', () => {
+    // Even with a disabled workspace and an error, a bad shared token is the
+    // first gate, so the response is the uniform 401 Unauthorized.
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: false,
+      enabled: false,
+      error: new UnauthorizedException('should not surface'),
+    });
+    expect(d).toEqual({
+      kind: 'respond',
+      status: 401,
+      body: { error: 'Unauthorized' },
+    });
   });
 });

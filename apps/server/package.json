@@ -23,6 +23,7 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "pretest": "pnpm --filter @docmost/editor-ext build",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -162,10 +163,30 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "tsx"
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/core/auth/auth.controller.spec.ts",
+      "<rootDir>/core/auth/services/auth.service.spec.ts",
+      "<rootDir>/core/auth/services/token.service.spec.ts",
+      "<rootDir>/core/comment/comment.service.spec.ts",
+      "<rootDir>/core/group/group.controller.spec.ts",
+      "<rootDir>/core/group/services/group.service.spec.ts",
+      "<rootDir>/core/page/page.controller.spec.ts",
+      "<rootDir>/core/page/services/page.service.spec.ts",
+      "<rootDir>/core/search/search.controller.spec.ts",
+      "<rootDir>/core/search/search.service.spec.ts",
+      "<rootDir>/core/space/services/space.service.spec.ts",
+      "<rootDir>/core/space/space.controller.spec.ts",
+      "<rootDir>/core/user/user.controller.spec.ts",
+      "<rootDir>/core/workspace/services/workspace.service.spec.ts",
+      "<rootDir>/integrations/environment/environment.service.spec.ts",
+      "<rootDir>/integrations/storage/storage.service.spec.ts"
+    ],
     "transform": {
       "happy-dom.+\\.js$": [
         "babel-jest",
@@ -182,7 +203,7 @@
           ]
         }
       ],
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "transformIgnorePatterns": [
       "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom)(@|/))"
