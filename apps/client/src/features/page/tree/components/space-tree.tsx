@@ -1,8 +1,17 @@
 import { useAtom } from "jotai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Text } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   fetchAllAncestorChildren,
   useGetRootSidebarPagesQuery,
@@ -19,7 +28,10 @@ import {
 } from "@/features/page/tree/utils/utils.ts";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
-import { getPageBreadcrumbs } from "@/features/page/services/page-service.ts";
+import {
+  getPageBreadcrumbs,
+  getSpaceTree,
+} from "@/features/page/services/page-service.ts";
 import { IPage } from "@/features/page/types/page.types.ts";
 import { extractPageSlugId } from "@/lib";
 import { DocTree } from "./doc-tree";
@@ -30,10 +42,20 @@ interface SpaceTreeProps {
   readOnly: boolean;
 }
 
-export default function SpaceTree({ spaceId, readOnly }: SpaceTreeProps) {
+export type SpaceTreeApi = {
+  expandAll: () => Promise<void>;
+  collapseAll: () => void;
+  isExpanding: boolean;
+};
+
+const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
+  { spaceId, readOnly },
+  ref,
+) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
   const [data, setData] = useAtom(treeDataAtom);
+  const [isExpanding, setIsExpanding] = useState(false);
   const { handleMove } = useTreeMutation(spaceId);
   const {
     data: pagesData,
@@ -186,6 +208,80 @@ export default function SpaceTree({ spaceId, readOnly }: SpaceTreeProps) {
     [data, spaceId],
   );
 
+  const expandAll = useCallback(async () => {
+    const startSpaceId = spaceIdRef.current;
+    setIsExpanding(true);
+    try {
+      // One request: the entire space tree, permission-filtered server-side.
+      const items = await getSpaceTree({ spaceId: startSpaceId });
+      // Space switched mid-flight — abort merge/expand.
+      if (spaceIdRef.current !== startSpaceId) return;
+
+      const fullTree = buildTreeWithChildren(buildTree(items));
+
+      setData((prev) => {
+        // Replace current-space nodes with the full tree; keep other spaces intact.
+        const others = prev.filter((n) => n?.spaceId !== startSpaceId);
+        return [...others, ...fullTree];
+      });
+
+      // Open every branch node (node with children) of the current space only.
+      const branchIds: string[] = [];
+      const collectBranchIds = (nodes: SpaceTreeNode[]) => {
+        for (const n of nodes) {
+          if (n.children && n.children.length > 0) {
+            branchIds.push(n.id);
+            collectBranchIds(n.children);
+          }
+        }
+      };
+      collectBranchIds(fullTree);
+
+      setOpenTreeNodes((prev) => {
+        const next = { ...prev };
+        for (const id of branchIds) next[id] = true;
+        return next;
+      });
+    } catch (err: any) {
+      // Never swallow: log full error + surface the real reason.
+      console.error("[tree] expandAll failed", err);
+      notifications.show({
+        color: "red",
+        message: t("Couldn't expand the tree: {{reason}}", {
+          reason:
+            err?.response?.data?.message ?? err?.message ?? String(err),
+        }),
+      });
+    } finally {
+      setIsExpanding(false);
+    }
+  }, [setData, setOpenTreeNodes, t]);
+
+  const collapseAll = useCallback(() => {
+    // The open-map is shared across spaces; collapse only current-space ids so
+    // other spaces' expanded state is left intact.
+    const ids = new Set<string>();
+    const walk = (nodes: SpaceTreeNode[]) => {
+      for (const n of nodes) {
+        ids.add(n.id);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    walk(filteredData);
+
+    setOpenTreeNodes((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = false;
+      return next;
+    });
+  }, [filteredData, setOpenTreeNodes]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ expandAll, collapseAll, isExpanding }),
+    [expandAll, collapseAll, isExpanding],
+  );
+
   // Stable callbacks for DocTree. Without these, every parent render recreates
   // the props and tears down every row's draggable/dropTarget subscription,
   // defeating memo(DocTreeRow).
@@ -228,4 +324,6 @@ export default function SpaceTree({ spaceId, readOnly }: SpaceTreeProps) {
       )}
     </div>
   );
-}
+});
+
+export default SpaceTree;

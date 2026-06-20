@@ -32,7 +32,7 @@ import {
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { Page, User, Workspace } from '@docmost/db/types/entity.types';
-import { SidebarPageDto } from './dto/sidebar-page.dto';
+import { SidebarPageDto, SidebarPageTreeDto } from './dto/sidebar-page.dto';
 import {
   SpaceCaslAction,
   SpaceCaslSubject,
@@ -576,6 +576,49 @@ export class PageController {
       user.id,
       spaceCanEdit,
     );
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/tree')
+  async getPagesTree(
+    @Body() dto: SidebarPageTreeDto,
+    @AuthUser() user: User,
+  ) {
+    if (!dto.spaceId && !dto.pageId) {
+      throw new BadRequestException(
+        'Either spaceId or pageId must be provided',
+      );
+    }
+
+    let spaceId = dto.spaceId;
+
+    if (dto.pageId) {
+      const page = await this.pageRepo.findById(dto.pageId);
+      if (!page) {
+        throw new ForbiddenException();
+      }
+
+      spaceId = page.spaceId;
+    }
+
+    const ability = await this.spaceAbility.createForUser(user, spaceId);
+    if (ability.cannot(SpaceCaslAction.Read, SpaceCaslSubject.Page)) {
+      throw new ForbiddenException();
+    }
+
+    const spaceCanEdit = ability.can(
+      SpaceCaslAction.Edit,
+      SpaceCaslSubject.Page,
+    );
+
+    const items = await this.pageService.getSidebarPagesTree(
+      spaceId,
+      user.id,
+      spaceCanEdit,
+      dto.pageId,
+    );
+
+    return { items };
   }
 
   @HttpCode(HttpStatus.OK)

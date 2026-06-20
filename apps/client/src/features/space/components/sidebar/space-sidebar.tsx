@@ -7,6 +7,8 @@ import {
 } from "@mantine/core";
 import {
   IconArrowDown,
+  IconChevronsDown,
+  IconChevronsUp,
   IconDots,
   IconEye,
   IconEyeOff,
@@ -23,14 +25,16 @@ import {
   useUnwatchSpaceMutation,
 } from "@/features/space/queries/space-watcher-query.ts";
 import classes from "./space-sidebar.module.css";
-import React from "react";
+import React, { useRef } from "react";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import { Link, useParams } from "react-router-dom";
 import clsx from "clsx";
 import { useDisclosure } from "@mantine/hooks";
 import SpaceSettingsModal from "@/features/space/components/settings-modal.tsx";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
-import SpaceTree from "@/features/page/tree/components/space-tree.tsx";
+import SpaceTree, {
+  SpaceTreeApi,
+} from "@/features/page/tree/components/space-tree.tsx";
 import { useSpaceAbility } from "@/features/space/permissions/use-space-ability.ts";
 import {
   SpaceCaslAction,
@@ -57,6 +61,7 @@ export function SpaceSidebar() {
   const spaceRules = space?.membership?.permissions;
   const spaceAbility = useSpaceAbility(spaceRules);
   const { handleCreate } = useTreeMutation(space?.id ?? "");
+  const treeRef = useRef<SpaceTreeApi | null>(null);
 
   if (!space) {
     return <></>;
@@ -100,6 +105,7 @@ export function SpaceSidebar() {
                   SpaceCaslSubject.Page,
                 )}
                 onSpaceSettings={openSettings}
+                treeRef={treeRef}
               />
 
               {spaceAbility.can(
@@ -122,6 +128,7 @@ export function SpaceSidebar() {
 
           <div className={classes.pages}>
             <SpaceTree
+              ref={treeRef}
               spaceId={space.id}
               readOnly={spaceAbility.cannot(
                 SpaceCaslAction.Manage,
@@ -145,13 +152,29 @@ interface SpaceMenuProps {
   spaceId: string;
   canManagePages: boolean;
   onSpaceSettings: () => void;
+  treeRef: React.RefObject<SpaceTreeApi | null>;
 }
 function SpaceMenu({
   spaceId,
   canManagePages,
   onSpaceSettings,
+  treeRef,
 }: SpaceMenuProps) {
   const { t } = useTranslation();
+  const [isExpanding, setIsExpanding] = React.useState(false);
+
+  const handleExpandAll = async () => {
+    setIsExpanding(true);
+    try {
+      await treeRef.current?.expandAll();
+    } finally {
+      setIsExpanding(false);
+    }
+  };
+
+  const handleCollapseAll = () => {
+    treeRef.current?.collapseAll();
+  };
   const { spaceSlug } = useParams();
   const [importOpened, { open: openImportModal, close: closeImportModal }] =
     useDisclosure(false);
@@ -201,6 +224,24 @@ function SpaceMenu({
         </Menu.Target>
 
         <Menu.Dropdown>
+          <Menu.Item
+            onClick={handleExpandAll}
+            disabled={isExpanding}
+            closeMenuOnClick={false}
+            leftSection={<IconChevronsDown size={16} />}
+          >
+            {t("Expand all")}
+          </Menu.Item>
+
+          <Menu.Item
+            onClick={handleCollapseAll}
+            leftSection={<IconChevronsUp size={16} />}
+          >
+            {t("Collapse all")}
+          </Menu.Item>
+
+          <Menu.Divider />
+
           <Menu.Item
             onClick={handleToggleFavorite}
             leftSection={
