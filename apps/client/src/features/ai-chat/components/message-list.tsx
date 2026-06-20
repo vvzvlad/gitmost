@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef } from "react";
 import { Center, ScrollArea, Stack, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
@@ -10,6 +10,26 @@ import classes from "@/features/ai-chat/components/ai-chat.module.css";
 interface MessageListProps {
   messages: UIMessage[];
   isStreaming: boolean;
+  /**
+   * Content shown when the transcript is empty and no turn is in flight.
+   * Defaults to the internal chat's prompt. The public share passes its own
+   * documentation-focused copy. This is purely the empty-state text; the
+   * streaming/typing/markdown/tool-card paths below are shared verbatim.
+   */
+  emptyState?: ReactNode;
+  /**
+   * Forwarded to MessageItem -> ToolCallCard: whether tool cards render page
+   * citation links. Defaults to true (internal chat). The public share passes
+   * false because an anonymous reader cannot open the linked internal pages.
+   */
+  showCitations?: boolean;
+  /**
+   * Forwarded to MessageItem: neutralize internal/relative markdown links in
+   * the rendered answers (drop their href so they render as inert text).
+   * Defaults to false (internal chat). The public share passes true so internal
+   * UUIDs/routes don't leak as clickable links to anonymous readers.
+   */
+  neutralizeInternalLinks?: boolean;
 }
 
 // Distance (px) from the bottom within which the viewport still counts as
@@ -24,7 +44,7 @@ const BOTTOM_THRESHOLD = 40;
  *  - the last (assistant) message has no non-empty text and no tool part.
  * Once any text/tool part arrives, MessageItem renders it and this hides.
  */
-function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boolean {
+export function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boolean {
   if (!isStreaming) return false;
   const last = messages[messages.length - 1];
   if (!last) return true; // submitted with nothing rendered yet.
@@ -41,7 +61,13 @@ function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boole
  * but only while the user is pinned to the bottom — if they scrolled up to read
  * earlier messages, streamed deltas no longer yank them back down.
  */
-export default function MessageList({ messages, isStreaming }: MessageListProps) {
+export default function MessageList({
+  messages,
+  isStreaming,
+  emptyState,
+  showCitations = true,
+  neutralizeInternalLinks = false,
+}: MessageListProps) {
   const { t } = useTranslation();
   const viewportRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned to the bottom. Starts true so the
@@ -104,9 +130,11 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
   if (messages.length === 0 && !typing) {
     return (
       <Center className={classes.messages}>
-        <Text size="sm" c="dimmed" ta="center">
-          {t("Ask the AI agent anything about your workspace.")}
-        </Text>
+        {emptyState ?? (
+          <Text size="sm" c="dimmed" ta="center">
+            {t("Ask the AI agent anything about your workspace.")}
+          </Text>
+        )}
       </Center>
     );
   }
@@ -115,7 +143,12 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
     <ScrollArea className={classes.messages} viewportRef={viewportRef} scrollbarSize={6} type="scroll">
       <Stack gap={0} pr="xs">
         {messages.map((message) => (
-          <MessageItem key={message.id} message={message} />
+          <MessageItem
+            key={message.id}
+            message={message}
+            showCitations={showCitations}
+            neutralizeInternalLinks={neutralizeInternalLinks}
+          />
         ))}
         {typing && <TypingIndicator />}
       </Stack>

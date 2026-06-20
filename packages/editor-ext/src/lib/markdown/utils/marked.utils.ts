@@ -2,6 +2,10 @@ import { marked } from "marked";
 import { calloutExtension } from "./callout.marked";
 import { mathBlockExtension } from "./math-block.marked";
 import { mathInlineExtension } from "./math-inline.marked";
+import {
+  footnoteReferenceExtension,
+  extractFootnoteDefinitions,
+} from "./footnote.marked";
 import { htmlEmbedExtension } from "./html-embed.marked";
 
 marked.use({
@@ -39,6 +43,7 @@ marked.use({
     calloutExtension,
     mathBlockExtension,
     mathInlineExtension,
+    footnoteReferenceExtension,
     htmlEmbedExtension,
   ],
 });
@@ -54,5 +59,16 @@ export function markdownToHtml(
     .replace(YAML_FONT_MATTER_REGEX, "")
     .trimStart();
 
-  return marked.parse(markdown).toString();
+  // Pull `[^id]: ...` definition lines out of the body, render the body, then
+  // append a single <section data-footnotes> so the round-trip rebuilds the
+  // footnotesList + footnoteDefinition nodes.
+  const { body, section } = extractFootnoteDefinitions(markdown);
+
+  const parsed = marked.parse(body);
+  if (!section) return parsed;
+
+  if (typeof parsed === "string") {
+    return parsed + section;
+  }
+  return parsed.then((html) => html + section);
 }
