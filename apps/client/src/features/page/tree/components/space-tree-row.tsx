@@ -2,13 +2,14 @@ import { useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
-import { ActionIcon, rem } from "@mantine/core";
+import { ActionIcon, rem, Tooltip } from "@mantine/core";
 import {
   IconChevronDown,
   IconChevronRight,
   IconFileDescription,
   IconPlus,
   IconPointFilled,
+  IconTemplate,
 } from "@tabler/icons-react";
 
 import EmojiPicker from "@/components/ui/emoji-picker.tsx";
@@ -170,6 +171,25 @@ export function SpaceTreeRow({
       </div>
 
       <span className={classes.text}>{node.name || t("untitled")}</span>
+
+      {node.isTemplate === true && (
+        <Tooltip label={t("Template")} withArrow>
+          <IconTemplate
+            size={14}
+            stroke={1.5}
+            // Visual-only indicator: subtle and never shrinks. Pointer events
+            // stay enabled so the Tooltip's hover handlers fire; clicks fall
+            // through to the row link since no stopPropagation is used.
+            style={{
+              flexShrink: 0,
+              marginLeft: rem(4),
+              color: "var(--mantine-color-dimmed)",
+            }}
+            aria-label={t("Template")}
+            role="img"
+          />
+        </Tooltip>
+      )}
 
       <div className={classes.actions}>
         <NodeMenu node={node} canEdit={canEdit} />
