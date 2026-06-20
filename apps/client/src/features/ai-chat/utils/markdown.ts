@@ -8,21 +8,36 @@ export interface RenderChatMarkdownOptions {
    * relative app links (e.g. `[page](/p/{uuid})`, `[settings](/settings/members)`)
    * that would otherwise become clickable `<a href="/p/...">`, leaking internal
    * UUIDs/structure and pointing at auth-gated routes. An anonymous reader can
-   * still follow genuinely EXTERNAL `http(s)` links, so those are kept (with a
-   * safe `rel`/`target`). Defaults to false — the internal chat keeps internal
-   * links clickable for authenticated users.
+   * still follow genuinely EXTERNAL `http(s)` links (a DIFFERENT host than the
+   * app's own origin), so those are kept (with a safe `rel`/`target`); absolute
+   * links back to our OWN origin (e.g. `https://self/p/{uuid}`) are internal and
+   * neutralized too. Defaults to false — the internal chat keeps internal links
+   * clickable for authenticated users.
    */
   neutralizeInternalLinks?: boolean;
 }
 
 /**
  * Whether `href` points at an EXTERNAL absolute URL we are happy for an
- * anonymous reader to follow. Only absolute `http(s)://` URLs qualify;
- * everything else (relative `/...`, bare fragments `#...`, protocol-relative
- * `//...`, other schemes) is treated as internal/unsafe and neutralized.
+ * anonymous reader to follow. A link qualifies only if it is absolute
+ * `http(s)://` AND its host differs from the app's own origin
+ * (`window.location.host`): absolute links back to our OWN host (e.g.
+ * `https://self/p/{uuid}`) are internal and must be neutralized, exactly like
+ * relative `/p/...` links. Everything else (relative `/...`, bare fragments
+ * `#...`, protocol-relative `//...`, other schemes, or anything that does not
+ * parse) is treated as internal/unsafe and neutralized — fail closed.
  */
 function isExternalHttpUrl(href: string): boolean {
-  return /^https?:\/\//i.test(href.trim());
+  const value = href.trim();
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    // External only if it points at a DIFFERENT host than the app's own origin.
+    // Absolute links back to our own host (e.g. https://self/p/{uuid}) are
+    // internal and must be neutralized, same as relative `/p/...` links.
+    return new URL(value).host !== window.location.host;
+  } catch {
+    return false; // unparseable -> treat as internal/unsafe, neutralize
+  }
 }
 
 /**
