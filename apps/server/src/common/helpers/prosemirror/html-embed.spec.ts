@@ -105,135 +105,34 @@ describe('canAuthorHtmlEmbed', () => {
   });
 });
 
-// Replicates the write-path decision used by every non-admin persistence guard
-// (page create, collab store, single import, zip import, duplication,
-// transclusion unsync):
-//   if !canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json) -> strip, else keep.
-const applyAdminGate = (json: any, role: string | null | undefined) => {
-  if (!canAuthorHtmlEmbed(role) && hasHtmlEmbedNode(json)) {
-    return stripHtmlEmbedNodes(json);
-  }
-  return json;
-};
-
-describe('admin-gate write-path decision (duplication / import / unsync)', () => {
-  const docWithEmbed = {
-    type: 'doc',
-    content: [
-      { type: 'paragraph', content: [{ type: 'text', text: 'keep' }] },
-      { type: 'htmlEmbed', attrs: { source: '<script>alert(1)</script>' } },
-    ],
-  };
-
-  it('strips the embed for a non-admin (member) author', () => {
-    const result = applyAdminGate(docWithEmbed, 'member');
-    expect(hasHtmlEmbedNode(result)).toBe(false);
-    expect(result.content).toHaveLength(1);
-    expect(result.content[0].content[0].text).toBe('keep');
-  });
-
-  it('strips the embed for unknown/empty roles', () => {
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, null))).toBe(false);
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, undefined))).toBe(
-      false,
-    );
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, 'viewer'))).toBe(
-      false,
-    );
-  });
-
-  it('keeps the embed for an admin author', () => {
-    const result = applyAdminGate(docWithEmbed, 'admin');
-    expect(hasHtmlEmbedNode(result)).toBe(true);
-    expect(result).toBe(docWithEmbed);
-  });
-
-  it('keeps the embed for an owner author', () => {
-    const result = applyAdminGate(docWithEmbed, 'owner');
-    expect(hasHtmlEmbedNode(result)).toBe(true);
-  });
-
-  it('strips nested embeds (subtree/column duplication) for a non-admin', () => {
-    const nested = {
-      type: 'doc',
-      content: [
-        {
-          type: 'columns',
-          content: [
-            {
-              type: 'column',
-              content: [
-                { type: 'htmlEmbed', attrs: { source: '<script>x</script>' } },
-                { type: 'paragraph', content: [{ type: 'text', text: 'ok' }] },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-    const result = applyAdminGate(nested, 'member');
-    expect(hasHtmlEmbedNode(result)).toBe(false);
-    const col = findFirstChild(result, 'column');
-    expect(col.content).toHaveLength(1);
-    expect(col.content[0].type).toBe('paragraph');
-  });
-
-  it('leaves a non-admin doc without embeds untouched (no needless rewrite)', () => {
-    const clean = {
-      type: 'doc',
-      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }],
-    };
-    const result = applyAdminGate(clean, 'member');
-    expect(result).toBe(clean);
-  });
-});
-
-// PageService.create() now applies exactly `applyAdminGate` (above) to the
-// parsed ProseMirror JSON BEFORE deriving content/textContent/ydoc and calling
-// insertPage. The create controller only requires space Edit, so without this a
-// regular member could POST a doc (json, or the markdown/html
-// <!--html-embed:BASE64--> forms that parse to the same node) containing an
-// htmlEmbed and store XSS for every reader. These cases pin the create-path
-// decision: non-admin -> stripped, admin/owner -> kept.
-describe('admin-gate write-path decision (page create)', () => {
-  const docWithEmbed = {
-    type: 'doc',
-    content: [
-      { type: 'paragraph', content: [{ type: 'text', text: 'body' }] },
-      { type: 'htmlEmbed', attrs: { source: '<script>alert(1)</script>' } },
-    ],
-  };
-
-  it('strips the embed when a non-admin (member) creates the page', () => {
-    const result = applyAdminGate(docWithEmbed, 'member');
-    expect(hasHtmlEmbedNode(result)).toBe(false);
-    expect(result.content).toHaveLength(1);
-    expect(result.content[0].content[0].text).toBe('body');
-  });
-
-  it('strips the embed when the creator role is unknown/empty', () => {
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, null))).toBe(false);
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, undefined))).toBe(
-      false,
-    );
-  });
-
-  it('keeps the embed when an admin or owner creates the page', () => {
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, 'admin'))).toBe(true);
-    expect(hasHtmlEmbedNode(applyAdminGate(docWithEmbed, 'owner'))).toBe(true);
-  });
-
-  it('strips embeds smuggled via the markdown/html <!--html-embed--> form', () => {
-    // The markdown/html create formats decode to the same htmlEmbed node, so
-    // the gate (run on the parsed JSON) covers them identically.
+// NOTE: a previous revision of this file re-implemented the write-path admin
+// gate as a local `applyAdminGate` stand-in and asserted against THAT. A
+// deleted/misplaced real guard would have kept those green. The stand-in is
+// removed. The collab store, REST/MCP update, and transclusion-unsync paths are
+// now tested against their REAL code in:
+//   - collaboration/extensions/persistence.extension.html-embed.spec.ts
+//   - collaboration/collaboration.handler.html-embed.spec.ts
+//   - core/page/transclusion/spec/transclusion-unsync-html-embed.spec.ts
+//   - core/page/services/page-service-html-embed-identity.spec.ts (create/dup)
+//   - integrations/import/services/import-html-embed-identity.spec.ts (import)
+//
+// The case below stays here because it asserts a REAL parse path
+// (htmlToJson, the markdown/html create format) feeding the REAL helpers — not a
+// re-implemented gate.
+describe('htmlEmbed smuggled via the markdown/html <!--html-embed--> form (real parse + real helpers)', () => {
+  it('the parsed node is detected and stripped by the real helpers', () => {
+    // The markdown/html create formats decode to the same htmlEmbed node, so the
+    // gate (run on the parsed JSON) covers them identically.
     const source = '<script>steal()</script>';
     const encoded = encodeHtmlEmbedSource(source);
     const html = `<div data-type="htmlEmbed" data-source="${encoded}"></div>`;
     const parsed = htmlToJson(html);
     expect(hasHtmlEmbedNode(parsed)).toBe(true);
 
-    const result = applyAdminGate(parsed, 'member');
-    expect(hasHtmlEmbedNode(result)).toBe(false);
+    // A non-admin role gates to strip via the real helpers.
+    expect(canAuthorHtmlEmbed('member')).toBe(false);
+    const stripped = stripHtmlEmbedNodes(parsed);
+    expect(hasHtmlEmbedNode(stripped)).toBe(false);
   });
 });
 
