@@ -4,9 +4,10 @@
  * This is a separate, locked-down persona from the authenticated agent
  * (`ai-chat.prompt.ts`). The caller is an unauthenticated visitor of a public
  * share, so the assistant is strictly read-only and scoped to the published
- * share tree. There is no admin-configurable text here — the persona and the
- * safety block are both immutable, because the security boundary is the tool
- * scope (the share tree), not any per-request input.
+ * share tree. An admin MAY select an agent role whose `instructions` REPLACE the
+ * built-in PERSONA, but the SAFETY_FRAMEWORK is immutable and is ALWAYS still
+ * appended — the security boundary remains the tool scope (the share tree), not
+ * any persona text or other per-request input.
  */
 
 /**
@@ -50,6 +51,12 @@ export interface BuildShareSystemPromptInput {
    * reads via the share-scoped tools, which reject pages outside the share.
    */
   openedPage?: { id?: string; title?: string } | null;
+  /**
+   * When an admin-selected agent role is active, its instructions REPLACE the
+   * built-in PERSONA; the SAFETY_FRAMEWORK is always still appended. Empty/null
+   * = keep the built-in locked persona.
+   */
+  roleInstructions?: string | null;
 }
 
 const PERSONA = [
@@ -64,13 +71,17 @@ const PERSONA = [
 ].join(' ');
 
 /**
- * Compose the locked system prompt for the public-share assistant: an immutable
- * persona, optional context (share title + opened page), then ALWAYS the
- * non-removable safety framework. There is no admin override path.
+ * Compose the system prompt for the public-share assistant: a persona, optional
+ * context (share title + opened page), then ALWAYS the non-removable safety
+ * framework. The persona defaults to the built-in locked PERSONA, but an
+ * admin-selected agent role's `roleInstructions` may REPLACE it; either way the
+ * SAFETY_FRAMEWORK is immutable and always appended, and the tool scope (the
+ * share tree) remains the real security boundary.
  */
 export function buildShareSystemPrompt({
   share,
   openedPage,
+  roleInstructions,
 }: BuildShareSystemPromptInput): string {
   let context = '';
 
@@ -91,5 +102,12 @@ export function buildShareSystemPrompt({
     context += `\nThe reader is currently viewing the page "${title}" (pageId: ${pageId.trim()}). When they refer to "this page" or "the current page", use that pageId with the read tool.`;
   }
 
-  return `${PERSONA}${context}\n${SAFETY_FRAMEWORK}`;
+  // An admin-selected role's instructions replace the built-in persona; the
+  // safety framework below is still always appended.
+  const persona =
+    typeof roleInstructions === 'string' && roleInstructions.trim().length > 0
+      ? roleInstructions.trim()
+      : PERSONA;
+
+  return `${persona}${context}\n${SAFETY_FRAMEWORK}`;
 }

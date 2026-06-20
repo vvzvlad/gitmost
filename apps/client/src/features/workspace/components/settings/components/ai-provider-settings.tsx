@@ -38,6 +38,8 @@ import {
   IAiSettingsUpdate,
   SttApiStyle,
 } from "@/features/workspace/services/ai-settings-service.ts";
+import { useAiRolesQuery } from "@/features/ai-chat/queries/ai-chat-query.ts";
+import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
 import AiMcpServers from "./ai-mcp-servers.tsx";
 
 // No driver field: every endpoint is OpenAI-compatible, so the form carries only
@@ -47,6 +49,9 @@ const formSchema = z.object({
   chatModel: z.string(),
   // Cheap model id for the anonymous public-share assistant; empty = use chatModel.
   publicShareChatModel: z.string(),
+  // Agent-role id whose persona the public-share assistant adopts; empty =
+  // built-in locked persona.
+  publicShareAssistantRoleId: z.string(),
   embeddingModel: z.string(),
   baseUrl: z.string(),
   // Embedding-specific base URL. Empty means "use the chat base URL".
@@ -145,6 +150,10 @@ export default function AiProviderSettings() {
   const embedTest = useTestAiConnectionMutation();
   const sttTest = useTestAiConnectionMutation();
 
+  // Agent roles drive the public-share assistant identity picker. Admin-gated
+  // (the component returns early for non-admins), same as the AI settings query.
+  const { data: roles } = useAiRolesQuery(isAdmin);
+
   // Workspace-level feature toggles live in the card headers.
   const [workspace, setWorkspace] = useAtom(workspaceAtom);
   const [chatEnabled, setChatEnabled] = useState<boolean>(
@@ -187,6 +196,7 @@ export default function AiProviderSettings() {
     initialValues: {
       chatModel: "",
       publicShareChatModel: "",
+      publicShareAssistantRoleId: "",
       embeddingModel: "",
       baseUrl: "",
       embeddingBaseUrl: "",
@@ -207,6 +217,7 @@ export default function AiProviderSettings() {
     form.setValues({
       chatModel: settings.chatModel ?? "",
       publicShareChatModel: settings.publicShareChatModel ?? "",
+      publicShareAssistantRoleId: settings.publicShareAssistantRoleId ?? "",
       embeddingModel: settings.embeddingModel ?? "",
       baseUrl: settings.baseUrl ?? "",
       embeddingBaseUrl: settings.embeddingBaseUrl ?? "",
@@ -236,6 +247,9 @@ export default function AiProviderSettings() {
       // Cheap model id for the anonymous public-share assistant; empty falls
       // back to chatModel server-side.
       publicShareChatModel: values.publicShareChatModel,
+      // Agent-role id whose persona the public-share assistant adopts; empty =
+      // built-in locked persona server-side.
+      publicShareAssistantRoleId: values.publicShareAssistantRoleId,
       embeddingModel: values.embeddingModel,
       // The embedding base URL is optional; empty falls back to the chat base
       // URL server-side.
@@ -471,6 +485,34 @@ export default function AiProviderSettings() {
 
   const monoFont = "ui-monospace, Menlo, monospace";
 
+  // Public-share assistant identity options: a leading "built-in persona" entry
+  // (empty value, the server default) plus every enabled agent role. If the saved
+  // role was since disabled it is filtered out of the enabled list, so surface it
+  // explicitly (labeled "disabled") instead of letting the Select render a blank
+  // field for a still-stored id.
+  const selectedRoleId = form.values.publicShareAssistantRoleId;
+  const enabledRoles = (roles ?? []).filter((r: IAiRole) => r.enabled);
+  const selectedDisabledRole =
+    selectedRoleId.length > 0 &&
+    !enabledRoles.some((r: IAiRole) => r.id === selectedRoleId)
+      ? (roles ?? []).find((r: IAiRole) => r.id === selectedRoleId)
+      : undefined;
+  const roleOptions = [
+    { value: "", label: t("Built-in assistant persona") },
+    ...enabledRoles.map((r: IAiRole) => ({
+      value: r.id,
+      label: r.emoji ? `${r.emoji} ${r.name}` : r.name,
+    })),
+    ...(selectedDisabledRole
+      ? [
+          {
+            value: selectedDisabledRole.id,
+            label: `${selectedDisabledRole.emoji ? `${selectedDisabledRole.emoji} ` : ""}${selectedDisabledRole.name} (${t("disabled")})`,
+          },
+        ]
+      : []),
+  ];
+
   return (
     <Stack mt="sm">
       {/* Section header */}
@@ -590,6 +632,17 @@ export default function AiProviderSettings() {
             "Optional cheaper model id for the public assistant. Empty uses the chat model above.",
           )}
         </Text>
+        <Select
+          mt="sm"
+          label={t("Assistant identity")}
+          description={t(
+            "Pick an agent role whose persona the public assistant adopts. The safety rules always still apply.",
+          )}
+          data={roleOptions}
+          allowDeselect={false}
+          disabled={isLoading || !publicShareAssistantEnabled}
+          {...form.getInputProps("publicShareAssistantRoleId")}
+        />
 
         <Group mt="md" align="center">
           <Button
