@@ -1,4 +1,9 @@
-import { compactToolOutput } from './ai-chat.service';
+import {
+  compactToolOutput,
+  prepareAgentStep,
+  MAX_AGENT_STEPS,
+  FINAL_STEP_INSTRUCTION,
+} from './ai-chat.service';
 
 /**
  * Unit tests for compactToolOutput: the pure helper that shrinks LARGE tool
@@ -64,5 +69,32 @@ describe('compactToolOutput', () => {
     const originalBytes = Buffer.byteLength(JSON.stringify(original), 'utf8');
     const compactedBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
     expect(compactedBytes).toBeLessThan(originalBytes / 10);
+  });
+});
+
+/**
+ * Unit tests for prepareAgentStep: the pure helper that decides per-step
+ * overrides for the agent loop. Early steps return undefined (default
+ * behavior); the final allowed step (stepNumber === MAX_AGENT_STEPS - 1) forces
+ * a text-only synthesis answer (toolChoice 'none') with the FINAL_STEP_INSTRUCTION
+ * appended onto — not replacing — the original system prompt.
+ */
+describe('prepareAgentStep', () => {
+  it('returns undefined for the first step', () => {
+    expect(prepareAgentStep(0, 'SYS')).toBeUndefined();
+  });
+
+  it('returns undefined for a non-final step (just before the last)', () => {
+    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
+  });
+
+  it('forces a text-only synthesis on the final allowed step', () => {
+    const result = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
+    expect(result).toBeDefined();
+    expect(result?.toolChoice).toBe('none');
+    // The original persona is preserved (prefix), not replaced.
+    expect(result?.system.startsWith('SYS')).toBe(true);
+    // The synthesis instruction is appended.
+    expect(result?.system).toContain(FINAL_STEP_INSTRUCTION);
   });
 });
