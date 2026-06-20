@@ -62,6 +62,16 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   const workspace = useAtomValue(workspaceAtom);
   const htmlEmbedEnabled = workspace?.settings?.htmlEmbed === true;
 
+  // Execution policy split by editor mode:
+  //  - READ-ONLY / public-share view: the SERVER already decided whether to
+  //    include the embed (it strips htmlEmbed from shared content when the
+  //    workspace toggle is OFF). An anonymous viewer has no workspace and thus
+  //    reads `htmlEmbedEnabled` as false, so we must NOT gate execution on it
+  //    here — we execute exactly the `source` the server chose to serve.
+  //  - EDITABLE editor (admin authoring): keep gating on the per-workspace
+  //    toggle so an admin sees the inert placeholder when the feature is OFF.
+  const shouldExecute = !editor.isEditable || htmlEmbedEnabled;
+
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [draft, setDraft] = useState<string>(source || "");
@@ -72,12 +82,12 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   // feature toggle is OFF we clear the container and inject/execute nothing.
   useEffect(() => {
     if (!contentRef.current) return;
-    if (htmlEmbedEnabled) {
+    if (shouldExecute) {
       renderRawHtml(contentRef.current, source || "");
     } else {
       contentRef.current.innerHTML = "";
     }
-  }, [source, htmlEmbedEnabled]);
+  }, [source, shouldExecute]);
 
   const openEditor = useCallback(() => {
     setDraft(source || "");
@@ -116,9 +126,12 @@ export default function HtmlEmbedView(props: NodeViewProps) {
         </div>
       )}
 
-      {!htmlEmbedEnabled ? (
-        // Feature disabled for this workspace: never inject/execute the source.
-        // Show a neutral placeholder so an existing embed is visibly inert.
+      {!shouldExecute ? (
+        // Feature disabled for this workspace AND we're in the editable editor:
+        // never inject/execute the source. Show a neutral placeholder so an
+        // existing embed is visibly inert for the authoring admin. Read-only /
+        // share viewers never hit this branch (`shouldExecute` is always true
+        // there) — they execute exactly the source the server chose to serve.
         <div className={classes.htmlEmbedPlaceholder}>
           <IconCode size={18} />
           <Text size="sm">
