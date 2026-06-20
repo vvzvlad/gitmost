@@ -1,6 +1,6 @@
 import { NodeViewContent, NodeViewProps, NodeViewWrapper } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
-import { computeFootnoteNumbers } from "@docmost/editor-ext";
+import { getFootnoteNumber } from "@docmost/editor-ext";
 import classes from "./footnote.module.css";
 
 /**
@@ -13,8 +13,9 @@ export default function FootnoteDefinitionView(props: NodeViewProps) {
   const { t } = useTranslation();
   const id = node.attrs.id as string;
 
-  const numbers = computeFootnoteNumbers(editor.state.doc);
-  const number = numbers.get(id) ?? "?";
+  // Read the cached number from the numbering plugin (computed once per doc
+  // change) rather than recomputing the whole map on every render.
+  const number = getFootnoteNumber(editor.state, id) ?? "?";
 
   const handleBack = (e: React.MouseEvent) => {
     e.preventDefault();

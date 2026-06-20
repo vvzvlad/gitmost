@@ -11,7 +11,7 @@ import {
 } from "@floating-ui/dom";
 import {
   FOOTNOTE_DEFINITION_NAME,
-  computeFootnoteNumbers,
+  getFootnoteNumber,
 } from "@docmost/editor-ext";
 import { ActionIcon } from "@mantine/core";
 import { IconArrowDown } from "@tabler/icons-react";
@@ -45,9 +45,10 @@ export default function FootnoteReferenceView(props: NodeViewProps) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
 
-  // Number is derived (not stored) — recompute from the current doc.
-  const numbers = computeFootnoteNumbers(editor.state.doc);
-  const number = numbers.get(id) ?? "?";
+  // Number is derived (not stored). Read it from the numbering plugin's cached
+  // map (computed once per doc change) instead of walking the whole document on
+  // every render — recomputing per NodeView per render was O(n^2) per keystroke.
+  const number = getFootnoteNumber(editor.state, id) ?? "?";
   const defText = open ? getDefinitionText(editor, id) : "";
 
   const position = useCallback(() => {

@@ -293,107 +293,237 @@ export function footnoteSyncPlugin(
       const plan = resolveCollisions(info);
       const referenceIds = plan.referenceIds;
 
-      // 1) Desired definitions: one per referenced id, in reference order,
-      //    reusing existing definition nodes (preserving their content) and
-      //    synthesizing empty ones for references that lack a definition.
-      //    Definitions whose id has no matching reference (true orphans) are
-      //    dropped per the existing orphan policy — but a collision is NEVER the
-      //    cause of a drop, because collisions were re-id'd above.
-      const desiredDefs: ProseMirrorNode[] = referenceIds.map((id) => {
-        const existing = plan.definitions.get(id);
-        if (existing) {
-          // A definition paired to a re-id'd reference keeps its CONTENT but
-          // must carry the new id. Rewrite the id attr when it differs (cheap
-          // no-op when it already matches).
-          if (existing.attrs.id !== id) {
-            return defType.create({ id }, existing.content);
-          }
-          return existing;
-        }
-        return defType.create({ id }, paragraphType.create());
-      });
+      // The set of ids that must have a definition, in reference order (after
+      // collision re-id). De-duplicated already by resolveCollisions.
+      const referenceIdSet = new Set(referenceIds);
 
-      // 2) Determine whether the document already matches the desired end-state.
-      const hasRefs = desiredDefs.length > 0;
+      // 1) For each definition occurrence, compute the id it should END UP with
+      //    (which differs from its current id only when collision resolution
+      //    re-id'd it). plan.definitions maps a FINAL id -> the chosen node, so
+      //    we invert it by node identity to recover each occurrence's target id.
+      const finalIdByNode = new Map<ProseMirrorNode, string>();
+      for (const [id, node] of plan.definitions) finalIdByNode.set(node, id);
 
-      // Is the existing single list already exactly the desired list, placed
-      // after all meaningful content (nothing but empty paragraphs after it)?
       const isEmptyParagraph = (node: ProseMirrorNode) =>
         node.type === paragraphType && node.content.size === 0;
 
-      let alreadyCanonical = false;
-      if (plan.changed) {
-        // A collision was detected (duplicate ids among refs/defs). The doc must
-        // be rewritten (re-id'd references + rebuilt list); it is never already
-        // canonical in this case.
-        alreadyCanonical = false;
-      } else if (!hasRefs) {
-        // Canonical when there is no footnotesList at all.
-        alreadyCanonical = info.lists.length === 0;
-      } else if (info.lists.length === 1) {
-        const { pos, node } = info.lists[0];
-        // Same definitions, same order, same identity (no rewrite needed)?
-        const sameDefs =
-          node.childCount === desiredDefs.length &&
-          desiredDefs.every((d, i) => node.child(i) === d);
+      // 2) Classify every existing definition occurrence:
+      //    - reId:   keep the node in place, only change its id attr (collision).
+      //    - orphan: delete it (its final id has no matching reference).
+      //    A definition that already carries the right id and is referenced is
+      //    left COMPLETELY untouched (its Yjs subtree is preserved). This is the
+      //    core of the data-loss fix: a pure reference reorder produces NO
+      //    mutation of any definition subtree.
+      interface DefReid {
+        pos: number;
+        node: ProseMirrorNode;
+        newId: string;
+      }
+      const defReids: DefReid[] = [];
+      const orphanDefs: DefOccurrence[] = [];
+      // Track which referenced ids already have a surviving (non-orphan)
+      // definition, so we can synthesize the genuinely missing ones.
+      const satisfiedIds = new Set<string>();
+      // Choose a "primary" list to receive inserts/migrated defs: the LAST list
+      // whose placement is canonical (only empty paragraphs follow it), else the
+      // last list, else none. New defs and consolidated defs land here.
+      for (const occ of info.defOccurrences) {
+        const finalId = finalIdByNode.get(occ.node) ?? occ.id;
+        if (!referenceIdSet.has(finalId)) {
+          orphanDefs.push(occ);
+          continue;
+        }
+        if (occ.id !== finalId) {
+          defReids.push({ pos: occ.pos, node: occ.node, newId: finalId });
+        }
+        satisfiedIds.add(finalId);
+      }
 
-        // Placement: only empty paragraphs may follow the list.
-        const listEnd = pos + node.nodeSize;
-        let onlyEmptyParasAfter = true;
+      // 3) Referenced ids with no surviving definition need a fresh empty one.
+      const missingIds = referenceIds.filter((id) => !satisfiedIds.has(id));
+
+      // 4) Determine list topology.
+      const hasRefs = referenceIds.length > 0;
+
+      // Pick the primary list: prefer the last canonically-placed list.
+      const listIsTrailing = (listPos: number, listNode: ProseMirrorNode) => {
+        const listEnd = listPos + listNode.nodeSize;
+        let ok = true;
         doc.nodesBetween(listEnd, doc.content.size, (child, childPos) => {
-          // Only inspect top-level children that start at/after the list end.
-          if (childPos >= listEnd && child !== node) {
-            if (!isEmptyParagraph(child)) onlyEmptyParasAfter = false;
+          if (childPos >= listEnd && child !== listNode) {
+            if (!isEmptyParagraph(child)) ok = false;
           }
           return false; // do not descend
         });
-
-        alreadyCanonical = sameDefs && onlyEmptyParasAfter;
+        return ok;
+      };
+      let primaryList: { pos: number; node: ProseMirrorNode } | null = null;
+      for (let i = info.lists.length - 1; i >= 0; i--) {
+        if (listIsTrailing(info.lists[i].pos, info.lists[i].node)) {
+          primaryList = info.lists[i];
+          break;
+        }
       }
+      if (!primaryList && info.lists.length > 0) {
+        primaryList = info.lists[info.lists.length - 1];
+      }
+      // Extra lists (everything except the primary) must be consolidated away.
+      const extraLists = info.lists.filter((l) => l !== primaryList);
+      const inExtraList = (pos: number) =>
+        extraLists.some((l) => pos > l.pos && pos < l.pos + l.node.nodeSize);
 
-      if (alreadyCanonical) return null;
+      // Definitions inside an extra list are migrated (recreated with the right
+      // id) into the primary list, so drop their in-place re-id markups — the
+      // whole extra list is deleted below and the markup would be wasted.
+      const defReidsToApply = defReids.filter((r) => !inExtraList(r.pos));
 
-      // 3) Rebuild: produce exactly ONE transaction that reaches the end-state.
+      // 5) Decide whether anything must change. The document is canonical when:
+      //    - no collisions were resolved (refs or defs), AND
+      //    - no orphan definitions, AND
+      //    - no missing definitions, AND
+      //    - exactly the right number of lists (0 when no refs, else 1) AND the
+      //      single list is canonically placed (trailing).
+      const noChangeNeeded =
+        !plan.changed &&
+        defReids.length === 0 &&
+        orphanDefs.length === 0 &&
+        missingIds.length === 0 &&
+        extraLists.length === 0 &&
+        (hasRefs
+          ? info.lists.length === 1 && primaryList !== null
+          : info.lists.length === 0);
+
+      if (noChangeNeeded) return null;
+
+      // 6) Apply the targeted, minimal mutations in ONE transaction. We never
+      //    delete-and-recreate an unchanged definition subtree; we only:
+      //      (a) re-id specific colliding references and definitions (attr-only),
+      //      (b) delete genuine orphan definitions and extra/empty lists,
+      //      (c) insert genuinely-missing empty definitions and migrate defs out
+      //          of extra lists into the primary list,
+      //      (d) create the primary list if references exist but none does yet.
       const tr = newState.tr;
 
-      // 3a) Re-id colliding body references FIRST. A footnoteReference is an
-      //     inline atom, so setNodeMarkup changes only its attrs (not its size),
-      //     leaving every other position valid for the list deletions/insert
-      //     that follow.
+      // 6a) Re-id colliding references (inline atoms: attr-only, size-stable).
       for (const reid of plan.refReids) {
-        tr.setNodeMarkup(reid.pos, undefined, {
+        tr.setNodeMarkup(tr.mapping.map(reid.pos), undefined, {
+          ...reid.node.attrs,
+          id: reid.newId,
+        });
+      }
+      // 6b) Re-id colliding definitions IN PLACE (attr-only). This preserves the
+      //     definition's content subtree — never delete+recreate it.
+      for (const reid of defReidsToApply) {
+        tr.setNodeMarkup(tr.mapping.map(reid.pos), undefined, {
           ...reid.node.attrs,
           id: reid.newId,
         });
       }
 
-      // Delete every existing footnotesList (from the end so earlier positions
-      // stay valid while we mutate).
-      [...info.lists]
-        .sort((a, b) => b.pos - a.pos)
-        .forEach(({ pos, node }) => {
-          tr.delete(pos, pos + node.nodeSize);
+      // 6c) Migrate non-orphan definitions out of every extra list into the
+      //     primary list (or, if there is no primary list, into a new one we
+      //     build), then delete the extra (now drained) lists. This is the only
+      //     path that moves a definition subtree, and it runs ONLY in the
+      //     abnormal multi-list case (paste/collab merge) — never on a plain
+      //     reorder, which keeps a single list untouched.
+      const migrated: ProseMirrorNode[] = [];
+      for (const extra of extraLists) {
+        extra.node.forEach((defChild) => {
+          if (defChild.type !== defType) return;
+          const finalId = finalIdByNode.get(defChild) ?? defChild.attrs.id;
+          if (!referenceIdSet.has(finalId)) return; // orphan: drop it
+          migrated.push(
+            defChild.attrs.id === finalId
+              ? defChild
+              : defType.create({ id: finalId }, defChild.content),
+          );
+        });
+      }
+
+      // 6c-bis) The definitions to INSERT into the primary list: migrated defs
+      //     from extra lists + freshly synthesized empty defs for references
+      //     that have no definition at all. Computed before deletions so we can
+      //     decide whether the primary list would be left empty.
+      const toInsert: ProseMirrorNode[] = [
+        ...migrated,
+        ...missingIds.map((id) =>
+          defType.create({ id }, paragraphType.create()),
+        ),
+      ];
+
+      // Does the primary list keep at least one definition after we strip its
+      // orphans AND counting the defs we are about to insert? If it ends up
+      // empty (an empty footnotesList is invalid schema), delete the WHOLE list
+      // instead of leaving a hollow shell. Only the primary list can receive
+      // inserts; extra lists are always deleted wholesale.
+      let primarySurvivors = 0;
+      if (primaryList) {
+        primaryList.node.forEach((defChild) => {
+          if (defChild.type !== defType) return;
+          const finalId = finalIdByNode.get(defChild) ?? defChild.attrs.id;
+          if (referenceIdSet.has(finalId)) primarySurvivors += 1;
+        });
+      }
+      const primaryWillBeEmpty =
+        !!primaryList && primarySurvivors === 0 && toInsert.length === 0;
+
+      // 6d) Delete orphan definitions, extra lists, and any list that would be
+      //     left empty. Sort deletions from the end so earlier positions stay
+      //     valid; map through tr.mapping to account for the (size-stable) re-id
+      //     markups and earlier deletions.
+      const deletions: Array<{ from: number; to: number }> = [];
+      const wholeListDeletes = new Set(extraLists);
+      if (primaryWillBeEmpty && primaryList) wholeListDeletes.add(primaryList);
+
+      for (const occ of orphanDefs) {
+        // Skip orphans inside a list that is being deleted wholesale.
+        const inWholeDeleted = [...wholeListDeletes].some(
+          (l) => occ.pos > l.pos && occ.pos < l.pos + l.node.nodeSize,
+        );
+        if (inWholeDeleted) continue;
+        deletions.push({ from: occ.pos, to: occ.pos + occ.node.nodeSize });
+      }
+      for (const l of wholeListDeletes) {
+        deletions.push({ from: l.pos, to: l.pos + l.node.nodeSize });
+      }
+      deletions
+        .sort((a, b) => b.from - a.from)
+        .forEach(({ from, to }) => {
+          tr.delete(tr.mapping.map(from), tr.mapping.map(to));
         });
 
-      if (hasRefs) {
-        // Insert a single canonical list holding the desired definitions. Place
-        // it after the last meaningful (non-empty-paragraph) top-level block, so
-        // it lands before any trailing empty paragraph the trailing-node plugin
-        // maintains. This keeps both plugins idempotent.
-        const mappedDoc = tr.doc;
-        let insertPos = mappedDoc.content.size;
-        for (let i = mappedDoc.childCount - 1; i >= 0; i--) {
-          const child = mappedDoc.child(i);
-          if (isEmptyParagraph(child)) {
-            // skip trailing empty paragraphs; insert before them
-            insertPos -= child.nodeSize;
-          } else {
-            break;
-          }
-        }
+      // If we deleted the primary list wholesale, it can no longer receive the
+      // inserts below — null it out so a fresh list is created when needed.
+      if (primaryWillBeEmpty) primaryList = null;
 
-        const merged = listType.create(null, Fragment.fromArray(desiredDefs));
-        tr.insert(insertPos, merged);
+      // 6e) Insert the migrated + synthesized definitions.
+      if (hasRefs) {
+        if (primaryList) {
+          if (toInsert.length > 0) {
+            // Append at the end of the (mapped) primary list, just before its
+            // closing token, so its existing definition subtrees are untouched.
+            // We only changed attrs (size-stable) and deleted OTHER nodes, so
+            // mapping the original list-end position forward lands at the same
+            // boundary; -1 puts us just inside the list's closing token.
+            const insertAt =
+              tr.mapping.map(primaryList.pos + primaryList.node.nodeSize) - 1;
+            tr.insert(insertAt, Fragment.fromArray(toInsert));
+          }
+        } else {
+          // No usable list exists yet but references do — create one holding the
+          // migrated + synthesized definitions, placed after the last meaningful
+          // (non-empty-paragraph) top-level block so it sits before any trailing
+          // empty paragraph the trailing-node plugin maintains.
+          const mappedDoc = tr.doc;
+          let insertPos = mappedDoc.content.size;
+          for (let i = mappedDoc.childCount - 1; i >= 0; i--) {
+            const child = mappedDoc.child(i);
+            if (isEmptyParagraph(child)) insertPos -= child.nodeSize;
+            else break;
+          }
+          const list = listType.create(null, Fragment.fromArray(toInsert));
+          tr.insert(insertPos, list);
+        }
       }
 
       if (!tr.docChanged) return null;

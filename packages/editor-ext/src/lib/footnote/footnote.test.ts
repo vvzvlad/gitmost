@@ -6,10 +6,13 @@ import { Text } from "@tiptap/extension-text";
 import { Superscript } from "@tiptap/extension-superscript";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Node as PMNode } from "@tiptap/pm/model";
+import { EditorState } from "@tiptap/pm/state";
 import { FootnoteReference } from "./footnote-reference";
 import { FootnotesList } from "./footnotes-list";
 import { FootnoteDefinition } from "./footnote-definition";
 import { TrailingNode } from "../trailing-node";
+import { footnoteSyncPlugin } from "./footnote-sync";
+import { getFootnoteNumber } from "./footnote-numbering";
 import {
   computeFootnoteNumbers,
   collectReferenceIds,
@@ -685,6 +688,261 @@ describe("footnote sync plugin (no infinite loop — live editor)", () => {
     });
     expect(defIds.sort()).toEqual(["x", "y"]);
     expect(lastFootnotesListIsTrailing(doc)).toBe(true);
+    editor.destroy();
+  });
+});
+
+/**
+ * Data-loss-window regression guard (Fix 1). A pure reference REORDER must not
+ * cause the sync plugin to delete-and-recreate any definition subtree — doing so
+ * (the previous behaviour) would, through Yjs, replace the CRDT subtree of every
+ * definition and could lose a collaborator's in-flight characters on merge.
+ *
+ * Numbering is decoration-only (footnote-numbering.ts derives numbers from
+ * reference order), so the bottom list's PHYSICAL order need not match reference
+ * order for the displayed numbers to be correct. We therefore assert: the
+ * existing definition NODE INSTANCES are preserved (identity-equal) after the
+ * sync pass, AND the derived numbers follow the new reference order.
+ */
+describe("footnote sync plugin (no rebuild on reorder — data-loss guard)", () => {
+  function reorderedDoc() {
+    // The "out of order" end-state of a reorder: references occur as [b, a] but
+    // the bottom list still physically holds definitions in [a, b] order. This
+    // is exactly the situation a reference reorder produces (decoration-only
+    // numbering keeps the displayed numbers correct without physically moving
+    // the definition subtrees). The sync plugin must leave the definitions
+    // ALONE here — no delete/recreate of any definition subtree.
+    return {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "p" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "b" } },
+            { type: "text", text: "q" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "a" } },
+          ],
+        },
+        {
+          type: FOOTNOTES_LIST_NAME,
+          content: [
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "a" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "A" }] },
+              ],
+            },
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "b" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "B" }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function getDefNodesById(doc: PMNode): Map<string, PMNode> {
+    const m = new Map<string, PMNode>();
+    doc.descendants((node) => {
+      if (node.type.name === FOOTNOTE_DEFINITION_NAME) m.set(node.attrs.id, node);
+    });
+    return m;
+  }
+
+  it("does NOT delete/recreate existing definition subtrees for an out-of-order list (numbers still correct)", () => {
+    const editor = makeEditor(reorderedDoc());
+
+    // Capture the exact definition NODE INSTANCES before any sync pass.
+    const before = getDefNodesById(editor.state.doc);
+    // Sanity: both carry their content right now.
+    expect(before.get("a")!.textContent).toBe("A");
+    expect(before.get("b")!.textContent).toBe("B");
+
+    // Trigger a local edit elsewhere in the body so the sync plugin runs.
+    editor.commands.insertContentAt(1, "z");
+
+    const doc = editor.state.doc;
+
+    // Reference order is [b, a]; the displayed numbers follow reference order
+    // (decoration-only numbering): b -> 1, a -> 2 — regardless of physical list
+    // order.
+    expect(collectReferenceIds(doc)).toEqual(["b", "a"]);
+    const numbers = computeFootnoteNumbers(doc);
+    expect(numbers.get("b")).toBe(1);
+    expect(numbers.get("a")).toBe(2);
+
+    // CRITICAL regression guard: both definitions still exist and are the SAME
+    // node instances as before the edit — the plugin did NOT delete/recreate the
+    // list (which would replace every definition's CRDT subtree and open the
+    // concurrent-edit data-loss window). Identity equality proves the subtree
+    // was preserved verbatim.
+    const after = getDefNodesById(doc);
+    expect(after.get("a")).toBe(before.get("a"));
+    expect(after.get("b")).toBe(before.get("b"));
+    // Content intact, exactly one list, both definitions present.
+    expect(after.get("a")!.textContent).toBe("A");
+    expect(after.get("b")!.textContent).toBe("B");
+    expect(countType(doc, FOOTNOTES_LIST_NAME)).toBe(1);
+    expect(countType(doc, FOOTNOTE_DEFINITION_NAME)).toBe(2);
+
+    editor.destroy();
+  });
+});
+
+/**
+ * Sync-plugin guard paths that are awkward to exercise through a live editor:
+ * the remote-transaction skip and the enableSync:false (read-only) mode.
+ */
+describe("footnote sync plugin (guards)", () => {
+  // Build a non-canonical document (an orphan reference with no definition) so a
+  // sync pass would normally append a transaction.
+  function nonCanonicalState() {
+    const schema = getSchema(extensions);
+    const doc = PMNode.fromJSON(schema, {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "x" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "orphan" } },
+          ],
+        },
+      ],
+    });
+    return EditorState.create({ schema, doc });
+  }
+
+  it("isRemoteTransaction => true: appendTransaction returns null (no rebuild on remote txns)", () => {
+    // The sync plugin must SKIP remote/collab transactions so orphan cleanup and
+    // structural rewrites only ever run on local edits.
+    const plugin = footnoteSyncPlugin(() => true);
+    const state = nonCanonicalState();
+
+    // Produce a doc-changing transaction (insert a space) and feed it to the
+    // plugin's appendTransaction exactly as ProseMirror would.
+    const tr = state.tr.insertText(" ", 1);
+    const newState = state.apply(tr);
+    const result = plugin.spec.appendTransaction!(
+      [tr],
+      state,
+      newState,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("isRemoteTransaction => false: appendTransaction DOES rebuild (sanity)", () => {
+    // Control: with a local (non-remote) transaction the same non-canonical doc
+    // triggers a sync transaction, proving the null above is the remote guard
+    // and not a no-op everywhere.
+    const plugin = footnoteSyncPlugin(() => false);
+    const state = nonCanonicalState();
+    const tr = state.tr.insertText(" ", 1);
+    const newState = state.apply(tr);
+    const result = plugin.spec.appendTransaction!([tr], state, newState);
+    expect(result).not.toBeNull();
+    expect(result!.docChanged).toBe(true);
+  });
+
+  it("enableSync:false: the plugin never mutates the doc (read-only viewer)", () => {
+    // Build an editor with sync disabled. An orphan reference (no definition)
+    // must NOT trigger a definition insertion — the document is left untouched.
+    const editor = new Editor({
+      extensions: [
+        Document,
+        Paragraph,
+        Text,
+        FootnoteReference.configure({ enableSync: false }),
+        FootnotesList,
+        FootnoteDefinition,
+      ],
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "x" },
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "orphan" } },
+            ],
+          },
+        ],
+      },
+    });
+    // A local edit that would normally trigger orphan-definition synthesis.
+    editor.commands.insertContentAt(1, "y");
+
+    const doc = editor.state.doc;
+    // No definition (and no list) was ever created — sync is disabled.
+    expect(countType(doc, FOOTNOTE_DEFINITION_NAME)).toBe(0);
+    expect(countType(doc, FOOTNOTES_LIST_NAME)).toBe(0);
+    // Numbering decorations still work: the reference is numbered 1.
+    expect(getFootnoteNumber(editor.state, "orphan")).toBe(1);
+    editor.destroy();
+  });
+});
+
+/**
+ * Numbering cache (Fix 2). NodeViews must read footnote numbers from the
+ * numbering plugin's cached map (updated once per doc change) rather than
+ * recomputing the whole map per render. We assert the cache exists, is correct,
+ * and stays current across edits.
+ */
+describe("footnote numbering cache", () => {
+  it("exposes correct numbers via getFootnoteNumber and updates on edits", () => {
+    const editor = makeEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "x" } },
+            { type: "text", text: "b" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "y" } },
+          ],
+        },
+        {
+          type: FOOTNOTES_LIST_NAME,
+          content: [
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "x" },
+              content: [{ type: "paragraph" }],
+            },
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "y" },
+              content: [{ type: "paragraph" }],
+            },
+          ],
+        },
+      ],
+    });
+
+    // The cache mirrors computeFootnoteNumbers — but is read in O(1) per id.
+    expect(getFootnoteNumber(editor.state, "x")).toBe(1);
+    expect(getFootnoteNumber(editor.state, "y")).toBe(2);
+    // The cached map is the SAME values a fresh full computation would yield.
+    const fresh = computeFootnoteNumbers(editor.state.doc);
+    expect(getFootnoteNumber(editor.state, "x")).toBe(fresh.get("x"));
+    expect(getFootnoteNumber(editor.state, "y")).toBe(fresh.get("y"));
+
+    // After inserting a new earlier reference, the cache updates so the numbers
+    // shift (decoration-only numbering follows reference order).
+    editor.commands.insertContentAt(1, {
+      type: FOOTNOTE_REFERENCE_NAME,
+      attrs: { id: "z" },
+    });
+    expect(getFootnoteNumber(editor.state, "z")).toBe(1);
+    expect(getFootnoteNumber(editor.state, "x")).toBe(2);
+    expect(getFootnoteNumber(editor.state, "y")).toBe(3);
     editor.destroy();
   });
 });
