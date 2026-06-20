@@ -5,12 +5,12 @@ export const HTML_EMBED_NODE_NAME = 'htmlEmbed';
 /**
  * Recursively remove every `htmlEmbed` node from a ProseMirror JSON document.
  *
- * SECURITY: `htmlEmbed` renders raw, unsanitized HTML/CSS/JS in the wiki origin
- * (stored-XSS by design, Variant C). Only workspace admins/owners are allowed to
- * author it. This helper is the server-side enforcement primitive: every WRITE
- * path that may persist content from a NON-admin caller must run the incoming
- * document through this function so a non-admin cannot smuggle the node in via
- * the collab socket, the REST/MCP/AI content-update path, paste, or import.
+ * The `htmlEmbed` node renders inside a SANDBOXED iframe (no `allow-same-origin`)
+ * on the client, so its content cannot touch the viewer's session/cookies/API —
+ * it is NOT a stored-XSS surface. This helper is retained ONLY to honor the
+ * workspace master toggle (`settings.htmlEmbed`) on the anonymous public-share
+ * read path: an anonymous viewer cannot read the workspace toggle, so the server
+ * strips the block when the toggle is OFF before serving shared content.
  *
  * Returns a NEW document; the input is not mutated. If the input is not a valid
  * doc object it is returned unchanged (callers persist what they were given).
@@ -41,8 +41,8 @@ export function stripHtmlEmbedNodes<T = JSONContent>(pmJson: T): T {
 
 /**
  * Returns true if the document contains at least one `htmlEmbed` node anywhere
- * in its tree. Useful to decide whether a strip pass actually changed anything
- * (e.g. for logging a rejected non-admin embed attempt).
+ * in its tree. Useful to decide whether a strip pass on the share read path
+ * actually changed anything.
  */
 export function hasHtmlEmbedNode(pmJson: unknown): boolean {
   if (!pmJson || typeof pmJson !== 'object') {
@@ -59,38 +59,9 @@ export function hasHtmlEmbedNode(pmJson: unknown): boolean {
 }
 
 /**
- * Map the workspace user role to whether it may author `htmlEmbed` nodes.
- * Owners and admins are trusted; everyone else (member, and any unknown role)
- * is not. Kept here so every write path shares one definition of "trusted".
- */
-export function canAuthorHtmlEmbed(role: string | null | undefined): boolean {
-  return role === 'owner' || role === 'admin';
-}
-
-/**
- * Combined write-path gate for the htmlEmbed feature.
- *
- * htmlEmbed is allowed in a document only when the workspace feature toggle is
- * ON and the authoring/saving user is a workspace admin/owner. OFF (default) =>
- * stripped for EVERYONE, including admins (the feature is disabled).
- *
- * `featureEnabled` is read from the workspace settings for the relevant write
- * (`workspace.settings?.htmlEmbed === true`). Every WRITE path that may persist
- * htmlEmbed content must gate on this combined predicate, so that turning the
- * toggle OFF strips existing embeds on the next save and prevents new ones from
- * being persisted regardless of role.
- */
-export function htmlEmbedAllowed(
-  featureEnabled: boolean,
-  role: string | null | undefined,
-): boolean {
-  return featureEnabled === true && canAuthorHtmlEmbed(role);
-}
-
-/**
- * Read the workspace-level htmlEmbed feature toggle from a workspace's settings
- * jsonb. ABSENT/non-true => OFF (the default). Kept here so every server write
- * path resolves the toggle the same way.
+ * Read the workspace-level htmlEmbed master toggle from a workspace's settings
+ * jsonb. ABSENT/non-true => OFF (the default). Kept here so the share read path
+ * resolves the toggle the same way it is persisted.
  */
 export function isHtmlEmbedFeatureEnabled(
   settings: unknown | null | undefined,

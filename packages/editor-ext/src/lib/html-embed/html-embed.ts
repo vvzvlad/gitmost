@@ -7,8 +7,10 @@ export interface HtmlEmbedOptions {
 }
 
 export interface HtmlEmbedAttributes {
-  // Raw HTML/CSS/JS string that is injected verbatim into the wiki origin.
+  // Raw HTML/CSS/JS string rendered inside a sandboxed iframe by the NodeView.
   source?: string;
+  // Fixed iframe height in pixels. null/absent => auto-resize via postMessage.
+  height?: number | null;
 }
 
 declare module "@tiptap/core" {
@@ -89,6 +91,16 @@ export const HtmlEmbed = Node.create<HtmlEmbedOptions>({
         renderHTML: (attributes: HtmlEmbedAttributes) => ({
           "data-source": encodeHtmlEmbedSource(attributes.source || ""),
         }),
+      },
+      // Fixed iframe height in px. null/absent => auto-resize on the client.
+      height: {
+        default: null,
+        parseHTML: (el) => {
+          const v = el.getAttribute("data-height");
+          return v ? parseInt(v, 10) : null;
+        },
+        renderHTML: (attrs: HtmlEmbedAttributes) =>
+          attrs.height ? { "data-height": String(attrs.height) } : {},
       },
     };
   },

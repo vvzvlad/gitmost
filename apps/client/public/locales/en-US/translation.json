@@ -1237,5 +1237,20 @@
   "Reusable presets that shape the agent's behavior (and optionally its model). Picked when starting a new chat.": "Reusable presets that shape the agent's behavior (and optionally its model). Picked when starting a new chat.",
   "No roles configured": "No roles configured",
   "Delete role": "Delete role",
-  "Are you sure you want to delete this role?": "Are you sure you want to delete this role?"
+  "Are you sure you want to delete this role?": "Are you sure you want to delete this role?",
+  "HTML embed": "HTML embed",
+  "Edit HTML embed": "Edit HTML embed",
+  "HTML embed is disabled in this workspace": "HTML embed is disabled in this workspace",
+  "Click to add HTML / CSS / JS": "Click to add HTML / CSS / JS",
+  "This HTML/CSS/JS runs in a sandboxed frame and cannot access the viewer's session, cookies, or API.": "This HTML/CSS/JS runs in a sandboxed frame and cannot access the viewer's session, cookies, or API.",
+  "<script>...</script>": "<script>...</script>",
+  "Height (px, blank = auto)": "Height (px, blank = auto)",
+  "advanced": "advanced",
+  "Enable HTML embed": "Enable HTML embed",
+  "Allow members to insert raw HTML/CSS/JavaScript blocks. The block renders in a sandboxed frame and cannot access the viewer's session, cookies, or API. Off by default.": "Allow members to insert raw HTML/CSS/JavaScript blocks. The block renders in a sandboxed frame and cannot access the viewer's session, cookies, or API. Off by default.",
+  "When enabled, any member can insert an HTML embed block. The toggle just enables or disables the block type workspace-wide.": "When enabled, any member can insert an HTML embed block. The toggle just enables or disables the block type workspace-wide.",
+  "Embeds run inside a sandboxed iframe with a separate origin, so they cannot read or modify the page they are embedded in.": "Embeds run inside a sandboxed iframe with a separate origin, so they cannot read or modify the page they are embedded in.",
+  "Turning this off hides existing embeds (they render as a disabled placeholder) and stops serving them on public share pages.": "Turning this off hides existing embeds (they render as a disabled placeholder) and stops serving them on public share pages.",
+  "Analytics / tracker": "Analytics / tracker",
+  "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.": "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only."
 }

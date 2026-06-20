@@ -237,9 +237,6 @@ export class PageController {
       user.id,
       workspace.id,
       createPageDto,
-      // Pass the caller's workspace role so create() can enforce the htmlEmbed
-      // admin gate (non-admins cannot author raw-JS embeds).
-      user.role,
       provenance,
     );
 

@@ -525,6 +525,22 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.trackerHead !== 'undefined') {
+        // Admin-only analytics/tracker snippet injected into the <head> of
+        // public share pages (same-origin). Persisted at settings.trackerHead.
+        const prev = (settingsBefore as any)?.trackerHead ?? '';
+        if (prev !== updateWorkspaceDto.trackerHead) {
+          before.trackerHead = prev;
+          after.trackerHead = updateWorkspaceDto.trackerHead;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'trackerHead',
+          updateWorkspaceDto.trackerHead,
+          trx,
+        );
+      }
+
       if (typeof updateWorkspaceDto.aiPublicShareAssistant !== 'undefined') {
         const prev = settingsBefore?.ai?.publicShareAssistant ?? false;
         if (prev !== updateWorkspaceDto.aiPublicShareAssistant) {
@@ -549,6 +565,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
       delete updateWorkspaceDto.htmlEmbed;
+      delete updateWorkspaceDto.trackerHead;
       delete updateWorkspaceDto.aiPublicShareAssistant;
 
       await this.workspaceRepo.updateWorkspace(

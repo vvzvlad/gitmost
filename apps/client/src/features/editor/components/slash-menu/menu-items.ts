@@ -623,10 +623,9 @@ const CommandGroups: SlashMenuGroupedItemsType = {
     },
     {
       title: "HTML embed",
-      description: "Embed raw HTML, CSS and JavaScript (admins only).",
+      description: "Embed raw HTML, CSS and JavaScript (sandboxed).",
       searchTerms: ["html", "css", "js", "javascript", "script", "tracker", "analytics", "raw", "embed"],
       icon: IconCode,
-      adminOnly: true,
       requiresHtmlEmbedFeature: true,
       command: ({ editor, range }: CommandProps) => {
         editor
@@ -795,30 +794,12 @@ const CommandGroups: SlashMenuGroupedItemsType = {
 };
 
 /**
- * Read whether the current user is a workspace admin/owner from the persisted
- * `currentUser` (the same payload `currentUserAtom` stores via localStorage).
- * Used to hide admin-only slash items (e.g. raw HTML embed). This is a UI gate
- * only; the server independently strips admin-only nodes from non-admin writes.
- */
-function isCurrentUserAdmin(): boolean {
-  try {
-    const raw = localStorage.getItem("currentUser");
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    const role = parsed?.user?.role;
-    return role === "owner" || role === "admin";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Read the workspace-level HTML embed feature toggle from the persisted
+ * Read the workspace-level HTML embed master toggle from the persisted
  * `currentUser` payload (the same localStorage entry `currentUserAtom` writes,
  * carrying `workspace.settings`). ABSENT/false => OFF (the default). The slash
  * `getSuggestionItems` is a plain function (no React/atom context), so we read
- * the persisted state the same way `isCurrentUserAdmin()` does. UI gate only;
- * the server independently strips htmlEmbed from every non-allowed write.
+ * the persisted state directly. UI gate only; an anonymous public-share read is
+ * served already-stripped content by the server when the toggle is OFF.
  */
 function isHtmlEmbedFeatureEnabled(): boolean {
   try {
@@ -840,7 +821,6 @@ export const getSuggestionItems = ({
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
   const filteredGroups: SlashMenuGroupedItemsType = {};
-  const isAdmin = isCurrentUserAdmin();
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
   const fuzzyMatch = (query: string, target: string) => {
@@ -856,9 +836,7 @@ export const getSuggestionItems = ({
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
       if (excludeItems?.has(item.title)) return false;
-      // Hide admin-only items (raw HTML embed) from non-admins.
-      if (item.adminOnly && !isAdmin) return false;
-      // Hide HTML-embed-gated items unless the workspace feature toggle is ON.
+      // Hide the HTML embed item unless the workspace master toggle is ON.
       if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
         return false;
       return (

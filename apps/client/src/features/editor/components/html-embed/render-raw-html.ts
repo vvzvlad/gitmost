@@ -1,56 +1,64 @@
 /**
- * Pure DOM helpers for the HTML embed node view. Kept out of the React
- * component so the script re-creation/execution mechanism and the execution/
- * edit policy can be unit-tested against a bare jsdom container with no
- * Tiptap/Mantine providers.
+ * Pure helpers for the HTML embed node view. Kept out of the React component so
+ * the sandbox srcdoc builder and the execution/edit policy can be unit-tested
+ * against a bare environment with no Tiptap/Mantine providers.
  */
+
+/** postMessage type the sandboxed iframe uses to report its content height. */
+export const HTML_EMBED_HEIGHT_MESSAGE = "gitmost-html-embed-height";
 
 /**
- * Inject raw HTML (including <script> tags) into `container`, executing any
- * scripts.
+ * Build the `srcdoc` document for the sandboxed embed iframe.
  *
- * Setting `innerHTML` does NOT run inline or external <script> tags the browser
- * parses that way: the HTML spec marks scripts inserted via innerHTML as
- * "already started" so they never execute. To get the tracker/analytics
- * use-case working we walk the freshly-parsed scripts and replace each with a
- * brand-new <script> element copying its attributes and inline code. A
- * programmatically created+inserted <script> DOES execute, so this restores
- * normal script behaviour in the wiki origin (Variant C).
+ * The user's `source` is placed verbatim, then a small bootstrap <script> is
+ * appended at the end of the body. The iframe is rendered with a sandbox that
+ * does NOT include `allow-same-origin`, so this content runs in an opaque
+ * ("null") origin and cannot read the viewer's cookies/session/API — it is
+ * harmless. The bootstrap measures the document height and reports it to the
+ * parent via postMessage on load and whenever the content resizes, so the
+ * parent can size the iframe to fit (auto-resize mode).
  */
-export function renderRawHtml(container: HTMLElement, source: string): void {
-  // Clear any previous render (re-render on source change).
-  container.innerHTML = "";
-  if (!source) return;
-
-  container.innerHTML = source;
-
-  // Use the container's own document so the helper works against any document
-  // (the live page or a standalone jsdom instance in tests), not just the
-  // ambient global `document`.
-  const doc = container.ownerDocument;
-  const scripts = Array.from(container.querySelectorAll("script"));
-  for (const oldScript of scripts) {
-    const newScript = doc.createElement("script");
-    // Copy every attribute (src, type, async, defer, data-*, etc.).
-    for (const attr of Array.from(oldScript.attributes)) {
-      newScript.setAttribute(attr.name, attr.value);
+export function buildSandboxSrcdoc(source: string): string {
+  const bootstrap = `
+<script>
+  (function () {
+    function reportHeight() {
+      var doc = document.documentElement;
+      var body = document.body;
+      var height = Math.max(
+        doc ? doc.scrollHeight : 0,
+        body ? body.scrollHeight : 0
+      );
+      parent.postMessage(
+        { type: ${JSON.stringify(HTML_EMBED_HEIGHT_MESSAGE)}, height: height },
+        "*"
+      );
     }
-    // Copy inline code.
-    newScript.text = oldScript.textContent ?? "";
-    // Replacing the node in place triggers execution.
-    oldScript.parentNode?.replaceChild(newScript, oldScript);
-  }
+    window.addEventListener("load", reportHeight);
+    // Report immediately too, in case load already fired.
+    reportHeight();
+    if (typeof ResizeObserver !== "undefined") {
+      try {
+        var ro = new ResizeObserver(reportHeight);
+        ro.observe(document.documentElement);
+      } catch (e) {
+        // ResizeObserver unavailable/failed: the load handler still reports once.
+      }
+    }
+  })();
+</script>`;
+  return `${source || ""}${bootstrap}`;
 }
 
 /**
  * Execution policy split by editor mode:
  *  - READ-ONLY / public-share view: the SERVER already decided whether to
  *    include the embed (it strips htmlEmbed from shared content when the
- *    workspace toggle is OFF). An anonymous viewer has no workspace and thus
- *    reads `featureEnabled` as false, so we must NOT gate execution on it here
- *    — we execute exactly the `source` the server chose to serve.
- *  - EDITABLE editor (admin authoring): keep gating on the per-workspace toggle
- *    so an admin sees the inert placeholder when the feature is OFF.
+ *    workspace master toggle is OFF). An anonymous viewer has no workspace and
+ *    thus reads `featureEnabled` as false, so we must NOT gate rendering on it
+ *    here — we render exactly the `source` the server chose to serve.
+ *  - EDITABLE editor: gate on the per-workspace master toggle so an author sees
+ *    the inert placeholder when the feature is OFF.
  */
 export function shouldExecute(
   isEditable: boolean,
@@ -60,14 +68,11 @@ export function shouldExecute(
 }
 
 /**
- * The edit affordance is only meaningful in edit mode, is restricted to admins
- * (the server strips the node for non-admins anyway), and is offered only when
- * the workspace feature toggle is ON.
+ * The edit affordance is only meaningful in edit mode and is offered only when
+ * the workspace master toggle is ON. The block renders in a sandboxed iframe
+ * (no same-origin access), so authoring is allowed to ANY member — there is no
+ * admin requirement.
  */
-export function canEdit(
-  isEditable: boolean,
-  isAdmin: boolean,
-  featureEnabled: boolean,
-): boolean {
-  return isEditable && isAdmin && featureEnabled;
+export function canEdit(isEditable: boolean, featureEnabled: boolean): boolean {
+  return isEditable && featureEnabled;
 }

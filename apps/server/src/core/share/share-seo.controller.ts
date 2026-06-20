@@ -84,9 +84,23 @@ export class ShareSeoController {
         .join('\n    ');
 
       const html = fs.readFileSync(indexFilePath, 'utf8');
-      const transformedHtml = html
+      let transformedHtml = html
         .replace(/<title>[\s\S]*?<\/title>/i, `<title>${metaTitle}</title>`)
         .replace(metaTagVar, metaTags);
+
+      // Deliberate same-origin tracker surface: this is the ONE place where an
+      // admin-authored analytics/tracker snippet (settings.trackerHead) is
+      // injected verbatim into the page origin. It is admin-only (writable only
+      // via the admin-gated workspace settings) and applies to PUBLIC SHARE
+      // pages only. It is trusted content, so it is NOT escaped. The htmlEmbed
+      // block itself is sandboxed and is the safe surface for everyone else.
+      const trackerHead = (workspace?.settings as any)?.trackerHead;
+      if (typeof trackerHead === 'string' && trackerHead.trim().length > 0) {
+        transformedHtml = transformedHtml.replace(
+          '</head>',
+          `${trackerHead}\n</head>`,
+        );
+      }
 
       res.type('text/html').send(transformedHtml);
     }

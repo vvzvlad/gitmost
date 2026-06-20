@@ -1,12 +1,14 @@
 import { ShareService } from './share.service';
 import { hasHtmlEmbedNode } from '../../common/helpers/prosemirror/html-embed.util';
 
-// Exercises the REAL ShareService server-authoritative htmlEmbed kill-switch for
-// shared content. An anonymous public-share viewer cannot read the per-workspace
-// htmlEmbed toggle, so the SERVER must decide what to serve: when the toggle is
-// OFF, htmlEmbed nodes are stripped from the shared doc; when ON they are kept so
-// the read-only client executes them. All repos / token service are mocked so the
-// real prepareContentForShare logic runs end-to-end via getSharedPage.
+// Exercises the REAL ShareService server-authoritative htmlEmbed master toggle
+// for shared content. The block renders inside a sandboxed iframe (harmless), so
+// this is NOT an XSS guard — it is the master-toggle enforcement for anonymous
+// shares: an anonymous public-share viewer cannot read the per-workspace
+// htmlEmbed toggle, so the SERVER must decide what to serve. When the toggle is
+// OFF, htmlEmbed nodes are stripped from the shared doc; when ON they are served
+// and rendered in their sandboxed frame. All repos / token service are mocked so
+// the real prepareContentForShare logic runs end-to-end via getSharedPage.
 
 const WS = 'ws-1';
 const PAGE = 'page-1';

@@ -1,7 +1,5 @@
 import {
-  canAuthorHtmlEmbed,
   hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
   stripHtmlEmbedNodes,
 } from './html-embed.util';
@@ -190,19 +188,6 @@ describe('hasHtmlEmbedNode (root/odd-shape detection)', () => {
   });
 });
 
-describe('canAuthorHtmlEmbed', () => {
-  it('allows owner and admin', () => {
-    expect(canAuthorHtmlEmbed('owner')).toBe(true);
-    expect(canAuthorHtmlEmbed('admin')).toBe(true);
-  });
-  it('denies member and unknown/empty roles', () => {
-    expect(canAuthorHtmlEmbed('member')).toBe(false);
-    expect(canAuthorHtmlEmbed(null)).toBe(false);
-    expect(canAuthorHtmlEmbed(undefined)).toBe(false);
-    expect(canAuthorHtmlEmbed('viewer')).toBe(false);
-  });
-});
-
 describe('isHtmlEmbedFeatureEnabled', () => {
   it('is true only when settings.htmlEmbed === true', () => {
     expect(isHtmlEmbedFeatureEnabled({ htmlEmbed: true })).toBe(true);
@@ -217,52 +202,22 @@ describe('isHtmlEmbedFeatureEnabled', () => {
   });
 });
 
-describe('htmlEmbedAllowed (toggle AND admin)', () => {
-  it('toggle OFF + admin/owner => not allowed (feature disabled for everyone)', () => {
-    expect(htmlEmbedAllowed(false, 'admin')).toBe(false);
-    expect(htmlEmbedAllowed(false, 'owner')).toBe(false);
-  });
-  it('toggle OFF + member => not allowed', () => {
-    expect(htmlEmbedAllowed(false, 'member')).toBe(false);
-  });
-  it('toggle ON + admin/owner => allowed', () => {
-    expect(htmlEmbedAllowed(true, 'admin')).toBe(true);
-    expect(htmlEmbedAllowed(true, 'owner')).toBe(true);
-  });
-  it('toggle ON + member/unknown => not allowed', () => {
-    expect(htmlEmbedAllowed(true, 'member')).toBe(false);
-    expect(htmlEmbedAllowed(true, null)).toBe(false);
-    expect(htmlEmbedAllowed(true, undefined)).toBe(false);
-    expect(htmlEmbedAllowed(true, 'viewer')).toBe(false);
-  });
-});
-
-// NOTE: a previous revision of this file re-implemented the write-path admin
-// gate as a local `applyAdminGate` stand-in and asserted against THAT. A
-// deleted/misplaced real guard would have kept those green. The stand-in is
-// removed. The collab store, REST/MCP update, and transclusion-unsync paths are
-// now tested against their REAL code in:
-//   - collaboration/extensions/persistence.extension.html-embed.spec.ts
-//   - collaboration/collaboration.handler.html-embed.spec.ts
-//   - core/page/transclusion/spec/transclusion-unsync-html-embed.spec.ts
-//   - core/page/services/page-service-html-embed-identity.spec.ts (create/dup)
-//   - integrations/import/services/import-html-embed-identity.spec.ts (import)
+// The htmlEmbed node renders inside a sandboxed iframe, so the per-write role
+// gate has been removed. `stripHtmlEmbedNodes` + `isHtmlEmbedFeatureEnabled`
+// remain ONLY to honor the workspace master toggle on the anonymous public-share
+// read path — tested against the real share code in:
+//   - core/share/share-html-embed.spec.ts
 //
-// The case below stays here because it asserts a REAL parse path
-// (htmlToJson, the markdown/html create format) feeding the REAL helpers — not a
-// re-implemented gate.
-describe('htmlEmbed smuggled via the markdown/html <!--html-embed--> form (real parse + real helpers)', () => {
-  it('the parsed node is detected and stripped by the real helpers', () => {
-    // The markdown/html create formats decode to the same htmlEmbed node, so the
-    // gate (run on the parsed JSON) covers them identically.
-    const source = '<script>steal()</script>';
+// The case below asserts that the REAL parse path (htmlToJson, the markdown/html
+// form) produces an htmlEmbed node the master-toggle strip can detect & remove.
+describe('htmlEmbed via the markdown/html form (real parse + real strip helper)', () => {
+  it('the parsed node is detected and stripped by the real helper', () => {
+    const source = '<script>track()</script>';
     const encoded = encodeHtmlEmbedSource(source);
     const html = `<div data-type="htmlEmbed" data-source="${encoded}"></div>`;
     const parsed = htmlToJson(html);
     expect(hasHtmlEmbedNode(parsed)).toBe(true);
 
-    // A non-admin role gates to strip via the real helpers.
-    expect(canAuthorHtmlEmbed('member')).toBe(false);
     const stripped = stripHtmlEmbedNodes(parsed);
     expect(hasHtmlEmbedNode(stripped)).toBe(false);
   });

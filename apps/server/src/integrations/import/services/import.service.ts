@@ -1,13 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
-import { UserRepo } from '@docmost/db/repos/user/user.repo';
-import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
-  isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
-} from '../../../common/helpers/prosemirror/html-embed.util';
-import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { MultipartFile } from '@fastify/multipart';
 import * as path from 'path';
 import {
@@ -45,12 +37,10 @@ export class ImportService {
 
   constructor(
     private readonly pageRepo: PageRepo,
-    private readonly userRepo: UserRepo,
     private readonly storageService: StorageService,
     @InjectKysely() private readonly db: KyselyDB,
     @InjectQueue(QueueName.FILE_TASK_QUEUE)
     private readonly fileTaskQueue: Queue,
-    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async importPage(
@@ -95,28 +85,7 @@ export class ImportService {
 
     const extracted = this.extractTitleAndRemoveHeading(prosemirrorState);
     const title = extracted.title;
-    let prosemirrorJson = extracted.prosemirrorJson;
-
-    // SECURITY (Variant C admin gate, import write path):
-    // An imported .html/.md file can carry an htmlEmbed marker (the node's
-    // serialized form), which would execute raw JS in readers' browsers. Only
-    // workspace admins/owners may author it, so strip htmlEmbed nodes from
-    // imports performed by a non-admin user.
-    if (prosemirrorJson && hasHtmlEmbedNode(prosemirrorJson)) {
-      const importingUser = await this.userRepo.findById(userId, workspaceId);
-      // Toggle-AND-admin gate: htmlEmbed survives only when the workspace
-      // feature toggle is ON and the importer is an admin/owner. OFF (default)
-      // => stripped for everyone.
-      const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
-        (await this.workspaceRepo.findById(workspaceId))?.settings,
-      );
-      if (!htmlEmbedAllowed(htmlEmbedEnabled, importingUser?.role)) {
-        this.logger.warn(
-          `Stripping htmlEmbed node(s) from import by user ${userId}`,
-        );
-        prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-      }
-    }
+    const prosemirrorJson = extracted.prosemirrorJson;
 
     const pageTitle = title || fileName;
 

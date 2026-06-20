@@ -33,13 +33,6 @@ import {
 import { jsonToNode } from '../../../collaboration/collaboration.util';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
-import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
-  isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
-} from '../../../common/helpers/prosemirror/html-embed.util';
-import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
 type ReferencingPageInfo = {
   id: string;
@@ -65,7 +58,6 @@ export class TransclusionService {
     private readonly attachmentRepo: AttachmentRepo,
     private readonly storageService: StorageService,
     private readonly pageAccessService: PageAccessService,
-    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async syncPageTransclusions(
@@ -752,24 +744,6 @@ export class TransclusionService {
       sourcePageId,
       transclusionId,
     );
-
-    // SECURITY (Variant C admin gate, transclusion unsync write path):
-    // The returned content is a source snapshot that the client materializes
-    // into the reference page via insertContentAt. The snapshot keeps any
-    // htmlEmbed verbatim, and unsync requires only space Edit/View. If the
-    // requesting user is not a workspace admin/owner, strip htmlEmbed nodes so a
-    // non-admin can never receive an embed payload to re-persist (the collab
-    // strip on the subsequent save is debounced/race-prone and must not be the
-    // only guard). Admin behavior is unchanged.
-    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
-      (await this.workspaceRepo.findById(user.workspaceId))?.settings,
-    );
-    if (!htmlEmbedAllowed(htmlEmbedEnabled, user.role) && hasHtmlEmbedNode(content)) {
-      this.logger.warn(
-        `Stripping htmlEmbed node(s) from transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
-      );
-      content = stripHtmlEmbedNodes(content);
-    }
 
     return { content };
   }

@@ -8,13 +8,13 @@ import useUserRole from "@/hooks/use-user-role.tsx";
 import { useTranslation } from "react-i18next";
 
 /**
- * Admin toggle for the workspace HTML embed feature.
+ * Workspace master toggle that enables/disables the HTML embed block type.
  *
- * SECURITY: when ON, workspace admins/owners can embed raw HTML/CSS/JS that
- * EXECUTES in the wiki page origin for every reader (a deliberate stored-XSS
- * surface, e.g. for analytics trackers). OFF by default. The server strips
- * htmlEmbed nodes on every write where the toggle is OFF or the saver is not an
- * admin, so this switch fully enables/disables the feature workspace-wide.
+ * The block renders inside a SANDBOXED iframe (no same-origin access), so it
+ * cannot touch the viewer's session/cookies/API — it is a feature switch, not a
+ * security gate. When ON, ANY member can insert the block. OFF by default; for
+ * anonymous public-share reads the server serves already-stripped content when
+ * the toggle is OFF. The toggle itself is managed by workspace admins.
  */
 export default function HtmlEmbedSettings() {
   const { t } = useTranslation();
@@ -69,7 +69,7 @@ export default function HtmlEmbedSettings() {
         <Switch
           label={t("Enable HTML embed")}
           description={t(
-            "Allow workspace admins to insert raw HTML/CSS/JavaScript that EXECUTES in the wiki page origin for everyone who views the page (a deliberate stored-XSS surface, e.g. for analytics trackers). Off by default.",
+            "Allow members to insert raw HTML/CSS/JavaScript blocks. The block renders in a sandboxed frame and cannot access the viewer's session, cookies, or API. Off by default.",
           )}
           checked={checked}
           disabled={!isAdmin || isLoading}
@@ -79,17 +79,17 @@ export default function HtmlEmbedSettings() {
         <List size="xs" c="dimmed" mt="md" spacing={4}>
           <List.Item>
             {t(
-              "Only workspace admins/owners can insert HTML embeds. Members never can: the editor option is hidden for them and the server strips the embed on save at every write path.",
+              "When enabled, any member can insert an HTML embed block. The toggle just enables or disables the block type workspace-wide.",
             )}
           </List.Item>
           <List.Item>
             {t(
-              "If a non-admin edits and saves a page that contains an admin's embed, that save strips the embed (fail-closed). An admin must re-add it.",
+              "Embeds run inside a sandboxed iframe with a separate origin, so they cannot read or modify the page they are embedded in.",
             )}
           </List.Item>
           <List.Item>
             {t(
-              "Turning this off strips existing embeds on their next save and immediately disables execution (existing embeds render as a disabled placeholder).",
+              "Turning this off hides existing embeds (they render as a disabled placeholder) and stops serving them on public share pages.",
             )}
           </List.Item>
         </List>

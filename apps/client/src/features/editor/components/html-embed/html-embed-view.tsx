@@ -1,85 +1,114 @@
 import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import clsx from "clsx";
 import {
   ActionIcon,
   Button,
   Group,
   Modal,
+  NumberInput,
   Text,
   Textarea,
 } from "@mantine/core";
 import { IconCode, IconEdit } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useAtomValue } from "jotai";
-import useUserRole from "@/hooks/use-user-role.tsx";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import classes from "./html-embed-view.module.css";
 import {
+  buildSandboxSrcdoc,
   canEdit as computeCanEdit,
-  renderRawHtml,
+  HTML_EMBED_HEIGHT_MESSAGE,
   shouldExecute as computeShouldExecute,
 } from "./render-raw-html.ts";
+
+// Sane bounds for the auto-resized iframe so a runaway embed cannot blow up the
+// page layout, and a sensible default before the first height message arrives.
+const MIN_IFRAME_HEIGHT = 40;
+const MAX_IFRAME_HEIGHT = 4000;
+const DEFAULT_IFRAME_HEIGHT = 150;
 
 export default function HtmlEmbedView(props: NodeViewProps) {
   const { t } = useTranslation();
   const { node, selected, updateAttributes, editor } = props;
-  const { source } = node.attrs as { source: string };
-  const { isAdmin } = useUserRole();
+  const { source, height } = node.attrs as {
+    source: string;
+    height: number | null;
+  };
 
-  // Defense in depth: only execute the raw HTML/JS when the workspace HTML embed
-  // feature toggle is ON. When OFF (the default), we render a neutral disabled
-  // placeholder and inject nothing — so turning the feature off neutralizes
-  // existing embeds at render time as well as on the next server-side save.
+  // The HTML embed renders inside a SANDBOXED iframe (no same-origin access), so
+  // the workspace toggle is a feature switch, not a security gate. When OFF (the
+  // default) we render a neutral placeholder in the editor and nothing else.
   const workspace = useAtomValue(workspaceAtom);
   const htmlEmbedEnabled = workspace?.settings?.htmlEmbed === true;
 
-  // Execution policy split by editor mode:
-  //  - READ-ONLY / public-share view: the SERVER already decided whether to
-  //    include the embed (it strips htmlEmbed from shared content when the
-  //    workspace toggle is OFF). An anonymous viewer has no workspace and thus
-  //    reads `htmlEmbedEnabled` as false, so we must NOT gate execution on it
-  //    here — we execute exactly the `source` the server chose to serve.
-  //  - EDITABLE editor (admin authoring): keep gating on the per-workspace
-  //    toggle so an admin sees the inert placeholder when the feature is OFF.
   const shouldExecute = computeShouldExecute(
     editor.isEditable,
     htmlEmbedEnabled,
   );
 
-  const contentRef = useRef<HTMLDivElement | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [draft, setDraft] = useState<string>(source || "");
+  const [draftHeight, setDraftHeight] = useState<number | "">(height ?? "");
 
-  // (Re)render the raw source whenever it changes. This runs in BOTH the
-  // editable editor and the read-only / public-share editor (same NodeView),
-  // so trackers fire for readers too — that is the intended behaviour. When the
-  // feature toggle is OFF we clear the container and inject/execute nothing.
+  // Auto-resize height tracked in state (used only when no fixed height is set).
+  const [autoHeight, setAutoHeight] = useState<number>(
+    height ?? DEFAULT_IFRAME_HEIGHT,
+  );
+
+  const srcdoc = useMemo(() => buildSandboxSrcdoc(source || ""), [source]);
+
+  // Auto-resize: accept height messages ONLY from this iframe's own content
+  // window. The sandboxed srcdoc has an opaque ("null") origin, so we cannot
+  // match by event.origin — we match by event.source instead. No-op when a
+  // fixed height is configured.
   useEffect(() => {
-    if (!contentRef.current) return;
-    if (shouldExecute) {
-      renderRawHtml(contentRef.current, source || "");
-    } else {
-      contentRef.current.innerHTML = "";
+    if (typeof height === "number") return;
+    function onMessage(event: MessageEvent) {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const data = event.data as { type?: string; height?: number };
+      if (data?.type !== HTML_EMBED_HEIGHT_MESSAGE) return;
+      const next = Number(data.height);
+      if (!Number.isFinite(next)) return;
+      setAutoHeight(
+        Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, next)),
+      );
     }
-  }, [source, shouldExecute]);
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [height]);
+
+  const effectiveHeight =
+    typeof height === "number"
+      ? Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, height))
+      : autoHeight;
 
   const openEditor = useCallback(() => {
     setDraft(source || "");
+    setDraftHeight(height ?? "");
     setModalOpen(true);
-  }, [source]);
+  }, [source, height]);
 
   const onSave = useCallback(() => {
     if (editor.isEditable) {
-      updateAttributes({ source: draft });
+      updateAttributes({
+        source: draft,
+        height: draftHeight === "" ? null : Number(draftHeight),
+      });
     }
     setModalOpen(false);
-  }, [draft, editor.isEditable, updateAttributes]);
+  }, [draft, draftHeight, editor.isEditable, updateAttributes]);
 
-  // The edit affordance is only meaningful in edit mode, is restricted to admins
-  // (the server strips the node for non-admins anyway), and is offered only when
-  // the workspace feature toggle is ON.
-  const canEdit = computeCanEdit(editor.isEditable, isAdmin, htmlEmbedEnabled);
+  // The edit affordance is only meaningful in edit mode and is offered only when
+  // the workspace master toggle is ON. Any member can edit (sandboxed = safe).
+  const canEdit = computeCanEdit(editor.isEditable, htmlEmbedEnabled);
 
   return (
     <NodeViewWrapper
@@ -103,10 +132,10 @@ export default function HtmlEmbedView(props: NodeViewProps) {
 
       {!shouldExecute ? (
         // Feature disabled for this workspace AND we're in the editable editor:
-        // never inject/execute the source. Show a neutral placeholder so an
-        // existing embed is visibly inert for the authoring admin. Read-only /
-        // share viewers never hit this branch (`shouldExecute` is always true
-        // there) — they execute exactly the source the server chose to serve.
+        // render a neutral placeholder so an existing embed is visibly inert for
+        // the author. Read-only / share viewers never hit this branch
+        // (`shouldExecute` is always true there) — they render exactly the
+        // source the server chose to serve.
         <div className={classes.htmlEmbedPlaceholder}>
           <IconCode size={18} />
           <Text size="sm">
@@ -114,9 +143,18 @@ export default function HtmlEmbedView(props: NodeViewProps) {
           </Text>
         </div>
       ) : source ? (
-        // Raw HTML/CSS/JS rendered into the wiki origin. Scripts are re-created
-        // in renderRawHtml so they execute.
-        <div ref={contentRef} className={classes.htmlEmbedContent} />
+        // Raw HTML/CSS/JS rendered inside a sandboxed iframe (no same-origin):
+        // scripts run in an opaque origin and cannot touch the viewer's
+        // session/cookies/API.
+        <iframe
+          ref={iframeRef}
+          className={classes.htmlEmbedFrame}
+          sandbox="allow-scripts allow-popups allow-forms"
+          srcDoc={srcdoc}
+          title="HTML embed"
+          referrerPolicy="no-referrer"
+          style={{ width: "100%", border: "none", height: effectiveHeight }}
+        />
       ) : canEdit ? (
         <div className={classes.htmlEmbedPlaceholder} onClick={openEditor}>
           <IconCode size={18} />
@@ -124,7 +162,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
         </div>
       ) : (
         // Empty source, non-editor: render nothing visible.
-        <div ref={contentRef} className={classes.htmlEmbedContent} />
+        <div className={classes.htmlEmbedContent} />
       )}
 
       <Modal
@@ -135,7 +173,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
       >
         <Text size="xs" c="dimmed" mb="xs">
           {t(
-            "This HTML/CSS/JS runs in the page origin for everyone who views it. Admins only.",
+            "This HTML/CSS/JS runs in a sandboxed frame and cannot access the viewer's session, cookies, or API.",
           )}
         </Text>
         <Textarea
@@ -147,6 +185,19 @@ export default function HtmlEmbedView(props: NodeViewProps) {
           placeholder={t("<script>...</script>")}
           styles={{ input: { fontFamily: "monospace" } }}
           data-autofocus
+        />
+        <NumberInput
+          mt="md"
+          label={t("Height (px, blank = auto)")}
+          value={draftHeight}
+          onChange={(value) =>
+            setDraftHeight(
+              value === "" || value === null ? "" : Number(value),
+            )
+          }
+          min={MIN_IFRAME_HEIGHT}
+          max={MAX_IFRAME_HEIGHT}
+          allowDecimal={false}
         />
         <Group justify="flex-end" mt="md">
           <Button variant="default" onClick={() => setModalOpen(false)}>

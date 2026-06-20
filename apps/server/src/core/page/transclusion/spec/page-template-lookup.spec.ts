@@ -35,7 +35,6 @@ describe('TransclusionService.lookupTemplate (access mapping)', () => {
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
 
     jest
