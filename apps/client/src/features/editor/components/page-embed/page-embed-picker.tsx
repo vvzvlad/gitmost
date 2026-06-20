@@ -9,6 +9,18 @@ import type { IPage } from "@/features/page/types/page.types";
 
 export const PAGE_EMBED_PICKER_EVENT = "open-page-embed-picker";
 
+/**
+ * Pure filter excluding the host page (and any nullish entries) from the picker
+ * results. Extracted so the self-embed guard at insertion time is unit-testable
+ * without mounting the modal/search query.
+ */
+export function filterPageEmbedOptions<T extends { id: string }>(
+  pages: T[],
+  hostPageId?: string,
+): T[] {
+  return (pages ?? []).filter((p) => p && p.id !== hostPageId);
+}
+
 type PickerDetail = {
   editor: Editor;
   range: Range;
@@ -55,9 +67,7 @@ export default function PageEmbedPicker() {
   });
 
   const hostPageId = detailRef.current?.hostPageId;
-  const pages = ((data?.pages ?? []) as IPage[]).filter(
-    (p) => p && p.id !== hostPageId,
-  );
+  const pages = filterPageEmbedOptions((data?.pages ?? []) as IPage[], hostPageId);
 
   const handleSelect = (page: IPage) => {
     const detail = detailRef.current;

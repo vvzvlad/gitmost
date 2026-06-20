@@ -20,7 +20,8 @@ import { usePageEmbedLookup } from "./page-embed-lookup-context";
 import {
   PageEmbedAncestryProvider,
   usePageEmbedAncestry,
-  PAGE_EMBED_MAX_DEPTH,
+  isPageEmbedCycle,
+  isPageEmbedTooDeep,
 } from "./page-embed-ancestry-context";
 import PageEmbedContent from "./page-embed-content";
 
@@ -100,11 +101,12 @@ function PageEmbedBody({
 
   // --- Cycle / depth guard (evaluated before any lookup is rendered) ---------
   // Self-embed or a source already present in the ancestor chain → cycle.
-  const isCycle =
-    !!sourcePageId &&
-    (ancestry.chain.includes(sourcePageId) ||
-      ancestry.hostPageId === sourcePageId);
-  const isTooDeep = ancestry.chain.length >= PAGE_EMBED_MAX_DEPTH;
+  const isCycle = isPageEmbedCycle(
+    ancestry.chain,
+    ancestry.hostPageId,
+    sourcePageId,
+  );
+  const isTooDeep = isPageEmbedTooDeep(ancestry.chain);
 
   const sourceTitle =
     result && !("status" in result) ? result.title : null;
