@@ -40,9 +40,11 @@ import {
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
 import {
+  collectHtmlEmbedSources,
   hasHtmlEmbedNode,
   htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
+  stripDisallowedHtmlEmbedNodes,
   stripHtmlEmbedNodes,
 } from '../../common/helpers/prosemirror/html-embed.util';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
@@ -130,12 +132,31 @@ export class PersistenceExtension implements Extension {
     // every htmlEmbed node before it is written to the page row AND before the
     // ydoc state is re-encoded, so the node cannot be reintroduced by a
     // non-admin via the collab socket.
-    // NOTE (residual risk): the gate is keyed to the storing connection's user.
-    // If an admin already authored an htmlEmbed and a non-admin's later store
-    // does not touch it, this strip would remove the admin's embed on that
-    // non-admin store. This is intentionally conservative (fail closed): the
-    // admin re-adds/keeps the node on their own next edit. A future refinement
-    // could diff against the previously persisted admin-authored embeds.
+    // NOTE (defense-in-depth refinement, Gitea #29): the gate is keyed to the
+    // storing connection's user, but it no longer blindly strips EVERY embed on
+    // a non-admin store. We distinguish two cases inside the !allowed branch:
+    //   - Feature toggle OFF => strip ALL embeds (the feature is disabled for
+    //     everyone; existing embeds get cleaned up on the next save).
+    //   - Toggle ON but the storer is a NON-admin => strip only NEWLY-introduced
+    //     embeds and PRESERVE embeds already present in the currently-persisted
+    //     page content (admin-authored, already vetted). So a non-admin still
+    //     cannot ADD an embed, but an unrelated edit (e.g. a paragraph tweak) no
+    //     longer destroys an admin's existing embed (the prior data-loss bug).
+    // The pre-existing-embed identity is the raw `attrs.source` (see
+    // collectHtmlEmbedSources). A non-admin who copies an existing admin embed's
+    // exact source elsewhere passes — acceptable, that HTML is already vetted.
+    //
+    // ACCEPTED RESIDUAL RISK (toggle-ON allow-list TOCTOU): the allow-list is a
+    // best-effort snapshot read OUTSIDE the locked transaction (the prior content
+    // is pre-read above, but inside executeTx the row is re-read withLock without
+    // recomputing the allow-list). A concurrent admin store that changes the
+    // persisted embeds between the pre-read and this write can make the preserve
+    // decision use a slightly stale snapshot — worst case one embed transiently
+    // kept or dropped; it converges on the next store, with no auth bypass or
+    // broader data loss. The race is accepted because it only affects concurrent
+    // authenticated editors on the (rare) toggle-ON non-admin path, converges on
+    // the next store, and the persisted row plus every share/readonly read path
+    // remain protected by the strip.
     //
     // ACCEPTED RESIDUAL RISK (pre-persist broadcast window): this strip runs in
     // the debounced onStoreDocument, but hocuspocus broadcasts each inbound Yjs
@@ -157,22 +178,44 @@ export class PersistenceExtension implements Extension {
     );
     if (!htmlEmbedAllowed(htmlEmbedEnabled, context?.user?.role)) {
       if (hasHtmlEmbedNode(tiptapJson)) {
-        this.logger.warn(
-          `Stripping htmlEmbed node(s) from collab store by user ${context?.user?.id} on ${documentName}`,
-        );
-        tiptapJson = stripHtmlEmbedNodes(tiptapJson);
-        // Reflect the stripped content back into the shared ydoc so the node is
-        // removed for all connected clients, not just the persisted row.
-        const fragment = document.getXmlFragment('default');
-        if (fragment.length > 0) {
-          fragment.delete(0, fragment.length);
+        let strippedJson: typeof tiptapJson;
+        if (htmlEmbedEnabled === false) {
+          // Toggle OFF: feature disabled for everyone -> strip ALL embeds.
+          strippedJson = stripHtmlEmbedNodes(tiptapJson);
+        } else {
+          // Toggle ON, non-admin storer: preserve embeds already present in the
+          // currently-persisted (admin-vetted) page content; strip only the
+          // newly-introduced ones. Pre-read the prior content — a small extra
+          // query only on this rare non-admin + toggle-ON path.
+          const prior = await this.pageRepo.findById(pageId, {
+            includeContent: true,
+          });
+          const allowed = collectHtmlEmbedSources(prior?.content);
+          strippedJson = stripDisallowedHtmlEmbedNodes(tiptapJson, allowed);
         }
-        const cleanDoc = TiptapTransformer.toYdoc(
-          tiptapJson,
-          'default',
-          tiptapExtensions,
-        );
-        Y.applyUpdate(document, Y.encodeStateAsUpdate(cleanDoc));
+
+        // Only mutate the ydoc + log when the strip actually removed something;
+        // an unnecessary ydoc rewrite would churn the doc for all clients. With
+        // the toggle-ON branch a non-admin store that only touches admin-vetted
+        // embeds leaves the content unchanged here.
+        if (!isDeepStrictEqual(strippedJson, tiptapJson)) {
+          this.logger.warn(
+            `Stripping htmlEmbed node(s) from collab store by user ${context?.user?.id} on ${documentName}`,
+          );
+          tiptapJson = strippedJson;
+          // Reflect the stripped content back into the shared ydoc so the node
+          // is removed for all connected clients, not just the persisted row.
+          const fragment = document.getXmlFragment('default');
+          if (fragment.length > 0) {
+            fragment.delete(0, fragment.length);
+          }
+          const cleanDoc = TiptapTransformer.toYdoc(
+            tiptapJson,
+            'default',
+            tiptapExtensions,
+          );
+          Y.applyUpdate(document, Y.encodeStateAsUpdate(cleanDoc));
+        }
       }
     }
 
