@@ -92,6 +92,102 @@ describe('stripHtmlEmbedNodes', () => {
     const result = stripHtmlEmbedNodes(doc);
     expect(result).toEqual(doc);
   });
+
+  it('strips a deeply nested htmlEmbed (3+ levels: callout > column > paragraph-sibling)', () => {
+    // htmlEmbed sits as a sibling of a paragraph, nested four containers deep.
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'callout',
+          content: [
+            {
+              type: 'columns',
+              content: [
+                {
+                  type: 'column',
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [{ type: 'text', text: 'deep keep' }],
+                    },
+                    { type: 'htmlEmbed', attrs: { source: '<script>x</script>' } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = stripHtmlEmbedNodes(doc);
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+    const col = findFirstChild(result, 'column');
+    // Sibling paragraph survives; only the embed is removed.
+    expect(col.content).toHaveLength(1);
+    expect(col.content[0].type).toBe('paragraph');
+    expect(col.content[0].content[0].text).toBe('deep keep');
+  });
+
+  it('returns non-object / null / array-without-content nodes unchanged', () => {
+    // Non-object inputs are returned as-is (callers persist what they got).
+    expect(stripHtmlEmbedNodes(null as any)).toBeNull();
+    expect(stripHtmlEmbedNodes(undefined as any)).toBeUndefined();
+    expect(stripHtmlEmbedNodes('not-a-node' as any)).toBe('not-a-node');
+    expect(stripHtmlEmbedNodes(42 as any)).toBe(42);
+
+    // An object node with no `content` array is returned shallow-cloned, equal.
+    const leaf = { type: 'paragraph', attrs: { id: 'x' } };
+    const out = stripHtmlEmbedNodes(leaf);
+    expect(out).toEqual(leaf);
+    expect(out).not.toBe(leaf); // new object, input not mutated
+  });
+
+  it('yields empty content (not null/undefined) for a doc whose only child is an htmlEmbed', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'htmlEmbed', attrs: { source: '<b>only</b>' } }],
+    };
+    const result = stripHtmlEmbedNodes(doc) as any;
+    expect(Array.isArray(result.content)).toBe(true);
+    expect(result.content).toHaveLength(0);
+    expect(result.content).not.toBeNull();
+    expect(result.content).not.toBeUndefined();
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+});
+
+describe('hasHtmlEmbedNode (root/odd-shape detection)', () => {
+  it('returns true when the ROOT node itself is an htmlEmbed (not only a child)', () => {
+    const rootEmbed = { type: 'htmlEmbed', attrs: { source: '<script>r</script>' } };
+    expect(hasHtmlEmbedNode(rootEmbed)).toBe(true);
+  });
+
+  it('returns false for a doc with embed-like TEXT but no htmlEmbed node', () => {
+    // The literal string "htmlEmbed" appears only as text content, not as a
+    // node type, so it must NOT be detected.
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'type: htmlEmbed <div data-type="htmlEmbed">' },
+          ],
+        },
+      ],
+    };
+    expect(hasHtmlEmbedNode(doc)).toBe(false);
+  });
+
+  it('returns false for non-object / null / array inputs', () => {
+    expect(hasHtmlEmbedNode(null)).toBe(false);
+    expect(hasHtmlEmbedNode(undefined)).toBe(false);
+    expect(hasHtmlEmbedNode('htmlEmbed')).toBe(false);
+    // A bare array (no `content` wrapper) has no node `type`, so it's false.
+    expect(hasHtmlEmbedNode([{ type: 'htmlEmbed' }] as any)).toBe(false);
+  });
 });
 
 describe('canAuthorHtmlEmbed', () => {

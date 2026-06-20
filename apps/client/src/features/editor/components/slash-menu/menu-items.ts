@@ -28,6 +28,7 @@ import {
   IconTag,
   IconMoodSmile,
   IconRotate2,
+  IconSuperscript,
   IconArrowsMaximize,
 } from "@tabler/icons-react";
 import { PAGE_EMBED_PICKER_EVENT } from "@/features/editor/components/page-embed/page-embed-picker";
@@ -367,6 +368,14 @@ const CommandGroups: SlashMenuGroupedItemsType = {
       icon: IconCaretRightFilled,
       command: ({ editor, range }: CommandProps) =>
         editor.chain().focus().deleteRange(range).setDetails().run(),
+    },
+    {
+      title: "Footnote",
+      description: "Insert a footnote reference.",
+      searchTerms: ["footnote", "note", "reference", "сноска", "примечание"],
+      icon: IconSuperscript,
+      command: ({ editor, range }: CommandProps) =>
+        editor.chain().focus().deleteRange(range).setFootnote().run(),
     },
     {
       title: "Callout",

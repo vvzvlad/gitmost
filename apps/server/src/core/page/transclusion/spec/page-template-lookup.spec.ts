@@ -1,4 +1,5 @@
 import { TransclusionService } from '../transclusion.service';
+import * as collabUtil from '../../../../collaboration/collaboration.util';
 
 /**
  * Exercises the pure access/mapping logic of `lookupTemplate`:
@@ -34,6 +35,7 @@ describe('TransclusionService.lookupTemplate (access mapping)', () => {
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
+      {} as any, // workspaceRepo
     );
 
     jest
@@ -109,5 +111,62 @@ describe('TransclusionService.lookupTemplate (access mapping)', () => {
     expect((items[0] as any).status).toBe('no_access');
     expect((items[1] as any).status).toBeUndefined();
     expect((items[2] as any).status).toBe('no_access');
+  });
+
+  // Content-prep failure path: if jsonToNode throws for an accessible page, the
+  // item must degrade to not_found and NEVER return content (which would
+  // otherwise carry the source's un-stripped comment marks).
+  describe('content-prep failure → not_found', () => {
+    let jsonToNodeSpy: jest.SpyInstance;
+
+    afterEach(() => {
+      jsonToNodeSpy?.mockRestore();
+    });
+
+    it('maps to not_found and returns no content when jsonToNode throws', async () => {
+      // The page is accessible and present, but content preparation blows up.
+      jsonToNodeSpy = jest
+        .spyOn(collabUtil, 'jsonToNode')
+        .mockImplementation(() => {
+          throw new Error('boom');
+        });
+
+      const contentWithComment = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'secret',
+                marks: [{ type: 'comment', attrs: { commentId: 'leak' } }],
+              },
+            ],
+          },
+        ],
+      };
+
+      const { service } = makeService({
+        accessibleIds: ['p1'],
+        pages: [
+          {
+            id: 'p1',
+            title: 'T',
+            icon: null,
+            content: contentWithComment,
+            updatedAt: now,
+          },
+        ],
+      });
+
+      // Silence the service's error logger for the expected throw.
+      jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
+
+      const { items } = await service.lookupTemplate(['p1'], 'u1', 'w1');
+      expect(items).toEqual([{ sourcePageId: 'p1', status: 'not_found' }]);
+      // Crucially: no content field, so no comment mark can leak.
+      expect((items[0] as any).content).toBeUndefined();
+    });
   });
 });

@@ -18,7 +18,12 @@ env:
   IMAGE: ghcr.io/vvzvlad/gitmost
 
 jobs:
+  # Run the reusable test suite first so a failing test blocks the image build.
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

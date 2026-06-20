@@ -27,6 +27,8 @@ import {
   mergeRootTrees,
   collectAllIds,
   collectBranchIds,
+  openBranches,
+  closeIds,
 } from "@/features/page/tree/utils/utils.ts";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
@@ -236,11 +238,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
       // Open every branch node (node with children) of the current space only.
       const branchIds = collectBranchIds(fullTree);
 
-      setOpenTreeNodes((prev) => {
-        const next = { ...prev };
-        for (const id of branchIds) next[id] = true;
-        return next;
-      });
+      setOpenTreeNodes((prev) => openBranches(prev, branchIds));
     } catch (err: any) {
       // Never swallow: log full error + surface the real reason.
       console.error("[tree] expandAll failed", err);
@@ -261,11 +259,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
     // other spaces' expanded state is left intact.
     const ids = collectAllIds(filteredData);
 
-    setOpenTreeNodes((prev) => {
-      const next = { ...prev };
-      for (const id of ids) next[id] = false;
-      return next;
-    });
+    setOpenTreeNodes((prev) => closeIds(prev, ids));
   }, [filteredData, setOpenTreeNodes]);
 
   useImperativeHandle(
