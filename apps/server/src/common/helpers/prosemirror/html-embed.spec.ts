@@ -1,8 +1,10 @@
 import {
   canAuthorHtmlEmbed,
+  collectHtmlEmbedSources,
   hasHtmlEmbedNode,
   htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
+  stripDisallowedHtmlEmbedNodes,
   stripHtmlEmbedNodes,
 } from './html-embed.util';
 import { htmlToJson, jsonToHtml } from '../../../collaboration/collaboration.util';
@@ -93,6 +95,17 @@ describe('stripHtmlEmbedNodes', () => {
     expect(result).toEqual(doc);
   });
 
+  it('neutralizes a root node that is itself an htmlEmbed', () => {
+    // Defensive: the PM root is always a `doc`, so this is unreachable in normal
+    // use, but the helper must still never return a bare htmlEmbed.
+    const root = {
+      type: 'htmlEmbed',
+      attrs: { source: '<script>alert(1)</script>' },
+    };
+    const result = stripHtmlEmbedNodes(root);
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+
   it('strips a deeply nested htmlEmbed (3+ levels: callout > column > paragraph-sibling)', () => {
     // htmlEmbed sits as a sibling of a paragraph, nested four containers deep.
     const doc = {
@@ -155,6 +168,169 @@ describe('stripHtmlEmbedNodes', () => {
     expect(result.content).not.toBeNull();
     expect(result.content).not.toBeUndefined();
     expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+});
+
+describe('collectHtmlEmbedSources', () => {
+  it('collects the source of every htmlEmbed node, including nested ones', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'htmlEmbed', attrs: { source: '<b>top</b>' } },
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [
+                { type: 'htmlEmbed', attrs: { source: '<i>nested</i>' } },
+                { type: 'paragraph', content: [{ type: 'text', text: 'x' }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const sources = collectHtmlEmbedSources(doc);
+    expect(sources).toEqual(new Set(['<b>top</b>', '<i>nested</i>']));
+  });
+
+  it('returns an empty set for a doc with no embeds', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }],
+    };
+    expect(collectHtmlEmbedSources(doc).size).toBe(0);
+  });
+
+  it('gracefully skips embeds with absent attrs or non-string source', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'htmlEmbed' }, // no attrs
+        { type: 'htmlEmbed', attrs: {} }, // no source
+        { type: 'htmlEmbed', attrs: { source: 42 } }, // non-string
+        { type: 'htmlEmbed', attrs: { source: '<ok/>' } },
+      ],
+    };
+    expect(collectHtmlEmbedSources(doc)).toEqual(new Set(['<ok/>']));
+  });
+
+  it('returns an empty set for non-object input', () => {
+    expect(collectHtmlEmbedSources(null).size).toBe(0);
+    expect(collectHtmlEmbedSources(undefined).size).toBe(0);
+    expect(collectHtmlEmbedSources('x' as any).size).toBe(0);
+  });
+});
+
+describe('stripDisallowedHtmlEmbedNodes', () => {
+  it('keeps an embed whose source is allowed and removes the rest', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'htmlEmbed', attrs: { source: '<vetted/>' } },
+        { type: 'htmlEmbed', attrs: { source: '<new-evil/>' } },
+        { type: 'paragraph', content: [{ type: 'text', text: 'keep' }] },
+      ],
+    };
+    const result = stripDisallowedHtmlEmbedNodes(doc, new Set(['<vetted/>']));
+    expect(collectHtmlEmbedSources(result)).toEqual(new Set(['<vetted/>']));
+    // The allowed embed and the paragraph survive; the new embed is gone.
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].attrs.source).toBe('<vetted/>');
+    expect(result.content[1].type).toBe('paragraph');
+  });
+
+  it('keeps BOTH embeds when two nodes share the same allowed source', () => {
+    // Source-identity semantics: identity is the raw `attrs.source`, so a
+    // non-admin who duplicates an existing admin-vetted source keeps both copies.
+    // This is intended — the raw HTML is already vetted, so a duplicate is safe.
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'htmlEmbed', attrs: { source: '<vetted/>' } },
+        { type: 'paragraph', content: [{ type: 'text', text: 'mid' }] },
+        { type: 'htmlEmbed', attrs: { source: '<vetted/>' } },
+      ],
+    };
+    const result = stripDisallowedHtmlEmbedNodes(doc, new Set(['<vetted/>']));
+    expect(hasHtmlEmbedNode(result)).toBe(true);
+    const embeds = result.content.filter(
+      (n: any) => n.type === 'htmlEmbed',
+    );
+    expect(embeds).toHaveLength(2);
+    expect(embeds.every((n: any) => n.attrs.source === '<vetted/>')).toBe(true);
+  });
+
+  it('removes a newly-introduced embed when nothing is allowed', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'htmlEmbed', attrs: { source: '<new/>' } }],
+    };
+    const result = stripDisallowedHtmlEmbedNodes(doc, new Set());
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+
+  it('filters nested embeds by the allow-list (e.g. inside columns)', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [
+                { type: 'htmlEmbed', attrs: { source: '<vetted/>' } },
+                { type: 'htmlEmbed', attrs: { source: '<new/>' } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const result = stripDisallowedHtmlEmbedNodes(doc, new Set(['<vetted/>']));
+    const col = findFirstChild(result, 'column');
+    expect(col.content).toHaveLength(1);
+    expect(col.content[0].attrs.source).toBe('<vetted/>');
+  });
+
+  it('treats an embed with absent/non-string source as not allowed (stripped)', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'htmlEmbed' },
+        { type: 'htmlEmbed', attrs: {} },
+      ],
+    };
+    const result = stripDisallowedHtmlEmbedNodes(doc, new Set(['<vetted/>']));
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+
+  it('does not mutate the input document', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'htmlEmbed', attrs: { source: '<new/>' } }],
+    };
+    stripDisallowedHtmlEmbedNodes(doc, new Set());
+    expect(doc.content).toHaveLength(1);
+    expect(doc.content[0].type).toBe('htmlEmbed');
+  });
+
+  it('neutralizes a root node that is itself a disallowed htmlEmbed', () => {
+    const root = { type: 'htmlEmbed', attrs: { source: '<new/>' } };
+    const result = stripDisallowedHtmlEmbedNodes(root, new Set());
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+  });
+
+  it('keeps a root node that is an allowed htmlEmbed (defensive branch)', () => {
+    const root = { type: 'htmlEmbed', attrs: { source: '<vetted/>' } };
+    const result = stripDisallowedHtmlEmbedNodes(root, new Set(['<vetted/>']));
+    expect(collectHtmlEmbedSources(result)).toEqual(new Set(['<vetted/>']));
+  });
+
+  it('returns non-object input unchanged', () => {
+    expect(stripDisallowedHtmlEmbedNodes(null as any, new Set())).toBeNull();
   });
 });
 

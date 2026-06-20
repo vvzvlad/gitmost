@@ -22,6 +22,15 @@ export function stripHtmlEmbedNodes<T = JSONContent>(pmJson: T): T {
 
   const node = pmJson as unknown as JSONContent;
 
+  // Defensive root-type check: if the ROOT node is itself an htmlEmbed, the
+  // children-filtering below could never drop it, so a bare htmlEmbed would be
+  // returned as-is. This branch is unreachable in normal use (the PM document
+  // root is always a `doc`) and exists only to make the helper total — a bare
+  // htmlEmbed can never be returned by this function.
+  if (node.type === HTML_EMBED_NODE_NAME) {
+    return { type: 'doc', content: [] } as unknown as T;
+  }
+
   if (Array.isArray(node.content)) {
     const filtered: JSONContent[] = [];
     for (const child of node.content) {
@@ -32,6 +41,107 @@ export function stripHtmlEmbedNodes<T = JSONContent>(pmJson: T): T {
       // Recurse so nested htmlEmbed nodes (e.g. inside columns/callouts) are
       // also removed.
       filtered.push(stripHtmlEmbedNodes(child));
+    }
+    return { ...node, content: filtered } as unknown as T;
+  }
+
+  return { ...node } as unknown as T;
+}
+
+/**
+ * Walk the document and collect a stable identity for every `htmlEmbed` node.
+ *
+ * The identity is the node's `attrs.source` string — the raw HTML the embed
+ * renders. Two embeds that render the exact same HTML are treated as the same
+ * identity. Used by the collab persist path to know which embeds are ALREADY
+ * present in the currently-persisted (admin-vetted) page content, so a later
+ * non-admin store can strip only NEWLY-introduced embeds while preserving the
+ * pre-existing admin-authored ones.
+ *
+ * Absent attrs or a non-string/absent `source` are skipped gracefully (such a
+ * node contributes no identity to the set).
+ */
+export function collectHtmlEmbedSources(pmJson: unknown): Set<string> {
+  const sources = new Set<string>();
+
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+    const n = node as JSONContent;
+    if (n.type === HTML_EMBED_NODE_NAME) {
+      const source = (n.attrs as Record<string, unknown> | undefined)?.source;
+      if (typeof source === 'string') {
+        sources.add(source);
+      }
+    }
+    if (Array.isArray(n.content)) {
+      for (const child of n.content) {
+        walk(child);
+      }
+    }
+  };
+
+  walk(pmJson);
+  return sources;
+}
+
+/**
+ * Like {@link stripHtmlEmbedNodes}, but KEEP any `htmlEmbed` node whose
+ * `attrs.source` is in `allowedSources`; remove the rest.
+ *
+ * Used on the collab persist path when the feature toggle is ON but the storing
+ * user is a NON-admin: `allowedSources` is the set of embed sources already
+ * present in the currently-persisted page content (admin-authored, already
+ * vetted). A non-admin therefore cannot ADD a new embed, but their unrelated
+ * edit also cannot destroy an admin's existing one.
+ *
+ * NOTE: identity is the raw source string, so a non-admin who COPIES an existing
+ * admin embed's exact source into a NEW location passes this check. That is
+ * acceptable — the source is already admin-vetted content present in the doc; no
+ * new untrusted HTML is introduced.
+ *
+ * Returns a NEW document; the input is not mutated. Same defensive root-type
+ * check pattern as {@link stripHtmlEmbedNodes}.
+ */
+export function stripDisallowedHtmlEmbedNodes<T = JSONContent>(
+  pmJson: T,
+  allowedSources: Set<string>,
+): T {
+  if (!pmJson || typeof pmJson !== 'object') {
+    return pmJson;
+  }
+
+  const node = pmJson as unknown as JSONContent;
+
+  // Defensive root-type check (mirrors stripHtmlEmbedNodes): if the ROOT node is
+  // itself an htmlEmbed and its source is NOT allowed, the children-filtering
+  // below could never drop it, so neutralize it here. Unreachable in normal use
+  // (the PM document root is always a `doc`).
+  if (node.type === HTML_EMBED_NODE_NAME) {
+    const source = (node.attrs as Record<string, unknown> | undefined)?.source;
+    if (typeof source === 'string' && allowedSources.has(source)) {
+      return { ...node } as unknown as T;
+    }
+    return { type: 'doc', content: [] } as unknown as T;
+  }
+
+  if (Array.isArray(node.content)) {
+    const filtered: JSONContent[] = [];
+    for (const child of node.content) {
+      // Drop a disallowed htmlEmbed child (newly introduced); keep an allowed
+      // one (already present in the persisted, admin-vetted content).
+      if (child && child.type === HTML_EMBED_NODE_NAME) {
+        const source = (child.attrs as Record<string, unknown> | undefined)
+          ?.source;
+        if (typeof source === 'string' && allowedSources.has(source)) {
+          filtered.push({ ...child });
+        }
+        continue;
+      }
+      // Recurse so nested htmlEmbed nodes (e.g. inside columns/callouts) are
+      // also filtered by the same allow-list.
+      filtered.push(stripDisallowedHtmlEmbedNodes(child, allowedSources));
     }
     return { ...node, content: filtered } as unknown as T;
   }

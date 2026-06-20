@@ -3,6 +3,7 @@ import { TiptapTransformer } from '@hocuspocus/transformer';
 import { PersistenceExtension } from './persistence.extension';
 import { tiptapExtensions } from '../collaboration.util';
 import {
+  collectHtmlEmbedSources,
   hasHtmlEmbedNode,
   HTML_EMBED_NODE_NAME,
 } from '../../common/helpers/prosemirror/html-embed.util';
@@ -121,7 +122,7 @@ function nodeTypeCounts(json: any): Record<string, number> {
  * onStoreDocument to reach the strip + persist branch, and capture the content
  * that would be written to the page row.
  */
-function buildExtension(featureEnabled = true) {
+function buildExtension(featureEnabled = true, priorContent?: any) {
   const captured: { content?: any } = {};
 
   const existingPage = {
@@ -131,7 +132,10 @@ function buildExtension(featureEnabled = true) {
     workspaceId: 'ws-1',
     creatorId: 'creator-1',
     contributorIds: [],
-    content: { type: 'doc', content: [] }, // differs from new content -> persist runs
+    // The currently-persisted content. Defaults to an empty doc (differs from
+    // new content -> persist runs); a test may pass a prior admin embed here to
+    // exercise the preserve-admin-embed branch.
+    content: priorContent ?? { type: 'doc', content: [] },
     createdAt: new Date(),
     lastUpdatedSource: 'user',
   };
@@ -186,8 +190,9 @@ async function runStore(
   role: string | null | undefined,
   doc: Y.Doc,
   featureEnabled = true,
+  priorContent?: any,
 ) {
-  const { ext, captured } = buildExtension(featureEnabled);
+  const { ext, captured } = buildExtension(featureEnabled, priorContent);
   // hocuspocus augments the Y.Doc with broadcastStateless; a bare Y.Doc has
   // none, so stub it (the post-persist broadcast is not under test here).
   (doc as any).broadcastStateless = () => undefined;
@@ -268,6 +273,62 @@ describe('PersistenceExtension.onStoreDocument htmlEmbed admin gate (real code)'
     ).toBe(false);
   });
 
+  it('toggle ON + non-admin store: PRESERVES an admin embed already in the persisted content through an unrelated edit', async () => {
+    // Prior persisted content already holds an admin-authored embed.
+    const ADMIN_SOURCE = '<script>adminAuthored()</script>';
+    const prior = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+      ],
+    };
+    // A non-admin makes an UNRELATED edit (tweaks the paragraph) but the embed
+    // is still present in the merged doc.
+    const edited = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro edited' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+      ],
+    };
+
+    const captured = await runStore('member', buildYdoc(edited), true, prior);
+    expect(captured.content).toBeDefined();
+    // The admin's pre-existing embed survives the non-admin store.
+    expect(collectHtmlEmbedSources(captured.content)).toEqual(
+      new Set([ADMIN_SOURCE]),
+    );
+  });
+
+  it('toggle ON + non-admin store: strips a NEWLY-added embed while keeping the prior admin one', async () => {
+    const ADMIN_SOURCE = '<script>adminAuthored()</script>';
+    const prior = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+      ],
+    };
+    // Non-admin keeps the admin embed, makes an unrelated paragraph edit (so the
+    // store is not a no-op and is persisted), and ALSO adds a brand-new embed.
+    const edited = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro edited' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: '<script>evil()</script>' } },
+      ],
+    };
+
+    const captured = await runStore('member', buildYdoc(edited), true, prior);
+    expect(captured.content).toBeDefined();
+    // Only the admin-vetted source remains; the newly-introduced one is stripped.
+    expect(collectHtmlEmbedSources(captured.content)).toEqual(
+      new Set([ADMIN_SOURCE]),
+    );
+  });
+
   it('empty-fragment ydoc (no content) does not throw and persists no embed', async () => {
     const emptyDoc = buildYdoc({
       type: 'doc',
@@ -276,5 +337,120 @@ describe('PersistenceExtension.onStoreDocument htmlEmbed admin gate (real code)'
     // Non-admin path with an empty/embed-free fragment must be a no-op strip,
     // not throw.
     await expect(runStore('member', emptyDoc)).resolves.toBeDefined();
+  });
+});
+
+// Exercises the REAL early onChange guard (Gitea #26): guardHtmlEmbed converges
+// the shared ydoc sub-second, before the 10s store debounce. We call it directly
+// (it is the debounced timer body) and assert the ydoc fragment no longer yields
+// an htmlEmbed for the non-admin's transient embed, while admin-vetted embeds
+// already in the persisted content survive.
+describe('PersistenceExtension.guardHtmlEmbed early onChange guard (real code)', () => {
+  async function runGuard(
+    role: string | null | undefined,
+    doc: Y.Doc,
+    featureEnabled = true,
+    priorContent?: any,
+  ) {
+    const { ext } = buildExtension(featureEnabled, priorContent);
+    await (ext as any).guardHtmlEmbed(
+      'page-1',
+      doc,
+      { user: { id: 'u1', role, workspaceId: 'ws-1' } },
+    );
+  }
+
+  it('toggle ON + non-admin: strips a newly-added embed from the shared ydoc', async () => {
+    // Prior persisted content has NO embed; the live doc has one a non-admin
+    // just added.
+    const doc = buildYdoc({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'hi' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: '<script>evil()</script>' } },
+      ],
+    });
+    expect(hasHtmlEmbedNode(TiptapTransformer.fromYdoc(doc, 'default'))).toBe(
+      true,
+    );
+
+    await runGuard('member', doc, true, { type: 'doc', content: [] });
+
+    // The shared ydoc fragment no longer yields any htmlEmbed.
+    expect(hasHtmlEmbedNode(TiptapTransformer.fromYdoc(doc, 'default'))).toBe(
+      false,
+    );
+  });
+
+  it('toggle ON + non-admin: preserves a prior admin embed, strips the new one', async () => {
+    const ADMIN_SOURCE = '<script>adminAuthored()</script>';
+    const prior = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+      ],
+    };
+    // Live doc keeps the admin embed AND adds a brand-new one.
+    const doc = buildYdoc({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'intro' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: ADMIN_SOURCE } },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: '<script>evil()</script>' } },
+      ],
+    });
+
+    await runGuard('member', doc, true, prior);
+
+    // Only the admin-vetted source survives in the shared ydoc.
+    expect(
+      collectHtmlEmbedSources(TiptapTransformer.fromYdoc(doc, 'default')),
+    ).toEqual(new Set([ADMIN_SOURCE]));
+  });
+
+  it('toggle OFF + non-admin: strips ALL embeds (allow-list is null)', async () => {
+    // Even an embed that matches the prior content is stripped when the toggle
+    // is OFF, because the OFF path passes allowed=null (strip everything) and
+    // never reads the prior content for an allow-list.
+    const SOURCE = '<script>any()</script>';
+    const doc = buildYdoc({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'hi' }] },
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: SOURCE } },
+      ],
+    });
+    await runGuard('member', doc, false, {
+      type: 'doc',
+      content: [{ type: HTML_EMBED_NODE_NAME, attrs: { source: SOURCE } }],
+    });
+    expect(hasHtmlEmbedNode(TiptapTransformer.fromYdoc(doc, 'default'))).toBe(
+      false,
+    );
+  });
+
+  it('admin role: guard is a defensive no-op (embed preserved)', async () => {
+    const doc = buildYdoc({
+      type: 'doc',
+      content: [
+        { type: HTML_EMBED_NODE_NAME, attrs: { source: '<script>ok()</script>' } },
+      ],
+    });
+    await runGuard('admin', doc, true, { type: 'doc', content: [] });
+    expect(hasHtmlEmbedNode(TiptapTransformer.fromYdoc(doc, 'default'))).toBe(
+      true,
+    );
+  });
+
+  it('no embed present: guard is a cheap no-op (loop-safe re-fire)', async () => {
+    const doc = buildYdoc({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'plain' }] }],
+    });
+    await runGuard('member', doc, true, { type: 'doc', content: [] });
+    expect(hasHtmlEmbedNode(TiptapTransformer.fromYdoc(doc, 'default'))).toBe(
+      false,
+    );
   });
 });
