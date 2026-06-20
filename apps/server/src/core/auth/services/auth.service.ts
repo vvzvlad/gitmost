@@ -57,7 +57,23 @@ export class AuthService {
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
 
-  async login(loginDto: LoginDto, workspaceId: string) {
+  /**
+   * Verify a user's email + password WITHOUT any side effects: it performs the
+   * exact same user lookup, password comparison, email-verified and disabled
+   * checks as `login()`, but does NOT mint a session/token, does NOT write the
+   * USER_LOGIN audit event, and does NOT update lastLoginAt. Returns the matched
+   * user on success; throws UnauthorizedException (credentials) or whatever
+   * `throwIfEmailNotVerified` throws otherwise.
+   *
+   * Use this for repeated per-request credential re-validation (e.g. the /mcp
+   * anti-fixation check on subsequent requests) where minting a new DB session
+   * and audit row on every call would be audit spam / a session-table DoS. The
+   * full `login()` reuses it so there is no behaviour drift between the two.
+   */
+  async verifyUserCredentials(
+    loginDto: LoginDto,
+    workspaceId: string,
+  ): Promise<User> {
     const user = await this.userRepo.findByEmail(loginDto.email, workspaceId, {
       includePassword: true,
     });
@@ -83,6 +99,12 @@ export class AuthService {
       workspaceId,
       appSecret: this.environmentService.getAppSecret(),
     });
+
+    return user;
+  }
+
+  async login(loginDto: LoginDto, workspaceId: string) {
+    const user = await this.verifyUserCredentials(loginDto, workspaceId);
 
     user.lastLoginAt = new Date();
     await this.userRepo.updateLastLogin(user.id, workspaceId);
