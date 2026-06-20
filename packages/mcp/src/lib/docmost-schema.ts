@@ -378,6 +378,83 @@ const Mention = Node.create({
   },
 });
 
+/**
+ * Footnote feature (mirror of packages/editor-ext/src/lib/footnote). Three
+ * nodes connected by `id`:
+ *  - FootnoteReference: inline atom marker in the body (<sup data-footnote-ref>);
+ *  - FootnotesList:     a single bottom container (<section data-footnotes>);
+ *  - FootnoteDefinition: one editable note keyed by id (<div data-footnote-def>).
+ * The visible number is not stored; it is derived from reference order.
+ *
+ * priority 101 so this node's <sup> parse rule beats the Superscript mark's
+ * <sup> rule (otherwise an empty reference is parsed as an empty superscript
+ * mark and dropped). Keep in sync with editor-ext.
+ */
+const FootnoteReference = Node.create({
+  name: "footnoteReference",
+  priority: 101,
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes() {
+    return {
+      id: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-id"),
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.id ? { "data-id": attrs.id } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "sup[data-footnote-ref]", priority: 100 }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["sup", { "data-footnote-ref": "", ...HTMLAttributes }];
+  },
+});
+
+const FootnotesList = Node.create({
+  name: "footnotesList",
+  group: "block",
+  content: "footnoteDefinition+",
+  isolating: true,
+  selectable: false,
+  defining: true,
+  parseHTML() {
+    return [{ tag: "section[data-footnotes]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["section", { "data-footnotes": "", ...HTMLAttributes }, 0];
+  },
+});
+
+const FootnoteDefinition = Node.create({
+  name: "footnoteDefinition",
+  content: "paragraph+",
+  defining: true,
+  isolating: true,
+  selectable: false,
+  addAttributes() {
+    return {
+      id: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-id"),
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.id ? { "data-id": attrs.id } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "div[data-footnote-def]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", { "data-footnote-def": "", ...HTMLAttributes }, 0];
+  },
+});
+
 /** Inline KaTeX expression. Carries the LaTeX source in `text`. */
 const MathInline = Node.create({
   name: "mathInline",
@@ -1069,6 +1146,9 @@ export const docmostExtensions = [
   TableCell,
   TableHeader,
   Mention,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
   MathInline,
   MathBlock,
   Details,

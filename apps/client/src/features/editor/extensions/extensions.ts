@@ -63,6 +63,9 @@ import {
   TransclusionReference,
   PageEmbed,
   TableView,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
 } from "@docmost/editor-ext";
 import {
   randomElement,
@@ -94,6 +97,9 @@ import PdfView from "@/features/editor/components/pdf/pdf-view.tsx";
 import SubpagesView from "@/features/editor/components/subpages/subpages-view.tsx";
 import TransclusionView from "@/features/editor/components/transclusion/transclusion-view.tsx";
 import TransclusionReferenceView from "@/features/editor/components/transclusion/transclusion-reference-view.tsx";
+import FootnoteReferenceView from "@/features/editor/components/footnote/footnote-reference-view.tsx";
+import FootnotesListView from "@/features/editor/components/footnote/footnotes-list-view.tsx";
+import FootnoteDefinitionView from "@/features/editor/components/footnote/footnote-definition-view.tsx";
 import PageEmbedView from "@/features/editor/components/page-embed/page-embed-view.tsx";
 import { common, createLowlight } from "lowlight";
 import plaintext from "highlight.js/lib/languages/plaintext";
@@ -391,6 +397,19 @@ export const mainExtensions = [
   }),
   TransclusionReference.configure({
     view: TransclusionReferenceView,
+  }),
+  FootnoteReference.configure({
+    view: FootnoteReferenceView,
+    // Skip orphan-cleanup on remote/collaboration steps so collaborating
+    // clients never fight over footnote integrity (deterministic numbering
+    // decorations handle the rest).
+    isRemoteTransaction: (tr: any) => isChangeOrigin(tr),
+  }),
+  FootnotesList.configure({
+    view: FootnotesListView,
+  }),
+  FootnoteDefinition.configure({
+    view: FootnoteDefinitionView,
   }),
   PageEmbed.configure({
     view: PageEmbedView,
