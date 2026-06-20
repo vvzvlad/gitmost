@@ -240,6 +240,14 @@ export interface PageTransclusionReferences {
   workspaceId: string;
 }
 
+export interface PageTemplateReferences {
+  createdAt: Generated<Timestamp>;
+  id: Generated<string>;
+  referencePageId: string;
+  sourcePageId: string;
+  workspaceId: string;
+}
+
 export interface PageTransclusions {
   content: Json;
   createdAt: Generated<Timestamp>;
@@ -281,6 +289,7 @@ export interface Pages {
   icon: string | null;
   id: Generated<string>;
   isLocked: Generated<boolean>;
+  isTemplate: Generated<boolean>;
   lastUpdatedAiChatId: string | null;
   lastUpdatedById: string | null;
   lastUpdatedSource: Generated<string>;
@@ -643,6 +652,7 @@ export interface DB {
   notifications: Notifications;
   pageAccess: PageAccess;
   pageTransclusionReferences: PageTransclusionReferences;
+  pageTemplateReferences: PageTemplateReferences;
   pageTransclusions: PageTransclusions;
   pagePermissions: PagePermissions;
   pageHistory: PageHistory;

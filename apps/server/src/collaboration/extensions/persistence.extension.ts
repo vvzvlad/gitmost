@@ -434,5 +434,17 @@ export class PersistenceExtension implements Extension {
         'Failed to sync transclusion references for page',
       );
     }
+    try {
+      await this.transclusionService.syncPageTemplateReferences(
+        pageId,
+        workspaceId,
+        tiptapJson,
+      );
+    } catch (err) {
+      this.logger.error(
+        { err, pageId },
+        'Failed to sync page template references for page',
+      );
+    }
   }
 }

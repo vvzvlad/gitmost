@@ -40,6 +40,7 @@ export class PageRepo {
     'spaceId',
     'workspaceId',
     'isLocked',
+    'isTemplate',
     'createdAt',
     'updatedAt',
     'deletedAt',
@@ -112,6 +113,7 @@ export class PageRepo {
     opts?: {
       trx?: KyselyTransaction;
       workspaceId?: string;
+      includeContent?: boolean;
     },
   ): Promise<Page[]> {
     if (pageIds.length === 0) return [];
@@ -120,6 +122,7 @@ export class PageRepo {
     let query = db
       .selectFrom('pages')
       .select(this.baseFields)
+      .$if(opts?.includeContent, (qb) => qb.select('content'))
       .where('id', 'in', pageIds);
 
     if (opts?.workspaceId) {

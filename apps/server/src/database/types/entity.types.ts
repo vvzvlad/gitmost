@@ -12,6 +12,7 @@ import {
   PageAccess as _PageAccess,
   PageTransclusions,
   PageTransclusionReferences,
+  PageTemplateReferences,
   PagePermissions as _PagePermissions,
   PageVerifications as _PageVerifications,
   PageVerifiers as _PageVerifiers,
@@ -186,6 +187,14 @@ export type PageTransclusionReference = Selectable<PageTransclusionReferences>;
 export type InsertablePageTransclusionReference = Insertable<PageTransclusionReferences>;
 export type UpdatablePageTransclusionReference = Updateable<
   Omit<PageTransclusionReferences, 'id'>
+>;
+
+// Page Template Reference (whole-page live embed back-references)
+export type PageTemplateReference = Selectable<PageTemplateReferences>;
+export type InsertablePageTemplateReference =
+  Insertable<PageTemplateReferences>;
+export type UpdatablePageTemplateReference = Updateable<
+  Omit<PageTemplateReferences, 'id'>
 >;
 
 // File Task

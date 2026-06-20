@@ -2,10 +2,15 @@ import { TransclusionNodeSnapshot } from '../transclusion.types';
 
 const TRANSCLUSION_TYPE = 'transclusionSource';
 const REFERENCE_TYPE = 'transclusionReference';
+const PAGE_EMBED_TYPE = 'pageEmbed';
 
 export type TransclusionReferenceSnapshot = {
   sourcePageId: string;
   transclusionId: string;
+};
+
+export type PageEmbedSnapshot = {
+  sourcePageId: string;
 };
 
 /**
@@ -83,6 +88,45 @@ export function collectReferencesFromPmJson(
 
     // References cannot live inside a source (schema-enforced); skip recursing
     // so a malformed inbound doc can't sneak in a nested reference here.
+    if (node.type === TRANSCLUSION_TYPE) return;
+
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) visit(child);
+    }
+  };
+
+  visit(doc);
+  return out;
+}
+
+/**
+ * Walks a ProseMirror JSON document and returns one snapshot per unique
+ * `sourcePageId` found on `pageEmbed` nodes (whole-page live embeds). Order
+ * preserved by first-seen, duplicates deduped. `pageEmbed` is an atom so it
+ * has no relevant children; we don't descend into transclusion sources.
+ */
+export function collectPageEmbedsFromPmJson(
+  doc: unknown,
+): PageEmbedSnapshot[] {
+  if (!doc || typeof doc !== 'object') return [];
+
+  const seen = new Set<string>();
+  const out: PageEmbedSnapshot[] = [];
+
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+
+    if (node.type === PAGE_EMBED_TYPE) {
+      const sourcePageId = node.attrs?.sourcePageId;
+      if (typeof sourcePageId === 'string' && sourcePageId.length > 0) {
+        if (!seen.has(sourcePageId)) {
+          seen.add(sourcePageId);
+          out.push({ sourcePageId });
+        }
+      }
+      return; // atom node - no children
+    }
+
     if (node.type === TRANSCLUSION_TYPE) return;
 
     if (Array.isArray(node.content)) {
