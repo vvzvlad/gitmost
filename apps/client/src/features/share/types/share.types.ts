@@ -42,6 +42,9 @@ export interface ISharedPage extends IShare {
     sharedPage: { id: string; slugId: string; title: string; icon: string };
   };
   features?: string[];
+  // Whether the anonymous public-share AI assistant is enabled for the
+  // workspace (server-resolved). Gates the "Ask AI" widget.
+  aiAssistant?: boolean;
 }
 
 export interface IShareForPage extends IShare {

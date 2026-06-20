@@ -32,8 +32,17 @@ export class AiService {
   /**
    * Resolve the workspace config and build the chat language model.
    * Throws AiNotConfiguredException (→ 503) when the config is incomplete.
+   *
+   * `override.chatModel` substitutes ONLY the model id; the driver, baseUrl and
+   * apiKey are ALWAYS reused from the workspace's configured chat provider (the
+   * override is not an isolated provider/key). The public-share assistant uses
+   * this to run the cheap `publicShareChatModel` on the SAME provider. An
+   * empty/blank override falls back to the workspace `chatModel`.
    */
-  async getChatModel(workspaceId: string): Promise<LanguageModel> {
+  async getChatModel(
+    workspaceId: string,
+    override?: { chatModel?: string },
+  ): Promise<LanguageModel> {
     const cfg = await this.aiSettings.resolve(workspaceId);
     if (
       !cfg?.driver ||
@@ -42,6 +51,13 @@ export class AiService {
     ) {
       throw new AiNotConfiguredException();
     }
+
+    // Effective model id: a non-blank override, else the workspace chatModel.
+    const overrideModel =
+      typeof override?.chatModel === 'string' && override.chatModel.trim()
+        ? override.chatModel.trim()
+        : undefined;
+    const modelId = overrideModel ?? cfg.chatModel;
 
     switch (cfg.driver) {
       case 'openai':
@@ -52,13 +68,13 @@ export class AiService {
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
         return createOpenAI({ apiKey: cfg.apiKey, baseURL: cfg.baseUrl }).chat(
-          cfg.chatModel,
+          modelId,
         );
       case 'gemini':
-        return createGoogleGenerativeAI({ apiKey: cfg.apiKey })(cfg.chatModel);
+        return createGoogleGenerativeAI({ apiKey: cfg.apiKey })(modelId);
       case 'ollama':
         // Ollama needs no API key.
-        return createOllama({ baseURL: cfg.baseUrl })(cfg.chatModel);
+        return createOllama({ baseURL: cfg.baseUrl })(modelId);
       default:
         throw new AiNotConfiguredException();
     }

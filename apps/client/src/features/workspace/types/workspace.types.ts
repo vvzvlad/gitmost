@@ -25,6 +25,7 @@ export interface IWorkspace {
   mcpEnabled?: boolean;
   aiChat?: boolean;
   aiDictation?: boolean;
+  aiPublicShareAssistant?: boolean;
   trashRetentionDays?: number;
   restrictApiToAdmins?: boolean;
   allowMemberTemplates?: boolean;
@@ -48,6 +49,7 @@ export interface IWorkspaceAiSettings {
   mcp?: boolean;
   chat?: boolean;
   dictation?: boolean;
+  publicShareAssistant?: boolean;
 }
 
 export interface IWorkspaceSharingSettings {
