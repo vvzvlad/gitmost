@@ -173,8 +173,13 @@ describe('TransclusionService — template access core (real filter)', () => {
     expect((items[2] as any).status).toBe('no_access'); // not space-visible
   });
 
-  it('honours the DTO-level ≤50 cap by deduping ids passed to the filter', async () => {
-    // The DTO enforces ArrayMaxSize(50); the service dedupes before filtering.
+  it('dedupes source ids before passing them to the access filter', async () => {
+    // NOTE: this test only covers DEDUP, not the ≤50 cap. The ArrayMaxSize(50)
+    // limit is enforced by the DTO (validation layer), so it is never engaged in
+    // the service under unit test — the service receives an already-validated
+    // array and merely dedupes it. Renamed from the old "honours ≤50 cap" title,
+    // which misleadingly implied the cap was exercised here. A real cap test would
+    // belong in a controller/DTO-validation spec, not in this service unit test.
     const ids = ['a', 'a', 'b'];
     const { service, db } = makeService({
       spaceVisibleRows: [],
