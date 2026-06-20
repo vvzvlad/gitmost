@@ -16,6 +16,8 @@ export type SttApiStyle = "multipart" | "json";
 export interface IAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  // Cheap model id for the anonymous public-share assistant; empty = chatModel.
+  publicShareChatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
@@ -42,6 +44,7 @@ export interface IAiSettings {
 export interface IAiSettingsUpdate {
   driver?: AiDriver;
   chatModel?: string;
+  publicShareChatModel?: string;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;

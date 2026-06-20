@@ -35,6 +35,7 @@ import {
   AUDIT_SERVICE,
   IAuditService,
 } from '../../integrations/audit/audit.service';
+import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('shares')
@@ -46,6 +47,7 @@ export class ShareController {
     private readonly pagePermissionRepo: PagePermissionRepo,
     private readonly pageAccessService: PageAccessService,
     private readonly licenseCheckService: LicenseCheckService,
+    private readonly aiSettings: AiSettingsService,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
 
@@ -79,8 +81,15 @@ export class ShareController {
       throw new NotFoundException('Shared page not found');
     }
 
+    // Surface whether the anonymous public-share AI assistant is enabled, so the
+    // client only renders the "Ask AI" widget when the workspace allows it.
+    const aiAssistant = await this.aiSettings.isPublicShareAssistantEnabled(
+      workspace.id,
+    );
+
     return {
       ...shareData,
+      aiAssistant,
       features: this.licenseCheckService.resolveFeatures(
         workspace.licenseKey,
         workspace.plan,

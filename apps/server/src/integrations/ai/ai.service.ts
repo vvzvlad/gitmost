@@ -53,14 +53,19 @@ export class AiService {
    * Resolve the workspace config and build the chat language model.
    * Throws AiNotConfiguredException (→ 503) when the config is incomplete.
    *
-   * `override` (from an agent role's `model_config`) optionally swaps the model
-   * id and/or the whole provider:
+   * `override` optionally swaps the model id and/or the whole provider:
    *  - `override.chatModel` replaces the workspace chat model id;
    *  - `override.driver` (when it differs from the workspace driver) switches the
    *    provider, pulling that driver's creds from `ai_provider_credentials`. When
    *    those creds are missing the call throws a 503 naming the role's driver — a
    *    deliberate, explicit failure rather than a silent fallback. Resolved
    *    BEFORE the stream starts so the 503 surfaces as clean JSON.
+   *
+   * Two callers: an agent role's `model_config` (may set driver + model), and
+   * the anonymous public-share assistant, which passes ONLY `chatModel` (the
+   * cheap `publicShareChatModel`) so the driver/baseUrl/apiKey stay the
+   * workspace's configured chat provider. A blank override falls back to the
+   * workspace `chatModel`.
    */
   async getChatModel(
     workspaceId: string,

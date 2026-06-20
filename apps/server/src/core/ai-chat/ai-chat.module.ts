@@ -8,6 +8,11 @@ import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { ExternalMcpModule } from './external-mcp/external-mcp.module';
 import { AiAgentRolesModule } from './roles/ai-agent-roles.module';
+import { ShareModule } from '../share/share.module';
+import { SearchModule } from '../search/search.module';
+import { PublicShareChatController } from './public-share-chat.controller';
+import { PublicShareChatService } from './public-share-chat.service';
+import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
 
 /**
  * Per-user AI chat module (§6.1).
@@ -19,6 +24,10 @@ import { AiAgentRolesModule } from './roles/ai-agent-roles.module';
  * + AI_CHAT throttler come from the global ThrottleModule registered in
  * AppModule. EmbeddingModule hosts the vector-RAG indexer + AI_QUEUE consumer
  * (§6.7 stage D); importing it here boots the processor with the app.
+ *
+ * ShareModule (ShareService) + SearchModule (SearchService) are imported for the
+ * ANONYMOUS public-share assistant (PublicShareChatController), whose read-only
+ * tools scope every lookup to a single share tree.
  */
 @Module({
   imports: [
@@ -27,8 +36,16 @@ import { AiAgentRolesModule } from './roles/ai-agent-roles.module';
     EmbeddingModule,
     ExternalMcpModule,
     AiAgentRolesModule,
+    ShareModule,
+    SearchModule,
   ],
-  controllers: [AiChatController],
-  providers: [AiChatService, AiTranscriptionService, AiChatToolsService],
+  controllers: [AiChatController, PublicShareChatController],
+  providers: [
+    AiChatService,
+    AiTranscriptionService,
+    AiChatToolsService,
+    PublicShareChatService,
+    PublicShareChatToolsService,
+  ],
 })
 export class AiChatModule {}

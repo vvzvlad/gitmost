@@ -45,6 +45,8 @@ import AiMcpServers from "./ai-mcp-servers.tsx";
 // (empty means "leave unchanged" unless explicitly cleared).
 const formSchema = z.object({
   chatModel: z.string(),
+  // Cheap model id for the anonymous public-share assistant; empty = use chatModel.
+  publicShareChatModel: z.string(),
   embeddingModel: z.string(),
   baseUrl: z.string(),
   // Embedding-specific base URL. Empty means "use the chat base URL".
@@ -154,9 +156,17 @@ export default function AiProviderSettings() {
   const [dictationEnabled, setDictationEnabled] = useState<boolean>(
     workspace?.settings?.ai?.dictation ?? false,
   );
+  const [publicShareAssistantEnabled, setPublicShareAssistantEnabled] =
+    useState<boolean>(
+      workspace?.settings?.ai?.publicShareAssistant ?? false,
+    );
   const [chatToggleLoading, setChatToggleLoading] = useState(false);
   const [searchToggleLoading, setSearchToggleLoading] = useState(false);
   const [dictationToggleLoading, setDictationToggleLoading] = useState(false);
+  const [
+    publicShareAssistantToggleLoading,
+    setPublicShareAssistantToggleLoading,
+  ] = useState(false);
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -176,6 +186,7 @@ export default function AiProviderSettings() {
     validate: zod4Resolver(formSchema),
     initialValues: {
       chatModel: "",
+      publicShareChatModel: "",
       embeddingModel: "",
       baseUrl: "",
       embeddingBaseUrl: "",
@@ -195,6 +206,7 @@ export default function AiProviderSettings() {
     if (!settings) return;
     form.setValues({
       chatModel: settings.chatModel ?? "",
+      publicShareChatModel: settings.publicShareChatModel ?? "",
       embeddingModel: settings.embeddingModel ?? "",
       baseUrl: settings.baseUrl ?? "",
       embeddingBaseUrl: settings.embeddingBaseUrl ?? "",
@@ -221,6 +233,9 @@ export default function AiProviderSettings() {
       // Everything is OpenAI-compatible.
       driver: "openai",
       chatModel: values.chatModel,
+      // Cheap model id for the anonymous public-share assistant; empty falls
+      // back to chatModel server-side.
+      publicShareChatModel: values.publicShareChatModel,
       embeddingModel: values.embeddingModel,
       // The embedding base URL is optional; empty falls back to the chat base
       // URL server-side.
@@ -384,6 +399,37 @@ export default function AiProviderSettings() {
     }
   }
 
+  // Optimistic toggle for the anonymous public-share AI assistant
+  // (settings.ai.publicShareAssistant). When off, the public endpoint 404s.
+  async function handleTogglePublicShareAssistant(value: boolean) {
+    setPublicShareAssistantToggleLoading(true);
+    const previous = publicShareAssistantEnabled;
+    setPublicShareAssistantEnabled(value);
+    try {
+      const updated = await updateWorkspace({
+        aiPublicShareAssistant: value,
+      });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, publicShareAssistant: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setPublicShareAssistantEnabled(previous);
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setPublicShareAssistantToggleLoading(false);
+    }
+  }
+
   // Admins only — match the previous behavior.
   if (!isAdmin) {
     return (
@@ -510,6 +556,39 @@ export default function AiProviderSettings() {
         />
         <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
           {t("Resolves to {{url}}", { url: chatResolved })}
+        </Text>
+
+        {/* Anonymous public-share assistant: a single master toggle + an
+            optional cheaper model id. Reuses this card's driver/URL/key. */}
+        <Group justify="space-between" align="center" wrap="nowrap" mt="md">
+          <Text fw={600} size="sm">
+            {t("Public share assistant")}
+          </Text>
+          <Switch
+            label={t("Enabled")}
+            labelPosition="left"
+            checked={publicShareAssistantEnabled}
+            disabled={publicShareAssistantToggleLoading}
+            onChange={(e) =>
+              handleTogglePublicShareAssistant(e.currentTarget.checked)
+            }
+          />
+        </Group>
+        <Text size="xs" c="dimmed" mt={4} mb="xs">
+          {t(
+            "Let anonymous visitors of public shares ask an AI assistant scoped to that share's pages. You pay for the tokens.",
+          )}
+        </Text>
+        <TextInput
+          label={t("Public assistant model")}
+          placeholder={t("Defaults to the chat model")}
+          disabled={isLoading || !publicShareAssistantEnabled}
+          {...form.getInputProps("publicShareChatModel")}
+        />
+        <Text size="xs" c="dimmed" mt={4}>
+          {t(
+            "Optional cheaper model id for the public assistant. Empty uses the chat model above.",
+          )}
         </Text>
 
         <Group mt="md" align="center">

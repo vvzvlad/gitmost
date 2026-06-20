@@ -33,6 +33,7 @@ export interface UpdateAiSettingsInput {
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
   sttApiKey?: string;
+  publicShareChatModel?: string;
 }
 
 /**
@@ -94,6 +95,20 @@ export class AiSettingsService {
     );
   }
 
+  /**
+   * Whether the anonymous public-share AI assistant is enabled for a workspace
+   * (single master toggle `settings.ai.publicShareAssistant`, default false).
+   * Used by the public `/api/shares/ai/stream` guardrail funnel: when off, the
+   * route 404s so the feature's existence is not revealed.
+   */
+  async isPublicShareAssistantEnabled(workspaceId: string): Promise<boolean> {
+    const workspace = await this.workspaceRepo.findById(workspaceId);
+    const settings = (workspace?.settings ?? {}) as {
+      ai?: { publicShareAssistant?: boolean };
+    };
+    return settings?.ai?.publicShareAssistant === true;
+  }
+
   /** Read the stored non-secret provider settings for a workspace. */
   private async readProvider(
     workspaceId: string,
@@ -117,6 +132,9 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Cheap model id for the anonymous public-share assistant; reuses the chat
+      // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
+      publicShareChatModel: provider.publicShareChatModel,
       embeddingModel: provider.embeddingModel,
       sttModel: provider.sttModel,
       // Plain passthrough, no fallback; the transcribe path defaults unset to
@@ -197,6 +215,7 @@ export class AiSettingsService {
       sttBaseUrl: provider.sttBaseUrl,
       sttApiStyle: provider.sttApiStyle,
       systemPrompt: provider.systemPrompt,
+      publicShareChatModel: provider.publicShareChatModel,
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
@@ -234,6 +253,7 @@ export class AiSettingsService {
       'sttBaseUrl',
       'sttApiStyle',
       'systemPrompt',
+      'publicShareChatModel',
     ] as const) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];
