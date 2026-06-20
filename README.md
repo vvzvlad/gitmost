@@ -158,6 +158,11 @@ the existing data directory is reused as-is:
 start the new migrations apply on top of your existing schema (`CREATE EXTENSION vector` plus the
 `page_embeddings` and AI tables); watch the logs for `Migration "..." executed successfully`.
 
+> ⚠️ **Never change `APP_SECRET` after setup.** It does double duty: it signs JWTs *and* derives the
+> AES-256-GCM key that encrypts stored AI-provider credentials (API keys). Rotating it makes every
+> saved AI API key undecryptable (you'd have to re-enter them in AI settings) and invalidates all
+> existing sessions. Pick it once, keep it stable, and back it up together with your database.
+
 ### Notes
 
 - **Back up first.** Take a `pg_dump` before swapping — migrations apply in place, and the
