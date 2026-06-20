@@ -96,7 +96,7 @@ export async function getSpaceTree(params: {
   spaceId: string;
   pageId?: string;
 }): Promise<IPage[]> {
-  const req = await api.post("/pages/tree", params);
+  const req = await api.post<{ items: IPage[] }>("/pages/tree", params);
   return req.data.items;
 }
 

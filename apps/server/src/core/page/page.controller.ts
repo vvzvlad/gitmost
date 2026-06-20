@@ -32,7 +32,7 @@ import {
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { Page, User, Workspace } from '@docmost/db/types/entity.types';
-import { SidebarPageDto, SidebarPageTreeDto } from './dto/sidebar-page.dto';
+import { SidebarPageDto } from './dto/sidebar-page.dto';
 import {
   SpaceCaslAction,
   SpaceCaslSubject,
@@ -581,7 +581,7 @@ export class PageController {
   @HttpCode(HttpStatus.OK)
   @Post('/tree')
   async getPagesTree(
-    @Body() dto: SidebarPageTreeDto,
+    @Body() dto: SidebarPageDto,
     @AuthUser() user: User,
   ) {
     if (!dto.spaceId && !dto.pageId) {

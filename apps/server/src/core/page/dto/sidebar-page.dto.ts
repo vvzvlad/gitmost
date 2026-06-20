@@ -9,13 +9,3 @@ export class SidebarPageDto {
   @IsString()
   pageId: string;
 }
-
-export class SidebarPageTreeDto {
-  @IsOptional()
-  @IsUUID()
-  spaceId?: string;
-
-  @IsOptional()
-  @IsString()
-  pageId?: string;
-}

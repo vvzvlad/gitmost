@@ -25,6 +25,8 @@ import {
   buildTree,
   buildTreeWithChildren,
   mergeRootTrees,
+  collectAllIds,
+  collectBranchIds,
 } from "@/features/page/tree/utils/utils.ts";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
@@ -226,16 +228,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
       });
 
       // Open every branch node (node with children) of the current space only.
-      const branchIds: string[] = [];
-      const collectBranchIds = (nodes: SpaceTreeNode[]) => {
-        for (const n of nodes) {
-          if (n.children && n.children.length > 0) {
-            branchIds.push(n.id);
-            collectBranchIds(n.children);
-          }
-        }
-      };
-      collectBranchIds(fullTree);
+      const branchIds = collectBranchIds(fullTree);
 
       setOpenTreeNodes((prev) => {
         const next = { ...prev };
@@ -260,14 +253,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
   const collapseAll = useCallback(() => {
     // The open-map is shared across spaces; collapse only current-space ids so
     // other spaces' expanded state is left intact.
-    const ids = new Set<string>();
-    const walk = (nodes: SpaceTreeNode[]) => {
-      for (const n of nodes) {
-        ids.add(n.id);
-        if (n.children?.length) walk(n.children);
-      }
-    };
-    walk(filteredData);
+    const ids = collectAllIds(filteredData);
 
     setOpenTreeNodes((prev) => {
       const next = { ...prev };
