@@ -46,6 +46,20 @@ describe('isIpAllowed', () => {
     expect(isIpAllowed(ip).ok).toBe(false);
   });
 
+  // IP-level bypass vectors ported from the safety-coverage branch. CGNAT
+  // (100.64/10) and the ULA range (fc00::/7) are already exercised above with
+  // other sample addresses; the genuinely distinct case is the IPv4-mapped
+  // IPv6 *loopback* (::ffff:127.0.0.1) — the table above only had the mapped
+  // *private* variant. fd00::/8 is the commonly-assigned ULA prefix, kept as an
+  // explicit regression guard.
+  it.each([
+    ['CGNAT', '100.64.0.1'],
+    ['ULA fd00::/8', 'fd00::1'],
+    ['IPv4-mapped IPv6 loopback', '::ffff:127.0.0.1'],
+  ])('blocks bypass vector %s (%s)', (_label, ip) => {
+    expect(isIpAllowed(ip).ok).toBe(false);
+  });
+
   it('allows a public IPv4 (8.8.8.8)', () => {
     expect(isIpAllowed('8.8.8.8').ok).toBe(true);
   });
