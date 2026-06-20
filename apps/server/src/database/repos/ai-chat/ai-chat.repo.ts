@@ -32,12 +32,16 @@ export class AiChatRepo {
     // Left-join the bound role for the badge (emoji + name). Joined, not
     // denormalized — the chat list is not a hot path. A soft-deleted role
     // resolves to NULL so the badge disappears, matching the stream's behavior.
+    // A DISABLED role (enabled=false) is likewise excluded: resolveRoleForRequest
+    // downgrades such a chat to the universal assistant, so the badge must not
+    // advertise a role that is not actually applied.
     const query = this.db
       .selectFrom('aiChats')
       .leftJoin('aiAgentRoles', (join) =>
         join
           .onRef('aiAgentRoles.id', '=', 'aiChats.roleId')
-          .on('aiAgentRoles.deletedAt', 'is', null),
+          .on('aiAgentRoles.deletedAt', 'is', null)
+          .on('aiAgentRoles.enabled', '=', true),
       )
       .selectAll('aiChats')
       .select([

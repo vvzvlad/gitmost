@@ -84,4 +84,41 @@ describe('AiService.getChatModel role model override', () => {
     // The override driver's creds were looked up for the right driver.
     expect(aiProviderCredentialsRepo.find).toHaveBeenCalledWith('ws-1', 'gemini');
   });
+
+  it('cross-driver override with creds present: resolves without throwing, using the OVERRIDE driver creds', async () => {
+    // Workspace driver is openai; the role overrides to gemini, which HAS creds.
+    const { service, aiProviderCredentialsRepo, secretBox } = makeService({
+      workspaceDriver: 'openai',
+      credsApiKeyEnc: 'enc-gemini-key',
+    });
+
+    const model = await service.getChatModel('ws-1', {
+      driver: 'gemini',
+      chatModel: 'gemini-2.0-flash',
+      roleName: 'Researcher',
+    });
+
+    // A real LanguageModel was built (no 503).
+    expect(model).toBeDefined();
+    // Creds were fetched for the OVERRIDE driver, then decrypted.
+    expect(aiProviderCredentialsRepo.find).toHaveBeenCalledWith('ws-1', 'gemini');
+    expect(secretBox.decryptSecret).toHaveBeenCalledWith('enc-gemini-key');
+  });
+
+  it('chatModel-only override (no driver): reuses the workspace driver+creds, no creds lookup/decrypt', async () => {
+    // No override.driver => the workspace openai driver + its apiKey are reused;
+    // ai_provider_credentials must NOT be queried and nothing is decrypted.
+    const { service, aiProviderCredentialsRepo, secretBox } = makeService({
+      workspaceDriver: 'openai',
+    });
+
+    const model = await service.getChatModel('ws-1', {
+      chatModel: 'gpt-4o',
+      roleName: 'Writer',
+    });
+
+    expect(model).toBeDefined();
+    expect(aiProviderCredentialsRepo.find).not.toHaveBeenCalled();
+    expect(secretBox.decryptSecret).not.toHaveBeenCalled();
+  });
 });
