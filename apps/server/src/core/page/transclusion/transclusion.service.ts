@@ -233,9 +233,40 @@ export class TransclusionService {
   // ---------------------------------------------------------------------------
 
   /**
+   * Restrict a set of candidate `pageEmbed` source ids to the pages that
+   * actually live in `workspaceId` (and are not soft-deleted). Defense in depth:
+   * `page_template_references` is NOT access-filtered, so we must never persist a
+   * reference to a cross-workspace source page. This is a single workspace-scoped
+   * existence query; it does NOT do per-viewer permission filtering (that stays
+   * the job of `lookupTemplate` at read time — see the warning below).
+   */
+  private async filterInWorkspaceSourceIds(
+    sourceIds: string[],
+    workspaceId: string,
+    trx?: KyselyTransaction,
+  ): Promise<Set<string>> {
+    if (sourceIds.length === 0) return new Set();
+    const db = trx ?? this.db;
+    const rows = await db
+      .selectFrom('pages')
+      .select('id')
+      .where('id', 'in', sourceIds)
+      .where('workspaceId', '=', workspaceId)
+      .where('deletedAt', 'is', null)
+      .execute();
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
    * Diff `page_template_references` for a host page against the `pageEmbed`
    * nodes currently in its content. Mirror of `syncPageReferences` but keyed by
    * `sourcePageId` only (whole-page, no transclusionId). Idempotent.
+   *
+   * SECURITY: `page_template_references` rows are NOT access-filtered. Inserts
+   * are restricted here to in-workspace source pages so the graph can never
+   * accumulate cross-workspace edges, but rows are still NOT per-viewer
+   * permission-filtered. EVERY consumer of these rows MUST permission-filter at
+   * read time (as `lookupTemplate` does via `filterViewerAccessiblePageIds`).
    */
   async syncPageTemplateReferences(
     referencePageId: string,
@@ -244,7 +275,14 @@ export class TransclusionService {
     trx?: KyselyTransaction,
   ): Promise<{ inserted: number; deleted: number }> {
     const desired = collectPageEmbedsFromPmJson(pmJson);
-    const desiredIds = new Set(desired.map((d) => d.sourcePageId));
+    const inWorkspace = await this.filterInWorkspaceSourceIds(
+      desired.map((d) => d.sourcePageId),
+      workspaceId,
+      trx,
+    );
+    const desiredIds = new Set(
+      desired.map((d) => d.sourcePageId).filter((id) => inWorkspace.has(id)),
+    );
 
     const existing =
       await this.pageTemplateReferencesRepo.findByReferencePageId(
@@ -253,12 +291,12 @@ export class TransclusionService {
       );
     const existingIds = new Set(existing.map((e) => e.sourcePageId));
 
-    const toInsert = desired
-      .filter((d) => !existingIds.has(d.sourcePageId))
-      .map((d) => ({
+    const toInsert = Array.from(desiredIds)
+      .filter((id) => !existingIds.has(id))
+      .map((sourcePageId) => ({
         workspaceId,
         referencePageId,
-        sourcePageId: d.sourcePageId,
+        sourcePageId,
       }));
 
     const toDelete = existing
@@ -282,23 +320,57 @@ export class TransclusionService {
   /**
    * Bulk-insert `page_template_references` for brand-new pages (duplication,
    * import) where there is nothing to diff against.
+   *
+   * SECURITY: like `syncPageTemplateReferences`, inserts are restricted to
+   * in-workspace source pages so the (non-access-filtered) reference graph never
+   * gains a cross-workspace edge. Read-time per-viewer permission filtering is
+   * still required by every consumer.
    */
   async insertTemplateReferencesForPages(
     pages: Array<{ id: string; workspaceId: string; content: unknown }>,
     trx?: KyselyTransaction,
   ): Promise<{ inserted: number }> {
+    // Collect candidate source ids per workspace, then validate each workspace's
+    // set in a single existence query before building insert rows.
+    const candidatesByWorkspace = new Map<string, Set<string>>();
+    const pageEmbeds = pages.map((page) => {
+      const sourceIds = collectPageEmbedsFromPmJson(page.content).map(
+        (e) => e.sourcePageId,
+      );
+      let set = candidatesByWorkspace.get(page.workspaceId);
+      if (!set) {
+        set = new Set();
+        candidatesByWorkspace.set(page.workspaceId, set);
+      }
+      for (const id of sourceIds) set.add(id);
+      return { page, sourceIds };
+    });
+
+    const inWorkspaceByWorkspace = new Map<string, Set<string>>();
+    for (const [workspaceId, candidates] of candidatesByWorkspace) {
+      inWorkspaceByWorkspace.set(
+        workspaceId,
+        await this.filterInWorkspaceSourceIds(
+          Array.from(candidates),
+          workspaceId,
+          trx,
+        ),
+      );
+    }
+
     const rows: Array<{
       workspaceId: string;
       referencePageId: string;
       sourcePageId: string;
     }> = [];
-    for (const page of pages) {
-      const embeds = collectPageEmbedsFromPmJson(page.content);
-      for (const e of embeds) {
+    for (const { page, sourceIds } of pageEmbeds) {
+      const inWorkspace = inWorkspaceByWorkspace.get(page.workspaceId);
+      for (const sourcePageId of sourceIds) {
+        if (!inWorkspace?.has(sourcePageId)) continue;
         rows.push({
           workspaceId: page.workspaceId,
           referencePageId: page.id,
-          sourcePageId: e.sourcePageId,
+          sourcePageId,
         });
       }
     }

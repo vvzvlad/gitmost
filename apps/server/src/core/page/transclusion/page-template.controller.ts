@@ -7,6 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../../common/decorators/auth-user.decorator';
 import { User } from '@docmost/db/types/entity.types';
@@ -15,6 +16,8 @@ import { TemplateLookupDto } from './dto/template-lookup.dto';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PageAccessService } from '../page-access/page-access.service';
 import { ToggleTemplateDto } from './dto/toggle-template.dto';
+import { UserThrottlerGuard } from '../../../integrations/throttle/user-throttler.guard';
+import { PAGE_TEMPLATE_THROTTLER } from '../../../integrations/throttle/throttler-names';
 
 @UseGuards(JwtAuthGuard)
 @Controller('pages')
@@ -28,7 +31,14 @@ export class PageTemplateController {
   /**
    * Whole-page live embed lookup for authenticated viewers. Returns current
    * content (comment marks stripped) for accessible source pages.
+   *
+   * DoS note: the embed cycle/depth cap (PAGE_EMBED_MAX_DEPTH=5) is enforced
+   * CLIENT-side only — a scripted client could otherwise drive heavy full-doc
+   * fan-out. The server bounds the cost with this per-user throttle plus the
+   * DTO's ArrayMaxSize(50) cap; server-side recursive expansion is out of scope.
    */
+  @UseGuards(JwtAuthGuard, UserThrottlerGuard)
+  @Throttle({ [PAGE_TEMPLATE_THROTTLER]: { limit: 30, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @Post('template/lookup')
   async lookup(@Body() dto: TemplateLookupDto, @AuthUser() user: User) {
@@ -44,6 +54,8 @@ export class PageTemplateController {
    * inside `validateCanEdit`). The flag only affects template picker discovery;
    * it does not restrict editing or embedding.
    */
+  @UseGuards(JwtAuthGuard, UserThrottlerGuard)
+  @Throttle({ [PAGE_TEMPLATE_THROTTLER]: { limit: 30, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @Post('toggle-template')
   async toggleTemplate(
