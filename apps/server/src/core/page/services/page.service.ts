@@ -716,7 +716,7 @@ export class PageService {
             const sourcePageId = node.attrs.sourcePageId;
             if (sourcePageId && pageMap.has(sourcePageId)) {
               const mappedPage = pageMap.get(sourcePageId);
-              //@ts-ignore
+              // @ts-expect-error ProseMirror Attrs is read-only typed; reassigning sourcePageId to the duplicated page copy is intentional here
               node.attrs.sourcePageId = mappedPage.newPageId;
             }
           }
