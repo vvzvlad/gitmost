@@ -58,4 +58,26 @@ describe('describeProviderError', () => {
     // 'e | response body: ' + 300 chars + '…'
     expect(out.length).toBeLessThan('e | response body: '.length + 305);
   });
+
+  it('uses the fallback for a numeric or boolean (non-object, non-string) error', () => {
+    // typeof number / boolean is neither 'object' nor a non-empty 'string', so
+    // the early branch returns the fallback verbatim.
+    expect(describeProviderError(500, 'AI stream error')).toBe('AI stream error');
+    expect(describeProviderError(0, 'AI stream error')).toBe('AI stream error');
+    expect(describeProviderError(true)).toBe('Unknown error');
+    expect(describeProviderError(false, 'fb')).toBe('fb');
+  });
+
+  it('statusCode present but message undefined => "<code>:" with no trailing space', () => {
+    // `${code}: ${undefined ?? ''}`.trim() collapses to just "<code>:".
+    expect(describeProviderError({ statusCode: 503 })).toBe('503:');
+    // The trailing space after the colon is trimmed away.
+    expect(describeProviderError({ statusCode: 503 }).endsWith(': ')).toBe(false);
+  });
+
+  it('object with neither message nor statusCode nor body => fallback', () => {
+    expect(describeProviderError({}, 'AI stream error')).toBe('AI stream error');
+    // An object carrying only unrelated keys is still treated as message-less.
+    expect(describeProviderError({ foo: 'bar' } as never)).toBe('Unknown error');
+  });
 });

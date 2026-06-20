@@ -21,8 +21,8 @@ import { usePageEmbedLookup } from "./page-embed-lookup-context";
 import {
   PageEmbedAncestryProvider,
   usePageEmbedAncestry,
-  PAGE_EMBED_MAX_DEPTH,
 } from "./page-embed-ancestry-context";
+import { decideEmbedState } from "./decide-embed-state";
 import PageEmbedContent from "./page-embed-content";
 
 function Placeholder({
@@ -99,13 +99,15 @@ function PageEmbedBody({
     }
   };
 
-  // --- Cycle / depth guard (evaluated before any lookup is rendered) ---------
-  // Self-embed or a source already present in the ancestor chain → cycle.
-  const isCycle =
-    !!sourcePageId &&
-    (ancestry.chain.includes(sourcePageId) ||
-      ancestry.hostPageId === sourcePageId);
-  const isTooDeep = ancestry.chain.length >= PAGE_EMBED_MAX_DEPTH;
+  // --- Cycle / depth / availability decision (pure, unit-tested) ------------
+  // Evaluated before any nested editor is rendered.
+  const embedState = decideEmbedState({
+    sourcePageId,
+    chain: ancestry.chain,
+    hostPageId: ancestry.hostPageId,
+    available,
+    result,
+  });
 
   const sourceTitle =
     result && !("status" in result) ? result.title : null;
@@ -187,28 +189,28 @@ function PageEmbedBody({
     ) : null;
 
   let body: React.ReactNode;
-  if (!sourcePageId) {
+  if (embedState === "no_source") {
     body = (
       <Placeholder
         icon={<IconInfoCircle size={18} stroke={1.6} />}
         label={t("No page selected")}
       />
     );
-  } else if (isCycle) {
+  } else if (embedState === "cycle") {
     body = (
       <Placeholder
         icon={<IconRepeat size={18} stroke={1.6} />}
         label={t("Circular embed: this page is already shown above")}
       />
     );
-  } else if (isTooDeep) {
+  } else if (embedState === "too_deep") {
     body = (
       <Placeholder
         icon={<IconRepeat size={18} stroke={1.6} />}
         label={t("Embed nesting limit reached")}
       />
     );
-  } else if (!available) {
+  } else if (embedState === "unavailable") {
     // No lookup context (e.g. public share) → placeholder, no fetch in MVP.
     body = (
       <Placeholder
@@ -216,9 +218,9 @@ function PageEmbedBody({
         label={t("Embedded page is not available here")}
       />
     );
-  } else if (!result) {
+  } else if (embedState === "loading") {
     body = <div style={{ minHeight: 24 }} />;
-  } else if (!("status" in result)) {
+  } else if (embedState === "ok" && result && !("status" in result)) {
     body = (
       <PageEmbedAncestryProvider
         sourcePageId={sourcePageId}
@@ -227,7 +229,7 @@ function PageEmbedBody({
         <PageEmbedContent content={result.content} />
       </PageEmbedAncestryProvider>
     );
-  } else if (result.status === "no_access") {
+  } else if (embedState === "no_access") {
     body = (
       <Placeholder
         icon={<IconEyeOff size={18} stroke={1.6} />}

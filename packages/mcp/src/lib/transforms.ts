@@ -265,6 +265,66 @@ export function noteItem(inlineNodes: any[]): any {
 }
 
 /**
+ * Wrap inline ProseMirror nodes in a real footnoteDefinition node keyed by id:
+ *   { type:"footnoteDefinition", attrs:{id}, content:[{ type:"paragraph", content }] }
+ * (mirrors the editor-ext / docmost-schema FootnoteDefinition node).
+ */
+export function footnoteDefinition(id: string, inlineNodes: any[]): any {
+  const content = Array.isArray(inlineNodes) ? clone(inlineNodes) : [];
+  return {
+    type: "footnoteDefinition",
+    attrs: { id },
+    content: [{ type: "paragraph", attrs: { id: freshId() }, content }],
+  };
+}
+
+/**
+ * Replace every `[N]` body marker and `\u0000FN<i>\u0000` comment placeholder in
+ * an inline content array with a real `footnoteReference` node, in reading
+ * order. `onMarker` is called for each replaced marker (with the original `[N]`
+ * number or the placeholder index) and returns the fresh footnote id to attach
+ * to the inserted node. Mutates `inline` in place.
+ */
+function replaceMarkersWithReferences(
+  inline: any[],
+  onMarker: (info: { oldNum?: number; phIdx?: number }) => string,
+): void {
+  const re = /\[(\d+)\]|\u0000FN(\d+)\u0000/g;
+  for (let i = 0; i < inline.length; i++) {
+    const n = inline[i];
+    if (!isObject(n) || n.type !== "text" || typeof n.text !== "string") {
+      continue;
+    }
+    if (!re.test(n.text)) continue;
+    re.lastIndex = 0;
+
+    const marks = Array.isArray(n.marks) ? n.marks : [];
+    const parts: any[] = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(n.text)) !== null) {
+      if (m.index > last) {
+        parts.push({ ...n, text: n.text.slice(last, m.index), marks: [...marks] });
+      }
+      const oldNum = m[1] != null ? Number(m[1]) : undefined;
+      const phIdx = m[2] != null ? Number(m[2]) : undefined;
+      const fnId = onMarker({ oldNum, phIdx });
+      parts.push({ type: "footnoteReference", attrs: { id: fnId } });
+      last = m.index + m[0].length;
+    }
+    if (last < n.text.length) {
+      parts.push({ ...n, text: n.text.slice(last), marks: [...marks] });
+    }
+    // Drop any zero-length text runs the slicing may have produced.
+    const cleaned = parts.filter(
+      (p) => p.type !== "text" || (typeof p.text === "string" && p.text.length > 0),
+    );
+    inline.splice(i, 1, ...cleaned);
+    i += cleaned.length - 1;
+  }
+}
+
+/**
  * Convert a comment's markdown (e.g. `**Lead.** body...`) into inline
  * ProseMirror nodes.
  *
@@ -388,54 +448,91 @@ export function commentsToFootnotes(
   }
 
   const consumed: string[] = [];
-  const noteByPh = new Map<string, any>();
+  const noteInlineByPh = new Map<string, any[]>();
 
   (Array.isArray(comments) ? comments : []).forEach((c, i) => {
     if (!c || !c.selection) return;
     // Collision-proof sentinel delimited by NUL control chars, which never occur
-    // in real Docmost prose — so the renumber regex below cannot mistake any body
-    // text (e.g. "Press F1 for help", model "FN2") for a placeholder. The NUL is
-    // transient: the placeholder round-trips within this function (insertMarkerAfter
-    // inserts it, the renumber pass replaces it with "[N]"), so it never persists
-    // in a returned/pushed document.
+    // in real Docmost prose - so the marker regex cannot mistake any body text
+    // (e.g. "Press F1 for help", model "FN2") for a placeholder. The NUL is
+    // transient: the placeholder is inserted here and replaced by a
+    // footnoteReference node below; it never persists in a returned document.
     const ph = `\u0000FN${i}\u0000`;
-    // insertMarkerAfter returns a NEW cloned doc; reassign `working` and refresh
-    // the `top` / `notesList` references that point into it.
+    // insertMarkerAfter returns a NEW cloned doc; reassign `working`.
     const r = insertMarkerAfter(working, c.selection.trimEnd(), ph, {
       beforeBlock: notesIdx,
     });
     if (!r.inserted) return;
     working = r.doc;
-    noteByPh.set(ph, noteItem(mdToInlineNodes(c.content)));
+    noteInlineByPh.set(ph, mdToInlineNodes(c.content));
     consumed.push(c.id);
   });
 
   // Re-resolve references into the (possibly re-cloned) working doc.
   const top2: any[] = Array.isArray(working.content) ? working.content : [];
-  const notesList2 = top2
-    .slice(notesIdx)
-    .find((n) => isObject(n) && n.type === "orderedList");
+  const notesIdx2 = top2.findIndex(
+    (n) => isObject(n) && n.type === "heading" && blockText(n).trim() === notesHeading,
+  );
+  const oldListIndex = top2.findIndex(
+    (n) => isObject(n) && n.type === "orderedList",
+  );
+  const notesList2 = oldListIndex >= 0 ? top2[oldListIndex] : null;
   if (!notesList2) {
     throw new Error("notes orderedList not found");
   }
 
-  const oldNotes: any[] = Array.isArray(notesList2.content)
+  // Inline content of each existing note (listItem -> paragraph -> inline).
+  const oldNoteInline = (Array.isArray(notesList2.content)
     ? notesList2.content
-    : [];
-  const newNotes: any[] = [];
-  let seq = 0;
-  // Match either an existing "[N]" marker or a NUL-delimited "\u0000FN<i>\u0000"
-  // placeholder, in reading order across the body (blocks before the notes heading).
-  const re = /\[(\d+)\]|\u0000FN(\d+)\u0000/g;
-  // Same range regex setCalloutRange uses to detect the disclaimer callout's
-  // "[1]…[K]" range; used here to decide whether a top-level callout is the
-  // disclaimer (skip) or an ordinary callout (renumber normally).
+    : []
+  ).map((item: any) => {
+    const para =
+      isObject(item) && Array.isArray(item.content)
+        ? item.content.find((c: any) => isObject(c) && c.type === "paragraph")
+        : null;
+    return para && Array.isArray(para.content) ? para.content : [];
+  });
+
+  // Walk the body in reading order, turning each "[N]" / placeholder marker into
+  // a real footnoteReference node and collecting its definition inline content.
+  const definitions: any[] = [];
   const disclaimerRangeRe = /(\[1\]\s*(?:…|\.\.\.)\s*\[)\d+(\])/;
-  for (let i = 0; i < notesIdx; i++) {
-    // Skip ONLY the disclaimer callout: its "[1]…[K]" range is NOT a footnote
-    // marker and is synced separately by setCalloutRange. Renumbering it here
-    // would consume note slots and corrupt the sequence. Other top-level
-    // callouts may carry legitimate "[N]" body markers and are renumbered.
+
+  // Recursively visit inline arrays inside a block (paragraph, heading, callout
+  // child paragraphs, table cells, ...), preserving document reading order.
+  const visitInlineArrays = (container: any): void => {
+    if (!isObject(container) || !Array.isArray(container.content)) return;
+    const hasText = container.content.some(
+      (n: any) => isObject(n) && n.type === "text",
+    );
+    if (hasText) {
+      replaceMarkersWithReferences(container.content, ({ oldNum, phIdx }) => {
+        const fnId = freshId();
+        if (oldNum != null) {
+          const inline = oldNoteInline[oldNum - 1];
+          // Every existing body marker MUST map to a real note. An out-of-range
+          // marker means the document is internally inconsistent; fail loudly.
+          if (inline === undefined) {
+            throw new Error(
+              `footnote [${oldNum}] has no matching note (notes list has ${oldNoteInline.length} items); document is inconsistent`,
+            );
+          }
+          definitions.push(footnoteDefinition(fnId, inline));
+        } else {
+          const inline = noteInlineByPh.get(`\u0000FN${phIdx}\u0000`) || [];
+          definitions.push(footnoteDefinition(fnId, inline));
+        }
+        return fnId;
+      });
+    } else {
+      for (const child of container.content) visitInlineArrays(child);
+    }
+  };
+
+  const notesBoundary = notesIdx2 >= 0 ? notesIdx2 : oldListIndex;
+  for (let i = 0; i < notesBoundary; i++) {
+    // Skip ONLY the disclaimer callout: its "[1]...[K]" range is NOT a footnote
+    // marker and is synced separately by setCalloutRange.
     if (
       isObject(top2[i]) &&
       top2[i].type === "callout" &&
@@ -443,35 +540,22 @@ export function commentsToFootnotes(
     ) {
       continue;
     }
-    walk(top2[i], (node) => {
-      if (node.type !== "text" || typeof node.text !== "string") return;
-      node.text = node.text.replace(re, (_m: string, oldNum: string, phIdx: string) => {
-        if (oldNum != null) {
-          const note = oldNotes[Number(oldNum) - 1];
-          // Every existing body marker MUST map to a real note. An out-of-range
-          // marker means the document is internally inconsistent; fail loudly
-          // rather than silently dropping the note and desyncing the callout.
-          if (note === undefined) {
-            throw new Error(
-              `footnote [${oldNum}] has no matching note (notes list has ${oldNotes.length} items); document is inconsistent`,
-            );
-          }
-          newNotes.push(note);
-        } else {
-          newNotes.push(noteByPh.get(`\u0000FN${phIdx}\u0000`));
-        }
-        return `[${++seq}]`;
-      });
-    });
+    visitInlineArrays(top2[i]);
   }
 
-  // Reorder the notes list IN PLACE on `working` first, THEN sync the callout
-  // range. setCalloutRange clones `working`, so the reordered notes (mutated
-  // before the clone) are carried into its result automatically. No null-filter
-  // here: marker count and note count must stay exactly equal (the out-of-range
-  // guard above guarantees no undefined entry is ever pushed).
-  notesList2.content = newNotes;
-  const synced = setCalloutRange(working, notesList2.content.length);
+  // Replace the old orderedList with a real footnotesList of the collected
+  // definitions (reading order). If there are no definitions, drop the list.
+  if (definitions.length > 0) {
+    top2[oldListIndex] = {
+      type: "footnotesList",
+      content: definitions,
+    };
+  } else {
+    top2.splice(oldListIndex, 1);
+  }
+
+  // Sync the disclaimer callout range to the new note count.
+  const synced = setCalloutRange(working, definitions.length);
 
   return { doc: synced.doc, consumed };
 }

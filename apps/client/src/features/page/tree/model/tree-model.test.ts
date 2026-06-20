@@ -196,6 +196,17 @@ describe('treeModel.insertByPosition', () => {
     const t = treeModel.insertByPosition(roots, null, node);
     expect(t.map((n) => n.id)).toEqual(['a', 'b', 'c', 'x']);
   });
+
+  it('tie-break: a node whose position EQUALS a sibling lands deterministically (strict >)', () => {
+    // The insertion index is the first sibling whose position sorts STRICTLY
+    // after the new node's. An equal sibling is not strictly after, so it is
+    // skipped — the new node lands immediately AFTER every equal-position
+    // sibling and before the first strictly-greater one. This is deterministic:
+    // a tie always resolves the same way on every client.
+    const node: P = { id: 'x', name: 'X', position: 'a2' }; // equals b's position
+    const t = treeModel.insertByPosition(roots, null, node);
+    expect(t.map((n) => n.id)).toEqual(['a', 'b', 'x', 'c']);
+  });
 });
 
 // addTreeNode idempotency: the receiver early-returns when the node id already
@@ -691,5 +702,46 @@ describe('treeModel.move', () => {
       targetId: 'ghost',
     });
     expect(out.tree).toBe(fixture);
+  });
+
+  it('cross-parent move does NOT apply the same-parent adjust (no off-by-one)', () => {
+    // Source `x3` sits at index 2 in parent `x`; target `y1` sits at index 0 in
+    // parent `y`. sourceInfo.index (2) > info.index (0) AND the parents differ,
+    // so the `sameParent && source.index < info.index` adjust must be 0 — the
+    // node must land at index 0 in `y`, not at index -1 (which would silently
+    // drop it at a wrong slot / off-by-one).
+    const crossFixture: N[] = [
+      {
+        id: 'x',
+        name: 'X',
+        children: [
+          { id: 'x1', name: 'X1' },
+          { id: 'x2', name: 'X2' },
+          { id: 'x3', name: 'X3' },
+        ],
+      },
+      {
+        id: 'y',
+        name: 'Y',
+        children: [
+          { id: 'y1', name: 'Y1' },
+          { id: 'y2', name: 'Y2' },
+        ],
+      },
+    ];
+    const { tree: t, result } = treeModel.move(crossFixture, 'x3', {
+      kind: 'reorder-before',
+      targetId: 'y1',
+    });
+    expect(result).toEqual({ parentId: 'y', index: 0 });
+    expect(treeModel.find(t, 'y')?.children?.map((n) => n.id)).toEqual([
+      'x3',
+      'y1',
+      'y2',
+    ]);
+    expect(treeModel.find(t, 'x')?.children?.map((n) => n.id)).toEqual([
+      'x1',
+      'x2',
+    ]);
   });
 });

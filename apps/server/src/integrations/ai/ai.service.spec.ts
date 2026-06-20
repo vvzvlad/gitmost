@@ -171,4 +171,117 @@ describe('AiService.getChatModel role model override', () => {
     expect(aiProviderCredentialsRepo.find).not.toHaveBeenCalled();
     expect(secretBox.decryptSecret).not.toHaveBeenCalled();
   });
+
+  /**
+   * Build a service whose workspace driver is ollama (no apiKey, with a baseUrl).
+   * Complements makeService (which configures openai) for the same-driver and
+   * not-configured ollama cases.
+   */
+  function makeOllamaService(over: { baseUrl?: string } = {}) {
+    const aiSettings = {
+      resolve: jest.fn().mockResolvedValue({
+        driver: 'ollama',
+        chatModel: 'llama3',
+        apiKey: undefined,
+        baseUrl: over.baseUrl ?? 'http://localhost:11434/v1',
+      }),
+    };
+    const aiProviderCredentialsRepo = { find: jest.fn() };
+    const secretBox = { decryptSecret: jest.fn() };
+    const service = new AiService(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiSettings as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiProviderCredentialsRepo as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      secretBox as any,
+    );
+    return { service, aiSettings, aiProviderCredentialsRepo, secretBox };
+  }
+
+  it('same-driver ollama override (workspace driver=ollama): reuses the workspace ollama baseUrl, no creds lookup/decrypt', async () => {
+    // Workspace driver IS ollama. A role that overrides to ollama (same driver)
+    // legitimately reuses the workspace's configured ollama endpoint — it must
+    // NOT hit the cross-driver 503 path, NOT query ai_provider_credentials, and
+    // NOT decrypt anything (ollama needs no key).
+    const { service, aiProviderCredentialsRepo, secretBox } = makeOllamaService();
+
+    const model = await service.getChatModel('ws-1', {
+      driver: 'ollama',
+      chatModel: 'llama3.1',
+      roleName: 'Local',
+    });
+
+    expect(model).toBeDefined();
+    expect(aiProviderCredentialsRepo.find).not.toHaveBeenCalled();
+    expect(secretBox.decryptSecret).not.toHaveBeenCalled();
+  });
+
+  it('chatModel-only override on an ollama workspace: reuses the workspace ollama baseUrl, no creds lookup', async () => {
+    // No override.driver on an ollama workspace => the workspace ollama driver +
+    // baseUrl are reused; no creds lookup, no decrypt (the cheap public-share
+    // model-only override path against an ollama workspace).
+    const { service, aiProviderCredentialsRepo, secretBox } = makeOllamaService();
+
+    const model = await service.getChatModel('ws-1', { chatModel: 'mistral' });
+
+    expect(model).toBeDefined();
+    expect(aiProviderCredentialsRepo.find).not.toHaveBeenCalled();
+    expect(secretBox.decryptSecret).not.toHaveBeenCalled();
+  });
+
+  it('blank chatModel guard: workspace has a driver but a blank chatModel and no override chatModel => AiNotConfiguredException', async () => {
+    // cfg.driver passes the first guard, but cfg.chatModel is blank and the
+    // override carries no chatModel, so the effective chatModel is empty.
+    const aiSettings = {
+      resolve: jest.fn().mockResolvedValue({
+        driver: 'openai',
+        chatModel: '',
+        apiKey: 'workspace-key',
+        baseUrl: undefined,
+      }),
+    };
+    const aiProviderCredentialsRepo = { find: jest.fn() };
+    const secretBox = { decryptSecret: jest.fn() };
+    const service = new AiService(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiSettings as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiProviderCredentialsRepo as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      secretBox as any,
+    );
+
+    await expect(
+      // Override has only a roleName, no chatModel to fill the blank.
+      service.getChatModel('ws-1', { roleName: 'Writer' }),
+    ).rejects.toBeInstanceOf(AiNotConfiguredException);
+  });
+
+  it('non-ollama driver with a missing apiKey => AiNotConfiguredException', async () => {
+    // Workspace is openai (non-ollama) with a model but NO apiKey: the combined
+    // `driver !== ollama && !apiKey` guard must 503.
+    const aiSettings = {
+      resolve: jest.fn().mockResolvedValue({
+        driver: 'openai',
+        chatModel: 'gpt-4o-mini',
+        apiKey: undefined,
+        baseUrl: undefined,
+      }),
+    };
+    const aiProviderCredentialsRepo = { find: jest.fn() };
+    const secretBox = { decryptSecret: jest.fn() };
+    const service = new AiService(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiSettings as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiProviderCredentialsRepo as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      secretBox as any,
+    );
+
+    await expect(service.getChatModel('ws-1')).rejects.toBeInstanceOf(
+      AiNotConfiguredException,
+    );
+  });
 });

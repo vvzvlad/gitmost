@@ -98,6 +98,33 @@ export function resolveCardStatus(
   return enabled ? "warning" : "off";
 }
 
+// Pure + unit-testable. A non-chat endpoint (embeddings / voice) is "configured"
+// when its model is set AND it has a usable base URL: either its own base URL is
+// non-empty, or the chat base URL is non-empty (inherited when own is empty).
+// All inputs are trimmed so whitespace-only values do not count as filled.
+export function isEndpointConfigured(
+  model: string,
+  ownBase: string,
+  chatBase: string,
+): boolean {
+  return (
+    model.trim() !== "" && (ownBase.trim() !== "" || chatBase.trim() !== "")
+  );
+}
+
+// Pure + unit-testable. Write-only API-key payload semantics:
+//   - typed a value (buffer non-empty) -> set it
+//   - explicitly cleared -> send '' to clear the stored key
+//   - untouched (empty buffer, not cleared) -> omit the key entirely
+export function resolveKeyField(
+  buffer: string,
+  cleared: boolean,
+): { set: true; value: string } | { set: false } {
+  if (buffer.length > 0) return { set: true, value: buffer };
+  if (cleared) return { set: true, value: "" };
+  return { set: false };
+}
+
 // Translate the dot's tooltip label. Kept in one place so all three endpoint
 // cards share identical wording.
 function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
@@ -263,29 +290,23 @@ export default function AiProviderSettings() {
       sttApiStyle: values.sttApiStyle,
     };
 
-    // Key semantics (never send the stored key back):
+    // Key semantics (never send the stored key back) — see resolveKeyField:
     //   - typed a value -> set it
     //   - explicitly cleared -> send '' to clear
     //   - untouched -> omit the key entirely (leave unchanged)
-    if (values.apiKey.length > 0) {
-      payload.apiKey = values.apiKey;
-    } else if (keyCleared) {
-      payload.apiKey = "";
-    }
+    const apiKeyField = resolveKeyField(values.apiKey, keyCleared);
+    if (apiKeyField.set) payload.apiKey = apiKeyField.value;
 
     // Same write-only semantics for the embedding-specific key.
-    if (values.embeddingApiKey.length > 0) {
-      payload.embeddingApiKey = values.embeddingApiKey;
-    } else if (embeddingKeyCleared) {
-      payload.embeddingApiKey = "";
-    }
+    const embeddingKeyField = resolveKeyField(
+      values.embeddingApiKey,
+      embeddingKeyCleared,
+    );
+    if (embeddingKeyField.set) payload.embeddingApiKey = embeddingKeyField.value;
 
     // Same write-only semantics for the STT-specific key.
-    if (values.sttApiKey.length > 0) {
-      payload.sttApiKey = values.sttApiKey;
-    } else if (sttKeyCleared) {
-      payload.sttApiKey = "";
-    }
+    const sttKeyField = resolveKeyField(values.sttApiKey, sttKeyCleared);
+    if (sttKeyField.set) payload.sttApiKey = sttKeyField.value;
 
     return payload;
   }
@@ -460,12 +481,12 @@ export default function AiProviderSettings() {
   const v = form.values;
   const chatBase = v.baseUrl.trim();
   const chatConfigured = v.chatModel.trim() !== "" && chatBase !== "";
-  const embedConfigured =
-    v.embeddingModel.trim() !== "" &&
-    (v.embeddingBaseUrl.trim() !== "" || chatBase !== "");
-  const sttConfigured =
-    v.sttModel.trim() !== "" &&
-    (v.sttBaseUrl.trim() !== "" || chatBase !== "");
+  const embedConfigured = isEndpointConfigured(
+    v.embeddingModel,
+    v.embeddingBaseUrl,
+    v.baseUrl,
+  );
+  const sttConfigured = isEndpointConfigured(v.sttModel, v.sttBaseUrl, v.baseUrl);
 
   const chatStatus = resolveCardStatus(chatConfigured, chatEnabled);
   const embedStatus = resolveCardStatus(embedConfigured, searchEnabled);

@@ -80,6 +80,67 @@ describe('collectPageEmbedsFromPmJson', () => {
     };
     expect(collectPageEmbedsFromPmJson(doc)).toEqual([]);
   });
+
+  it('ignores a pageEmbed whose sourcePageId is not a string', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'pageEmbed', attrs: { sourcePageId: 123 as any } },
+        { type: 'pageEmbed', attrs: { sourcePageId: null as any } },
+        { type: 'pageEmbed', attrs: { sourcePageId: { nested: true } as any } },
+        { type: 'pageEmbed', attrs: { sourcePageId: ['arr'] as any } },
+        // a valid one mixed in proves only the bad ones are dropped
+        { type: 'pageEmbed', attrs: { sourcePageId: 'good' } },
+      ],
+    };
+    expect(collectPageEmbedsFromPmJson(doc)).toEqual([
+      { sourcePageId: 'good' },
+    ]);
+  });
+
+  it('collects a pageEmbed nested under multiple block containers', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'callout',
+          content: [
+            {
+              type: 'columns',
+              content: [
+                {
+                  type: 'column',
+                  content: [
+                    {
+                      type: 'details',
+                      content: [
+                        {
+                          type: 'pageEmbed',
+                          attrs: { sourcePageId: 'deep' },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(collectPageEmbedsFromPmJson(doc)).toEqual([{ sourcePageId: 'deep' }]);
+  });
+
+  it('terminates (does not silently hang) on a self-referencing/cyclic object', () => {
+    // FINDING: there is NO explicit cycle guard. A hand-built cyclic JS object
+    // (which cannot arise from JSON parsing — the real input path) makes the
+    // recursive walk overflow the stack and throw a RangeError. It TERMINATES
+    // with a controlled error rather than recursing unboundedly forever, and a
+    // non-cyclic (JSON-shaped) document is never affected.
+    const node: any = { type: 'doc', content: [] };
+    node.content.push(node); // content array references its own parent node
+    expect(() => collectPageEmbedsFromPmJson(node)).toThrow(RangeError);
+  });
 });
 
 describe('pageEmbed HTML <-> JSON round-trip (server schema)', () => {

@@ -1,0 +1,111 @@
+/* Superscript reference marker. The visible number comes from the numbering
+   plugin decoration which sets the --footnote-number CSS variable. */
+.reference {
+  cursor: pointer;
+  color: var(--mantine-color-blue-6);
+  font-weight: 500;
+  vertical-align: super;
+  font-size: 0.75em;
+  line-height: 0;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.reference::after {
+  content: var(--footnote-number, "");
+}
+
+.reference:hover {
+  text-decoration: underline;
+}
+
+.reference.selected {
+  background-color: var(--mantine-color-blue-1);
+  border-radius: 2px;
+}
+
+/* Read-only popover shown on hover/click of a reference. */
+.popover {
+  position: absolute;
+  z-index: 1000;
+  max-width: 360px;
+  padding: var(--mantine-spacing-sm);
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-default-color);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  box-shadow: var(--mantine-shadow-md);
+  font-size: var(--mantine-font-size-sm);
+  line-height: 1.4;
+}
+
+.popoverHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+  margin-bottom: 4px;
+}
+
+.popoverNumber {
+  font-weight: 600;
+  color: var(--mantine-color-dimmed);
+}
+
+.popoverBody {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Bottom footnotes container. */
+.list {
+  margin-top: var(--mantine-spacing-lg);
+  padding-top: var(--mantine-spacing-md);
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.listHeading {
+  font-weight: 600;
+  font-size: var(--mantine-font-size-sm);
+  color: var(--mantine-color-dimmed);
+  margin-bottom: var(--mantine-spacing-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.definition {
+  display: flex;
+  align-items: flex-start;
+  /* Tight number→text spacing (~one space) so it reads like "1. text"
+     instead of leaving a wide gap after the period. */
+  gap: 0.4em;
+  padding: 2px 0;
+}
+
+.definitionMarker {
+  flex: 0 0 auto;
+  min-width: 1.5em;
+  /* Right-align within the narrow column so the period sits next to the text
+     and multi-digit numbers (10, 11, …) stay aligned on their right edge. */
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--mantine-color-dimmed);
+  user-select: none;
+}
+
+.definitionContent {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.backLink {
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--mantine-color-blue-6);
+  user-select: none;
+  font-size: 0.9em;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}

@@ -329,3 +329,109 @@ describe('WsService.emitTreeEvent', () => {
     expect(anonEmit).toHaveBeenCalledWith('message', data);
   });
 });
+
+describe('move-into-restricted disjointness contract (WsTreeService + real WsService)', () => {
+  // CONTRACT: a move under a restricted ancestor PARTITIONS the room. The
+  // authorized set (gets the moveTreeNode via emitToAuthorizedUsers) and its
+  // complement (gets the deleteTreeNode via emitDeleteToUnauthorized) are
+  // disjoint and together cover every socket — and an anonymous (no-userId)
+  // socket lands in the delete set. We wire a REAL WsService (only its repo,
+  // cache and socket server mocked) so both broadcasts run against the SAME fixed
+  // socket set, the way they do in production.
+  let treeService: WsTreeService;
+  let pagePermissionRepo: {
+    hasRestrictedPagesInSpace: jest.Mock;
+    hasRestrictedAncestor: jest.Mock;
+    getUserIdsWithPageAccess: jest.Mock;
+  };
+
+  // Fixed room: two authorized users (one with two sockets), one unauthorized
+  // user, one anonymous socket.
+  const moveSeen: string[] = [];
+  const deleteSeen: string[] = [];
+
+  const mkSocket = (id: string, userId: string | undefined) => ({
+    id,
+    data: userId ? { userId } : {},
+    emit: jest.fn((_event: string, payload: { operation: string }) => {
+      if (payload.operation === 'moveTreeNode') moveSeen.push(id);
+      if (payload.operation === 'deleteTreeNode') deleteSeen.push(id);
+    }),
+  });
+
+  const sockets = [
+    mkSocket('s-ok-1', 'user-ok'), // authorized, tab 1
+    mkSocket('s-ok-2', 'user-ok'), // authorized, tab 2 (fan-out)
+    mkSocket('s-no', 'user-no'), // unauthorized
+    mkSocket('s-anon', undefined), // anonymous (no userId)
+  ];
+
+  beforeEach(async () => {
+    moveSeen.length = 0;
+    deleteSeen.length = 0;
+
+    pagePermissionRepo = {
+      hasRestrictedPagesInSpace: jest.fn().mockResolvedValue(true),
+      // The move destination IS under a restricted ancestor.
+      hasRestrictedAncestor: jest.fn().mockResolvedValue(true),
+      // Only user-ok is authorized to see the page.
+      getUserIdsWithPageAccess: jest.fn().mockResolvedValue(['user-ok']),
+    };
+    const cache = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WsTreeService,
+        WsService,
+        { provide: PagePermissionRepo, useValue: pagePermissionRepo },
+        { provide: CACHE_MANAGER, useValue: cache },
+      ],
+    }).compile();
+
+    const wsService = module.get<WsService>(WsService);
+    const server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue({
+        fetchSockets: jest.fn().mockResolvedValue(sockets),
+      }),
+    };
+    wsService.setServer(server as never);
+
+    treeService = module.get<WsTreeService>(WsTreeService);
+  });
+
+  it('authorized set (move) and complement (delete) partition the room; anon is in delete', async () => {
+    const event: PageMovedEvent = {
+      workspaceId: 'ws-1',
+      oldParentId: 'old-parent',
+      hasChildren: false,
+      node: { ...snapshot, parentPageId: 'restricted-parent', position: 'a5' },
+    };
+
+    await treeService.broadcastPageMoved(event);
+
+    const moveSet = new Set(moveSeen);
+    const deleteSet = new Set(deleteSeen);
+
+    // Authorized user's BOTH sockets got the move; nobody else did.
+    expect(moveSet).toEqual(new Set(['s-ok-1', 's-ok-2']));
+    // Everyone else (unauthorized + anonymous) got the delete.
+    expect(deleteSet).toEqual(new Set(['s-no', 's-anon']));
+
+    // DISJOINT: no socket received both a move and a delete.
+    const intersection = [...moveSet].filter((id) => deleteSet.has(id));
+    expect(intersection).toEqual([]);
+
+    // PARTITION: the two sets together cover every socket in the room exactly.
+    const union = new Set([...moveSet, ...deleteSet]);
+    expect(union).toEqual(new Set(sockets.map((s) => s.id)));
+
+    // The anonymous socket specifically lands in the DELETE set, never the move.
+    expect(deleteSet.has('s-anon')).toBe(true);
+    expect(moveSet.has('s-anon')).toBe(false);
+  });
+});

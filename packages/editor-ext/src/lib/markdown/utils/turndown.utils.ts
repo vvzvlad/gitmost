@@ -12,12 +12,44 @@ function sanitizeMdLinkText(value: string): string {
     .replace(/[\r\n]+/g, ' ');
 }
 
+// Tags turndown treats as void (self-closing). Footnote references render as an
+// empty <sup data-footnote-ref> whose meaning lives entirely in its data-id;
+// without marking it void, turndown's blank-node removal drops it before our
+// rule runs, losing the `[^id]` marker. Mirrors turndown's built-in list.
+const TURNDOWN_VOID_ELEMENTS = [
+  'AREA', 'BASE', 'BR', 'COL', 'COMMAND', 'EMBED', 'HR', 'IMG', 'INPUT',
+  'KEYGEN', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR',
+];
+
+function isVoidNode(node: any): boolean {
+  const name = node?.nodeName?.toUpperCase?.();
+  if (!name) return false;
+  if (name === 'SUP' && node.hasAttribute?.('data-footnote-ref')) {
+    return true;
+  }
+  return TURNDOWN_VOID_ELEMENTS.indexOf(name) !== -1;
+}
+
+/**
+ * An empty <sup data-footnote-ref> is "blank" to turndown, which removes blank
+ * inline nodes (RootNode/Node use a module-level isVoid the options cannot
+ * override). To survive, inject the id as text content so the node is non-blank;
+ * the footnoteReference rule then reads data-id and emits `[^id]`.
+ */
+function fillEmptyFootnoteRefs(html: string): string {
+  return html.replace(
+    /<sup\b([^>]*\bdata-footnote-ref\b[^>]*)>\s*<\/sup>/gi,
+    (_m, attrs) => `<sup${attrs}>​</sup>`,
+  );
+}
+
 export function htmlToMarkdown(html: string): string {
   const turndownService = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
     hr: '---',
     bulletListMarker: '-',
+    isVoid: isVoidNode,
   });
 
   turndownService.use([
@@ -35,8 +67,12 @@ export function htmlToMarkdown(html: string): string {
     htmlEmbed,
     image,
     video,
+    footnoteReference,
+    footnotesList,
   ]);
-  return turndownService.turndown(html).replaceAll('<br>', ' ');
+  return turndownService
+    .turndown(fillEmptyFootnoteRefs(html))
+    .replaceAll('<br>', ' ');
 }
 
 /**
@@ -226,6 +262,57 @@ function image(turndownService: _TurndownService) {
       const title = node.getAttribute('title') || '';
       const titlePart = title ? ' "' + title.replace(/"/g, '\\"') + '"' : '';
       return '![' + alt + '](' + src + titlePart + ')';
+    },
+  });
+}
+
+/**
+ * Footnote reference (inline atom) -> pandoc/GFM marker `[^id]`.
+ * The visible number is derived (not stored), so the id is the stable anchor.
+ */
+function footnoteReference(turndownService: _TurndownService) {
+  turndownService.addRule('footnoteReference', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'SUP' && node.hasAttribute('data-footnote-ref')
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      const id = node.getAttribute('data-id') || '';
+      return id ? `[^${id}]` : '';
+    },
+  });
+}
+
+/**
+ * Footnotes container -> the list of `[^id]: text` definitions at the end of
+ * the document (one per line). Each footnoteDefinition inside emits its own
+ * `[^id]: ...` line; turndown joins them with the surrounding block spacing.
+ */
+function footnotesList(turndownService: _TurndownService) {
+  turndownService.addRule('footnoteDefinition', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'DIV' && node.hasAttribute('data-footnote-def')
+      );
+    },
+    replacement: function (content: string, node: HTMLInputElement) {
+      const id = node.getAttribute('data-id') || '';
+      // Collapse internal newlines so the definition stays a single MD line;
+      // continuation lines are a v2 refinement.
+      const text = content.replace(/\s*\n+\s*/g, ' ').trim();
+      return id ? `\n[^${id}]: ${text}\n` : '';
+    },
+  });
+
+  turndownService.addRule('footnotesList', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'SECTION' && node.hasAttribute('data-footnotes')
+      );
+    },
+    replacement: function (content: string) {
+      return `\n\n${content.trim()}\n`;
     },
   });
 }

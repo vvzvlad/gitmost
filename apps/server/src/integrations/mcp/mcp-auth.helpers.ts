@@ -5,6 +5,7 @@
 // the Authorization header.
 import { UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
 import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
 
@@ -291,6 +292,14 @@ export interface BearerVerifyDeps {
     workspaceId?: string;
     sessionId?: string;
   }>;
+  // The workspace id of THIS MCP instance, when the caller can resolve it (the
+  // community build is single-workspace, so McpService passes its default
+  // workspace's id). When provided, the token's `workspaceId` claim MUST equal
+  // it, mirroring JwtStrategy's `req.raw.workspaceId !== payload.workspaceId`
+  // guard so a valid ACCESS token from a DIFFERENT workspace cannot be replayed
+  // against this instance in a multi-workspace deployment. Optional so callers /
+  // tests that genuinely cannot resolve an instance workspace are unchanged.
+  expectedWorkspaceId?: string;
   // Load the user (or undefined) for the disabled check.
   findUser: (
     sub: string,
@@ -321,6 +330,19 @@ export async function verifyBearerAccess(
     throw new UnauthorizedException(generic);
   }
 
+  // Bind the token to THIS instance's workspace (mirrors JwtStrategy). When the
+  // caller resolved an instance workspace id, a token whose `workspaceId` claim
+  // points at another workspace is rejected, so a valid ACCESS token minted in
+  // workspace B cannot be replayed against an MCP instance serving workspace A.
+  // In the single-workspace community build expectedWorkspaceId equals the only
+  // workspace, so this is a no-op there; it only bites a multi-workspace deploy.
+  if (
+    deps.expectedWorkspaceId &&
+    payload.workspaceId !== deps.expectedWorkspaceId
+  ) {
+    throw new UnauthorizedException(generic);
+  }
+
   const user = await deps.findUser(payload.sub, payload.workspaceId);
   if (!user || user.deactivatedAt || user.deletedAt) {
     throw new UnauthorizedException(generic);
@@ -342,21 +364,129 @@ export async function verifyBearerAccess(
 
 /**
  * Detect a genuine JSON-RPC `initialize` request from an already-parsed body.
- * Mirrors the @modelcontextprotocol/sdk `isInitializeRequest` signal that
- * packages/mcp/src/http.ts uses to decide whether to mint a session, but
- * framework/SDK-free so it is unit-testable and usable from the CommonJS
- * McpService. An initialize request is a single JSON-RPC object whose `method`
- * is exactly 'initialize'; a batch (array) body is never an initialize request.
+ * Delegates to the @modelcontextprotocol/sdk `isInitializeRequest` predicate —
+ * the SAME predicate packages/mcp/src/http.ts uses to decide whether to mint a
+ * session — so the session-minting side (this server) and the session-creating
+ * side (http.ts) agree EXACTLY on what counts as an initialize request. The SDK
+ * predicate validates the full InitializeRequest shape (jsonrpc, id, method ===
+ * 'initialize', params incl. protocolVersion); a bare `{ method: 'initialize' }`
+ * with no params, a batch (array) body, etc. are NOT initialize requests.
  *
  * This is the second half of the session-INIT decision: `isSessionInit` is
- * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Using it
- * ensures the side-effecting login() (user_sessions insert + USER_LOGIN audit +
- * lastLoginAt) only runs for a real initialize, never for an arbitrary
- * header-less request that http.ts will subsequently 400.
+ * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Matching the
+ * SDK predicate exactly ensures the side-effecting login() (user_sessions insert
+ * + USER_LOGIN audit + lastLoginAt) only runs for a request http.ts will also
+ * accept as an initialize — never for an arbitrary header-less request that
+ * http.ts would subsequently 400 (which would otherwise spam the audit log /
+ * grow user_sessions without ever creating an MCP session).
  */
 export function isInitializeRequestBody(body: unknown): boolean {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-  return (body as { method?: unknown }).method === 'initialize';
+  return isInitializeRequest(body);
+}
+
+/**
+ * The outcome of McpService.handle's pre-hijack gauntlet, as a pure value the
+ * caller acts on. Either send a JSON error with a fixed status (`respond`), or
+ * proceed to hijack the response and delegate to the MCP transport (`hijack`).
+ * Keeping this a pure decision (no FastifyReply, no res.hijack) makes the
+ * status/body mapping unit-testable, and guarantees no error path can leak the
+ * password or Authorization header — the body is only ever a fixed string or the
+ * UnauthorizedException's own message.
+ */
+export type McpHandleDecision =
+  | { kind: 'respond'; status: number; body: { error: string } }
+  | { kind: 'hijack' };
+
+/**
+ * Pure mapping of McpService.handle's auth/enablement gauntlet to a response
+ * decision. Precedence mirrors handle():
+ *   1. shared X-MCP-Token mismatch -> 401 {error:'Unauthorized'} (no hijack).
+ *   2. workspace MCP disabled      -> 403 {error:'MCP is disabled ...'}.
+ *   3. resolveSessionConfig threw:
+ *        - an UnauthorizedException -> 401 with err.message (a SPECIFIC reason;
+ *          never the password/header — the message is the only thing surfaced).
+ *        - any other error          -> 500 generic 'Internal server error'.
+ *   4. otherwise (auth resolved)   -> hijack and delegate to the transport.
+ */
+export function mapAuthResultToResponse(input: {
+  sharedTokenOk: boolean;
+  enabled: boolean;
+  error?: unknown;
+}): McpHandleDecision {
+  if (!input.sharedTokenOk) {
+    return { kind: 'respond', status: 401, body: { error: 'Unauthorized' } };
+  }
+
+  if (!input.enabled) {
+    return {
+      kind: 'respond',
+      status: 403,
+      body: { error: 'MCP is disabled for this workspace' },
+    };
+  }
+
+  if (input.error !== undefined) {
+    if (input.error instanceof UnauthorizedException) {
+      return {
+        kind: 'respond',
+        status: 401,
+        body: { error: input.error.message },
+      };
+    }
+    return {
+      kind: 'respond',
+      status: 500,
+      body: { error: 'Internal server error' },
+    };
+  }
+
+  return { kind: 'hijack' };
+}
+
+// Result of the EE MFA module's requirement check for the Basic gate. Both
+// flags absent/false means MFA does not block the password login.
+export interface BasicGateMfaResult {
+  userHasMfa?: boolean;
+  requiresMfaSetup?: boolean;
+}
+
+/**
+ * Pure decision logic for the /mcp HTTP-Basic pre-token gate, replicating EXACTLY
+ * what AuthController.login enforces before issuing a token, so the Basic path is
+ * not an SSO/MFA bypass. Framework-free (no ModuleRef, no on-disk EE MFA module)
+ * so the SSO/MFA decision is unit-testable in isolation:
+ *
+ *   - `ssoEnforced` true  -> throw Unauthorized ("enforced SSO"); a password
+ *      login is not allowed on an SSO-enforced workspace.
+ *   - otherwise, `mfa` is the EE MFA module's requirement result (or undefined
+ *      when no EE MFA module is bundled — a community/fork build). If MFA is
+ *      present and the user has MFA enabled OR needs MFA setup, throw Unauthorized
+ *      telling the caller to use a Bearer access token (Basic cannot complete MFA).
+ *   - no SSO + no MFA gate -> resolve (the Basic login is allowed to proceed).
+ *
+ * McpService.enforceBasicLoginGate wires the concrete `validateSsoEnforcement`
+ * result and the lazily-loaded MFA module result into this, so the gate decision
+ * itself carries no framework dependencies. Throws UnauthorizedException on
+ * rejection (surfaced as a clean 401); never logs the password.
+ */
+export function decideBasicGate(input: {
+  ssoEnforced: boolean;
+  mfa?: BasicGateMfaResult;
+}): void {
+  if (input.ssoEnforced) {
+    throw new UnauthorizedException(
+      'This workspace has enforced SSO login. Use SSO; MCP HTTP Basic is not allowed.',
+    );
+  }
+
+  const mfa = input.mfa;
+  if (mfa && (mfa.userHasMfa || mfa.requiresMfaSetup)) {
+    throw new UnauthorizedException(
+      'This account requires multi-factor authentication. MCP HTTP Basic ' +
+        'cannot complete MFA — log in normally and use a Bearer access token ' +
+        'instead.',
+    );
+  }
 }
 
 /** Extract a Bearer token from an Authorization header (case-insensitive). */
