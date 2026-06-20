@@ -161,15 +161,11 @@ function SpaceMenu({
   treeRef,
 }: SpaceMenuProps) {
   const { t } = useTranslation();
-  const [isExpanding, setIsExpanding] = React.useState(false);
-
-  const handleExpandAll = async () => {
-    setIsExpanding(true);
-    try {
-      await treeRef.current?.expandAll();
-    } finally {
-      setIsExpanding(false);
-    }
+  const handleExpandAll = () => {
+    // Fire-and-forget: expandAll already surfaces its own error notification.
+    // The menu closes on click (consistent with Collapse all), so there is no
+    // in-menu loading state to track here.
+    treeRef.current?.expandAll();
   };
 
   const handleCollapseAll = () => {
@@ -226,8 +222,6 @@ function SpaceMenu({
         <Menu.Dropdown>
           <Menu.Item
             onClick={handleExpandAll}
-            disabled={isExpanding}
-            closeMenuOnClick={false}
             leftSection={<IconChevronsDown size={16} />}
           >
             {t("Expand all")}
