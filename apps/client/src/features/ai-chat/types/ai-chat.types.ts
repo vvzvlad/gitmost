@@ -31,20 +31,24 @@ export interface IAiRoleModelConfig {
 }
 
 /**
- * An agent role (mirrors the server `AgentRoleView`). A role replaces the
- * agent's persona (instructions) and may optionally override the model. The
- * safety framework is always still applied server-side.
+ * An agent role (mirrors the server role views). A role replaces the agent's
+ * persona (instructions) and may optionally override the model. The safety
+ * framework is always still applied server-side.
+ *
+ * The list endpoint returns the FULL view to admins and a reduced picker view to
+ * ordinary members, so the admin-only fields (`instructions`, `modelConfig`,
+ * `createdAt`, `updatedAt`) are optional here — present only for admins.
  */
 export interface IAiRole {
   id: string;
   name: string;
   emoji: string | null;
   description: string | null;
-  instructions: string;
-  modelConfig: IAiRoleModelConfig | null;
+  instructions?: string;
+  modelConfig?: IAiRoleModelConfig | null;
   enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /** Admin create payload for a role. */

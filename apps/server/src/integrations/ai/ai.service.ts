@@ -83,9 +83,20 @@ export class AiService {
     // driver's own creds (the workspace driver's key would be wrong/absent).
     if (overrideDriver && overrideDriver !== cfg.driver) {
       if (overrideDriver === 'ollama') {
-        // Ollama needs no key; baseUrl is taken from the workspace config (it is
-        // the only configurable endpoint for a local model).
-        apiKey = undefined;
+        // Cross-driver override to ollama: the workspace driver is NOT ollama, so
+        // there is no configured ollama endpoint. `cfg.baseUrl` belongs to the
+        // workspace driver (e.g. an OpenAI/OpenRouter gateway) and pointing the
+        // ollama client at it would silently send requests to the wrong server.
+        // Fail explicitly (503) — a dedicated per-driver ollama endpoint is not
+        // supported yet. The same-driver ollama case (handled outside this block)
+        // legitimately reuses the workspace's ollama endpoint and is unaffected.
+        const who = override?.roleName ? ` for role "${override.roleName}"` : '';
+        throw new AiNotConfiguredException(
+          `An ollama model override${who} requires a dedicated ollama endpoint, ` +
+            `which is not supported when the workspace driver is "${cfg.driver}". ` +
+            `Set the role's driver to "${cfg.driver}" or switch the workspace ` +
+            `to ollama.`,
+        );
       } else {
         const creds = await this.aiProviderCredentialsRepo.find(
           workspaceId,

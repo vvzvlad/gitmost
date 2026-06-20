@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { IsString } from 'class-validator';
+import { IsUUID } from 'class-validator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../../common/decorators/auth-workspace.decorator';
@@ -25,7 +25,7 @@ import {
 
 /** Path/body param for the per-role routes (update/delete). */
 class AgentRoleIdDto {
-  @IsString()
+  @IsUUID()
   id: string;
 }
 
@@ -48,21 +48,36 @@ export class AiAgentRolesController {
     private readonly workspaceAbility: WorkspaceAbilityFactory,
   ) {}
 
+  /**
+   * Whether the caller may manage workspace settings (the admin gate, same as AI
+   * settings / MCP servers). Used both to gate admin routes and to decide which
+   * role view `list` returns.
+   */
+  private canManageSettings(user: User, workspace: Workspace): boolean {
+    const ability = this.workspaceAbility.createForUser(user, workspace);
+    return ability.can(
+      WorkspaceCaslAction.Manage,
+      WorkspaceCaslSubject.Settings,
+    );
+  }
+
   /** Admin gate (same as workspace settings / MCP servers). */
   private assertAdmin(user: User, workspace: Workspace): void {
-    const ability = this.workspaceAbility.createForUser(user, workspace);
-    if (
-      ability.cannot(WorkspaceCaslAction.Manage, WorkspaceCaslSubject.Settings)
-    ) {
+    if (!this.canManageSettings(user, workspace)) {
       throw new ForbiddenException();
     }
   }
 
-  /** List roles — available to any workspace member for the chat picker. */
+  /**
+   * List roles — available to any workspace member for the chat picker. Ordinary
+   * members get only the picker fields; admins get the full view (instructions /
+   * modelConfig) the settings page needs, from this same endpoint.
+   */
   @HttpCode(HttpStatus.OK)
   @Post()
-  async list(@AuthWorkspace() workspace: Workspace) {
-    return this.rolesService.list(workspace.id);
+  async list(@AuthUser() user: User, @AuthWorkspace() workspace: Workspace) {
+    const isAdmin = this.canManageSettings(user, workspace);
+    return this.rolesService.list(workspace.id, isAdmin);
   }
 
   @HttpCode(HttpStatus.OK)

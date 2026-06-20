@@ -24,9 +24,11 @@ describe('AiAgentRolesController admin gate', () => {
   const workspace = { id: 'ws-1' } as Workspace;
 
   function makeController(isAdmin: boolean) {
-    // `cannot(Manage, Settings)` returns FALSE for an admin (they CAN manage),
-    // TRUE for a non-admin (they cannot) — matching CASL's ability.cannot.
+    // CASL semantics: `can(Manage, Settings)` is TRUE for an admin / FALSE for a
+    // non-admin; `cannot(...)` is the inverse. The controller uses `can` (via
+    // canManageSettings) for both the admin gate and the list view branch.
     const ability = {
+      can: jest.fn().mockReturnValue(isAdmin),
       cannot: jest.fn().mockReturnValue(!isAdmin),
     };
     const workspaceAbility = {
@@ -76,7 +78,7 @@ describe('AiAgentRolesController admin gate', () => {
     it('the gate checks the Manage/Settings ability', async () => {
       const { controller, ability } = makeController(false);
       await controller.create(createDto, user, workspace).catch(() => {});
-      expect(ability.cannot).toHaveBeenCalledWith(
+      expect(ability.can).toHaveBeenCalledWith(
         WorkspaceCaslAction.Manage,
         WorkspaceCaslSubject.Settings,
       );
@@ -108,13 +110,17 @@ describe('AiAgentRolesController admin gate', () => {
   });
 
   describe('list (member-reachable)', () => {
-    it('does NOT call the admin gate, and delegates to the service', async () => {
-      const { controller, rolesService, workspaceAbility } =
-        makeController(false); // even a non-admin reaches list
-      await controller.list(workspace);
-      expect(rolesService.list).toHaveBeenCalledWith('ws-1');
-      // assertAdmin builds an ability via createForUser — list must skip it.
-      expect(workspaceAbility.createForUser).not.toHaveBeenCalled();
+    it('non-admin reaches list and the service is asked for the picker view (isAdmin=false)', async () => {
+      const { controller, rolesService } = makeController(false);
+      await controller.list(user, workspace);
+      // The member view is requested: workspace.id + isAdmin=false.
+      expect(rolesService.list).toHaveBeenCalledWith('ws-1', false);
+    });
+
+    it('admin reaches list and the service is asked for the full view (isAdmin=true)', async () => {
+      const { controller, rolesService } = makeController(true);
+      await controller.list(user, workspace);
+      expect(rolesService.list).toHaveBeenCalledWith('ws-1', true);
     });
   });
 });

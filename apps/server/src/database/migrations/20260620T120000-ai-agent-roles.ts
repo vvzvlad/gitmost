@@ -52,6 +52,17 @@ export async function up(db: Kysely<any>): Promise<void> {
     .column('workspace_id')
     .execute();
 
+  // A role name is unique per workspace. Partial (WHERE deleted_at IS NULL) so a
+  // soft-deleted role does not block re-creating a role with the same name.
+  await db.schema
+    .createIndex('ai_agent_roles_workspace_id_name_unique')
+    .ifNotExists()
+    .on('ai_agent_roles')
+    .columns(['workspace_id', 'name'])
+    .unique()
+    .where(sql.ref('deleted_at'), 'is', null)
+    .execute();
+
   // Bind a chat to a role. ON DELETE SET NULL: a hard-deleted role degrades the
   // chat to the universal assistant instead of breaking it. The role is read
   // from this column on every turn — the client only sends roleId on chat
@@ -66,5 +77,9 @@ export async function up(db: Kysely<any>): Promise<void> {
 
 export async function down(db: Kysely<any>): Promise<void> {
   await db.schema.alterTable('ai_chats').dropColumn('role_id').execute();
+  await db.schema
+    .dropIndex('ai_agent_roles_workspace_id_name_unique')
+    .ifExists()
+    .execute();
   await db.schema.dropTable('ai_agent_roles').execute();
 }

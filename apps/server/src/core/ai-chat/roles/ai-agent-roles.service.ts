@@ -1,15 +1,18 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiAgentRole } from '@docmost/db/types/entity.types';
 import { CreateAgentRoleDto, UpdateAgentRoleDto } from './dto/agent-role.dto';
 import { RoleModelConfig } from './role-model-config';
 
 /**
- * Public view of an agent role. There are no secret columns on this table (the
- * model creds live in ai_provider_credentials, keyed by driver), so the whole
- * row is safe to return to admins. The list endpoint is also reachable by any
- * member for the chat picker — the same shape is fine (instructions are
- * admin-authored, workspace-scoped, non-sensitive trusted content).
+ * Full (admin) view of an agent role. There are no secret columns on this table
+ * (the model creds live in ai_provider_credentials, keyed by driver), so the
+ * whole row is safe to return — but only to admins, who need `instructions` /
+ * `modelConfig` to edit roles on the settings page.
  */
 export interface AgentRoleView {
   id: string;
@@ -24,6 +27,20 @@ export interface AgentRoleView {
 }
 
 /**
+ * Picker view returned to ordinary (non-admin) members. Only the fields the chat
+ * role picker needs — deliberately WITHOUT `instructions`, `modelConfig`,
+ * creator or timestamps, so non-admins never receive the admin-authored prompt
+ * or the model override.
+ */
+export interface AgentRolePickerView {
+  id: string;
+  name: string;
+  emoji: string | null;
+  description: string | null;
+  enabled: boolean;
+}
+
+/**
  * Admin business logic for agent roles: workspace-scoped CRUD with validation.
  * A role only shapes the system-prompt persona + an optional model override; it
  * never changes the toolset or the CASL boundary.
@@ -32,9 +49,19 @@ export interface AgentRoleView {
 export class AiAgentRolesService {
   constructor(private readonly repo: AiAgentRoleRepo) {}
 
-  async list(workspaceId: string): Promise<AgentRoleView[]> {
+  /**
+   * List the workspace's roles. Admins get the full view (the settings page needs
+   * `instructions` / `modelConfig`); ordinary members get only the picker fields,
+   * so the admin-authored prompt and model override never leak to non-admins.
+   */
+  async list(
+    workspaceId: string,
+    isAdmin: boolean,
+  ): Promise<AgentRoleView[] | AgentRolePickerView[]> {
     const rows = await this.repo.listByWorkspace(workspaceId);
-    return rows.map((r) => this.toView(r));
+    return isAdmin
+      ? rows.map((r) => this.toView(r))
+      : rows.map((r) => this.toPickerView(r));
   }
 
   async create(
@@ -50,17 +77,21 @@ export class AiAgentRolesService {
     }
     const modelConfig = normalizeModelConfig(dto.modelConfig);
 
-    const row = await this.repo.insert({
-      workspaceId,
-      creatorId,
-      name,
-      emoji: emptyToNull(dto.emoji),
-      description: emptyToNull(dto.description),
-      instructions,
-      modelConfig: modelConfig as Record<string, unknown> | null,
-      enabled: dto.enabled ?? true,
-    });
-    return this.toView(row);
+    try {
+      const row = await this.repo.insert({
+        workspaceId,
+        creatorId,
+        name,
+        emoji: emptyToNull(dto.emoji),
+        description: emptyToNull(dto.description),
+        instructions,
+        modelConfig: modelConfig as Record<string, unknown> | null,
+        enabled: dto.enabled ?? true,
+      });
+      return this.toView(row);
+    } catch (err) {
+      throw rethrowDuplicateName(err, name);
+    }
   }
 
   async update(
@@ -79,22 +110,28 @@ export class AiAgentRolesService {
       throw new BadRequestException('Role instructions cannot be empty');
     }
 
-    await this.repo.update(id, workspaceId, {
-      name: dto.name?.trim(),
-      // undefined => unchanged; '' => clear to null.
-      emoji: dto.emoji === undefined ? undefined : emptyToNull(dto.emoji),
-      description:
-        dto.description === undefined ? undefined : emptyToNull(dto.description),
-      instructions: dto.instructions?.trim(),
-      // undefined => unchanged; null => clear; object => normalize + set.
-      modelConfig:
-        dto.modelConfig === undefined
-          ? undefined
-          : (normalizeModelConfig(dto.modelConfig) as
-              | Record<string, unknown>
-              | null),
-      enabled: dto.enabled,
-    });
+    try {
+      await this.repo.update(id, workspaceId, {
+        name: dto.name?.trim(),
+        // undefined => unchanged; '' => clear to null.
+        emoji: dto.emoji === undefined ? undefined : emptyToNull(dto.emoji),
+        description:
+          dto.description === undefined
+            ? undefined
+            : emptyToNull(dto.description),
+        instructions: dto.instructions?.trim(),
+        // undefined => unchanged; null => clear; object => normalize + set.
+        modelConfig:
+          dto.modelConfig === undefined
+            ? undefined
+            : (normalizeModelConfig(dto.modelConfig) as
+                | Record<string, unknown>
+                | null),
+        enabled: dto.enabled,
+      });
+    } catch (err) {
+      throw rethrowDuplicateName(err, dto.name?.trim() || existing.name);
+    }
 
     const updated = await this.repo.findById(id, workspaceId);
     // The role may be soft-deleted concurrently between the UPDATE and this
@@ -123,6 +160,35 @@ export class AiAgentRolesService {
       updatedAt: row.updatedAt,
     };
   }
+
+  /** Non-admin picker view: id/name/emoji/description/enabled only. */
+  private toPickerView(row: AiAgentRole): AgentRolePickerView {
+    return {
+      id: row.id,
+      name: row.name,
+      emoji: row.emoji ?? null,
+      description: row.description ?? null,
+      enabled: row.enabled,
+    };
+  }
+}
+
+/**
+ * Map a Postgres unique-violation (the partial `(workspace_id, name)` index) to a
+ * friendly 409 ConflictException. Any other error is re-thrown untouched so real
+ * failures keep surfacing as 500s.
+ */
+function rethrowDuplicateName(err: unknown, name: string): never {
+  if (
+    err &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === '23505'
+  ) {
+    throw new ConflictException(
+      `A role named "${name}" already exists in this workspace.`,
+    );
+  }
+  throw err;
 }
 
 /** '' / whitespace-only / undefined => null; otherwise the trimmed value. */

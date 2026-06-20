@@ -105,6 +105,56 @@ describe('AiService.getChatModel role model override', () => {
     expect(secretBox.decryptSecret).toHaveBeenCalledWith('enc-gemini-key');
   });
 
+  it('cross-driver override to ollama (workspace driver != ollama): throws 503, does NOT silently reuse the workspace baseUrl', async () => {
+    // Workspace driver is openai with a configured (gateway) baseUrl. A role that
+    // overrides to ollama has no dedicated ollama endpoint, so pointing the
+    // ollama client at the workspace's openai baseUrl would be wrong — it must
+    // fail explicitly instead.
+    const aiSettings = {
+      resolve: jest.fn().mockResolvedValue({
+        driver: 'openai',
+        chatModel: 'gpt-4o-mini',
+        apiKey: 'workspace-key',
+        baseUrl: 'https://openrouter.example/v1',
+      }),
+    };
+    const aiProviderCredentialsRepo = { find: jest.fn() };
+    const secretBox = { decryptSecret: jest.fn() };
+    const service = new AiService(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiSettings as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiProviderCredentialsRepo as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      secretBox as any,
+    );
+
+    await service
+      .getChatModel('ws-1', {
+        driver: 'ollama',
+        chatModel: 'llama3',
+        roleName: 'Local',
+      })
+      .then(
+        () => {
+          throw new Error('expected getChatModel to throw');
+        },
+        (err: unknown) => {
+          expect(err).toBeInstanceOf(AiNotConfiguredException);
+          const message = (err as AiNotConfiguredException).message;
+          // Names the role and the workspace driver, and mentions ollama.
+          expect(message).toContain('ollama');
+          expect(message).toContain('openai');
+          expect(message).toContain('Local');
+          // Must NOT leak / reuse the workspace gateway baseUrl in the path.
+          expect(message).not.toContain('openrouter.example');
+        },
+      );
+
+    // No ollama creds lookup happens (ollama needs no key); we fail before that.
+    expect(aiProviderCredentialsRepo.find).not.toHaveBeenCalled();
+  });
+
   it('chatModel-only override (no driver): reuses the workspace driver+creds, no creds lookup/decrypt', async () => {
     // No override.driver => the workspace openai driver + its apiKey are reused;
     // ai_provider_credentials must NOT be queried and nothing is decrypted.

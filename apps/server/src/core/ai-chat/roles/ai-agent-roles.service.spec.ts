@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { AiAgentRolesService } from './ai-agent-roles.service';
 import type { AiAgentRole } from '@docmost/db/types/entity.types';
 import type {
@@ -27,6 +27,7 @@ describe('AiAgentRolesService guards', () => {
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),
+      ...over,
     } as AiAgentRole;
   }
 
@@ -133,6 +134,98 @@ describe('AiAgentRolesService guards', () => {
         } as CreateAgentRoleDto),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(repo.insert).not.toHaveBeenCalled();
+    });
+
+    it('duplicate name (Postgres 23505) => ConflictException (409), not 500', async () => {
+      const { service, repo } = makeService();
+      // The partial unique (workspace_id, name) index rejects the insert.
+      repo.insert.mockRejectedValueOnce({ code: '23505' });
+      await expect(
+        service.create('ws-1', 'u1', {
+          name: 'Researcher',
+          instructions: 'do',
+        } as CreateAgentRoleDto),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('non-unique-violation error is NOT swallowed (re-thrown as-is)', async () => {
+      const { service, repo } = makeService();
+      const other = Object.assign(new Error('boom'), { code: '23502' });
+      repo.insert.mockRejectedValueOnce(other);
+      await expect(
+        service.create('ws-1', 'u1', {
+          name: 'Researcher',
+          instructions: 'do',
+        } as CreateAgentRoleDto),
+      ).rejects.toBe(other);
+    });
+  });
+
+  describe('list view (security: non-admin must not see instructions/modelConfig)', () => {
+    function makeListService(rows: AiAgentRole[]) {
+      const repo = {
+        findById: jest.fn(),
+        insert: jest.fn(),
+        update: jest.fn(),
+        softDelete: jest.fn(),
+        listByWorkspace: jest.fn().mockResolvedValue(rows),
+      };
+      const service = new AiAgentRolesService(repo as never);
+      return { service, repo };
+    }
+
+    const row = makeRow({
+      id: 'r1',
+      name: 'Researcher',
+      emoji: '🔬',
+      description: 'finds things',
+      instructions: 'SECRET admin-authored persona',
+      modelConfig: { driver: 'gemini', chatModel: 'gemini-2.0-flash' } as never,
+      enabled: true,
+    });
+
+    it('non-admin (isAdmin=false) gets the picker view WITHOUT instructions/modelConfig', async () => {
+      const { service } = makeListService([row]);
+      const list = await service.list('ws-1', false);
+      expect(list).toHaveLength(1);
+      const item = list[0] as unknown as Record<string, unknown>;
+      // The picker fields ARE present...
+      expect(item).toEqual({
+        id: 'r1',
+        name: 'Researcher',
+        emoji: '🔬',
+        description: 'finds things',
+        enabled: true,
+      });
+      // ...and the admin-only fields are absent (not just undefined).
+      expect('instructions' in item).toBe(false);
+      expect('modelConfig' in item).toBe(false);
+      expect('createdAt' in item).toBe(false);
+      expect('updatedAt' in item).toBe(false);
+    });
+
+    it('admin (isAdmin=true) gets the full view WITH instructions/modelConfig', async () => {
+      const { service } = makeListService([row]);
+      const list = await service.list('ws-1', true);
+      expect(list).toHaveLength(1);
+      const item = list[0] as unknown as Record<string, unknown>;
+      expect(item.instructions).toBe('SECRET admin-authored persona');
+      expect(item.modelConfig).toEqual({
+        driver: 'gemini',
+        chatModel: 'gemini-2.0-flash',
+      });
+    });
+  });
+
+  describe('update conflict', () => {
+    it('duplicate name (Postgres 23505) => ConflictException (409)', async () => {
+      const { service, repo } = makeService({ existing: makeRow() });
+      repo.update.mockRejectedValueOnce({ code: '23505' });
+      await expect(
+        service.update('ws-1', 'r1', {
+          name: 'Taken',
+        } as UpdateAgentRoleDto),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
   });
 });
