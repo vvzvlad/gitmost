@@ -38,12 +38,15 @@ export class PageTemplateReferencesRepo {
 
   async deleteByReferenceAndSources(
     referencePageId: string,
+    workspaceId: string,
     sourcePageIds: string[],
     trx?: KyselyTransaction,
   ): Promise<void> {
     if (sourcePageIds.length === 0) return;
     await dbOrTx(this.db, trx)
       .deleteFrom('pageTemplateReferences')
+      // Defense-in-depth: scope deletes to the caller's workspace.
+      .where('workspaceId', '=', workspaceId)
       .where('referencePageId', '=', referencePageId)
       .where('sourcePageId', 'in', sourcePageIds)
       .execute();

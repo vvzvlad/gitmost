@@ -67,6 +67,12 @@ export class PageTemplateController {
       throw new NotFoundException('Page not found');
     }
 
+    if (page.workspaceId !== user.workspaceId) {
+      // Defense-in-depth: never act on a page outside the caller's workspace.
+      // Use NotFound (not Forbidden) to avoid leaking cross-workspace existence.
+      throw new NotFoundException('Page not found');
+    }
+
     await this.pageAccessService.validateCanEdit(page, user);
 
     const isTemplate =
