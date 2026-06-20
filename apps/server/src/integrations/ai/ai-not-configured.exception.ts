@@ -5,7 +5,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
  * driver / chat model / API key). Maps to HTTP 503 (§6.2/§6.4).
  */
 export class AiNotConfiguredException extends ServiceUnavailableException {
-  constructor() {
-    super('AI provider not configured');
+  constructor(message = 'AI provider not configured') {
+    super(message);
   }
 }

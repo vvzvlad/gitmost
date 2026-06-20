@@ -1,5 +1,6 @@
 import { Insertable, Selectable, Updateable } from 'kysely';
 import {
+  AiAgentRoles,
   AiChats,
   AiChatMessages,
   Attachments,
@@ -73,6 +74,13 @@ export type UpdatableAiProviderCredentials = Updateable<
 export type AiMcpServer = Selectable<AiMcpServersTable>;
 export type InsertableAiMcpServer = Insertable<AiMcpServersTable>;
 export type UpdatableAiMcpServer = Updateable<Omit<AiMcpServersTable, 'id'>>;
+
+// AI Agent Roles (reusable, workspace-scoped, admin-owned agent presets).
+// A role replaces the persona layer of the system prompt (instructions) and may
+// optionally override the chat model (`modelConfig`). Soft-deletable.
+export type AiAgentRole = Selectable<AiAgentRoles>;
+export type InsertableAiAgentRole = Insertable<AiAgentRoles>;
+export type UpdatableAiAgentRole = Updateable<Omit<AiAgentRoles, 'id'>>;
 
 // Workspace
 export type Workspace = Selectable<Workspaces>;

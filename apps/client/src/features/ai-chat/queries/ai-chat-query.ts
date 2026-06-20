@@ -8,18 +8,26 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { notifications } from "@mantine/notifications";
 import {
+  createAiRole,
   deleteAiChat,
+  deleteAiRole,
   getAiChatMessages,
   getAiChats,
+  getAiRoles,
   renameAiChat,
+  updateAiRole,
 } from "@/features/ai-chat/services/ai-chat-service.ts";
 import {
   IAiChat,
   IAiChatMessageRow,
+  IAiRole,
+  IAiRoleCreate,
+  IAiRoleUpdate,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { IPagination } from "@/lib/types.ts";
 
 export const AI_CHATS_RQ_KEY = ["ai-chats"];
+export const AI_ROLES_RQ_KEY = ["ai-roles"];
 export const AI_CHAT_MESSAGES_RQ_KEY = (chatId: string) => [
   "ai-chat-messages",
   chatId,
@@ -109,6 +117,82 @@ export function useDeleteAiChatMutation() {
     onError: () => {
       notifications.show({
         message: t("Failed to delete chat"),
+        color: "red",
+      });
+    },
+  });
+}
+
+/**
+ * List the workspace's agent roles. Available to any workspace member (used by
+ * the chat-creation role picker and the admin management section). `enabled`
+ * lets callers gate the fetch (e.g. only fetch in the settings section).
+ */
+export function useAiRolesQuery(enabled: boolean = true) {
+  return useQuery<IAiRole[], Error>({
+    queryKey: AI_ROLES_RQ_KEY,
+    queryFn: () => getAiRoles(),
+    enabled,
+  });
+}
+
+export function useCreateAiRoleMutation() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation<IAiRole, Error, IAiRoleCreate>({
+    mutationFn: (data) => createAiRole(data),
+    onSuccess: () => {
+      notifications.show({ message: t("Created successfully") });
+      queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+    },
+    onError: (error) => {
+      const message = error["response"]?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    },
+  });
+}
+
+export function useUpdateAiRoleMutation() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation<IAiRole, Error, IAiRoleUpdate>({
+    mutationFn: (data) => updateAiRole(data),
+    onSuccess: () => {
+      notifications.show({ message: t("Updated successfully") });
+      queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+      // The role badge denormalized onto the chat list may have changed.
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+    },
+    onError: (error) => {
+      const message = error["response"]?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    },
+  });
+}
+
+export function useDeleteAiRoleMutation() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation<{ success: true }, Error, string>({
+    mutationFn: (id) => deleteAiRole(id),
+    onSuccess: () => {
+      notifications.show({ message: t("Deleted successfully") });
+      queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+    },
+    onError: (error) => {
+      const message = error["response"]?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
         color: "red",
       });
     },

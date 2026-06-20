@@ -7,6 +7,7 @@ import { AiTranscriptionService } from './ai-transcription.service';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { ExternalMcpModule } from './external-mcp/external-mcp.module';
+import { AiAgentRolesModule } from './roles/ai-agent-roles.module';
 import { ShareModule } from '../share/share.module';
 import { SearchModule } from '../search/search.module';
 import { PublicShareChatController } from './public-share-chat.controller';
@@ -34,6 +35,7 @@ import { PublicShareChatToolsService } from './tools/public-share-chat-tools.ser
     TokenModule,
     EmbeddingModule,
     ExternalMcpModule,
+    AiAgentRolesModule,
     ShareModule,
     SearchModule,
   ],
