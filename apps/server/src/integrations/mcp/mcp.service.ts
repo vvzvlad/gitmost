@@ -1,8 +1,10 @@
 import {
   Injectable,
   Logger,
+  OnModuleDestroy,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { IncomingMessage } from 'node:http';
@@ -13,11 +15,14 @@ import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
 import { AuthService } from '../../core/auth/services/auth.service';
 import { TokenService } from '../../core/auth/services/token.service';
+import { validateSsoEnforcement } from '../../core/auth/auth.util';
 import { JwtType, JwtPayload } from '../../core/auth/dto/jwt-payload';
+import { Workspace } from '@docmost/db/types/entity.types';
 import {
   FailedLoginLimiter,
   resolveMcpSessionConfig,
   verifyBearerAccess,
+  isInitializeRequestBody,
   DocmostMcpConfig,
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
@@ -58,7 +63,7 @@ const esmImport = new Function(
 ) as (specifier: string) => Promise<unknown>;
 
 @Injectable()
-export class McpService {
+export class McpService implements OnModuleDestroy {
   private readonly logger = new Logger(McpService.name);
   private handler: McpHttpHandler | null = null;
   private handlerPromise: Promise<McpHttpHandler> | null = null;
@@ -69,6 +74,13 @@ export class McpService {
   // this is the brute-force speed bump for /mcp. 5 failures per 60s window.
   private readonly failedLogins = new FailedLoginLimiter(5, 60_000);
 
+  // Periodically drop expired limiter buckets so never-revisited keys do not
+  // accumulate forever (unbounded memory growth / DoS via forgeable XFF keys).
+  // unref()'d so it never keeps the process alive; cleared on module destroy.
+  // Mirrors the sweepTimer pattern in packages/mcp/src/http.ts.
+  private readonly sweepIntervalMs = 60_000;
+  private readonly sweepTimer: NodeJS.Timeout;
+
   constructor(
     private readonly environmentService: EnvironmentService,
     private readonly workspaceRepo: WorkspaceRepo,
@@ -76,7 +88,22 @@ export class McpService {
     private readonly tokenService: TokenService,
     private readonly userRepo: UserRepo,
     private readonly userSessionRepo: UserSessionRepo,
-  ) {}
+    private readonly moduleRef: ModuleRef,
+  ) {
+    this.sweepTimer = setInterval(() => {
+      try {
+        this.failedLogins.sweep();
+      } catch (err) {
+        this.logger.error('MCP failed-login limiter sweep failed', err as Error);
+      }
+    }, this.sweepIntervalMs);
+    // Do not let this interval hold the event loop open.
+    this.sweepTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    clearInterval(this.sweepTimer);
+  }
 
   // Service account the embedded MCP uses to talk back to this Docmost
   // instance over loopback REST + the collaboration WebSocket. Now OPTIONAL:
@@ -188,15 +215,24 @@ export class McpService {
     const authHeader = req.headers['authorization'] as string | undefined;
     // A request carrying an mcp-session-id is operating on an ALREADY
     // established session (see packages/mcp/src/http.ts: a new session is only
-    // minted by an initialize POST with no session id). Only the INIT request
-    // should run the full, session-minting login(); subsequent requests only
-    // re-validate credentials (anti-fixation) with no side effects.
-    const isSessionInit = !req.headers['mcp-session-id'];
+    // minted by an initialize POST with no session id). The session-minting
+    // login() (user_sessions insert + USER_LOGIN audit + lastLoginAt bump) must
+    // run ONLY for a genuine session INITIALIZE: no mcp-session-id AND the
+    // JSON-RPC body is an `initialize` request — the same signal http.ts uses to
+    // decide whether to mint a session. Any other request (e.g. a non-initialize
+    // body with no session id, which http.ts will 400) uses the non-side-
+    // effecting verifyCredentials path so it never mints an orphan DB
+    // session/audit row before being rejected.
+    const isSessionInit =
+      !req.headers['mcp-session-id'] &&
+      isInitializeRequestBody((req as unknown as { body?: unknown }).body);
     return resolveMcpSessionConfig(authHeader, {
       apiUrl: this.getApiUrl(),
       email: this.getEmail(),
       password: this.getPassword(),
       findWorkspace: () => this.workspaceRepo.findFirst(),
+      enforceBasicGate: (workspace, creds) =>
+        this.enforceBasicLoginGate(workspace as Workspace, creds),
       login: (creds, workspaceId) => this.authService.login(creds, workspaceId),
       verifyCredentials: async (creds, workspaceId) => {
         await this.authService.verifyUserCredentials(creds, workspaceId);
@@ -206,6 +242,68 @@ export class McpService {
       clientIp: this.clientIp(req),
       isSessionInit,
     });
+  }
+
+  // Pre-token gate for the /mcp HTTP-Basic path, replicating EXACTLY what
+  // AuthController.login does before issuing a token, so the Basic path is not
+  // an SSO/MFA bypass:
+  //   1) validateSsoEnforcement(workspace) — reject if the workspace enforces
+  //      SSO (a password login is not allowed there).
+  //   2) Lazily require the EE MFA module (same pattern/path as the controller).
+  //      If it is bundled and the user has MFA enabled OR the workspace enforces
+  //      MFA, reject the Basic path and tell the caller to use a Bearer token (a
+  //      Bearer ACCESS JWT is only minted AFTER the normal gated login, so it is
+  //      safe). A fork WITHOUT the EE module behaves exactly like the controller:
+  //      no MFA module -> no MFA gate.
+  // Throws UnauthorizedException on rejection (surfaced as a clean 401, never a
+  // torn/hijacked response, never a token). Never logs the password.
+  private async enforceBasicLoginGate(
+    workspace: Workspace,
+    creds: { email: string; password: string },
+  ): Promise<void> {
+    // 1) SSO enforcement. validateSsoEnforcement throws BadRequestException; we
+    // re-surface it as Unauthorized so the /mcp 401 path is consistent and a
+    // token is never issued.
+    try {
+      validateSsoEnforcement(workspace);
+    } catch {
+      throw new UnauthorizedException(
+        'This workspace has enforced SSO login. Use SSO; MCP HTTP Basic is not allowed.',
+      );
+    }
+
+    // 2) MFA gate — lazy-require the EE module exactly like AuthController.login.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let MfaModule: any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      MfaModule = require('./../../ee/mfa/services/mfa.service');
+    } catch {
+      // No EE MFA module bundled in this build: same as the controller -> no
+      // MFA gate. (A community/fork build has no MFA, so Basic is allowed.)
+      return;
+    }
+
+    const mfaService = this.moduleRef.get(MfaModule.MfaService, {
+      strict: false,
+    });
+    // Use the same requirement check the controller uses. We pass NO FastifyReply
+    // (the controller passes `res` only to set a cookie on the no-MFA happy path,
+    // which we never take here): we only read the requirement flags. Be tolerant
+    // of either a (loginInput, workspace) or (loginInput, workspace, res) shape.
+    const mfaResult = await mfaService.checkMfaRequirements(
+      creds,
+      workspace,
+      undefined,
+    );
+
+    if (mfaResult && (mfaResult.userHasMfa || mfaResult.requiresMfaSetup)) {
+      throw new UnauthorizedException(
+        'This account requires multi-factor authentication. MCP HTTP Basic ' +
+          'cannot complete MFA — log in normally and use a Bearer access token ' +
+          'instead.',
+      );
+    }
   }
 
   // Lazily create the HTTP handler exactly once. The import is indirected so

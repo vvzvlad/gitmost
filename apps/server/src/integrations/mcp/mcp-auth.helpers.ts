@@ -116,6 +116,20 @@ export interface McpAuthDeps {
   email?: string;
   password?: string;
   findWorkspace: () => Promise<{ id: string } | undefined>;
+  // Pre-token gate for the Basic path ONLY, replicating what AuthController.login
+  // does BEFORE issuing a token: validateSsoEnforcement(workspace) and the lazy
+  // EE MFA requirement check. It is invoked with the resolved (default)
+  // workspace right after it is loaded and BEFORE any login()/verifyCredentials()
+  // call, so an SSO-enforced workspace or an MFA-required user never gets a token
+  // via /mcp Basic. It MUST throw (UnauthorizedException) to reject; on a fork
+  // without the EE MFA module bundled it behaves exactly like the controller
+  // (no MFA module -> no MFA gate). The Bearer path skips this gate because those
+  // ACCESS JWTs were already minted post-gate by the normal controller login.
+  // Optional so existing callers/tests that don't exercise the gate are unchanged.
+  enforceBasicGate?: (
+    workspace: { id: string },
+    creds: { email: string; password: string },
+  ) => Promise<void> | void;
   // Full login: mints a user session + JWT, writes the USER_LOGIN audit event
   // and updates lastLoginAt. Called at MOST once per MCP session (at the
   // session-init request) so we do not spam the audit log / user_sessions table
@@ -227,6 +241,25 @@ export async function verifyBearerAccess(
   return { sub: payload.sub, email: payload.email };
 }
 
+/**
+ * Detect a genuine JSON-RPC `initialize` request from an already-parsed body.
+ * Mirrors the @modelcontextprotocol/sdk `isInitializeRequest` signal that
+ * packages/mcp/src/http.ts uses to decide whether to mint a session, but
+ * framework/SDK-free so it is unit-testable and usable from the CommonJS
+ * McpService. An initialize request is a single JSON-RPC object whose `method`
+ * is exactly 'initialize'; a batch (array) body is never an initialize request.
+ *
+ * This is the second half of the session-INIT decision: `isSessionInit` is
+ * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Using it
+ * ensures the side-effecting login() (user_sessions insert + USER_LOGIN audit +
+ * lastLoginAt) only runs for a real initialize, never for an arbitrary
+ * header-less request that http.ts will subsequently 400.
+ */
+export function isInitializeRequestBody(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  return (body as { method?: unknown }).method === 'initialize';
+}
+
 /** Extract a Bearer token from an Authorization header (case-insensitive). */
 export function extractBearer(
   authHeader: string | undefined,
@@ -283,6 +316,22 @@ export async function resolveMcpSessionConfig(
       throw new UnauthorizedException('No workspace is configured.');
     }
 
+    // SSO/MFA pre-token gate (BLOCKER fix): replicate the AuthController.login
+    // gates BEFORE any token is issued on the Basic path. If the workspace
+    // enforces SSO, or the EE MFA module is bundled and this user/workspace
+    // requires MFA, this throws and we never mint a token. The Bearer path is
+    // intentionally NOT gated here (its JWT was already minted post-gate). This
+    // runs on BOTH init and subsequent Basic requests, but it must run before
+    // login()/verifyCredentials so an SSO/MFA user cannot authenticate at all.
+    // We do NOT count a gate rejection toward the brute-force limiter: it is not
+    // a password-guess signal.
+    if (deps.enforceBasicGate) {
+      await deps.enforceBasicGate(workspace, {
+        email: basic.email,
+        password: basic.password,
+      });
+    }
+
     // Fix 1 (init vs subsequent):
     //   - SESSION INIT (no mcp-session-id): full login() mints the user JWT
     //     (the one allowed session creation + audit event for this MCP
@@ -330,10 +379,16 @@ export async function resolveMcpSessionConfig(
           : 'Email or password does not match';
       throw new UnauthorizedException(message);
     }
-    // Subsequent request, credentials valid: clear any prior failure budget.
+    // Subsequent request, credentials valid: clear the per-IP and per-IP+email
+    // budget, but DELIBERATELY do NOT reset the GLOBAL per-email key here. That
+    // email key is the only brute-force backstop that survives IP/XFF rotation;
+    // resetting it on every periodic tool call of a victim's live MCP session
+    // would repeatedly wipe a parallel attacker's failed-login budget for that
+    // email. The global email key is reset ONLY on a session-INIT login()
+    // success (above), which is a single deliberate authentication, not a
+    // high-frequency re-validation.
     deps.limiter.reset(ipKey);
     deps.limiter.reset(ipEmailKey);
-    deps.limiter.reset(emailKey);
     return {
       config: { apiUrl, getToken: async () => '' },
       identity: `basic:${emailLc}`,
