@@ -41,6 +41,7 @@ import {
   Drawio,
   Excalidraw,
   Embed,
+  HtmlEmbed,
   TiptapPdf,
   PageBreak,
   SearchAndReplace,
@@ -87,6 +88,7 @@ import CodeBlockView from "@/features/editor/components/code-block/code-block-vi
 import DrawioView from "../components/drawio/drawio-view";
 import ExcalidrawView from "@/features/editor/components/excalidraw/excalidraw-view-lazy.tsx";
 import EmbedView from "@/features/editor/components/embed/embed-view.tsx";
+import HtmlEmbedView from "@/features/editor/components/html-embed/html-embed-view.tsx";
 import PdfView from "@/features/editor/components/pdf/pdf-view.tsx";
 import SubpagesView from "@/features/editor/components/subpages/subpages-view.tsx";
 import TransclusionView from "@/features/editor/components/transclusion/transclusion-view.tsx";
@@ -364,6 +366,13 @@ export const mainExtensions = [
   }),
   Embed.configure({
     view: EmbedView,
+  }),
+  // Raw HTML/CSS/JS node (Variant C). The node is registered for ALL users so
+  // documents authored by admins render correctly for everyone; INSERTION is
+  // gated to admins in the slash menu, and the server strips the node from any
+  // non-admin write so a non-admin cannot persist it.
+  HtmlEmbed.configure({
+    view: HtmlEmbedView,
   }),
   TiptapPdf.configure({
     view: PdfView,

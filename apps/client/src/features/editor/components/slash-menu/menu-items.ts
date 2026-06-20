@@ -588,6 +588,21 @@ const CommandGroups: SlashMenuGroupedItemsType = {
           .run(),
     },
     {
+      title: "HTML embed",
+      description: "Embed raw HTML, CSS and JavaScript (admins only).",
+      searchTerms: ["html", "css", "js", "javascript", "script", "tracker", "analytics", "raw", "embed"],
+      icon: IconCode,
+      adminOnly: true,
+      command: ({ editor, range }: CommandProps) => {
+        editor
+          .chain()
+          .focus()
+          .deleteRange(range)
+          .setHtmlEmbed({ source: "" })
+          .run();
+      },
+    },
+    {
       title: "Iframe embed",
       description: "Embed any Iframe",
       searchTerms: ["iframe"],
@@ -744,6 +759,24 @@ const CommandGroups: SlashMenuGroupedItemsType = {
   ],
 };
 
+/**
+ * Read whether the current user is a workspace admin/owner from the persisted
+ * `currentUser` (the same payload `currentUserAtom` stores via localStorage).
+ * Used to hide admin-only slash items (e.g. raw HTML embed). This is a UI gate
+ * only; the server independently strips admin-only nodes from non-admin writes.
+ */
+function isCurrentUserAdmin(): boolean {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const role = parsed?.user?.role;
+    return role === "owner" || role === "admin";
+  } catch {
+    return false;
+  }
+}
+
 export const getSuggestionItems = ({
   query,
   excludeItems,
@@ -753,6 +786,7 @@ export const getSuggestionItems = ({
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
   const filteredGroups: SlashMenuGroupedItemsType = {};
+  const isAdmin = isCurrentUserAdmin();
 
   const fuzzyMatch = (query: string, target: string) => {
     let queryIndex = 0;
@@ -767,6 +801,8 @@ export const getSuggestionItems = ({
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
       if (excludeItems?.has(item.title)) return false;
+      // Hide admin-only items (raw HTML embed) from non-admins.
+      if (item.adminOnly && !isAdmin) return false;
       return (
         fuzzyMatch(search, item.title) ||
         item.description.toLowerCase().includes(search) ||

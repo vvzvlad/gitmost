@@ -21,6 +21,9 @@ export type SlashMenuItemType = {
   searchTerms: string[];
   command: (props: CommandProps) => void;
   disable?: (editor: ReturnType<typeof useEditor>) => boolean;
+  // When true, the item is only offered to workspace admins/owners. This is a
+  // UI convenience only — the real authoring gate is enforced server-side.
+  adminOnly?: boolean;
 };
 
 export type SlashMenuGroupedItemsType = {

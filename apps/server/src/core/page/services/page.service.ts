@@ -31,6 +31,11 @@ import {
   removeMarkTypeFromDoc,
 } from '../../../common/helpers/prosemirror/utils';
 import {
+  canAuthorHtmlEmbed,
+  hasHtmlEmbedNode,
+  stripHtmlEmbedNodes,
+} from '../../../common/helpers/prosemirror/html-embed.util';
+import {
   htmlToJson,
   jsonToNode,
   jsonToText,
@@ -688,7 +693,25 @@ export class PageService {
           }
         });
 
-        const prosemirrorJson = prosemirrorDoc.toJSON();
+        let prosemirrorJson = prosemirrorDoc.toJSON();
+
+        // SECURITY (Variant C admin gate, duplication write path):
+        // Duplication builds the ydoc directly and bypasses the collab
+        // onStoreDocument strip. htmlEmbed renders raw, unsanitized JS in
+        // readers' browsers, so only workspace admins/owners may author it. A
+        // non-admin with space Edit could otherwise duplicate an admin page
+        // that contains an embed into a new page authored by them. Strip every
+        // htmlEmbed node from each duplicated page when the duplicating user is
+        // not an admin, BEFORE computing textContent/ydoc/insert.
+        if (
+          !canAuthorHtmlEmbed(authUser.role) &&
+          hasHtmlEmbedNode(prosemirrorJson)
+        ) {
+          this.logger.warn(
+            `Stripping htmlEmbed node(s) from non-admin page duplication by user ${authUser.id} (source page ${page.id})`,
+          );
+          prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+        }
 
         // Add "Copy of " prefix to the root page title only for duplicates in same space
         let title = page.title;

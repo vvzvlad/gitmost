@@ -8,6 +8,11 @@ import {
 import { setYjsMark, updateYjsMarkAttribute, YjsSelection } from './yjs.util';
 import * as Y from 'yjs';
 import { User } from '@docmost/db/types/entity.types';
+import {
+  canAuthorHtmlEmbed,
+  hasHtmlEmbedNode,
+  stripHtmlEmbedNodes,
+} from '../common/helpers/prosemirror/html-embed.util';
 
 export type CollabEventHandlers = ReturnType<
   CollaborationHandler['getHandlers']
@@ -83,8 +88,25 @@ export class CollaborationHandler {
           user: User;
         },
       ) => {
-        const { prosemirrorJson, operation, user } = payload;
+        const { operation, user } = payload;
+        let { prosemirrorJson } = payload;
         this.logger.debug('Updating page content via yjs', documentName);
+
+        // SECURITY (Variant C admin gate, REST/MCP/AI write path):
+        // updatePageContent is the server-side entrypoint used by the REST page
+        // update endpoint and by the MCP/AI agent. Raw `htmlEmbed` nodes execute
+        // arbitrary JS in every reader's browser, so a NON-admin caller must not
+        // be able to persist them here. If the editing user is not a workspace
+        // admin/owner, strip every htmlEmbed node before it reaches the ydoc.
+        if (!canAuthorHtmlEmbed(user?.role)) {
+          if (hasHtmlEmbedNode(prosemirrorJson)) {
+            this.logger.warn(
+              `Stripping htmlEmbed node(s) from non-admin update by user ${user?.id} on ${documentName}`,
+            );
+            prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+          }
+        }
+
         await this.withYdocConnection(
           hocuspocus,
           documentName,

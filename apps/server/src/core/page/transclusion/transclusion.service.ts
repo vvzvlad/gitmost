@@ -23,6 +23,11 @@ import { rewriteAttachmentsForUnsync } from './utils/transclusion-unsync.util';
 import { TransclusionLookup } from './transclusion.types';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
+import {
+  canAuthorHtmlEmbed,
+  hasHtmlEmbedNode,
+  stripHtmlEmbedNodes,
+} from '../../../common/helpers/prosemirror/html-embed.util';
 
 type ReferencingPageInfo = {
   id: string;
@@ -461,10 +466,12 @@ export class TransclusionService {
       throw new NotFoundException('Sync block not found');
     }
 
-    const { content, copies } = rewriteAttachmentsForUnsync(
+    let content: unknown;
+    let copies: ReturnType<typeof rewriteAttachmentsForUnsync>['copies'];
+    ({ content, copies } = rewriteAttachmentsForUnsync(
       transclusion.content,
       () => uuid7(),
-    );
+    ));
 
     if (copies.length > 0) {
       const oldIds = copies.map((c) => c.oldAttachmentId);
@@ -512,6 +519,21 @@ export class TransclusionService {
       sourcePageId,
       transclusionId,
     );
+
+    // SECURITY (Variant C admin gate, transclusion unsync write path):
+    // The returned content is a source snapshot that the client materializes
+    // into the reference page via insertContentAt. The snapshot keeps any
+    // htmlEmbed verbatim, and unsync requires only space Edit/View. If the
+    // requesting user is not a workspace admin/owner, strip htmlEmbed nodes so a
+    // non-admin can never receive an embed payload to re-persist (the collab
+    // strip on the subsequent save is debounced/race-prone and must not be the
+    // only guard). Admin behavior is unchanged.
+    if (!canAuthorHtmlEmbed(user.role) && hasHtmlEmbedNode(content)) {
+      this.logger.warn(
+        `Stripping htmlEmbed node(s) from non-admin transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
+      );
+      content = stripHtmlEmbedNodes(content);
+    }
 
     return { content };
   }

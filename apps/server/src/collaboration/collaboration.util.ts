@@ -32,6 +32,7 @@ import {
   Drawio,
   Excalidraw,
   Embed,
+  HtmlEmbed,
   Mention,
   Subpages,
   Highlight,
@@ -102,6 +103,10 @@ export const tiptapExtensions = [
   Drawio,
   Excalidraw,
   Embed,
+  // Registered server-side so the node survives schema parsing/serialization.
+  // Authoring is gated to admins at the document WRITE paths (see
+  // stripHtmlEmbedNodes usage in persistence/page services), NOT here.
+  HtmlEmbed,
   Mention,
   Subpages,
   Columns,
