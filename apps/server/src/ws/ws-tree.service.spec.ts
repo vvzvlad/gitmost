@@ -7,7 +7,10 @@ import {
   PageMovedEvent,
   TreeNodeSnapshot,
 } from '../database/listeners/page.listener';
-import { getSpaceRoomName } from './ws.utils';
+import {
+  getSpaceRoomName,
+  WS_SPACE_RESTRICTION_CACHE_PREFIX,
+} from './ws.utils';
 
 const snapshot: TreeNodeSnapshot = {
   id: 'page-1',
@@ -289,6 +292,15 @@ describe('WsService.emitTreeEvent', () => {
     expect(roomEmit).not.toHaveBeenCalled();
     expect(okEmit).toHaveBeenCalledWith('message', data);
     expect(noEmit).not.toHaveBeenCalled();
+  });
+
+  it('invalidateSpaceRestrictionCache deletes the cached restriction verdict for that space only', async () => {
+    await service.invalidateSpaceRestrictionCache('space-42');
+
+    expect(cache.del).toHaveBeenCalledTimes(1);
+    expect(cache.del).toHaveBeenCalledWith(
+      `${WS_SPACE_RESTRICTION_CACHE_PREFIX}space-42`,
+    );
   });
 
   it('emitDeleteToUnauthorized sends ONLY to sockets whose user lacks page access', async () => {

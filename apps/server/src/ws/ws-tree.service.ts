@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { Page } from '@docmost/db/types/entity.types';
 import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { WsService } from './ws.service';
 import {
@@ -143,45 +142,6 @@ export class WsTreeService {
     this.wsService.emitToSpaceRoom(spaceId, {
       operation: 'refetchRootTreeNodeEvent',
       spaceId,
-    });
-  }
-
-  async notifyPageRestricted(page: Page, excludeUserId: string): Promise<void> {
-    await this.wsService.emitToSpaceExceptUsers(page.spaceId, [excludeUserId], {
-      operation: 'deleteTreeNode',
-      spaceId: page.spaceId,
-      payload: {
-        node: {
-          id: page.id,
-          slugId: page.slugId,
-        },
-      },
-    });
-  }
-
-  async notifyPermissionGranted(page: Page, userIds: string[]): Promise<void> {
-    if (userIds.length === 0) return;
-
-    await this.wsService.emitToUsers(userIds, {
-      operation: 'addTreeNode',
-      spaceId: page.spaceId,
-      payload: {
-        parentId: page.parentPageId ?? null,
-        index: 0,
-        data: {
-          id: page.id,
-          slugId: page.slugId,
-          name: page.title ?? '',
-          title: page.title,
-          icon: page.icon,
-          position: page.position,
-          spaceId: page.spaceId,
-          parentPageId: page.parentPageId,
-          creatorId: page.creatorId,
-          hasChildren: false,
-          children: [],
-        },
-      },
     });
   }
 }

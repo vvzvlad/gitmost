@@ -8,7 +8,6 @@ import {
   WS_SPACE_RESTRICTION_CACHE_PREFIX,
   WS_CACHE_TTL_MS,
   getSpaceRoomName,
-  getUserRoomName,
 } from './ws.utils';
 
 @Injectable()
@@ -57,6 +56,22 @@ export class WsService {
     await this.broadcastToAuthorizedUsers(room, client.id, pageId, data);
   }
 
+  // Drop the cached spaceHasRestrictions verdict for a space. spaceHasRestrictions
+  // caches "does this space have ANY restricted page" for WS_CACHE_TTL_MS (30s),
+  // and emitTreeEvent / emitCommentEvent take a room-wide fast path when it is
+  // false. The FIRST time a space gains a restriction (or loses its last one)
+  // this cached verdict goes stale for up to the TTL, during which a title/icon-
+  // bearing tree payload could fan out to the whole room. This MUST be called by
+  // whatever code creates or removes a page's restriction (the page-access /
+  // page-permission grant/revoke/restrict path), passing the affected page's
+  // spaceId, so the next emit re-reads hasRestrictedPagesInSpace.
+  //
+  // NOTE: on this branch there is no permission-mutation site to call this from —
+  // the page-access/page-permission repo mutators (insertPageAccess /
+  // insertPagePermissions / deletePagePermission* / updatePagePermissionRole)
+  // have ZERO callers in apps/server/src; PageAccessService only validates access.
+  // This primitive is kept (and tested) so that flow, when it lands, has the
+  // correct hook to invalidate the cache.
   async invalidateSpaceRestrictionCache(spaceId: string): Promise<void> {
     await this.cacheManager.del(
       `${WS_SPACE_RESTRICTION_CACHE_PREFIX}${spaceId}`,
@@ -181,29 +196,6 @@ export class WsService {
   ): Promise<void> {
     const room = getSpaceRoomName(spaceId);
     await this.broadcastToAuthorizedUsers(room, null, pageId, data);
-  }
-
-  async emitToUsers(userIds: string[], data: any): Promise<void> {
-    if (userIds.length === 0) return;
-    const rooms = userIds.map((id) => getUserRoomName(id));
-    this.server.to(rooms).emit('message', data);
-  }
-
-  async emitToSpaceExceptUsers(
-    spaceId: string,
-    excludeUserIds: string[],
-    data: any,
-  ): Promise<void> {
-    const room = getSpaceRoomName(spaceId);
-    const sockets = await this.server.in(room).fetchSockets();
-    const excludeSet = new Set(excludeUserIds);
-
-    for (const socket of sockets) {
-      const userId = socket.data.userId as string;
-      if (userId && !excludeSet.has(userId)) {
-        socket.emit('message', data);
-      }
-    }
   }
 
   isTreeEvent(data: any): boolean {
