@@ -18,7 +18,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { useAtom, useSetAtom } from "jotai";
-import { useParams } from "react-router-dom";
+import { useMatch } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -140,13 +140,16 @@ export default function AiChatWindow() {
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
-  // The page the user is currently viewing, derived from the route (same
-  // source the breadcrumb uses). On a non-page route `pageSlug` is undefined,
-  // so the query is disabled and `openPage` is null. This is passed to the
-  // chat thread as context so the agent knows what "this page"/"the current
-  // page" refers to; the agent still reads/writes via its CASL-enforced page
-  // tools using the id.
-  const { pageSlug } = useParams();
+  // The page the user is currently viewing. AiChatWindow lives in a pathless
+  // parent layout route, so useParams() can't see :pageSlug. Match the full
+  // pathname against the authenticated page route instead so "the current page"
+  // resolves regardless of where this component is mounted. On a non-page route
+  // the match is null, so `pageSlug` is undefined, the query is disabled and
+  // `openPage` is null. This is passed to the chat thread as context so the
+  // agent knows what "this page"/"the current page" refers to; the agent still
+  // reads/writes via its CASL-enforced page tools using the id.
+  const pageRouteMatch = useMatch("/s/:spaceSlug/p/:pageSlug");
+  const pageSlug = pageRouteMatch?.params?.pageSlug;
   const { data: openPageData } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
   });

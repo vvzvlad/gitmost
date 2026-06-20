@@ -257,6 +257,9 @@ export class AiChatService {
       sessionId,
       workspace.id,
       chatId,
+      // Same open-page value used by the system prompt above; exposed to the
+      // model via getCurrentPage so page identity survives prompt mangling.
+      body.openPage,
     );
 
     // Merge in admin-configured external MCP tools (web search, etc.; §6.8).
