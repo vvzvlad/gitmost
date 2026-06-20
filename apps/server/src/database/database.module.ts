@@ -31,6 +31,7 @@ import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageListener } from '@docmost/db/listeners/page.listener';
 import { PostgresJSDialect } from 'kysely-postgres-js';
@@ -101,6 +102,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     AiChatMessageRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
+    AiAgentRoleRepo,
     PageEmbeddingRepo,
     PageListener,
   ],
@@ -131,6 +133,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     AiChatMessageRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
+    AiAgentRoleRepo,
     PageEmbeddingRepo,
   ],
 })

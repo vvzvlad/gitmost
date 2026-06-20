@@ -7,6 +7,7 @@ import { AiTranscriptionService } from './ai-transcription.service';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { ExternalMcpModule } from './external-mcp/external-mcp.module';
+import { AiAgentRolesModule } from './roles/ai-agent-roles.module';
 
 /**
  * Per-user AI chat module (§6.1).
@@ -20,7 +21,13 @@ import { ExternalMcpModule } from './external-mcp/external-mcp.module';
  * (§6.7 stage D); importing it here boots the processor with the app.
  */
 @Module({
-  imports: [AiModule, TokenModule, EmbeddingModule, ExternalMcpModule],
+  imports: [
+    AiModule,
+    TokenModule,
+    EmbeddingModule,
+    ExternalMcpModule,
+    AiAgentRolesModule,
+  ],
   controllers: [AiChatController],
   providers: [AiChatService, AiTranscriptionService, AiChatToolsService],
 })

@@ -25,6 +25,10 @@ interface ChatThreadProps {
   /** The page currently open in the workspace, or null on a non-page route.
    *  Sent with each turn so the agent knows what "this page" refers to. */
   openPage?: OpenPageContext | null;
+  /** The agent role selected for a NEW chat (null = universal assistant). Sent
+   *  in the request body so the server persists it on chat creation; ignored by
+   *  the server for existing chats (the role is read from the chat row). */
+  roleId?: string | null;
   /** Called when a turn finishes; the parent refreshes the chat list and, for
    *  a new chat, adopts the freshly created chat id. */
   onTurnFinished: () => void;
@@ -61,6 +65,7 @@ export default function ChatThread({
   chatId,
   initialRows,
   openPage,
+  roleId,
   onTurnFinished,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -83,6 +88,12 @@ export default function ChatThread({
   // the `chatStoreId` note below). Read live inside `prepareSendMessagesRequest`.
   const openPageRef = useRef<OpenPageContext | null>(openPage ?? null);
   openPageRef.current = openPage ?? null;
+
+  // Keep the selected role id in a ref, same rationale as openPageRef. Only the
+  // FIRST request of a brand-new chat uses it (the server persists it then and
+  // ignores it for existing chats), but sending it on every send is harmless.
+  const roleIdRef = useRef<string | null>(roleId ?? null);
+  roleIdRef.current = roleId ?? null;
 
   // Stable `useChat` store key for the lifetime of THIS mount.
   //
@@ -119,6 +130,9 @@ export default function ChatThread({
             ...body,
             chatId: chatIdRef.current,
             openPage: openPageRef.current,
+            // Honoured by the server only when creating a new chat; null =>
+            // universal assistant.
+            roleId: roleIdRef.current,
             messages,
           },
         }),

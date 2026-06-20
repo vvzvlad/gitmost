@@ -142,10 +142,16 @@ export class AiChatController {
 
     const body = (req.body ?? {}) as AiChatStreamBody;
 
-    // Resolve the model BEFORE hijack so an unconfigured provider returns a
-    // clean JSON 503 (AiNotConfiguredException is a 503 HttpException; letting
-    // it propagate here yields a normal response, not a broken stream).
-    const model = await this.aiChatService.getChatModel(workspace.id);
+    // Resolve the agent role for this turn BEFORE hijack: existing chats read it
+    // from ai_chats.role_id (authoritative), a new chat from body.roleId. The
+    // role drives both the persona and the optional model override below.
+    const role = await this.aiChatService.resolveRoleForRequest(workspace, body);
+
+    // Resolve the model (applying the role's optional override) BEFORE hijack so
+    // an unconfigured provider — including a role pointing at an unconfigured
+    // driver — returns a clean JSON 503 (AiNotConfiguredException is a 503
+    // HttpException) instead of breaking mid-stream.
+    const model = await this.aiChatService.getChatModel(workspace.id, role);
 
     // Abort the agent loop when the client disconnects. `close` also fires on
     // normal completion, so only abort when the response has not finished
@@ -173,6 +179,7 @@ export class AiChatController {
         res,
         signal: controller.signal,
         model,
+        role,
       });
     } catch (err) {
       // Any failure AFTER hijack can no longer send a clean JSON error, so emit
