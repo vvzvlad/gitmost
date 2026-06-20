@@ -6,6 +6,7 @@ import {
   footnoteReferenceExtension,
   extractFootnoteDefinitions,
 } from "./footnote.marked";
+import { htmlEmbedExtension } from "./html-embed.marked";
 
 marked.use({
   renderer: {
@@ -43,6 +44,7 @@ marked.use({
     mathBlockExtension,
     mathInlineExtension,
     footnoteReferenceExtension,
+    htmlEmbedExtension,
   ],
 });
 

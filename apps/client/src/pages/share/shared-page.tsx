@@ -8,6 +8,7 @@ import ReadonlyPageEditor from "@/features/editor/readonly-page-editor.tsx";
 import { extractPageSlugId } from "@/lib";
 import { Error404 } from "@/components/ui/error-404.tsx";
 import ShareBranding from "@/features/share/components/share-branding.tsx";
+import ShareAiWidget from "@/features/share/components/share-ai-widget.tsx";
 import { useAtomValue } from "jotai";
 import {
   sharedPageFullWidthAtom,
@@ -74,6 +75,12 @@ export default function SharedPage() {
       </Container>
 
       {data && !shareId && !(data.features?.length > 0) && <ShareBranding />}
+
+      {/* Anonymous "Ask AI" widget — only when the workspace enables the
+          public-share assistant (server-resolved flag on /shares/page-info). */}
+      {data?.aiAssistant && data.share?.id && data.page?.id && (
+        <ShareAiWidget shareId={data.share.id} pageId={data.page.id} />
+      )}
     </div>
   );
 }

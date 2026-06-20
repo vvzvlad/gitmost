@@ -64,6 +64,7 @@ export function htmlToMarkdown(html: string): string {
     mathInline,
     mathBlock,
     iframeEmbed,
+    htmlEmbed,
     image,
     video,
     footnoteReference,
@@ -72,6 +73,32 @@ export function htmlToMarkdown(html: string): string {
   return turndownService
     .turndown(fillEmptyFootnoteRefs(html))
     .replaceAll('<br>', ' ');
+}
+
+/**
+ * Serialize the `htmlEmbed` node to Markdown.
+ *
+ * Markdown has no native representation for an arbitrary-HTML block, so we
+ * preserve the node losslessly as an HTML comment carrying the base64-encoded
+ * source (the same `data-source` payload the node stores). `markdownToHtml`
+ * recognizes the same marker and rebuilds the node, so the round-trip
+ * MD -> HTML -> JSON keeps the source intact. The comment also keeps the raw
+ * markup inert in the exported `.md` file (it does not render in plain Markdown
+ * viewers).
+ */
+function htmlEmbed(turndownService: _TurndownService) {
+  turndownService.addRule('htmlEmbed', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'DIV' &&
+        node.getAttribute('data-type') === 'htmlEmbed'
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      const encoded = node.getAttribute('data-source') || '';
+      return `\n\n<!--html-embed:${encoded}-->\n\n`;
+    },
+  });
 }
 
 function listParagraph(turndownService: _TurndownService) {

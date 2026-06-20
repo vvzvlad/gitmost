@@ -25,11 +25,19 @@ export function buildTree(pages: IPage[]): SpaceTreeNode[] {
       spaceId: page.spaceId,
       parentPageId: page.parentPageId,
       canEdit: page.canEdit ?? page.permissions?.canEdit,
+      isTemplate: page.isTemplate,
       children: [],
     };
   });
 
+  // Defense-in-depth: a duplicate id in `pages` would push two references to the
+  // same node, producing a duplicate React key that crashes the sidebar render.
+  // Track ids we've already pushed and skip repeats so a stray duplicate from a
+  // realtime cache write can never break the tree.
+  const seen = new Set<string>();
   pages.forEach((page) => {
+    if (seen.has(page.id)) return;
+    seen.add(page.id);
     tree.push(pageMap[page.id]);
   });
 
@@ -215,4 +223,34 @@ export function mergeRootTrees(
   });
 
   return sortPositionKeys(merged);
+}
+
+// Collect every node id in the tree (roots, branches, leaves). Used by
+// collapseAll to clear the open-state map for all current-space nodes.
+export function collectAllIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      ids.push(n.id);
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+// Collect ids of branch nodes (nodes that have children). Used by expandAll to
+// open every branch in the open-state map; leaves need no entry.
+export function collectBranchIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      if (n.children?.length) {
+        ids.push(n.id);
+        walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return ids;
 }

@@ -9,10 +9,16 @@
  *
  * None of these fields contain the API key (it is sent as an Authorization
  * header and never echoed in the response body), so this is safe to log/return.
+ *
+ * `fallback` is used when the error carries no usable message (e.g. a bare
+ * object); defaults to 'Unknown error'.
  */
-export function describeProviderError(err: unknown): string {
+export function describeProviderError(
+  err: unknown,
+  fallback = 'Unknown error',
+): string {
   if (typeof err !== 'object' || err === null) {
-    return typeof err === 'string' ? err : 'Unknown error';
+    return typeof err === 'string' && err ? err : fallback;
   }
   const e = err as {
     statusCode?: number;
@@ -23,7 +29,7 @@ export function describeProviderError(err: unknown): string {
   const base =
     typeof e.statusCode === 'number'
       ? `${e.statusCode}: ${e.message ?? ''}`.trim()
-      : (e.message ?? 'Unknown error');
+      : (e.message ?? fallback);
   const body = (e.responseBody ?? e.text ?? '').trim();
   if (!body) return base;
   // Collapse whitespace so a multi-line HTML body stays on one log line.

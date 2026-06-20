@@ -239,7 +239,7 @@ export class WorkspaceRepo {
     // is a real jsonb object, never a double-encoded string. The CASE self-heals
     // workspaces whose settings.ai.provider was previously corrupted into an
     // array/string.
-    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'embeddingBaseUrl', 'sttModel', 'sttBaseUrl', 'sttApiStyle', 'systemPrompt'];
+    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'embeddingBaseUrl', 'sttModel', 'sttBaseUrl', 'sttApiStyle', 'systemPrompt', 'publicShareChatModel', 'publicShareAssistantRoleId'];
     const entries = Object.entries(provider).filter(
       ([k, v]) => v !== undefined && ALLOWED.includes(k),
     );
@@ -258,6 +258,32 @@ export class WorkspaceRepo {
                   THEN settings->'ai'->'provider' ELSE '{}'::jsonb END)
             || ${patch}
           ))`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', workspaceId)
+      .returning(this.baseFields)
+      .executeTakeFirst();
+  }
+
+  /**
+   * Set a single scalar key at the TOP LEVEL of `settings` (e.g.
+   * `settings.htmlEmbed`). Mirrors `updateAiSettings`/`updateSharingSettings`
+   * but without a nested namespace object. `prefKey` comes from a fixed
+   * allowlist at the call site (inlined via `sql.raw`, never user input); the
+   * value is inlined via `sql.lit`.
+   */
+  async updateSetting(
+    workspaceId: string,
+    prefKey: string,
+    prefValue: string | boolean,
+    trx?: KyselyTransaction,
+  ) {
+    const db = dbOrTx(this.db, trx);
+    return db
+      .updateTable('workspaces')
+      .set({
+        settings: sql`COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object('${sql.raw(prefKey)}', ${sql.lit(prefValue)})`,
         updatedAt: new Date(),
       })
       .where('id', '=', workspaceId)

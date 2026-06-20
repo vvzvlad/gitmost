@@ -54,13 +54,17 @@ export const useTreeSocket = () => {
           break;
         case "addTreeNode":
           setTreeData((prev) => {
+            // Idempotent: the author already inserted the node optimistically,
+            // and a node may be re-delivered — never insert a duplicate id.
             if (treeModel.find(prev, event.payload.data.id)) return prev;
             const newParentId = event.payload.parentId as string | null;
-            let next = treeModel.insert(
+            // Insert by `position` among already-loaded siblings (not the
+            // sender's absolute index) so order is consistent across clients
+            // with different loaded sets.
+            let next = treeModel.insertByPosition(
               prev,
               newParentId,
               event.payload.data,
-              event.payload.index,
             );
             // Mirror the emitter: flip new parent's hasChildren to true so
             // the chevron renders on the receiver.
@@ -80,22 +84,50 @@ export const useTreeSocket = () => {
               (sourceBefore as SpaceTreeNode).parentPageId ?? null;
             const newParentId = event.payload.parentId as string | null;
 
-            const placed = treeModel.place(prev, event.payload.id, {
+            // Place the node by its fractional `position` among the new
+            // siblings — NOT by the sender's absolute `index` (the sender
+            // computed that against its own loaded set, which differs from
+            // this receiver's). Using the position keeps the visible order
+            // correct on every client; placing at `index: 0` would wrongly
+            // drop reordered/moved nodes at the top of their new sibling list.
+            const placed = treeModel.placeByPosition(prev, event.payload.id, {
               parentId: newParentId,
-              index: event.payload.index,
+              position: event.payload.position,
             });
-            // `place` silently returns the same reference if the destination
-            // parent isn't loaded on this client. Falling back to removing the
-            // source keeps the UI consistent (the source will reappear when
-            // the user expands the new parent and lazy-load fetches it).
+            // `placeByPosition` silently returns the same reference if the
+            // destination parent isn't loaded on this client. Falling back to
+            // removing the source keeps the UI consistent (the source will
+            // reappear when the user expands the new parent and lazy-load
+            // fetches it).
             if (placed === prev) {
               return treeModel.remove(prev, event.payload.id);
             }
 
-            let next = treeModel.update(placed, event.payload.id, {
+            // Apply the authoritative node fields the move payload carries
+            // (`pageData`) so receivers don't keep a stale title/icon/chevron
+            // on the moved node. `placeByPosition` already set `position`.
+            const pageData = event.payload.pageData as
+              | {
+                  title?: string | null;
+                  icon?: string | null;
+                  hasChildren?: boolean;
+                }
+              | undefined;
+            const patch: Partial<SpaceTreeNode> = {
               position: event.payload.position,
-              parentPageId: newParentId,
-            } as Partial<SpaceTreeNode>);
+              // Honest type: a root move has a null parent, so this is
+              // `string | null`, not always `string`.
+              parentPageId: newParentId as string | null,
+            };
+            if (pageData) {
+              // The tree node stores the title as `name`.
+              if (pageData.title !== undefined) patch.name = pageData.title ?? "";
+              if (pageData.icon !== undefined)
+                patch.icon = pageData.icon ?? undefined;
+              if (pageData.hasChildren !== undefined)
+                patch.hasChildren = pageData.hasChildren;
+            }
+            let next = treeModel.update(placed, event.payload.id, patch);
 
             // Mirror the emitter's hasChildren bookkeeping so both clients
             // converge to the same chevron state.

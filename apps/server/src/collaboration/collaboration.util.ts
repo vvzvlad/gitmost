@@ -32,6 +32,7 @@ import {
   Drawio,
   Excalidraw,
   Embed,
+  HtmlEmbed,
   Mention,
   Subpages,
   Highlight,
@@ -47,6 +48,7 @@ import {
   FootnoteReference,
   FootnotesList,
   FootnoteDefinition,
+  PageEmbed,
 } from '@docmost/editor-ext';
 import { generateText, getSchema, JSONContent } from '@tiptap/core';
 import { generateHTML, generateJSON } from '../common/helpers/prosemirror/html';
@@ -105,6 +107,10 @@ export const tiptapExtensions = [
   Drawio,
   Excalidraw,
   Embed,
+  // Registered server-side so the node survives schema parsing/serialization.
+  // Authoring is gated to admins at the document WRITE paths (see
+  // stripHtmlEmbedNodes usage in persistence/page services), NOT here.
+  HtmlEmbed,
   Mention,
   Subpages,
   Columns,
@@ -115,6 +121,7 @@ export const tiptapExtensions = [
   FootnoteReference,
   FootnotesList,
   FootnoteDefinition,
+  PageEmbed,
 ] as any;
 
 export function jsonToHtml(tiptapJson: any) {

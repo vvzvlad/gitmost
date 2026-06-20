@@ -73,6 +73,9 @@ import { useEditorScroll } from "./hooks/use-editor-scroll";
 import { EditorLinkMenu } from "@/features/editor/components/link/link-menu";
 import ColumnsMenu from "@/features/editor/components/columns/columns-menu.tsx";
 import { TransclusionLookupProvider } from "@/features/editor/components/transclusion/transclusion-lookup-context";
+import { PageEmbedLookupProvider } from "@/features/editor/components/page-embed/page-embed-lookup-context";
+import { PageEmbedAncestryProvider } from "@/features/editor/components/page-embed/page-embed-ancestry-context";
+import PageEmbedPicker from "@/features/editor/components/page-embed/page-embed-picker";
 import { useTranslation } from "react-i18next";
 
 interface PageEditorProps {
@@ -407,6 +410,8 @@ export default function PageEditor({
 
   return (
     <TransclusionLookupProvider>
+      <PageEmbedLookupProvider>
+        <PageEmbedAncestryProvider hostPageId={pageId}>
       {showStatic ? (
         <EditorProvider
           editable={false}
@@ -454,6 +459,7 @@ export default function PageEditor({
             {showReadOnlyCommentPopup && (
               <CommentDialog editor={editor} pageId={pageId} readOnly />
             )}
+            {editor && editorIsEditable && <PageEmbedPicker />}
           </div>
           <div
             onClick={() => editor.commands.focus("end")}
@@ -461,6 +467,8 @@ export default function PageEditor({
           ></div>
         </div>
       )}
+        </PageEmbedAncestryProvider>
+      </PageEmbedLookupProvider>
     </TransclusionLookupProvider>
   );
 }

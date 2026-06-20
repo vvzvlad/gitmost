@@ -31,6 +31,13 @@ import {
   removeMarkTypeFromDoc,
 } from '../../../common/helpers/prosemirror/utils';
 import {
+  hasHtmlEmbedNode,
+  htmlEmbedAllowed,
+  isHtmlEmbedFeatureEnabled,
+  stripHtmlEmbedNodes,
+} from '../../../common/helpers/prosemirror/html-embed.util';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import {
   htmlToJson,
   jsonToNode,
   jsonToText,
@@ -74,6 +81,7 @@ export class PageService {
     private collaborationGateway: CollaborationGateway,
     private readonly watcherService: WatcherService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async findById(
@@ -93,6 +101,10 @@ export class PageService {
     userId: string,
     workspaceId: string,
     createPageDto: CreatePageDto,
+    // Workspace role of the caller. Used to enforce the htmlEmbed admin gate on
+    // the create write path (see below). Optional/typed loosely so unknown or
+    // missing roles fall through to the non-admin (strip) branch by default.
+    callerRole?: string | null,
     // Optional agent-edit provenance (from the signed access claim). When the
     // actor is 'agent', stamp the page's source marker so a freshly created page
     // shows it was created by the AI agent (§14 N2) — create goes through REST,
@@ -123,10 +135,35 @@ export class PageService {
     let ydoc = undefined;
 
     if (createPageDto?.content && createPageDto?.format) {
-      const prosemirrorJson = await this.parseProsemirrorContent(
+      let prosemirrorJson = await this.parseProsemirrorContent(
         createPageDto.content,
         createPageDto.format,
       );
+
+      // SECURITY (Variant C admin gate, plain page-create write path):
+      // create() builds content/textContent/ydoc directly and persists them via
+      // insertPage, bypassing the collab onStoreDocument strip. htmlEmbed renders
+      // raw, unsanitized JS in readers' browsers, so only workspace admins/owners
+      // may author it. The create controller requires only space Edit, so a
+      // regular member could otherwise POST a doc (json, or the markdown/html
+      // <!--html-embed:BASE64--> forms that parse to the same node) containing an
+      // htmlEmbed and store XSS for every reader. Strip every htmlEmbed node when
+      // the caller is not an admin, BEFORE deriving textContent/ydoc/insert.
+      // The gate is toggle-AND-admin: htmlEmbed survives only when the workspace
+      // feature toggle is ON and the caller is an admin/owner. OFF (default) =>
+      // stripped for everyone. Cheap settings read keyed to the workspace.
+      const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+        (await this.workspaceRepo.findById(workspaceId))?.settings,
+      );
+      if (
+        !htmlEmbedAllowed(htmlEmbedEnabled, callerRole) &&
+        hasHtmlEmbedNode(prosemirrorJson)
+      ) {
+        this.logger.warn(
+          `Stripping htmlEmbed node(s) from page creation by user ${userId} (space ${createPageDto.spaceId})`,
+        );
+        prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+      }
 
       content = prosemirrorJson;
       textContent = jsonToText(prosemirrorJson);
@@ -319,6 +356,7 @@ export class PageService {
         'parentPageId',
         'spaceId',
         'creatorId',
+        'isTemplate',
         'deletedAt',
       ])
       .select((eb) => this.pageRepo.withHasChildren(eb))
@@ -589,6 +627,12 @@ export class PageService {
 
     const attachmentMap = new Map<string, ICopyPageAttachment>();
 
+    // Resolve the htmlEmbed toggle ONCE for the workspace; the per-page gate
+    // below is toggle-AND-admin (OFF default => stripped for everyone).
+    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
+      (await this.workspaceRepo.findById(rootPage.workspaceId))?.settings,
+    );
+
     const insertablePages: InsertablePage[] = await Promise.all(
       pages.map(async (page) => {
         const pageContent = getProsemirrorContent(page.content);
@@ -665,6 +709,18 @@ export class PageService {
             }
           }
 
+          // Remap whole-page embeds (pageEmbed) the same way: if the embedded
+          // source page is also part of the copied set, point at its new copy;
+          // otherwise leave it pointing at the original (live embed of original).
+          if (node.type.name === 'pageEmbed') {
+            const sourcePageId = node.attrs.sourcePageId;
+            if (sourcePageId && pageMap.has(sourcePageId)) {
+              const mappedPage = pageMap.get(sourcePageId);
+              //@ts-ignore
+              node.attrs.sourcePageId = mappedPage.newPageId;
+            }
+          }
+
           // Update internal page links in link marks
           for (const mark of node.marks) {
             if (
@@ -688,7 +744,25 @@ export class PageService {
           }
         });
 
-        const prosemirrorJson = prosemirrorDoc.toJSON();
+        let prosemirrorJson = prosemirrorDoc.toJSON();
+
+        // SECURITY (Variant C admin gate, duplication write path):
+        // Duplication builds the ydoc directly and bypasses the collab
+        // onStoreDocument strip. htmlEmbed renders raw, unsanitized JS in
+        // readers' browsers, so only workspace admins/owners may author it. A
+        // non-admin with space Edit could otherwise duplicate an admin page
+        // that contains an embed into a new page authored by them. Strip every
+        // htmlEmbed node from each duplicated page when the duplicating user is
+        // not an admin, BEFORE computing textContent/ydoc/insert.
+        if (
+          !htmlEmbedAllowed(htmlEmbedEnabled, authUser.role) &&
+          hasHtmlEmbedNode(prosemirrorJson)
+        ) {
+          this.logger.warn(
+            `Stripping htmlEmbed node(s) from page duplication by user ${authUser.id} (source page ${page.id})`,
+          );
+          prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
+        }
 
         // Add "Copy of " prefix to the root page title only for duplicates in same space
         let title = page.title;
@@ -757,10 +831,30 @@ export class PageService {
       );
     }
 
+    try {
+      await this.transclusionService.insertTemplateReferencesForPages(
+        insertablePages.map((p) => ({
+          id: p.id,
+          workspaceId: p.workspaceId,
+          content: p.content,
+        })),
+      );
+    } catch (err) {
+      this.logger.error(
+        'Failed to insert page template references for duplicated pages',
+        err,
+      );
+    }
+
     const insertedPageIds = insertablePages.map((page) => page.id);
+    // `spaceId` is the single destination space for the whole copy/duplicate
+    // (every inserted page above gets `spaceId: spaceId`). It lets the WS
+    // listener trigger a root refetch for the bulk subtree (no `pages` snapshot
+    // here on purpose — we want the refetch fallback, not per-node addTreeNode).
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: insertedPageIds,
       workspaceId: authUser.workspaceId,
+      spaceId,
     });
 
     //TODO: best to handle this in a queue
@@ -887,6 +981,35 @@ export class PageService {
       },
       dto.pageId,
     );
+
+    // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
+    // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
+    // content-save and carries neither oldParentId nor the new position. Emit a
+    // dedicated PAGE_MOVED so the WS listener can build a precise moveTreeNode
+    // without a DB read (variant A: snapshot in the event).
+    //
+    // `parentPageId` is `undefined` when only the position changed (same
+    // parent); resolve it back to the page's actual parent for the snapshot.
+    const newParentPageId =
+      parentPageId === undefined ? movedPage.parentPageId : parentPageId;
+
+    this.eventEmitter.emit(EventName.PAGE_MOVED, {
+      workspaceId: movedPage.workspaceId,
+      oldParentId: movedPage.parentPageId ?? null,
+      // `hasChildren` is selected by findById({ includeHasChildren: true }) in
+      // the controller; it isn't on the base Page type, hence the cast.
+      hasChildren:
+        (movedPage as Page & { hasChildren?: boolean }).hasChildren ?? false,
+      node: {
+        id: movedPage.id,
+        slugId: movedPage.slugId,
+        title: movedPage.title,
+        icon: movedPage.icon,
+        position: dto.position,
+        spaceId: movedPage.spaceId,
+        parentPageId: newParentPageId ?? null,
+      },
+    });
   }
 
   async getPageBreadCrumbs(childPageId: string) {
@@ -1137,7 +1260,7 @@ export class PageService {
     T extends { id: string; parentPageId: string | null },
   >(
     pages: T[],
-    rootPageId: string,
+    rootPageId: string | null,
     userId: string,
     spaceId?: string,
   ): Promise<T[]> {
@@ -1153,6 +1276,15 @@ export class PageService {
     );
     const accessibleSet = new Set(accessibleIds);
 
+    // When no explicit root is given (whole-space tree), every page whose
+    // parent is outside the returned set acts as a root (space root pages have
+    // parentPageId === null). This mirrors the single-root case below.
+    const pageIdSet = new Set(pageIds);
+    const isRoot = (page: T): boolean => {
+      if (rootPageId !== null) return page.id === rootPageId;
+      return !page.parentPageId || !pageIdSet.has(page.parentPageId);
+    };
+
     // Prune: include a page only if it's accessible AND its parent chain to root is included
     const includedIds = new Set<string>();
 
@@ -1166,7 +1298,7 @@ export class PageService {
         if (!accessibleSet.has(page.id)) continue;
 
         // Root page: include if accessible
-        if (page.id === rootPageId) {
+        if (isRoot(page)) {
           includedIds.add(page.id);
           changed = true;
           continue;
@@ -1181,5 +1313,124 @@ export class PageService {
     }
 
     return pages.filter((p) => includedIds.has(p.id));
+  }
+
+  /**
+   * Whole subtree (pageId) or whole space tree (spaceId only) in a single
+   * query, permission-filtered, returned as a flat list matching the sidebar
+   * item shape (id, slugId, title, icon, position, parentPageId, spaceId,
+   * hasChildren, canEdit) ordered by position. content is never fetched.
+   *
+   * Reproduces the exact two-branch permission logic of getSidebarPages():
+   *  - open space (no restrictions): every returned page is visible, canEdit =
+   *    spaceCanEdit, hasChildren derived from the returned set.
+   *  - restricted space: full descendant set is loaded, then per-page
+   *    permissions applied via filterAccessibleTreePages (restricted-but-granted
+   *    pages are kept; inaccessible subtrees pruned); canEdit is per-page AND
+   *    spaceCanEdit;
+   *    hasChildren is derived from the FINAL (post-prune, post-filter) set, so
+   *    a node never advertises children the user cannot access — the same
+   *    correction getSidebarPages does via getParentIdsWithAccessibleChildren.
+   */
+  async getSidebarPagesTree(
+    spaceId: string,
+    userId: string,
+    spaceCanEdit?: boolean,
+    pageId?: string,
+  ): Promise<
+    Array<
+      Pick<
+        Page,
+        | 'id'
+        | 'slugId'
+        | 'title'
+        | 'icon'
+        | 'position'
+        | 'parentPageId'
+        | 'spaceId'
+      > & { hasChildren: boolean; canEdit: boolean }
+    >
+  > {
+    const hasRestrictions =
+      await this.pagePermissionRepo.hasRestrictedPagesInSpace(spaceId);
+
+    // Seed: a single page subtree, or all root pages of the space.
+    // Always seed with the FULL (non-excluding) descendant set — in a restricted
+    // space the per-page filtering below (filterAccessibleTreePages) does the
+    // pruning, exactly like getSidebarPages. Seeding with *ExcludingRestricted
+    // would wrongly drop restricted pages the user has an explicit grant for
+    // (and never recurse into their children), diverging from the sidebar.
+    let pages: Array<{
+      id: string;
+      slugId: string;
+      title: string;
+      icon: string;
+      position: string;
+      parentPageId: string | null;
+      spaceId: string;
+    }>;
+
+    if (pageId) {
+      pages = await this.pageRepo.getPageAndDescendants(pageId, {
+        includeContent: false,
+      });
+    } else {
+      pages = await this.pageRepo.getSpaceDescendants(spaceId, {
+        includeContent: false,
+      });
+    }
+
+    let permissionMap: Map<string, boolean> | undefined;
+
+    if (hasRestrictions) {
+      // Fine-grained per-page permissions on top of restricted pruning.
+      pages = await this.filterAccessibleTreePages(
+        pages,
+        pageId ?? null,
+        userId,
+        spaceId,
+      );
+
+      // Per-page canEdit, same source as getSidebarPages.
+      const accessiblePages =
+        await this.pagePermissionRepo.filterAccessiblePageIdsWithPermissions(
+          pages.map((p) => p.id),
+          userId,
+        );
+      permissionMap = new Map(accessiblePages.map((p) => [p.id, p.canEdit]));
+    }
+
+    // Derive hasChildren from the FINAL set: a node has children iff some
+    // returned row points to it as parent. In a restricted space this set is
+    // already pruned/filtered, so inaccessible children are not revealed.
+    const parentIds = new Set<string>();
+    for (const p of pages) {
+      if (p.parentPageId) parentIds.add(p.parentPageId);
+    }
+
+    const shaped = pages.map((p) => ({
+      id: p.id,
+      slugId: p.slugId,
+      title: p.title,
+      icon: p.icon,
+      position: p.position,
+      parentPageId: p.parentPageId,
+      spaceId: p.spaceId,
+      hasChildren: parentIds.has(p.id),
+      canEdit: hasRestrictions
+        ? Boolean(permissionMap?.get(p.id)) && (spaceCanEdit ?? true)
+        : (spaceCanEdit ?? true),
+    }));
+
+    // Order by position with byte order, matching the sidebar's
+    // `position collate "C"` SQL ordering. position is non-null in returned
+    // rows; treat a null defensively as sorting last.
+    shaped.sort((a, b) => {
+      if (a.position == null) return b.position == null ? 0 : 1;
+      if (b.position == null) return -1;
+      return Buffer.compare(Buffer.from(a.position), Buffer.from(b.position));
+    });
+
+    return shaped;
   }
 }

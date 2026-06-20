@@ -26,6 +26,11 @@ import { validate as isValidUUID } from 'uuid';
 import { sql } from 'kysely';
 import { TransclusionService } from '../page/transclusion/transclusion.service';
 import { TransclusionLookup } from '../page/transclusion/transclusion.types';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import {
+  isHtmlEmbedFeatureEnabled,
+  stripHtmlEmbedNodes,
+} from '../../common/helpers/prosemirror/html-embed.util';
 
 @Injectable()
 export class ShareService {
@@ -38,7 +43,21 @@ export class ShareService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly tokenService: TokenService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
+
+  /**
+   * Resolve whether the htmlEmbed feature toggle is ON for a workspace.
+   * Fail-closed: a missing workspace (or absent/non-true setting) => OFF, so
+   * share content gets the embed stripped when we can't positively confirm the
+   * feature is enabled.
+   */
+  private async isHtmlEmbedEnabledForWorkspace(
+    workspaceId: string,
+  ): Promise<boolean> {
+    const workspace = await this.workspaceRepo.findById(workspaceId);
+    return isHtmlEmbedFeatureEnabled(workspace?.settings);
+  }
 
   async getShareTree(shareId: string, workspaceId: string) {
     const share = await this.shareRepo.findById(shareId);
@@ -360,6 +379,11 @@ export class ShareService {
       workspaceId,
     );
 
+    // Resolve the workspace htmlEmbed toggle once for this share request; all
+    // transcluded items belong to the same workspace as the host share.
+    const htmlEmbedEnabled =
+      await this.isHtmlEmbedEnabledForWorkspace(workspaceId);
+
     // Sanitize each item's content for public delivery
     // generate per-attachment tokens scoped to the source page
     // and strip comment marks.
@@ -370,6 +394,7 @@ export class ShareService {
           item.content,
           item.sourcePageId,
           workspaceId,
+          htmlEmbedEnabled,
         );
         return { ...item, content: doc?.toJSON() ?? item.content };
       }),
@@ -417,10 +442,14 @@ export class ShareService {
   }
 
   async updatePublicAttachments(page: Page): Promise<any> {
+    const htmlEmbedEnabled = await this.isHtmlEmbedEnabledForWorkspace(
+      page.workspaceId,
+    );
     const doc = await this.prepareContentForShare(
       page.content,
       page.id,
       page.workspaceId,
+      htmlEmbedEnabled,
     );
     return doc?.toJSON() ?? page.content;
   }
@@ -441,6 +470,13 @@ export class ShareService {
    *    not leak structure (existence, location, count, resolved state, or
    *    comment ids) to public viewers.
    *
+   * 3. Strip `htmlEmbed` nodes when the workspace feature toggle is OFF. This
+   *    makes the toggle a SERVER-AUTHORITATIVE kill-switch for shared content:
+   *    when OFF the embed is never served to the anonymous viewer (who can't
+   *    read the per-workspace toggle), when ON the embed is served so the
+   *    read-only client executes it. `htmlEmbedEnabled` is resolved fail-closed
+   *    by the callers (missing workspace => OFF => strip).
+   *
    * Both share-content paths — the host page (`updatePublicAttachments`) and
    * the share-scoped transclusion lookup (`lookupTransclusionForShare`) —
    * call into this single helper so the two paths can never drift on
@@ -450,8 +486,16 @@ export class ShareService {
     content: unknown,
     attachmentOwnerPageId: string,
     workspaceId: string,
+    htmlEmbedEnabled: boolean,
   ): Promise<Node | null> {
-    const pmJson = getProsemirrorContent(content);
+    let pmJson = getProsemirrorContent(content);
+
+    // Kill-switch: when the workspace toggle is OFF, never serve htmlEmbed
+    // nodes to public viewers. Strip before tokenizing/serializing.
+    if (!htmlEmbedEnabled) {
+      pmJson = stripHtmlEmbedNodes(pmJson);
+    }
+
     const attachmentIds = getAttachmentIds(pmJson);
 
     const tokenMap = new Map<string, string>();

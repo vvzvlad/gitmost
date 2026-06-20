@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { z } from "zod/v4";
 import {
-  Anchor,
+  ActionIcon,
   Badge,
   Box,
   Button,
@@ -15,12 +15,13 @@ import {
   Text,
   Textarea,
   TextInput,
+  Tooltip,
   useMantineTheme,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useDisclosure } from "@mantine/hooks";
 import { zod4Resolver } from "mantine-form-zod-resolver";
-import { IconPencil } from "@tabler/icons-react";
+import { IconPencil, IconX } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
@@ -37,6 +38,8 @@ import {
   IAiSettingsUpdate,
   SttApiStyle,
 } from "@/features/workspace/services/ai-settings-service.ts";
+import { useAiRolesQuery } from "@/features/ai-chat/queries/ai-chat-query.ts";
+import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
 import AiMcpServers from "./ai-mcp-servers.tsx";
 
 // No driver field: every endpoint is OpenAI-compatible, so the form carries only
@@ -44,6 +47,11 @@ import AiMcpServers from "./ai-mcp-servers.tsx";
 // (empty means "leave unchanged" unless explicitly cleared).
 const formSchema = z.object({
   chatModel: z.string(),
+  // Cheap model id for the anonymous public-share assistant; empty = use chatModel.
+  publicShareChatModel: z.string(),
+  // Agent-role id whose persona the public-share assistant adopts; empty =
+  // built-in locked persona.
+  publicShareAssistantRoleId: z.string(),
   embeddingModel: z.string(),
   baseUrl: z.string(),
   // Embedding-specific base URL. Empty means "use the chat base URL".
@@ -60,8 +68,15 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-// Status of an endpoint card, drives the little status dot color.
-type CardStatus = "ok" | "error" | "idle";
+// Four-state endpoint health shown by the header dot. Derived synchronously
+// from the form values + feature toggle — never from a network probe (the
+// "Test endpoint" button still surfaces the live probe result as text).
+//   "ready"     (green)  — required fields filled AND the feature is ON
+//   "configured"(yellow) — required fields filled but the feature is OFF
+//   "off"       (gray)   — required fields missing (nothing to enable)
+//   "warning"   (orange) — feature is ON but required fields are missing
+//                          (a real misconfiguration: it won't work as-is)
+type CardStatus = "ready" | "configured" | "off" | "warning";
 
 // Resolve a "Base URL + path" hint defensively: trim a single trailing slash
 // off the base, then append the path. Empty base falls back to `fallback`
@@ -71,21 +86,53 @@ function resolveUrl(base: string, path: string, fallback = ""): string {
   return `${trimmed}${path}`;
 }
 
-// Small colored dot used in each card header.
-function StatusDot({ status }: { status: CardStatus }) {
+// Pure + unit-testable. `configured` = the endpoint has the fields it needs
+// to work; `enabled` = the workspace feature toggle for this endpoint is ON.
+// The "enabled && !configured" case is surfaced as "warning" instead of "off"
+// so a misconfiguration (feature on, endpoint not filled) is not hidden.
+export function resolveCardStatus(
+  configured: boolean,
+  enabled: boolean,
+): CardStatus {
+  if (configured) return enabled ? "ready" : "configured";
+  return enabled ? "warning" : "off";
+}
+
+// Translate the dot's tooltip label. Kept in one place so all three endpoint
+// cards share identical wording.
+function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
+  switch (status) {
+    case "ready":
+      return t("Configured and enabled");
+    case "configured":
+      return t("Configured but disabled");
+    case "warning":
+      return t("Enabled but not configured");
+    default:
+      return t("Not configured");
+  }
+}
+
+// Small colored dot used in each card header, with a tooltip label so the
+// state is readable without relying on color alone (colorblind access).
+function StatusDot({ status, label }: { status: CardStatus; label: string }) {
   const theme = useMantineTheme();
   const color =
-    status === "ok"
+    status === "ready"
       ? theme.colors.green[6]
-      : status === "error"
-        ? theme.colors.red[6]
-        : theme.colors.gray[5];
+      : status === "configured"
+        ? theme.colors.yellow[6]
+        : status === "warning"
+          ? theme.colors.orange[6]
+          : theme.colors.gray[5];
   return (
-    <Box
-      w={9}
-      h={9}
-      style={{ borderRadius: "50%", background: color, flex: "none" }}
-    />
+    <Tooltip label={label} position="top" withArrow>
+      <Box
+        w={9}
+        h={9}
+        style={{ borderRadius: "50%", background: color, flex: "none" }}
+      />
+    </Tooltip>
   );
 }
 
@@ -103,6 +150,10 @@ export default function AiProviderSettings() {
   const embedTest = useTestAiConnectionMutation();
   const sttTest = useTestAiConnectionMutation();
 
+  // Agent roles drive the public-share assistant identity picker. Admin-gated
+  // (the component returns early for non-admins), same as the AI settings query.
+  const { data: roles } = useAiRolesQuery(isAdmin);
+
   // Workspace-level feature toggles live in the card headers.
   const [workspace, setWorkspace] = useAtom(workspaceAtom);
   const [chatEnabled, setChatEnabled] = useState<boolean>(
@@ -114,9 +165,17 @@ export default function AiProviderSettings() {
   const [dictationEnabled, setDictationEnabled] = useState<boolean>(
     workspace?.settings?.ai?.dictation ?? false,
   );
+  const [publicShareAssistantEnabled, setPublicShareAssistantEnabled] =
+    useState<boolean>(
+      workspace?.settings?.ai?.publicShareAssistant ?? false,
+    );
   const [chatToggleLoading, setChatToggleLoading] = useState(false);
   const [searchToggleLoading, setSearchToggleLoading] = useState(false);
   const [dictationToggleLoading, setDictationToggleLoading] = useState(false);
+  const [
+    publicShareAssistantToggleLoading,
+    setPublicShareAssistantToggleLoading,
+  ] = useState(false);
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -136,6 +195,8 @@ export default function AiProviderSettings() {
     validate: zod4Resolver(formSchema),
     initialValues: {
       chatModel: "",
+      publicShareChatModel: "",
+      publicShareAssistantRoleId: "",
       embeddingModel: "",
       baseUrl: "",
       embeddingBaseUrl: "",
@@ -155,6 +216,8 @@ export default function AiProviderSettings() {
     if (!settings) return;
     form.setValues({
       chatModel: settings.chatModel ?? "",
+      publicShareChatModel: settings.publicShareChatModel ?? "",
+      publicShareAssistantRoleId: settings.publicShareAssistantRoleId ?? "",
       embeddingModel: settings.embeddingModel ?? "",
       baseUrl: settings.baseUrl ?? "",
       embeddingBaseUrl: settings.embeddingBaseUrl ?? "",
@@ -181,6 +244,12 @@ export default function AiProviderSettings() {
       // Everything is OpenAI-compatible.
       driver: "openai",
       chatModel: values.chatModel,
+      // Cheap model id for the anonymous public-share assistant; empty falls
+      // back to chatModel server-side.
+      publicShareChatModel: values.publicShareChatModel,
+      // Agent-role id whose persona the public-share assistant adopts; empty =
+      // built-in locked persona server-side.
+      publicShareAssistantRoleId: values.publicShareAssistantRoleId,
       embeddingModel: values.embeddingModel,
       // The embedding base URL is optional; empty falls back to the chat base
       // URL server-side.
@@ -344,6 +413,37 @@ export default function AiProviderSettings() {
     }
   }
 
+  // Optimistic toggle for the anonymous public-share AI assistant
+  // (settings.ai.publicShareAssistant). When off, the public endpoint 404s.
+  async function handleTogglePublicShareAssistant(value: boolean) {
+    setPublicShareAssistantToggleLoading(true);
+    const previous = publicShareAssistantEnabled;
+    setPublicShareAssistantEnabled(value);
+    try {
+      const updated = await updateWorkspace({
+        aiPublicShareAssistant: value,
+      });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, publicShareAssistant: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setPublicShareAssistantEnabled(previous);
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setPublicShareAssistantToggleLoading(false);
+    }
+  }
+
   // Admins only — match the previous behavior.
   if (!isAdmin) {
     return (
@@ -353,21 +453,23 @@ export default function AiProviderSettings() {
     );
   }
 
-  const chatStatus: CardStatus = chatTest.data
-    ? chatTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
-  const embedStatus: CardStatus = embedTest.data
-    ? embedTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
-  const sttStatus: CardStatus = sttTest.data
-    ? sttTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
+  // Per-endpoint "configured" predicate, derived from the LIVE form values
+  // (the dot reacts as the admin types). A key is NOT required — local
+  // servers (Ollama, speaches) work without one. Embeddings and Voice
+  // inherit the chat base URL when their own is empty (see resolveUrl).
+  const v = form.values;
+  const chatBase = v.baseUrl.trim();
+  const chatConfigured = v.chatModel.trim() !== "" && chatBase !== "";
+  const embedConfigured =
+    v.embeddingModel.trim() !== "" &&
+    (v.embeddingBaseUrl.trim() !== "" || chatBase !== "");
+  const sttConfigured =
+    v.sttModel.trim() !== "" &&
+    (v.sttBaseUrl.trim() !== "" || chatBase !== "");
+
+  const chatStatus = resolveCardStatus(chatConfigured, chatEnabled);
+  const embedStatus = resolveCardStatus(embedConfigured, searchEnabled);
+  const sttStatus = resolveCardStatus(sttConfigured, dictationEnabled);
 
   const chatResolved = resolveUrl(form.values.baseUrl, "/chat/completions");
   const embedResolved = resolveUrl(
@@ -382,6 +484,34 @@ export default function AiProviderSettings() {
   );
 
   const monoFont = "ui-monospace, Menlo, monospace";
+
+  // Public-share assistant identity options: a leading "built-in persona" entry
+  // (empty value, the server default) plus every enabled agent role. If the saved
+  // role was since disabled it is filtered out of the enabled list, so surface it
+  // explicitly (labeled "disabled") instead of letting the Select render a blank
+  // field for a still-stored id.
+  const selectedRoleId = form.values.publicShareAssistantRoleId;
+  const enabledRoles = (roles ?? []).filter((r: IAiRole) => r.enabled);
+  const selectedDisabledRole =
+    selectedRoleId.length > 0 &&
+    !enabledRoles.some((r: IAiRole) => r.id === selectedRoleId)
+      ? (roles ?? []).find((r: IAiRole) => r.id === selectedRoleId)
+      : undefined;
+  const roleOptions = [
+    { value: "", label: t("Built-in assistant persona") },
+    ...enabledRoles.map((r: IAiRole) => ({
+      value: r.id,
+      label: r.emoji ? `${r.emoji} ${r.name}` : r.name,
+    })),
+    ...(selectedDisabledRole
+      ? [
+          {
+            value: selectedDisabledRole.id,
+            label: `${selectedDisabledRole.emoji ? `${selectedDisabledRole.emoji} ` : ""}${selectedDisabledRole.name} (${t("disabled")})`,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <Stack mt="sm">
@@ -404,7 +534,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={chatStatus} />
+            <StatusDot status={chatStatus} label={cardStatusLabel(chatStatus, t)} />
             <Text fw={600}>{t("Chat / LLM")}</Text>
             <Badge size="sm" variant="light" color="gray">
               {t("root")}
@@ -430,19 +560,34 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("chatModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("API key")}
-              placeholder={hasApiKey ? t("•••• set") : ""}
-              autoComplete="off"
-              {...form.getInputProps("apiKey")}
-            />
-            {hasApiKey && (
-              <Anchor component="button" type="button" c="red" size="xs" onClick={handleClearKey}>
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("API key")}
+            placeholder={hasApiKey ? t("•••• set") : ""}
+            autoComplete="off"
+            rightSection={
+              hasApiKey && form.values.apiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("apiKey")}
+          />
         </Group>
 
         <TextInput
@@ -454,6 +599,50 @@ export default function AiProviderSettings() {
         <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
           {t("Resolves to {{url}}", { url: chatResolved })}
         </Text>
+
+        {/* Anonymous public-share assistant: a single master toggle + an
+            optional cheaper model id. Reuses this card's driver/URL/key. */}
+        <Group justify="space-between" align="center" wrap="nowrap" mt="md">
+          <Text fw={600} size="sm">
+            {t("Public share assistant")}
+          </Text>
+          <Switch
+            label={t("Enabled")}
+            labelPosition="left"
+            checked={publicShareAssistantEnabled}
+            disabled={publicShareAssistantToggleLoading}
+            onChange={(e) =>
+              handleTogglePublicShareAssistant(e.currentTarget.checked)
+            }
+          />
+        </Group>
+        <Text size="xs" c="dimmed" mt={4} mb="xs">
+          {t(
+            "Let anonymous visitors of public shares ask an AI assistant scoped to that share's pages. You pay for the tokens.",
+          )}
+        </Text>
+        <TextInput
+          label={t("Public assistant model")}
+          placeholder={t("Defaults to the chat model")}
+          disabled={isLoading || !publicShareAssistantEnabled}
+          {...form.getInputProps("publicShareChatModel")}
+        />
+        <Text size="xs" c="dimmed" mt={4}>
+          {t(
+            "Optional cheaper model id for the public assistant. Empty uses the chat model above.",
+          )}
+        </Text>
+        <Select
+          mt="sm"
+          label={t("Assistant identity")}
+          description={t(
+            "Pick an agent role whose persona the public assistant adopts. The safety rules always still apply.",
+          )}
+          data={roleOptions}
+          allowDeselect={false}
+          disabled={isLoading || !publicShareAssistantEnabled}
+          {...form.getInputProps("publicShareAssistantRoleId")}
+        />
 
         <Group mt="md" align="center">
           <Button
@@ -514,7 +703,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={embedStatus} />
+            <StatusDot status={embedStatus} label={cardStatusLabel(embedStatus, t)} />
             <Text fw={600}>{t("Embeddings")}</Text>
           </Group>
           <Switch
@@ -535,29 +724,38 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("embeddingModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("Embedding API key")}
-              placeholder={
-                hasEmbeddingApiKey
-                  ? t("•••• set")
-                  : t("Leave empty to use the chat API key")
-              }
-              autoComplete="off"
-              {...form.getInputProps("embeddingApiKey")}
-            />
-            {hasEmbeddingApiKey && (
-              <Anchor
-                component="button"
-                type="button"
-                c="red"
-                size="xs"
-                onClick={handleClearEmbeddingKey}
-              >
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("Embedding API key")}
+            placeholder={
+              hasEmbeddingApiKey
+                ? t("•••• set")
+                : t("Leave empty to use the chat API key")
+            }
+            autoComplete="off"
+            rightSection={
+              hasEmbeddingApiKey && form.values.embeddingApiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearEmbeddingKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("embeddingApiKey")}
+          />
         </Group>
 
         <TextInput
@@ -631,7 +829,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={sttStatus} />
+            <StatusDot status={sttStatus} label={cardStatusLabel(sttStatus, t)} />
             <Text fw={600}>{t("Voice / STT")}</Text>
           </Group>
           <Switch
@@ -654,29 +852,38 @@ export default function AiProviderSettings() {
             disabled={isLoading}
             {...form.getInputProps("sttModel")}
           />
-          <Stack gap={4}>
-            <PasswordInput
-              label={t("API key")}
-              placeholder={
-                hasSttApiKey
-                  ? t("•••• set")
-                  : t("Leave empty to use the chat API key")
-              }
-              autoComplete="off"
-              {...form.getInputProps("sttApiKey")}
-            />
-            {hasSttApiKey && (
-              <Anchor
-                component="button"
-                type="button"
-                c="red"
-                size="xs"
-                onClick={handleClearSttKey}
-              >
-                {t("Clear")}
-              </Anchor>
-            )}
-          </Stack>
+          {/* The key field is write-only: the stored key never loads back, so the
+              built-in visibility toggle reveals nothing. Replace it with a Clear
+              action in the right section. Passing rightSection suppresses the eye
+              (Mantine). While typing a new key (buffer non-empty) fall back to
+              the default eye so the user can verify what they typed. */}
+          <PasswordInput
+            label={t("API key")}
+            placeholder={
+              hasSttApiKey
+                ? t("•••• set")
+                : t("Leave empty to use the chat API key")
+            }
+            autoComplete="off"
+            rightSection={
+              hasSttApiKey && form.values.sttApiKey.length === 0 ? (
+                <Tooltip label={t("Clear")} position="top" withArrow>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    size="sm"
+                    aria-label={t("Clear")}
+                    type="button"
+                    onClick={handleClearSttKey}
+                  >
+                    <IconX size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            {...form.getInputProps("sttApiKey")}
+          />
         </Group>
 
         <Select

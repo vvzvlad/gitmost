@@ -10,12 +10,56 @@ import {
 } from 'ai';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
-import { User, Workspace, AiChatMessage } from '@docmost/db/types/entity.types';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import {
+  User,
+  Workspace,
+  AiChatMessage,
+  AiAgentRole,
+} from '@docmost/db/types/entity.types';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
+import { roleModelOverride } from './roles/role-model-config';
+
+// Max agent steps per turn. One step = one model generation; a step that calls
+// tools is followed by another step carrying the tool results. Raised from 8 so
+// multi-search research questions are not cut off mid-investigation.
+const MAX_AGENT_STEPS = 20;
+
+// System-prompt addendum injected ONLY on the final step (see prepareAgentStep).
+// It forbids further tool calls and tells the model to synthesize the best
+// answer it can from what it already gathered, so a tool-heavy turn never ends
+// empty.
+const FINAL_STEP_INSTRUCTION =
+  'You have reached the maximum number of tool-use steps for this turn. ' +
+  'Do NOT call any more tools. Using only the information already gathered, ' +
+  "write the most complete, useful final answer you can now, in the user's " +
+  'language. If the information is incomplete, say so explicitly: summarize ' +
+  'what you found, what is still missing, and give your best partial conclusion.';
+
+// Pure, unit-testable: decide per-step overrides. Returns undefined for normal
+// steps; on the final allowed step forces a text-only synthesis answer.
+// `system` is the in-scope system prompt; we CONCATENATE so the original
+// persona/context is preserved — a bare `system` override would REPLACE the
+// whole system prompt for the step.
+//
+// NOTE: at AI SDK v7 the per-step `system` field is renamed to `instructions`.
+// On v6 (`^6.0.134`) `system` is the correct field — adjust when bumping.
+export function prepareAgentStep(
+  stepNumber: number,
+  system: string,
+): { toolChoice: 'none'; system: string } | undefined {
+  if (stepNumber >= MAX_AGENT_STEPS - 1) {
+    return { toolChoice: 'none', system: `${system}\n\n${FINAL_STEP_INSTRUCTION}` };
+  }
+  return undefined;
+}
+
+export { MAX_AGENT_STEPS, FINAL_STEP_INSTRUCTION };
 
 /**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
@@ -24,6 +68,11 @@ import { buildSystemPrompt } from './ai-chat.prompt';
  */
 export interface AiChatStreamBody {
   chatId?: string;
+  // The agent role selected by the client. Honoured ONLY when creating a new
+  // chat (no valid chatId) — it is persisted to ai_chats.role_id and is
+  // immutable afterwards. For existing chats the role is read from the chat row,
+  // never from this field, so it cannot be swapped per-turn.
+  roleId?: string | null;
   // The page the user is currently viewing (client-supplied), or null on a
   // non-page route. Used ONLY as prompt context so the agent knows what "this
   // page" refers to; the page itself is never fetched server-side here. The id
@@ -43,7 +92,13 @@ export interface AiChatStreamArgs {
   signal: AbortSignal;
   // Resolved by the controller BEFORE res.hijack(), so an unconfigured provider
   // (AiNotConfiguredException -> 503) surfaces as clean JSON before streaming.
+  // For a role with a model override this already carries the override-resolved
+  // model (or the controller threw a 503 if the override driver was unconfigured).
   model: LanguageModel;
+  // The agent role to apply this turn, pre-resolved by the controller from the
+  // chat row (existing chat) or the request body (new chat). null => universal
+  // assistant. Carried here so the turn never re-loads it.
+  role: AiAgentRole | null;
 }
 
 /**
@@ -70,15 +125,53 @@ export class AiChatService {
     private readonly aiSettings: AiSettingsService,
     private readonly tools: AiChatToolsService,
     private readonly mcpClients: McpClientsService,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
   ) {}
 
   /**
-   * Resolve the chat language model for the workspace. Exposed so the
-   * controller can resolve it BEFORE res.hijack(): an unconfigured provider
-   * throws AiNotConfiguredException there and returns a clean 503.
+   * Resolve the agent role that applies to this stream request, scoped to the
+   * workspace and soft-delete aware. For an EXISTING chat the role is read from
+   * `ai_chats.role_id` (authoritative — never from the body). For a NEW chat
+   * (no valid chatId) the role comes from the request body's `roleId`. Returns
+   * null for the universal assistant or when the referenced role is missing /
+   * soft-deleted.
    */
-  getChatModel(workspaceId: string): Promise<LanguageModel> {
-    return this.ai.getChatModel(workspaceId);
+  async resolveRoleForRequest(
+    workspace: Workspace,
+    body: AiChatStreamBody,
+  ): Promise<AiAgentRole | null> {
+    let roleId: string | null | undefined;
+    if (body.chatId) {
+      const chat = await this.aiChatRepo.findById(body.chatId, workspace.id);
+      // A valid existing chat fixes the role from its own row.
+      if (chat) roleId = chat.roleId;
+      else roleId = body.roleId; // stale chatId => treated as a new chat
+    } else {
+      roleId = body.roleId;
+    }
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspace.id);
+    // A disabled role falls back to the universal assistant: it must not apply
+    // its persona/model override even to a chat that was bound to it earlier.
+    // findById already excludes soft-deleted roles; this also drops disabled
+    // ones, server-authoritatively, for both the new-chat (body.roleId) and
+    // existing-chat (chat.role_id) paths.
+    if (!role || !role.enabled) return null;
+    return role;
+  }
+
+  /**
+   * Resolve the chat language model for the workspace, applying the role's
+   * optional model override. Exposed so the controller can resolve it BEFORE
+   * res.hijack(): an unconfigured provider (incl. a role pointing at an
+   * unconfigured driver) throws AiNotConfiguredException there and returns a
+   * clean 503 instead of breaking mid-stream.
+   */
+  getChatModel(
+    workspaceId: string,
+    role?: AiAgentRole | null,
+  ): Promise<LanguageModel> {
+    return this.ai.getChatModel(workspaceId, roleModelOverride(role));
   }
 
   async stream({
@@ -89,6 +182,7 @@ export class AiChatService {
     res,
     signal,
     model,
+    role,
   }: AiChatStreamArgs): Promise<void> {
     // Resolve / create the chat. A new chat is created when no valid chatId is
     // supplied or the supplied one does not belong to this workspace.
@@ -104,6 +198,9 @@ export class AiChatService {
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
+        // Bind the chat to the resolved role (if any) at creation time. The role
+        // is immutable afterwards (later turns read it from this column).
+        roleId: role?.id ?? null,
       });
       chatId = chat.id;
       isNewChat = true;
@@ -146,6 +243,9 @@ export class AiChatService {
     const system = buildSystemPrompt({
       workspace,
       adminPrompt: resolved?.systemPrompt,
+      // The role (pre-resolved by the controller) REPLACES the persona layer;
+      // the safety framework is still appended by buildSystemPrompt.
+      roleInstructions: role?.instructions,
       openedPage: body.openPage,
     });
 
@@ -244,7 +344,13 @@ export class AiChatService {
       // cap would truncate complex tool calls mid-argument. Let the model use its
       // natural per-step budget. (Cost/credit limits are an account concern, not
       // something to enforce by silently breaking the agent.)
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(MAX_AGENT_STEPS),
+      // Forced finalization: reserve the LAST allowed step for a text-only
+      // answer. Without this, a turn that spends all its steps on tool calls
+      // ends with no assistant text (an empty turn). prepareAgentStep forbids
+      // further tool calls and appends a synthesis instruction on that step,
+      // concatenated onto the original `system` so the persona is preserved.
+      prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
       abortSignal: signal,
       onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
         await persistAssistant({
@@ -271,15 +377,10 @@ export class AiChatService {
       onError: async ({ error }) => {
         // NestJS Logger.error(message, stack?, context?): pass the real message
         // (with statusCode when present) + the stack string, not the Error
-        // object, so the actual provider cause is clearly logged.
-        const e = error as {
-          statusCode?: number;
-          message?: string;
-          stack?: string;
-        };
-        const errorText = e?.statusCode
-          ? `${e.statusCode}: ${e.message ?? String(error)}`
-          : (e?.message ?? String(error));
+        // object, so the actual provider cause is clearly logged. Reuse the
+        // shared formatter so provider error formatting stays unified.
+        const e = error as { stack?: string };
+        const errorText = describeProviderError(error, String(error));
         this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
         // Persist whatever text we have (likely empty) so the turn is recorded,
         // and record the error text in metadata so it is visible in history.
@@ -340,10 +441,9 @@ export class AiChatService {
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
-          const e = error as { statusCode?: number; message?: string };
-          return e?.statusCode
-            ? `${e.statusCode}: ${e.message}`
-            : (e?.message ?? 'AI stream error');
+          // Reuse the shared formatter so provider error formatting stays
+          // unified between the log line and the streamed error message.
+          return describeProviderError(error, 'AI stream error');
         },
       });
 
@@ -538,7 +638,9 @@ function compactValue(value: unknown, depth: number): unknown {
  * recovers the name. Falls back to a single `text` part built from
  * `fallbackText` when the steps carry no text.
  */
-function assistantParts(
+// Exported only so the unit tests can import these pure helpers; exporting
+// them does not change runtime behavior.
+export function assistantParts(
   steps: ReadonlyArray<StepLike> | undefined,
   fallbackText: string,
 ): UIMessage['parts'] {
@@ -596,7 +698,7 @@ function assistantParts(
  * stored parts when available; assistant messages restore the reconstructable
  * parts from metadata, falling back to a single text part from `content`.
  */
-function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
+export function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
   id: string;
 } {
   const role = row.role === 'assistant' ? 'assistant' : 'user';
@@ -613,7 +715,7 @@ function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
  * `tool_calls` column. Stores only what the UI action-log and history need —
  * never raw provider payloads or keys.
  */
-function serializeSteps(
+export function serializeSteps(
   steps: ReadonlyArray<{
     toolCalls?: ReadonlyArray<{ toolName?: string; input?: unknown }>;
     toolResults?: ReadonlyArray<{ toolName?: string; output?: unknown }>;

@@ -28,7 +28,7 @@ import ForgotPasswordEmail from '@docmost/transactional/emails/forgot-password-e
 import { UserTokenRepo } from '@docmost/db/repos/user-token/user-token.repo';
 import { PasswordResetDto } from '../dto/password-reset.dto';
 import { User, UserToken, Workspace } from '@docmost/db/types/entity.types';
-import { UserTokenType } from '../auth.constants';
+import { UserTokenType, CREDENTIALS_MISMATCH_MESSAGE } from '../auth.constants';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
@@ -57,12 +57,30 @@ export class AuthService {
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
 
-  async login(loginDto: LoginDto, workspaceId: string) {
+  /**
+   * Verify a user's email + password WITHOUT any side effects: it performs the
+   * exact same user lookup, password comparison, email-verified and disabled
+   * checks as `login()`, but does NOT mint a session/token, does NOT write the
+   * USER_LOGIN audit event, and does NOT update lastLoginAt. Returns the matched
+   * user on success; throws UnauthorizedException (credentials) or whatever
+   * `throwIfEmailNotVerified` throws otherwise.
+   *
+   * Use this for repeated per-request credential re-validation (e.g. the /mcp
+   * anti-fixation check on subsequent requests) where minting a new DB session
+   * and audit row on every call would be audit spam / a session-table DoS. The
+   * full `login()` reuses it so there is no behaviour drift between the two.
+   */
+  async verifyUserCredentials(
+    loginDto: LoginDto,
+    workspaceId: string,
+  ): Promise<User> {
     const user = await this.userRepo.findByEmail(loginDto.email, workspaceId, {
       includePassword: true,
     });
 
-    const errorMessage = 'Email or password does not match';
+    // Single source of truth (see auth.constants): the /mcp brute-force limiter
+    // recognises this exact message via isCredentialsFailure.
+    const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
     if (!user || isUserDisabled(user)) {
       throw new UnauthorizedException(errorMessage);
     }
@@ -83,6 +101,12 @@ export class AuthService {
       workspaceId,
       appSecret: this.environmentService.getAppSecret(),
     });
+
+    return user;
+  }
+
+  async login(loginDto: LoginDto, workspaceId: string) {
+    const user = await this.verifyUserCredentials(loginDto, workspaceId);
 
     user.lastLoginAt = new Date();
     await this.userRepo.updateLastLogin(user.id, workspaceId);

@@ -360,6 +360,16 @@ export function invalidateOnCreatePage(data: Partial<IPage>) {
     queryKey,
     (old) => {
       if (!old) return old;
+
+      // Idempotency guard: the server now self-echoes addTreeNode back to the
+      // author, so this writer can run twice for one create (mutation onSuccess
+      // + socket echo). Skip the append if the page is already in the cache to
+      // avoid a duplicate node / duplicate React key.
+      const exists = old.pages.some((page) =>
+        page.items.some((item) => item.id === newPage.id),
+      );
+      if (exists) return old;
+
       return {
         ...old,
         pages: old.pages.map((page, index) => {

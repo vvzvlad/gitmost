@@ -13,6 +13,11 @@ import { LoggerModule } from '../../common/logger/logger.module';
 import { RedisModule } from '@nestjs-labs/nestjs-ioredis';
 import { RedisConfigService } from '../../integrations/redis/redis-config.service';
 import { CaslModule } from '../../core/casl/casl.module';
+// TransclusionModule (via CollaborationModule) registers PageTemplateController,
+// whose UserThrottlerGuard needs the throttler options from ThrottleModule. The
+// API server's AppModule imports it; the collab process must too or it fails to
+// resolve THROTTLER:MODULE_OPTIONS at boot.
+import { ThrottleModule } from '../../integrations/throttle/throttle.module';
 import { CacheModule } from '@nestjs/cache-manager';
 import KeyvRedis from '@keyv/redis';
 
@@ -22,6 +27,7 @@ import KeyvRedis from '@keyv/redis';
     DatabaseModule,
     EnvironmentModule,
     CaslModule,
+    ThrottleModule,
     CollaborationModule,
     QueueModule,
     HealthModule,

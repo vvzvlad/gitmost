@@ -237,6 +237,9 @@ export class PageController {
       user.id,
       workspace.id,
       createPageDto,
+      // Pass the caller's workspace role so create() can enforce the htmlEmbed
+      // admin gate (non-admins cannot author raw-JS embeds).
+      user.role,
       provenance,
     );
 
@@ -579,6 +582,49 @@ export class PageController {
   }
 
   @HttpCode(HttpStatus.OK)
+  @Post('/tree')
+  async getPagesTree(
+    @Body() dto: SidebarPageDto,
+    @AuthUser() user: User,
+  ) {
+    if (!dto.spaceId && !dto.pageId) {
+      throw new BadRequestException(
+        'Either spaceId or pageId must be provided',
+      );
+    }
+
+    let spaceId = dto.spaceId;
+
+    if (dto.pageId) {
+      const page = await this.pageRepo.findById(dto.pageId);
+      if (!page) {
+        throw new ForbiddenException();
+      }
+
+      spaceId = page.spaceId;
+    }
+
+    const ability = await this.spaceAbility.createForUser(user, spaceId);
+    if (ability.cannot(SpaceCaslAction.Read, SpaceCaslSubject.Page)) {
+      throw new ForbiddenException();
+    }
+
+    const spaceCanEdit = ability.can(
+      SpaceCaslAction.Edit,
+      SpaceCaslSubject.Page,
+    );
+
+    const items = await this.pageService.getSidebarPagesTree(
+      spaceId,
+      user.id,
+      spaceCanEdit,
+      dto.pageId,
+    );
+
+    return { items };
+  }
+
+  @HttpCode(HttpStatus.OK)
   @Post('move-to-space')
   async movePageToSpace(
     @Body() dto: MovePageToSpaceDto,
@@ -724,7 +770,11 @@ export class PageController {
     @AuthUser() user: User,
     @AuthProvenance() provenance: AuthProvenanceData,
   ) {
-    const movedPage = await this.pageRepo.findById(dto.pageId);
+    // includeHasChildren so movePage's PAGE_MOVED snapshot carries an accurate
+    // hasChildren — receivers need it to keep the moved node's chevron correct.
+    const movedPage = await this.pageRepo.findById(dto.pageId, {
+      includeHasChildren: true,
+    });
     if (!movedPage) {
       throw new NotFoundException('Moved page not found');
     }

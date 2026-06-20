@@ -62,6 +62,14 @@ export interface BuildSystemPromptInput {
    */
   adminPrompt?: string | null;
   /**
+   * The persona instructions of the agent role bound to this chat
+   * (`ai_agent_roles.instructions`), when any. A role REPLACES the persona layer:
+   * when present and non-blank these take precedence over the admin prompt and
+   * the default. The non-removable SAFETY_FRAMEWORK is ALWAYS still appended — a
+   * role only shapes the persona, never the safety rules.
+   */
+  roleInstructions?: string | null;
+  /**
    * The page the user is currently viewing (client-supplied), if any. When it
    * has an id, a CONTEXT line is added so the agent can resolve "this page" /
    * "the current page" to that pageId. The page is NOT fetched here — the agent
@@ -78,12 +86,18 @@ export interface BuildSystemPromptInput {
 export function buildSystemPrompt({
   workspace,
   adminPrompt,
+  roleInstructions,
   openedPage,
 }: BuildSystemPromptInput): string {
+  // Persona precedence: role instructions REPLACE the admin persona / default.
+  // effectivePersona = roleInstructions || adminPrompt || DEFAULT_PROMPT.
+  // The SAFETY_FRAMEWORK below is appended regardless and cannot be removed.
   const base =
-    typeof adminPrompt === 'string' && adminPrompt.trim().length > 0
-      ? adminPrompt.trim()
-      : DEFAULT_PROMPT;
+    typeof roleInstructions === 'string' && roleInstructions.trim().length > 0
+      ? roleInstructions.trim()
+      : typeof adminPrompt === 'string' && adminPrompt.trim().length > 0
+        ? adminPrompt.trim()
+        : DEFAULT_PROMPT;
 
   let context = workspace?.name ? `\n\nWorkspace: ${workspace.name}.` : '';
 
