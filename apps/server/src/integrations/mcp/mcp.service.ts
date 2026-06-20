@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
-import { timingSafeEqual } from 'node:crypto';
 import { IncomingMessage } from 'node:http';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { EnvironmentService } from '../environment/environment.service';
@@ -16,13 +15,16 @@ import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
 import { AuthService } from '../../core/auth/services/auth.service';
 import { TokenService } from '../../core/auth/services/token.service';
 import { validateSsoEnforcement } from '../../core/auth/auth.util';
-import { JwtType, JwtPayload } from '../../core/auth/dto/jwt-payload';
+import { JwtPayload } from '../../core/auth/dto/jwt-payload';
 import { Workspace } from '@docmost/db/types/entity.types';
 import {
   FailedLoginLimiter,
   resolveMcpSessionConfig,
   verifyBearerAccess,
   isInitializeRequestBody,
+  sharedTokenMatches,
+  clientIp,
+  bindAccessJwtVerifier,
   DocmostMcpConfig,
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
@@ -144,41 +146,6 @@ export class McpService implements OnModuleDestroy {
     }
   }
 
-  // Constant-time comparison of the optional shared X-MCP-Token guard. A header
-  // value may arrive as string | string[] (multiple X-MCP-Token headers), so we
-  // normalise to the first string. crypto.timingSafeEqual avoids leaking the
-  // token's length-prefix via early-exit string comparison; it requires equal
-  // buffer lengths, so a length mismatch is treated as a non-match WITHOUT
-  // calling timingSafeEqual (which would throw on unequal lengths).
-  private sharedTokenMatches(
-    expected: string,
-    provided: string | string[] | undefined,
-  ): boolean {
-    const value = Array.isArray(provided) ? provided[0] : provided;
-    if (typeof value !== 'string') return false;
-    const a = Buffer.from(value);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  }
-
-  // Best-effort client IP for the failed-login limiter key. Prefer Fastify's
-  // req.ip (which honours a configured trustProxy chain) and the socket address
-  // over a raw X-Forwarded-For hop, since XFF is client-forgeable when no
-  // trusted proxy is configured. The first XFF hop is only used as a last
-  // resort. NOTE: a forged IP can only dodge the per-IP limiter keys — the
-  // GLOBAL per-email key in resolveMcpSessionConfig is the real account-brute
-  // backstop and does not depend on this value.
-  private clientIp(req: FastifyRequest): string {
-    if (req.ip) return req.ip;
-    if (req.socket?.remoteAddress) return req.socket.remoteAddress;
-    const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff.length > 0) {
-      return xff.split(',')[0].trim();
-    }
-    return 'unknown';
-  }
-
   // Bearer access-JWT verification for the /mcp token fallback. verifyJwt only
   // checks signature/exp/type, but a logged-out (revoked) or disabled user can
   // still hold an unexpired access JWT. JwtStrategy additionally checks the
@@ -191,8 +158,11 @@ export class McpService implements OnModuleDestroy {
     // verifyBearerAccess helper (unit-testable without the heavy auth graph);
     // this method only wires in the concrete TokenService + repos.
     return verifyBearerAccess(token, {
-      verifyJwt: (t) =>
-        this.tokenService.verifyJwt(t, JwtType.ACCESS) as Promise<JwtPayload>,
+      // The JwtType.ACCESS enforcement lives in bindAccessJwtVerifier (a pure,
+      // testable seam) so the type literal cannot silently drift to REFRESH.
+      verifyJwt: bindAccessJwtVerifier(this.tokenService) as (
+        t: string,
+      ) => Promise<JwtPayload>,
       findUser: (sub, workspaceId) =>
         this.userRepo.findById(sub, workspaceId),
       findActiveSession: (sessionId) =>
@@ -239,7 +209,7 @@ export class McpService implements OnModuleDestroy {
       },
       verifyAccessJwt: (token) => this.verifyMcpBearer(token),
       limiter: this.failedLogins,
-      clientIp: this.clientIp(req),
+      clientIp: clientIp(req),
       isSessionInit,
     });
   }
@@ -365,7 +335,7 @@ export class McpService implements OnModuleDestroy {
     const sharedToken = process.env.MCP_TOKEN;
     if (sharedToken) {
       const provided = req.headers['x-mcp-token'];
-      if (!this.sharedTokenMatches(sharedToken, provided)) {
+      if (!sharedTokenMatches(sharedToken, provided)) {
         res.status(401).send({ error: 'Unauthorized' });
         return;
       }

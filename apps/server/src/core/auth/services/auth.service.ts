@@ -28,7 +28,7 @@ import ForgotPasswordEmail from '@docmost/transactional/emails/forgot-password-e
 import { UserTokenRepo } from '@docmost/db/repos/user-token/user-token.repo';
 import { PasswordResetDto } from '../dto/password-reset.dto';
 import { User, UserToken, Workspace } from '@docmost/db/types/entity.types';
-import { UserTokenType } from '../auth.constants';
+import { UserTokenType, CREDENTIALS_MISMATCH_MESSAGE } from '../auth.constants';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
@@ -78,7 +78,9 @@ export class AuthService {
       includePassword: true,
     });
 
-    const errorMessage = 'Email or password does not match';
+    // Single source of truth (see auth.constants): the /mcp brute-force limiter
+    // recognises this exact message via isCredentialsFailure.
+    const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
     if (!user || isUserDisabled(user)) {
       throw new UnauthorizedException(errorMessage);
     }

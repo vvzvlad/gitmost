@@ -6,8 +6,13 @@ import {
   isCredentialsFailure,
   isInitializeRequestBody,
   verifyBearerAccess,
+  sharedTokenMatches,
+  clientIp,
+  bindAccessJwtVerifier,
   McpAuthDeps,
 } from './mcp-auth.helpers';
+import { JwtType } from '../../core/auth/dto/jwt-payload';
+import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
 
 // The /mcp per-user auth decision logic is tested through the framework-free
 // `resolveMcpSessionConfig` helper that McpService delegates to. McpService
@@ -90,6 +95,72 @@ describe('isCredentialsFailure', () => {
       ),
     ).toBe(false);
     expect(isCredentialsFailure(new Error('boom'))).toBe(false);
+  });
+
+  // --- Cross-file coupling lock (item 1) ---------------------------------
+  // The /mcp Basic brute-force limiter ONLY counts a failure when
+  // isCredentialsFailure(err) is true. AuthService.verifyUserCredentials throws
+  // the credentials failure with the shared CREDENTIALS_MISMATCH_MESSAGE for
+  // unknown email / wrong password / disabled user. If that message were
+  // reworded without updating the matcher, the limiter would stop counting and
+  // /mcp Basic would become an unthrottled password-guessing oracle. These
+  // tests lock the coupling to the SHARED constant (single source of truth) so a
+  // reword is a compile-time/test-time break, not a silent security regression.
+
+  it('recognises the exact UnauthorizedException AuthService throws (the shared constant)', () => {
+    // Reconstruct the EXACT exception AuthService.verifyUserCredentials throws
+    // for every credentials-failure case (it uses CREDENTIALS_MISMATCH_MESSAGE),
+    // and assert the REAL isCredentialsFailure recognises it. No hardcoded string
+    // is duplicated here — both sides reference the single shared constant.
+    const authThrows = new UnauthorizedException(CREDENTIALS_MISMATCH_MESSAGE);
+    expect(isCredentialsFailure(authThrows)).toBe(true);
+  });
+
+  it('the matcher is coupled to the single source of truth, not a local literal', () => {
+    // If someone reworded CREDENTIALS_MISMATCH_MESSAGE, this still passes only
+    // because the matcher derives its substring from the SAME constant. This
+    // pins the coupling structurally: there is one message both files share.
+    expect(CREDENTIALS_MISMATCH_MESSAGE).toBeTruthy();
+    expect(
+      isCredentialsFailure(
+        new UnauthorizedException(CREDENTIALS_MISMATCH_MESSAGE),
+      ),
+    ).toBe(true);
+    // A DIFFERENT message (a hypothetical reword that forgot to go through the
+    // constant) must NOT be silently recognised, proving the matcher is not just
+    // "always true".
+    expect(
+      isCredentialsFailure(new UnauthorizedException('totally different wording')),
+    ).toBe(false);
+  });
+});
+
+describe('AuthService verifyUserCredentials <-> isCredentialsFailure coupling (item 1)', () => {
+  // AuthService cannot be constructed under jest: importing it pulls in
+  // src/integrations/queue/constants (a `src/`-rooted absolute import) which the
+  // jest moduleNameMapper does not resolve under rootDir:src — the heavy auth
+  // graph. So instead of a live AuthService unit, we assert the security
+  // contract structurally: AuthService.verifyUserCredentials throws an
+  // UnauthorizedException built from the SHARED CREDENTIALS_MISMATCH_MESSAGE
+  // (see auth.service.ts), and the REAL isCredentialsFailure recognises it. The
+  // single shared constant is the lock: there is no second copy of the string to
+  // drift out of sync.
+  it('the credentials-failure UnauthorizedException is counted by the limiter matcher', () => {
+    // unknown email / disabled user / wrong password all surface as this:
+    const credentialsFailure = new UnauthorizedException(
+      CREDENTIALS_MISMATCH_MESSAGE,
+    );
+    expect(isCredentialsFailure(credentialsFailure)).toBe(true);
+  });
+
+  it('email-not-verified (a different, business error) is NOT counted', () => {
+    // throwIfEmailNotVerified throws a BadRequestException, which must not burn a
+    // victim's limiter budget; the matcher rejects it.
+    expect(
+      isCredentialsFailure(
+        new BadRequestException('Please verify your email address.'),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -576,5 +647,125 @@ describe('resolveMcpSessionConfig non-initialize request side effects', () => {
       { email: 'user@example.com', password: 'pw' },
       'ws-1',
     );
+  });
+});
+
+describe('sharedTokenMatches (X-MCP-Token constant-time guard, item 2)', () => {
+  it('equal token -> true', () => {
+    expect(sharedTokenMatches('s3cr3t-token', 's3cr3t-token')).toBe(true);
+  });
+
+  it('wrong token of the SAME length -> false (timingSafeEqual path)', () => {
+    // Same length so it reaches timingSafeEqual; the bytes differ -> no match.
+    expect(sharedTokenMatches('aaaaaa', 'aaaaab')).toBe(false);
+  });
+
+  it('different-length token -> false WITHOUT throwing (early-return before timingSafeEqual)', () => {
+    // timingSafeEqual throws on unequal-length buffers; the early length check
+    // must short-circuit so a length mismatch is a clean non-match, not a throw.
+    expect(() => sharedTokenMatches('expected', 'short')).not.toThrow();
+    expect(sharedTokenMatches('expected', 'short')).toBe(false);
+    expect(sharedTokenMatches('expected', 'a-much-longer-provided-value')).toBe(
+      false,
+    );
+  });
+
+  it('array-valued header -> uses the FIRST element', () => {
+    // Multiple X-MCP-Token headers arrive as string[]; only the first is used.
+    expect(sharedTokenMatches('tok', ['tok', 'ignored'])).toBe(true);
+    expect(sharedTokenMatches('tok', ['wrong', 'tok'])).toBe(false);
+  });
+
+  it('undefined / non-string provided -> false', () => {
+    expect(sharedTokenMatches('tok', undefined)).toBe(false);
+    // An empty array yields provided[0] === undefined -> non-string -> false.
+    expect(sharedTokenMatches('tok', [])).toBe(false);
+    expect(sharedTokenMatches('tok', [undefined as unknown as string])).toBe(
+      false,
+    );
+  });
+});
+
+describe('clientIp (XFF-fallback precedence, item 5)', () => {
+  it('req.ip wins over socket.remoteAddress AND over X-Forwarded-For', () => {
+    expect(
+      clientIp({
+        ip: '1.1.1.1',
+        socket: { remoteAddress: '2.2.2.2' },
+        headers: { 'x-forwarded-for': '3.3.3.3' },
+      }),
+    ).toBe('1.1.1.1');
+  });
+
+  it('socket.remoteAddress is used only when req.ip is absent (still beats XFF)', () => {
+    expect(
+      clientIp({
+        socket: { remoteAddress: '2.2.2.2' },
+        headers: { 'x-forwarded-for': '3.3.3.3' },
+      }),
+    ).toBe('2.2.2.2');
+  });
+
+  it('X-Forwarded-For is the LAST resort, and only the FIRST hop is taken', () => {
+    expect(
+      clientIp({
+        headers: { 'x-forwarded-for': '3.3.3.3, 4.4.4.4, 5.5.5.5' },
+      }),
+    ).toBe('3.3.3.3');
+  });
+
+  it("returns 'unknown' when nothing usable is present", () => {
+    expect(clientIp({ headers: {} })).toBe('unknown');
+    // An array-valued XFF header is not treated as a string source -> unknown.
+    expect(
+      clientIp({ headers: { 'x-forwarded-for': ['3.3.3.3'] } }),
+    ).toBe('unknown');
+    // An empty XFF string is ignored too.
+    expect(clientIp({ headers: { 'x-forwarded-for': '' } })).toBe('unknown');
+  });
+});
+
+describe('bindAccessJwtVerifier enforces JwtType.ACCESS (item 3)', () => {
+  it('calls TokenService.verifyJwt with JwtType.ACCESS as the second argument', async () => {
+    // Mock TokenService: assert the type literal is pinned to ACCESS so swapping
+    // to REFRESH (or omitting the type) breaks this test.
+    const verifyJwt = jest
+      .fn()
+      .mockResolvedValue({ sub: 'user-1', workspaceId: 'ws-1' });
+    const verify = bindAccessJwtVerifier({ verifyJwt });
+
+    await verify('the.access.jwt');
+
+    expect(verifyJwt).toHaveBeenCalledTimes(1);
+    expect(verifyJwt).toHaveBeenCalledWith('the.access.jwt', JwtType.ACCESS);
+    // Pin the real enum value too, so renaming/repointing the enum member is caught.
+    expect(verifyJwt.mock.calls[0][1]).toBe('access');
+  });
+
+  it('passes through the verified payload', async () => {
+    const payload = { sub: 'user-9', email: 'u@e.com', workspaceId: 'ws-1' };
+    const verifyJwt = jest.fn().mockResolvedValue(payload);
+    await expect(
+      bindAccessJwtVerifier({ verifyJwt })('t'),
+    ).resolves.toBe(payload);
+  });
+
+  // The Bearer revocation/disabled checks (verifyBearerAccess) are covered above;
+  // this binds the ACCESS-type enforcement that verifyMcpBearer wires in.
+  it('feeds verifyBearerAccess so the whole Bearer chain enforces ACCESS', async () => {
+    const verifyJwt = jest.fn().mockResolvedValue({
+      sub: 'user-1',
+      workspaceId: 'ws-1',
+      sessionId: 'sess-1',
+    });
+    const res = await verifyBearerAccess('t', {
+      verifyJwt: bindAccessJwtVerifier({ verifyJwt }),
+      findUser: jest.fn().mockResolvedValue({ deactivatedAt: null }),
+      findActiveSession: jest
+        .fn()
+        .mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1' }),
+    });
+    expect(verifyJwt).toHaveBeenCalledWith('t', JwtType.ACCESS);
+    expect(res).toEqual({ sub: 'user-1', email: undefined });
   });
 });

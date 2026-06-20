@@ -4,7 +4,9 @@
 // dependency graph, and reused by McpService. Nothing here logs the password or
 // the Authorization header.
 import { UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
+import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
 
 /**
  * Decode an `Authorization: Basic base64(email:password)` header into its
@@ -171,13 +173,110 @@ export interface McpAuthDeps {
  * throws an UnauthorizedException with exactly this message for every
  * credentials-mismatch case (no user / disabled / wrong password), so we match
  * on that.
+ *
+ * The message is NOT hardcoded here: it matches against the shared
+ * CREDENTIALS_MISMATCH_MESSAGE constant that AuthService.verifyUserCredentials
+ * also throws, so a reworded auth error cannot silently stop counting toward the
+ * limiter (single source of truth — see auth.constants.ts).
  */
 export function isCredentialsFailure(err: unknown): boolean {
   return (
     err instanceof UnauthorizedException &&
     typeof err.message === 'string' &&
-    err.message.toLowerCase().includes('email or password does not match')
+    err.message
+      .toLowerCase()
+      .includes(CREDENTIALS_MISMATCH_MESSAGE.toLowerCase())
   );
+}
+
+/**
+ * Constant-time comparison of the optional shared X-MCP-Token guard. A header
+ * value may arrive as string | string[] (multiple X-MCP-Token headers), so we
+ * normalise to the first string. crypto.timingSafeEqual avoids leaking the
+ * token's length via early-exit string comparison; it requires equal buffer
+ * lengths, so a length mismatch is treated as a non-match WITHOUT calling
+ * timingSafeEqual (which throws on unequal lengths). A non-string / undefined
+ * value is never a match.
+ *
+ * Pure and framework-free so it is unit-testable; McpService.handle delegates to
+ * it for the X-MCP-Token shared guard.
+ */
+export function sharedTokenMatches(
+  expected: string,
+  provided: string | string[] | undefined,
+): boolean {
+  const value = Array.isArray(provided) ? provided[0] : provided;
+  if (typeof value !== 'string') return false;
+  const a = Buffer.from(value);
+  const b = Buffer.from(expected);
+  // Early-return before timingSafeEqual, which throws on unequal-length buffers.
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// Minimal structural shape of the bits of a Fastify request that `clientIp`
+// needs. Kept structural so this module never imports the Fastify types.
+export interface ClientIpRequest {
+  ip?: string;
+  socket?: { remoteAddress?: string };
+  headers: Record<string, string | string[] | undefined>;
+}
+
+/**
+ * Best-effort client IP for the failed-login limiter key. Precedence:
+ *   1. req.ip          — Fastify's resolved IP (honours a configured trustProxy
+ *                        chain); the trustworthy value when a proxy is set up.
+ *   2. socket.remoteAddress — the raw TCP peer, used only when req.ip is absent.
+ *   3. first X-Forwarded-For hop — LAST resort only, because XFF is
+ *                        client-forgeable when no trusted proxy is configured.
+ *   4. 'unknown'       — nothing usable.
+ *
+ * A forged IP can only dodge the per-IP limiter keys; the GLOBAL per-email key
+ * in resolveMcpSessionConfig is the real account-brute backstop and does not
+ * depend on this value. Pure/framework-free so it is unit-testable; McpService
+ * delegates to it.
+ */
+export function clientIp(req: ClientIpRequest): string {
+  if (req.ip) return req.ip;
+  if (req.socket?.remoteAddress) return req.socket.remoteAddress;
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length > 0) {
+    return xff.split(',')[0].trim();
+  }
+  return 'unknown';
+}
+
+// Minimal structural shape of the TokenService.verifyJwt method we depend on,
+// so this module never imports the concrete TokenService (heavy graph).
+export interface AccessJwtVerifier {
+  verifyJwt: (
+    token: string,
+    type: JwtType,
+  ) => Promise<{
+    sub?: string;
+    email?: string;
+    workspaceId?: string;
+    sessionId?: string;
+  }>;
+}
+
+/**
+ * Bind a TokenService-like verifier into a one-arg `verifyJwt(token)` that
+ * ALWAYS enforces `JwtType.ACCESS`. This is the single place where the /mcp
+ * Bearer path pins the token type: a Bearer access token must be verified AS an
+ * access token (not refresh/exchange/collab/etc.), so the type literal is fixed
+ * here rather than at the call site. McpService.verifyMcpBearer delegates to
+ * this, keeping the `JwtType.ACCESS` choice testable without the heavy graph.
+ */
+export function bindAccessJwtVerifier(
+  tokenService: AccessJwtVerifier,
+): (token: string) => Promise<{
+  sub?: string;
+  email?: string;
+  workspaceId?: string;
+  sessionId?: string;
+}> {
+  return (token: string) => tokenService.verifyJwt(token, JwtType.ACCESS);
 }
 
 // Minimal shapes for the Bearer revocation/disabled check. Kept structural so
