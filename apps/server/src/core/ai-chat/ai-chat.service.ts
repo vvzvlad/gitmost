@@ -10,6 +10,7 @@ import {
 } from 'ai';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
 import { User, Workspace, AiChatMessage } from '@docmost/db/types/entity.types';
@@ -271,15 +272,10 @@ export class AiChatService {
       onError: async ({ error }) => {
         // NestJS Logger.error(message, stack?, context?): pass the real message
         // (with statusCode when present) + the stack string, not the Error
-        // object, so the actual provider cause is clearly logged.
-        const e = error as {
-          statusCode?: number;
-          message?: string;
-          stack?: string;
-        };
-        const errorText = e?.statusCode
-          ? `${e.statusCode}: ${e.message ?? String(error)}`
-          : (e?.message ?? String(error));
+        // object, so the actual provider cause is clearly logged. Reuse the
+        // shared formatter so provider error formatting stays unified.
+        const e = error as { stack?: string };
+        const errorText = describeProviderError(error, String(error));
         this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
         // Persist whatever text we have (likely empty) so the turn is recorded,
         // and record the error text in metadata so it is visible in history.
@@ -340,10 +336,9 @@ export class AiChatService {
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
-          const e = error as { statusCode?: number; message?: string };
-          return e?.statusCode
-            ? `${e.statusCode}: ${e.message}`
-            : (e?.message ?? 'AI stream error');
+          // Reuse the shared formatter so provider error formatting stays
+          // unified between the log line and the streamed error message.
+          return describeProviderError(error, 'AI stream error');
         },
       });
 
@@ -538,8 +533,8 @@ function compactValue(value: unknown, depth: number): unknown {
  * recovers the name. Falls back to a single `text` part built from
  * `fallbackText` when the steps carry no text.
  */
-// Exported only so the unit tests can import this pure helper; exporting it
-// does not change runtime behavior.
+// Exported only so the unit tests can import these pure helpers; exporting
+// them does not change runtime behavior.
 export function assistantParts(
   steps: ReadonlyArray<StepLike> | undefined,
   fallbackText: string,
