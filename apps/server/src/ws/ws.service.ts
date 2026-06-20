@@ -86,6 +86,47 @@ export class WsService {
     await this.broadcastToAuthorizedUsers(room, null, pageId, data);
   }
 
+  // Server-origin tree broadcast. Mirrors emitCommentEvent exactly: respects
+  // per-space page restrictions (spaceHasRestrictions -> hasRestrictedAncestor
+  // -> broadcastToAuthorizedUsers), otherwise fans the event out to everyone in
+  // the space room.
+  //
+  // The author is NOT excluded. The client receiver is idempotent (addTreeNode
+  // early-returns if the node id already exists; deleteTreeNode is a no-op if
+  // the node is gone), so the UI author's optimistic node is preserved, and
+  // non-UI creators (MCP / AI / REST API) still see their own page appear.
+  async emitTreeEvent(
+    spaceId: string,
+    pageId: string,
+    data: any,
+  ): Promise<void> {
+    const room = getSpaceRoomName(spaceId);
+
+    const hasRestrictions = await this.spaceHasRestrictions(spaceId);
+    if (!hasRestrictions) {
+      this.server.to(room).emit('message', data);
+      return;
+    }
+
+    const isRestricted =
+      await this.pagePermissionRepo.hasRestrictedAncestor(pageId);
+    if (!isRestricted) {
+      this.server.to(room).emit('message', data);
+      return;
+    }
+
+    await this.broadcastToAuthorizedUsers(room, null, pageId, data);
+  }
+
+  // Unconditional broadcast to everyone in the space room. Used for space-wide
+  // signals that carry no page payload (e.g. refetchRootTreeNodeEvent on
+  // restore): there is no per-page data to leak, and each client refetches the
+  // root tree through its own authorized query. Mirrors handleTreeEvent's
+  // special-casing of refetchRootTreeNodeEvent (no restriction check).
+  emitToSpaceRoom(spaceId: string, data: any): void {
+    this.server.to(getSpaceRoomName(spaceId)).emit('message', data);
+  }
+
   async emitToUsers(userIds: string[], data: any): Promise<void> {
     if (userIds.length === 0) return;
     const rooms = userIds.map((id) => getUserRoomName(id));

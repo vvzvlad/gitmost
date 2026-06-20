@@ -98,6 +98,35 @@ export const treeModel = {
     return touched ? out : tree;
   },
 
+  // Position-aware insert for server-authoritative broadcasts. The server does
+  // not know each receiver's local index (clients have different loaded sets and
+  // the root list is paginated), so it sends the node's fractional `position`.
+  // We insert among the already-loaded siblings ordered by `position` so the
+  // order is consistent across clients regardless of which nodes they loaded.
+  // Falls back to appending when `position` is missing.
+  insertByPosition<T extends { position?: string }>(
+    tree: TreeNode<T>[],
+    parentId: string | null,
+    node: TreeNode<T>,
+  ): TreeNode<T>[] {
+    const index = (siblings: TreeNode<T>[]): number => {
+      const pos = node.position;
+      if (pos == null) return siblings.length;
+      // First sibling whose position sorts after the new node's position.
+      const at = siblings.findIndex(
+        (s) => s.position != null && s.position > pos,
+      );
+      return at === -1 ? siblings.length : at;
+    };
+
+    if (parentId === null) {
+      return treeModel.insert(tree, null, node, index(tree));
+    }
+    const parent = treeModel.find(tree, parentId);
+    const kids = (parent?.children as TreeNode<T>[] | undefined) ?? [];
+    return treeModel.insert(tree, parentId, node, index(kids));
+  },
+
   remove<T extends object>(tree: TreeNode<T>[], id: string): TreeNode<T>[] {
     let touched = false;
     const walk = (nodes: TreeNode<T>[]): TreeNode<T>[] => {

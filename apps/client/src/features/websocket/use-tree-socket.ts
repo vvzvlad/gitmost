@@ -54,13 +54,17 @@ export const useTreeSocket = () => {
           break;
         case "addTreeNode":
           setTreeData((prev) => {
+            // Idempotent: the author already inserted the node optimistically,
+            // and a node may be re-delivered — never insert a duplicate id.
             if (treeModel.find(prev, event.payload.data.id)) return prev;
             const newParentId = event.payload.parentId as string | null;
-            let next = treeModel.insert(
+            // Insert by `position` among already-loaded siblings (not the
+            // sender's absolute index) so order is consistent across clients
+            // with different loaded sets.
+            let next = treeModel.insertByPosition(
               prev,
               newParentId,
               event.payload.data,
-              event.payload.index,
             );
             // Mirror the emitter: flip new parent's hasChildren to true so
             // the chevron renders on the receiver.

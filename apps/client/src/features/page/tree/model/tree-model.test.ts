@@ -128,6 +128,158 @@ describe('treeModel.insert', () => {
   });
 });
 
+describe('treeModel.insertByPosition', () => {
+  // Server-authoritative broadcasts ship the node's fractional `position`; the
+  // receiver inserts among already-loaded siblings ordered by `position`.
+  type P = TreeNode<{ name: string; position?: string }>;
+
+  const roots: P[] = [
+    { id: 'a', name: 'A', position: 'a0' },
+    { id: 'b', name: 'B', position: 'a2' },
+    { id: 'c', name: 'C', position: 'a4' },
+  ];
+
+  it('inserts a root node in position order (middle)', () => {
+    const node: P = { id: 'x', name: 'X', position: 'a3' };
+    const t = treeModel.insertByPosition(roots, null, node);
+    expect(t.map((n) => n.id)).toEqual(['a', 'b', 'x', 'c']);
+  });
+
+  it('inserts a root node at the front when its position sorts first', () => {
+    const node: P = { id: 'x', name: 'X', position: 'a-' };
+    const t = treeModel.insertByPosition(roots, null, node);
+    expect(t.map((n) => n.id)).toEqual(['x', 'a', 'b', 'c']);
+  });
+
+  it('appends a root node when its position sorts last', () => {
+    const node: P = { id: 'x', name: 'X', position: 'a9' };
+    const t = treeModel.insertByPosition(roots, null, node);
+    expect(t.map((n) => n.id)).toEqual(['a', 'b', 'c', 'x']);
+  });
+
+  it('produces the same order regardless of which siblings are loaded', () => {
+    // Client 1 loaded all siblings; client 2 only loaded a subset. The inserted
+    // node lands in a consistent relative position for both.
+    const full: P[] = roots;
+    const partial: P[] = [roots[0], roots[2]]; // a, c (b not loaded)
+    const node: P = { id: 'x', name: 'X', position: 'a3' };
+
+    expect(
+      treeModel.insertByPosition(full, null, node).map((n) => n.id),
+    ).toEqual(['a', 'b', 'x', 'c']);
+    expect(
+      treeModel.insertByPosition(partial, null, node).map((n) => n.id),
+    ).toEqual(['a', 'x', 'c']);
+  });
+
+  it('inserts a child in position order under the parent', () => {
+    const tree: P[] = [
+      {
+        id: 'p',
+        name: 'P',
+        position: 'a0',
+        children: [
+          { id: 'p1', name: 'P1', position: 'a0' },
+          { id: 'p2', name: 'P2', position: 'a2' },
+        ],
+      },
+    ];
+    const node: P = { id: 'p15', name: 'P1.5', position: 'a1' };
+    const t = treeModel.insertByPosition(tree, 'p', node);
+    expect(treeModel.find(t, 'p')?.children?.map((n) => n.id)).toEqual([
+      'p1', 'p15', 'p2',
+    ]);
+  });
+
+  it('appends when the new node has no position', () => {
+    const node: P = { id: 'x', name: 'X' };
+    const t = treeModel.insertByPosition(roots, null, node);
+    expect(t.map((n) => n.id)).toEqual(['a', 'b', 'c', 'x']);
+  });
+});
+
+// addTreeNode idempotency: the receiver early-returns when the node id already
+// exists, so re-delivery (or the author's optimistic node) is never duplicated.
+// This guards the find-then-skip contract insertByPosition relies on.
+describe('addTreeNode idempotency (find-then-skip)', () => {
+  type P = TreeNode<{ name: string; position?: string }>;
+
+  const applyAddTreeNode = (tree: P[], node: P): P[] => {
+    if (treeModel.find(tree, node.id)) return tree;
+    return treeModel.insertByPosition(tree, null, node);
+  };
+
+  it('does not insert a duplicate when the id already exists', () => {
+    const tree: P[] = [{ id: 'a', name: 'A', position: 'a0' }];
+    const node: P = { id: 'a', name: 'A again', position: 'a5' };
+    const t1 = applyAddTreeNode(tree, node);
+    expect(t1).toBe(tree);
+    expect(t1.map((n) => n.id)).toEqual(['a']);
+  });
+
+  it('inserts once, then is a no-op on repeat delivery', () => {
+    let tree: P[] = [{ id: 'a', name: 'A', position: 'a0' }];
+    const node: P = { id: 'x', name: 'X', position: 'a5' };
+    tree = applyAddTreeNode(tree, node);
+    expect(tree.map((n) => n.id)).toEqual(['a', 'x']);
+    const again = applyAddTreeNode(tree, node);
+    expect(again).toBe(tree);
+    expect(again.filter((n) => n.id === 'x')).toHaveLength(1);
+  });
+});
+
+// handleCreate optimistic-insert idempotency: the author's optimistic insert is
+// now guarded by `treeModel.find` (same contract as the addTreeNode socket
+// handler) because the server's broadcast can win the race and insert the node
+// first. Whichever runs first inserts; the second is a no-op. Exactly one row.
+describe('handleCreate optimistic-insert idempotency (find-then-skip)', () => {
+  // Mirrors the guarded optimistic insert in use-tree-mutation handleCreate.
+  const applyOptimisticInsert = (
+    tree: N[],
+    parentId: string | null,
+    node: N,
+    index: number,
+  ): N[] => {
+    if (treeModel.find(tree, node.id)) return tree;
+    return treeModel.insert(tree, parentId, node, index);
+  };
+
+  // Mirrors the addTreeNode socket handler guard.
+  const applyAddTreeNode = (tree: N[], parentId: string | null, node: N): N[] => {
+    if (treeModel.find(tree, node.id)) return tree;
+    return treeModel.insert(tree, parentId, node);
+  };
+
+  const created: N = { id: 'new', name: '' };
+
+  it('optimistic insert is a no-op when server addTreeNode already inserted it', () => {
+    // Reverse-of-reverse race: server wins.
+    const afterServer = applyAddTreeNode(fixture, null, created);
+    expect(afterServer.filter((n) => n.id === 'new')).toHaveLength(1);
+    const afterOptimistic = applyOptimisticInsert(
+      afterServer,
+      null,
+      created,
+      afterServer.length,
+    );
+    expect(afterOptimistic).toBe(afterServer); // skipped
+    expect(afterOptimistic.filter((n) => n.id === 'new')).toHaveLength(1);
+  });
+
+  it('server addTreeNode is a no-op when optimistic insert already ran (optimistic-first)', () => {
+    const afterOptimistic = applyOptimisticInsert(fixture, null, created, fixture.length);
+    expect(afterOptimistic.filter((n) => n.id === 'new')).toHaveLength(1);
+    const afterServer = applyAddTreeNode(afterOptimistic, null, created);
+    expect(afterServer).toBe(afterOptimistic); // skipped
+    expect(afterServer.filter((n) => n.id === 'new')).toHaveLength(1);
+  });
+
+  it('inserts exactly once when only the optimistic path runs', () => {
+    const t = applyOptimisticInsert(fixture, 'a', { id: 'a3', name: '' }, 2);
+    expect(treeModel.find(t, 'a')?.children?.filter((n) => n.id === 'a3')).toHaveLength(1);
+  });
+});
+
 describe('treeModel.remove', () => {
   it('removes a leaf', () => {
     const t = treeModel.remove(fixture, 'a2');
