@@ -82,44 +82,12 @@ editor-ext перед серверными тестами, INFRA-0 резолв 
 
 ---
 
-## Сопутствующие НЕ-тестовые находки (отдельные задачи)
+## Сопутствующие НЕ-тестовые находки
 
-Всплыли во время написания тестов; чинить отдельными PR, не в тест-ветке.
+Вынесены в отдельные issues (всплыли во время написания тестов):
 
-- **Нет серверной валидации «допустимого набора моделей» для роли.**
-  `chatModel` — свободная строка `MaxLength(200)`
-  (`apps/server/src/core/ai-chat/roles/dto/agent-role.dto.ts`); невалидная
-  модель принимается и падает только в рантайме как provider-ошибка/503.
-  Плюс клиентский enum драйверов
-  (`ai-agent-role-form.tsx`) захардкожен и может разойтись с серверным
-  `AI_DRIVERS` (`apps/server/src/integrations/ai/ai.types.ts`) — кандидат на
-  shared-константу или contract-тест.
-
-- **`WsService.invalidateSpaceRestrictionCache` не имеет вызывающих.**
-  `apps/server/src/ws/ws.service.ts` (~:44-48). Кэш `spaceHasRestrictions`
-  (TTL 30с) ничем не инвалидируется при изменении ограничений → реальное
-  30-секундное окно устаревания (риск утечки заголовков/метаданных дерева).
-  Привязать инвалидацию к ручкам restrict/grant/revoke.
-
-- **Серверный guard рекурсии page-embed.**
-  Cap глубины/циклов `PAGE_EMBED_MAX_DEPTH=5` — только клиентский
-  (`page-embed-view.tsx`). Серверный `/pages/template/lookup` ограничен лишь
-  throttle 30/60с + `ArrayMaxSize(50)`. Оценить, нужен ли серверный guard
-  раскрытия.
-
-- **`collectPageEmbedsFromPmJson` без cycle-guard.**
-  `apps/server/src/core/page/transclusion/utils/transclusion-prosemirror.util.ts`
-  (~:108-139). На циклическом объекте — `RangeError` (stack overflow). Через
-  JSON-парсинг недостижимо (реальный вход), поэтому низкий приоритет; тест
-  закрепляет текущее поведение.
-
-- **Предсуществующий долг jest-инфраструктуры (блокирует часть интеграций).**
-  16 серверных сьютов падают: (а) NestJS DI — стоковые `should be defined`
-  через `Test.createTestingModule(...).compile()` без провайдеров (auth,
-  page, comment, group, space, search, user, workspace, token, storage,
-  environment); (б) lib0 ESM — `Cannot use import statement outside a module`
-  из `lib0/decoding.js` по цепочке `@hocuspocus/server` (comment.service,
-  page.service, page.controller). `lib0` не входит в jest
-  `transformIgnorePatterns`. Пока это так, полноценные интеграционные тесты
-  сервисов/контроллеров через полный DI-граф невозможны (в PR #49 такие
-  тесты сделаны прямым конструированием с моками).
+- #52 — ai-roles: нет серверной валидации модели роли + дрейф enum драйверов.
+- #53 — ws: `invalidateSpaceRestrictionCache` без вызывающих (30с stale-окно).
+- #54 — page-embed: серверный guard глубины/циклов раскрытия.
+- #55 — transclusion: cycle-guard в `collectPageEmbedsFromPmJson`.
+- #56 — test-infra: jest DI + lib0 ESM (16 падающих сьютов).
