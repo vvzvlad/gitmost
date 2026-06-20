@@ -1,10 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { Server, Socket } from 'socket.io';
+import { Server } from 'socket.io';
 import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import {
-  TREE_EVENTS,
   WS_SPACE_RESTRICTION_CACHE_PREFIX,
   WS_CACHE_TTL_MS,
   getSpaceRoomName,
@@ -23,39 +22,6 @@ export class WsService {
     this.server = server;
   }
 
-  async handleTreeEvent(client: Socket, data: any): Promise<void> {
-    const room = getSpaceRoomName(data.spaceId);
-
-    if (!client.rooms.has(room)) {
-      return;
-    }
-
-    if (data.operation === 'refetchRootTreeNodeEvent') {
-      client.broadcast.to(room).emit('message', data);
-      return;
-    }
-
-    const hasRestrictions = await this.spaceHasRestrictions(data.spaceId);
-    if (!hasRestrictions) {
-      client.broadcast.to(room).emit('message', data);
-      return;
-    }
-
-    const pageId = this.extractPageId(data);
-    if (!pageId) {
-      return;
-    }
-
-    const isRestricted =
-      await this.pagePermissionRepo.hasRestrictedAncestor(pageId);
-    if (!isRestricted) {
-      client.broadcast.to(room).emit('message', data);
-      return;
-    }
-
-    await this.broadcastToAuthorizedUsers(room, client.id, pageId, data);
-  }
-
   // Drop the cached spaceHasRestrictions verdict for a space. spaceHasRestrictions
   // caches "does this space have ANY restricted page" for WS_CACHE_TTL_MS (30s),
   // and emitTreeEvent / emitCommentEvent take a room-wide fast path when it is
@@ -72,6 +38,9 @@ export class WsService {
   // have ZERO callers in apps/server/src; PageAccessService only validates access.
   // This primitive is kept (and tested) so that flow, when it lands, has the
   // correct hook to invalidate the cache.
+  //
+  // TODO: the future restriction-mutation endpoint (restrict/grant/revoke page
+  // access) MUST call this with the affected page's spaceId.
   async invalidateSpaceRestrictionCache(spaceId: string): Promise<void> {
     await this.cacheManager.del(
       `${WS_SPACE_RESTRICTION_CACHE_PREFIX}${spaceId}`,
@@ -136,8 +105,8 @@ export class WsService {
   // Unconditional broadcast to everyone in the space room. Used for space-wide
   // signals that carry no page payload (e.g. refetchRootTreeNodeEvent on
   // restore): there is no per-page data to leak, and each client refetches the
-  // root tree through its own authorized query. Mirrors handleTreeEvent's
-  // special-casing of refetchRootTreeNodeEvent (no restriction check).
+  // root tree through its own authorized query (refetchRootTreeNodeEvent carries
+  // no per-page data, so no restriction check is needed).
   emitToSpaceRoom(spaceId: string, data: any): void {
     this.server.to(getSpaceRoomName(spaceId)).emit('message', data);
   }
@@ -196,10 +165,6 @@ export class WsService {
   ): Promise<void> {
     const room = getSpaceRoomName(spaceId);
     await this.broadcastToAuthorizedUsers(room, null, pageId, data);
-  }
-
-  isTreeEvent(data: any): boolean {
-    return TREE_EVENTS.has(data?.operation) && !!data?.spaceId;
   }
 
   private async broadcastToAuthorizedUsers(
@@ -263,20 +228,5 @@ export class WsService {
     await this.cacheManager.set(cacheKey, hasRestrictions, WS_CACHE_TTL_MS);
 
     return hasRestrictions;
-  }
-
-  private extractPageId(data: any): string | null {
-    switch (data.operation) {
-      case 'addTreeNode':
-        return data.payload?.data?.id ?? null;
-      case 'moveTreeNode':
-        return data.payload?.id ?? null;
-      case 'deleteTreeNode':
-        return data.payload?.node?.id ?? null;
-      case 'updateOne':
-        return data.id ?? null;
-      default:
-        return null;
-    }
   }
 }

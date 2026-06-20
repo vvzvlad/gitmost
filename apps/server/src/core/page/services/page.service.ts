@@ -758,9 +758,14 @@ export class PageService {
     }
 
     const insertedPageIds = insertablePages.map((page) => page.id);
+    // `spaceId` is the single destination space for the whole copy/duplicate
+    // (every inserted page above gets `spaceId: spaceId`). It lets the WS
+    // listener trigger a root refetch for the bulk subtree (no `pages` snapshot
+    // here on purpose — we want the refetch fallback, not per-node addTreeNode).
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: insertedPageIds,
       workspaceId: authUser.workspaceId,
+      spaceId,
     });
 
     //TODO: best to handle this in a queue

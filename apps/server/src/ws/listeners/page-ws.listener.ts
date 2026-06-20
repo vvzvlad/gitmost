@@ -33,8 +33,22 @@ export class PageWsListener {
 
   @OnEvent(EventName.PAGE_CREATED)
   async onPageCreated(event: PageEvent): Promise<void> {
-    for (const page of event.pages ?? []) {
-      await this.wsTree.broadcastPageCreated(page);
+    // Two creation shapes:
+    //  - Single-page create carries precise node snapshots (`pages`), so we
+    //    broadcast a pointwise addTreeNode per node.
+    //  - Bulk create (copy/duplicate, import) produces whole subtrees and omits
+    //    `pages`; per-node placement would be fragile, so we fall back to a root
+    //    refetch (carries no page data, clients re-fetch via the permission-
+    //    checked API). Same mechanism PAGE_RESTORED uses.
+    if (event.pages?.length) {
+      for (const page of event.pages) {
+        await this.wsTree.broadcastPageCreated(page);
+      }
+      return;
+    }
+
+    if (event.spaceId) {
+      await this.wsTree.broadcastRefetchRoot(event.spaceId);
     }
   }
 

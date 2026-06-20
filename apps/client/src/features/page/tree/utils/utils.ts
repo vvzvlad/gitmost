@@ -29,7 +29,14 @@ export function buildTree(pages: IPage[]): SpaceTreeNode[] {
     };
   });
 
+  // Defense-in-depth: a duplicate id in `pages` would push two references to the
+  // same node, producing a duplicate React key that crashes the sidebar render.
+  // Track ids we've already pushed and skip repeats so a stray duplicate from a
+  // realtime cache write can never break the tree.
+  const seen = new Set<string>();
   pages.forEach((page) => {
+    if (seen.has(page.id)) return;
+    seen.add(page.id);
     tree.push(pageMap[page.id]);
   });
 

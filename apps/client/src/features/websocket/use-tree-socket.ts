@@ -115,7 +115,9 @@ export const useTreeSocket = () => {
               | undefined;
             const patch: Partial<SpaceTreeNode> = {
               position: event.payload.position,
-              parentPageId: newParentId as string,
+              // Honest type: a root move has a null parent, so this is
+              // `string | null`, not always `string`.
+              parentPageId: newParentId as string | null,
             };
             if (pageData) {
               // The tree node stores the title as `name`.
