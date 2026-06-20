@@ -22,7 +22,12 @@ import { treeModel } from "@/features/page/tree/model/tree-model";
 import { getPageBreadcrumbs } from "@/features/page/services/page-service.ts";
 import { IPage } from "@/features/page/types/page.types.ts";
 import { extractPageSlugId } from "@/lib";
-import { DocTree } from "./doc-tree";
+import { isCompactPageTreeEnabled } from "@/lib/config.ts";
+import {
+  DocTree,
+  ROW_HEIGHT_COMPACT,
+  ROW_HEIGHT_STANDARD,
+} from "./doc-tree";
 import { SpaceTreeRow } from "./space-tree-row";
 
 interface SpaceTreeProps {
@@ -33,6 +38,7 @@ interface SpaceTreeProps {
 export default function SpaceTree({ spaceId, readOnly }: SpaceTreeProps) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
+  const compactTree = isCompactPageTreeEnabled();
   const [data, setData] = useAtom(treeDataAtom);
   const { handleMove } = useTreeMutation(spaceId);
   const {
@@ -219,6 +225,7 @@ export default function SpaceTree({ spaceId, readOnly }: SpaceTreeProps) {
           renderRow={renderRow}
           onMove={handleMove}
           onToggle={handleToggle}
+          rowHeight={compactTree ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_STANDARD}
           readOnly={readOnly}
           disableDrag={disableDragDrop}
           disableDrop={disableDragDrop}
