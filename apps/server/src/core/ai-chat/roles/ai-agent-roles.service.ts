@@ -97,7 +97,10 @@ export class AiAgentRolesService {
     });
 
     const updated = await this.repo.findById(id, workspaceId);
-    return this.toView(updated as AiAgentRole);
+    // The role may be soft-deleted concurrently between the UPDATE and this
+    // re-fetch; fail with a clear 400 instead of dereferencing undefined.
+    if (!updated) throw new BadRequestException('Role not found');
+    return this.toView(updated);
   }
 
   async remove(workspaceId: string, id: string): Promise<{ success: true }> {
