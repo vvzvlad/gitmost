@@ -72,14 +72,20 @@ jest.mock('@docmost/db/repos/user/user.repo', () => ({
 jest.mock('@docmost/db/repos/session/user-session.repo', () => ({
   UserSessionRepo: class UserSessionRepo {},
 }));
-// mcp-auth.helpers exports both runtime values (FailedLoginLimiter is used in
-// the constructor) and types. Provide a minimal FailedLoginLimiter so the
-// constructor runs; everything else the gate path doesn't need.
-jest.mock('./mcp-auth.helpers', () => ({
-  FailedLoginLimiter: class FailedLoginLimiter {
-    sweep() {}
-  },
-}));
+// mcp-auth.helpers exports runtime values the gate relies on (decideBasicGate,
+// mapAuthResultToResponse, etc.). Keep the REAL helpers so the gate exercises
+// real logic; only stub FailedLoginLimiter so its constructor runs without a
+// real sweep timer. The module is framework-free and loads cleanly under jest
+// (mcp.service.spec.ts already imports it directly), so requireActual is safe.
+jest.mock('./mcp-auth.helpers', () => {
+  const actual = jest.requireActual('./mcp-auth.helpers');
+  return {
+    ...actual,
+    FailedLoginLimiter: class FailedLoginLimiter {
+      sweep() {}
+    },
+  };
+});
 
 // Import AFTER the mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
