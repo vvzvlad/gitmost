@@ -304,6 +304,160 @@ describe("footnote sync plugin (orphans)", () => {
     editor.destroy();
   });
 
+  it("two definitions sharing an id (with two matching references) BOTH survive the first edit (no data loss)", () => {
+    // Reproduces the verified data-loss bug: two footnoteDefinition nodes share
+    // id "d", and there are two references with id "d". The OLD code built the
+    // definitions Map last-wins and emitted exactly one definition for the
+    // de-duplicated reference, so the very first keystroke's sync transaction
+    // deleted the whole list and rebuilt it from one definition — silently
+    // destroying "first" and keeping only "second".
+    const editor = makeEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "d" } },
+            { type: "text", text: "b" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "d" } },
+          ],
+        },
+        {
+          type: FOOTNOTES_LIST_NAME,
+          content: [
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "d" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "first" }] },
+              ],
+            },
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "d" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "second" }] },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    // The first local keystroke fires the sync plugin's appendTransaction.
+    editor.commands.insertContentAt(1, " ");
+
+    const doc = editor.state.doc;
+    // BOTH definitions survive.
+    expect(countType(doc, FOOTNOTE_DEFINITION_NAME)).toBe(2);
+    const defTexts: string[] = [];
+    const defIds: string[] = [];
+    doc.descendants((node) => {
+      if (node.type.name === FOOTNOTE_DEFINITION_NAME) {
+        defIds.push(node.attrs.id);
+        defTexts.push(node.textContent);
+      }
+    });
+    // No content was lost: both "first" and "second" are still present.
+    expect(defTexts.sort()).toEqual(["first", "second"]);
+    // The colliding ids were made distinct.
+    expect(new Set(defIds).size).toBe(2);
+    // Each definition's id matches exactly one reference (1:1 pairing).
+    const refIds: string[] = [];
+    doc.descendants((node) => {
+      if (node.type.name === FOOTNOTE_REFERENCE_NAME) refIds.push(node.attrs.id);
+    });
+    expect(refIds.sort()).toEqual(defIds.sort());
+    editor.destroy();
+  });
+
+  it("re-ids colliding duplicates DETERMINISTICALLY (two clients converge to identical ids)", () => {
+    // Cross-client determinism guard. Two collaborating clients each see the
+    // SAME duplicate-id document and each make a local edit. The sync plugin
+    // runs identically on every client, so it MUST mint the SAME new ids on both
+    // — otherwise the two clients diverge permanently over Yjs (duplicated
+    // footnotes). This is exactly the blocker the previous random-id
+    // (generateFootnoteId / Math.random) implementation caused: it would mint
+    // DIFFERENT ids on each client and this assertion would fail.
+    const duplicateDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "d" } },
+            { type: "text", text: "b" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "d" } },
+            { type: "text", text: "c" },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "d" } },
+          ],
+        },
+        {
+          type: FOOTNOTES_LIST_NAME,
+          content: [
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "d" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "one" }] },
+              ],
+            },
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "d" },
+              content: [
+                { type: "paragraph", content: [{ type: "text", text: "two" }] },
+              ],
+            },
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: "d" },
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "three" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const idsAfterLocalEdit = () => {
+      // A fresh editor instance = an independent "client" running the same
+      // plugin pipeline on the same starting document.
+      const editor = makeEditor(structuredClone(duplicateDoc));
+      editor.commands.insertContentAt(1, " "); // local keystroke -> sync runs
+      const refIds: string[] = [];
+      const defIds: string[] = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === FOOTNOTE_REFERENCE_NAME)
+          refIds.push(node.attrs.id);
+        if (node.type.name === FOOTNOTE_DEFINITION_NAME)
+          defIds.push(node.attrs.id);
+      });
+      editor.destroy();
+      return { refIds, defIds };
+    };
+
+    const clientA = idsAfterLocalEdit();
+    const clientB = idsAfterLocalEdit();
+
+    // Both clients computed IDENTICAL ids (the property that makes Yjs converge).
+    expect(clientA.refIds).toEqual(clientB.refIds);
+    expect(clientA.defIds).toEqual(clientB.defIds);
+
+    // And the ids are deterministic-derived (not random uuid-style): the keeper
+    // keeps "d", the duplicates become "d__2", "d__3".
+    expect(new Set(clientA.refIds)).toEqual(new Set(["d", "d__2", "d__3"]));
+    // Every definition survived with a unique id, 1:1 with the references.
+    expect(clientA.defIds.length).toBe(3);
+    expect(new Set(clientA.defIds).size).toBe(3);
+    expect([...clientA.refIds].sort()).toEqual([...clientA.defIds].sort());
+  });
+
   it("removes an orphan definition with no matching reference", () => {
     const editor = makeEditor({
       type: "doc",

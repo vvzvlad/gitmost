@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { deriveFootnoteId } from "../../footnote/footnote-util";
 
 /**
  * Pandoc/GFM footnote support for the marked (Markdown -> HTML) pipeline.
@@ -52,6 +53,10 @@ function escapeAttr(value: string): string {
   return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Extract `[^id]: text` definition lines from the markdown body, returning the
  * cleaned body plus a rendered <section data-footnotes> (empty string when no
@@ -96,6 +101,56 @@ export function extractFootnoteDefinitions(markdown: string): {
     return { body: markdown, section: "" };
   }
 
+  // De-duplicate colliding definition ids. Two definitions sharing an id (e.g.
+  // `[^d]: first` / `[^d]: second`) would otherwise collapse into one footnote
+  // downstream (the editor's last-wins sync). Rename each colliding id to a
+  // DETERMINISTIC derived one AND rewrite the corresponding `[^id]` reference
+  // marker so the (reference, definition) pairing stays 1:1. The FIRST
+  // definition keeps the id and pairs with the FIRST `[^id]` marker; the Nth
+  // duplicate gets the derived id `${id}__${N}` and rewrites the Nth `[^id]`
+  // marker. If there are fewer markers than definitions, the surplus definition
+  // keeps a derived (orphan) id so it is never silently merged away.
+  //
+  // The id is derived (deriveFootnoteId), NOT random: importing the same
+  // markdown through two paths (here and the MCP mirror) must yield identical
+  // ids, and re-importing the same markdown twice must be stable.
+  let dedupedBody = bodyLines.join("\n");
+  // Every original definition id is reserved up front so a derived id can never
+  // collide with an unrelated original id present in the document.
+  const taken = new Set<string>(definitions.map((d) => d.id));
+  const seenDefIds = new Map<string, number>(); // original id -> how many seen
+  for (const def of definitions) {
+    const originalId = def.id;
+    const count = seenDefIds.get(originalId) ?? 0;
+    seenDefIds.set(originalId, count + 1);
+    if (count === 0) continue; // first definition keeps its id
+
+    // count is the 0-based number of PRIOR occurrences; this is occurrence
+    // (count + 1), i.e. 2 for the first duplicate, 3 for the next, ...
+    const newId = deriveFootnoteId(originalId, count + 1, taken);
+    taken.add(newId);
+    def.id = newId;
+
+    // Rewrite the NEXT still-unrewritten `[^originalId]` marker that does not
+    // belong to the keeper definition. After a prior duplicate rewrote its
+    // marker (to `[^someNewId]`), it no longer matches `[^originalId]`, so the
+    // remaining matches are: index 0 = the keeper's marker (left alone), index 1
+    // = this duplicate's marker. Rewrite index 1.
+    let occurrence = 0;
+    let rewritten = false;
+    const re = new RegExp(`\\[\\^${escapeRegExp(originalId)}\\]`, "g");
+    dedupedBody = dedupedBody.replace(re, (match) => {
+      const idx = occurrence++;
+      if (!rewritten && idx === 1) {
+        rewritten = true;
+        return `[^${newId}]`;
+      }
+      return match;
+    });
+    // If there was no second marker (more definitions than references), the
+    // duplicate simply survives as an orphan with its fresh id — no body change.
+  }
+
   const defsHtml = definitions
     .map((d) => {
       // Render the definition text as inline markdown so emphasis/links inside
@@ -109,7 +164,7 @@ export function extractFootnoteDefinitions(markdown: string): {
     .join("");
 
   return {
-    body: bodyLines.join("\n"),
+    body: dedupedBody,
     section: `<section data-footnotes>${defsHtml}</section>`,
   };
 }

@@ -90,6 +90,39 @@ test("JSON -> MD -> JSON preserves footnote ids and text", async () => {
   assert.match(md2, /\[\^fn2\]: Second note\./);
 });
 
+test("duplicate-id markdown dedups DETERMINISTICALLY (same input -> same ids)", async () => {
+  // The MCP import must derive duplicate ids deterministically (NOT random) so
+  // the same markdown imported here and via the editor produces identical ids,
+  // and re-importing is stable. This is the test that would FAIL on the old
+  // Math.random()/Date.now() implementation.
+  const md = [
+    "See[^d] one[^d] two[^d].",
+    "",
+    "[^d]: first",
+    "[^d]: second",
+    "[^d]: third",
+  ].join("\n");
+
+  const idsOf = async () => {
+    const json = await markdownToProseMirror(md);
+    const refs = findAll(json, "footnoteReference").map((r) => r.attrs.id);
+    const defs = findAll(json, "footnoteDefinition").map((d) => d.attrs.id);
+    return { refs, defs };
+  };
+
+  const a = await idsOf();
+  const b = await idsOf();
+
+  // Identical across runs.
+  assert.deepEqual(a.refs, b.refs);
+  assert.deepEqual(a.defs, b.defs);
+  // Deterministic derived scheme: keeper "d", duplicates "d__2", "d__3".
+  assert.deepEqual([...a.defs].sort(), ["d", "d__2", "d__3"]);
+  // 1:1 reference <-> definition pairing, all distinct.
+  assert.equal(new Set(a.defs).size, 3);
+  assert.deepEqual([...a.refs].sort(), [...a.defs].sort());
+});
+
 test("a [^id]: line inside a fenced code block is NOT treated as a definition", async () => {
   // Markdown that DOCUMENTS footnote syntax inside a code fence. The example
   // definition line must be preserved verbatim inside the code block and not

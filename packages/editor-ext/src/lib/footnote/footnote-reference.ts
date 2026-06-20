@@ -8,7 +8,7 @@ import {
   generateFootnoteId,
 } from "./footnote-util";
 import { footnoteNumberingPlugin } from "./footnote-numbering";
-import { footnoteSyncPlugin } from "./footnote-sync";
+import { footnoteSyncPlugin, footnotePastePlugin } from "./footnote-sync";
 
 export interface FootnoteReferenceOptions {
   HTMLAttributes: Record<string, any>;
@@ -88,6 +88,9 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
     // doc is never mutated.
     if (this.options.enableSync !== false) {
       plugins.push(footnoteSyncPlugin(this.options.isRemoteTransaction));
+      // Regenerate colliding footnote ids on paste so a pasted reference+
+      // definition pair never clobbers/merges with an existing footnote.
+      plugins.push(footnotePastePlugin());
     }
     return plugins;
   },

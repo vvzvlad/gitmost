@@ -44,6 +44,61 @@ export function generateFootnoteId(): string {
 }
 
 /**
+ * Derive a DETERMINISTIC unique footnote id for the k-th (k >= 2) occurrence of
+ * an original id `X` during collision resolution. The result is a pure function
+ * of (`originalId`, `occurrence`, `taken`) so that every collaborating client —
+ * and every import path — computes the SAME new id for the same input document.
+ *
+ * CRITICAL: this MUST NOT use Math.random()/Date.now()/uuid. Two clients that
+ * each make a local edit on the same duplicate-id document have to converge on
+ * identical ids; a random id would diverge permanently over Yjs.
+ *
+ * Scheme: the base candidate is `${originalId}__${occurrence}` (e.g. `X__2`,
+ * `X__3`). If that candidate already exists in `taken` (an existing footnote id,
+ * or one we already minted in this pass), a stable alphabetic suffix is appended
+ * and bumped — `X__2b`, `X__2c`, ... — until the candidate is unique. `taken` is
+ * itself part of the document state, so the whole walk stays deterministic.
+ *
+ * `taken` is consulted but NOT mutated here; the caller adds the returned id to
+ * its own seen-set before requesting the next derived id.
+ *
+ * NOTE: this implementation is intentionally duplicated in
+ *   packages/mcp/src/lib/collaboration.ts (deriveFootnoteId)
+ * and MUST stay in sync with it so markdown imported through either path yields
+ * identical ids.
+ */
+export function deriveFootnoteId(
+  originalId: string,
+  occurrence: number,
+  taken: Set<string> | ReadonlySet<string>,
+): string {
+  let candidate = `${originalId}__${occurrence}`;
+  // Deterministic suffix bump: b, c, d, ... then aa, ab, ... if ever exhausted.
+  let n = 0;
+  while (taken.has(candidate)) {
+    n += 1;
+    candidate = `${originalId}__${occurrence}${suffix(n)}`;
+  }
+  return candidate;
+}
+
+/**
+ * Map 1 -> "b", 2 -> "c", ... 25 -> "z", 26 -> "ba", ... (base-25 over b..z,
+ * skipping "a" so the first bump is visibly distinct from the un-bumped base).
+ * Purely deterministic.
+ */
+function suffix(n: number): string {
+  let out = "";
+  let x = n;
+  while (x > 0) {
+    const rem = (x - 1) % 25;
+    out = String.fromCharCode(98 + rem) + out; // 98 = 'b'
+    x = Math.floor((x - 1) / 25);
+  }
+  return out;
+}
+
+/**
  * Collect every `footnoteReference` id in document order. This is the single
  * source of truth for numbering and ordering — a pure function of the document
  * so every collaborating client computes the same result.

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { htmlToMarkdown } from "../markdown/utils/turndown.utils";
 import { markdownToHtml } from "../markdown/utils/marked.utils";
+import { extractFootnoteDefinitions } from "../markdown/utils/footnote.marked";
 
 // HTML the editor-ext nodes render (sup[data-footnote-ref], section/div).
 const HTML =
@@ -52,5 +53,88 @@ describe("footnote markdown round-trip", () => {
     // It did NOT get pulled out into a real footnotes section.
     expect(html).not.toContain("data-footnotes");
     expect(html).not.toContain("data-footnote-def");
+  });
+
+  it("extractFootnoteDefinitions de-duplicates colliding ids and rewrites markers", () => {
+    // Two definitions share id `d`, and the body has two `[^d]` markers. The
+    // output must keep BOTH definitions with DISTINCT ids and rewrite the second
+    // marker so the (reference, definition) pairing stays 1:1.
+    const md = [
+      "See here[^d] and there[^d].",
+      "",
+      "[^d]: first",
+      "[^d]: second",
+    ].join("\n");
+
+    const { body, section } = extractFootnoteDefinitions(md);
+
+    // Pull out the def ids from the section in order.
+    const defIds = Array.from(
+      section.matchAll(/data-footnote-def data-id="([^"]+)"/g),
+    ).map((m) => m[1]);
+    expect(defIds.length).toBe(2);
+    expect(new Set(defIds).size).toBe(2); // distinct
+    expect(defIds[0]).toBe("d"); // first definition keeps the id
+
+    // Both definition texts survive.
+    expect(section).toContain("first");
+    expect(section).toContain("second");
+
+    // The body still has two markers, now pointing at the two distinct ids.
+    const refIds = Array.from(body.matchAll(/\[\^([^\]\s]+)\]/g)).map(
+      (m) => m[1],
+    );
+    expect(refIds.length).toBe(2);
+    expect(refIds.sort()).toEqual(defIds.sort());
+  });
+
+  it("extractFootnoteDefinitions dedups DETERMINISTICALLY (same input -> same ids)", () => {
+    // The derived id must be a pure function of the input markdown so importing
+    // the same source twice (or via the editor and the MCP mirror) yields
+    // identical ids — never random/time-based.
+    const md = [
+      "See[^d] one[^d] two[^d].",
+      "",
+      "[^d]: first",
+      "[^d]: second",
+      "[^d]: third",
+    ].join("\n");
+
+    const run = () => {
+      const { body, section } = extractFootnoteDefinitions(md);
+      const defIds = Array.from(
+        section.matchAll(/data-footnote-def data-id="([^"]+)"/g),
+      ).map((m) => m[1]);
+      const refIds = Array.from(body.matchAll(/\[\^([^\]\s]+)\]/g)).map(
+        (m) => m[1],
+      );
+      return { defIds, refIds };
+    };
+
+    const a = run();
+    const b = run();
+    // Identical across runs (this is what would FAIL on the random-id version).
+    expect(a.defIds).toEqual(b.defIds);
+    expect(a.refIds).toEqual(b.refIds);
+    // Deterministic derived scheme: keeper "d", duplicates "d__2", "d__3".
+    expect(a.defIds).toEqual(["d", "d__2", "d__3"]);
+    expect(a.refIds.sort()).toEqual(a.defIds.sort());
+  });
+
+  it("markdownToHtml with duplicate ids renders two distinct footnote defs", async () => {
+    const md = [
+      "See here[^d] and there[^d].",
+      "",
+      "[^d]: first",
+      "[^d]: second",
+    ].join("\n");
+    const html = await markdownToHtml(md);
+    const defIds = Array.from(
+      html.matchAll(/data-footnote-def data-id="([^"]+)"/g),
+    ).map((m) => m[1]);
+    expect(defIds.length).toBe(2);
+    expect(new Set(defIds).size).toBe(2);
+    expect(html).toContain("first");
+    expect(html).toContain("second");
   });
 });
