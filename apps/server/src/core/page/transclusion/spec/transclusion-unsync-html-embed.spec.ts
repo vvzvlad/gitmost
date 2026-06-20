@@ -56,6 +56,7 @@ function buildService(featureEnabled = true) {
     {} as any, // db (unused on this path)
     pageTransclusionsRepo as any,
     pageTransclusionReferencesRepo as any,
+    {} as any, // pageTemplateReferencesRepo (unused on this path)
     pageRepo as any,
     {} as any, // pagePermissionRepo (unused)
     {} as any, // spaceMemberRepo (unused)

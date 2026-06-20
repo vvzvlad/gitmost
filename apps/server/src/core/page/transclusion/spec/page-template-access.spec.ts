@@ -68,6 +68,7 @@ describe('TransclusionService — template access core (real filter)', () => {
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
+      {} as any, // workspaceRepo
     );
 
     return { service, db, pageRepo, spaceMemberRepo, pagePermissionRepo };
@@ -216,7 +217,8 @@ describe('TransclusionService.syncPageTemplateReferences — workspace scoping',
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {} as any, // pageAccessService
+      {} as any, // workspaceRepo
     );
 
     return { service, insertMany, pageTemplateReferencesRepo };
