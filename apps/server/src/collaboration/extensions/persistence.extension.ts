@@ -40,6 +40,7 @@ import {
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
 import {
+  canAuthorHtmlEmbed,
   collectHtmlEmbedSources,
   hasHtmlEmbedNode,
   htmlEmbedAllowed,
@@ -58,6 +59,21 @@ export class PersistenceExtension implements Extension {
   // coalescing window" per document and OR it across all edits in the window,
   // so the snapshot is marked 'agent' regardless of who wrote last.
   private agentTouched: Map<string, boolean> = new Map();
+  // Per-document debounce timers for the early htmlEmbed guard (Gitea #26).
+  // onChange schedules a short (~300ms) debounced strip that converges the
+  // shared ydoc for all connected clients well before the 10s store debounce,
+  // shrinking the pre-persist broadcast window of a non-admin's transient embed.
+  private htmlEmbedGuardTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Per-document cache of the workspace htmlEmbed toggle (Gitea #26). Populated
+  // in onLoadDocument (which already loads the page + has workspace context) and
+  // read in onChange to gate early-guard scheduling: when the toggle is OFF (the
+  // common default) we schedule NOTHING — no timer, no fromYdoc, no DB read — and
+  // rely on the onStoreDocument strip as the backstop (when OFF the embed does
+  // not execute in editable mode anyway). Cleared in afterUnloadDocument.
+  // STALENESS: if an admin flips the toggle ON mid-session this cache stays OFF
+  // until the document is reloaded, so the early guard won't schedule — accepted,
+  // the onStoreDocument backstop still strips on persist.
+  private htmlEmbedToggleByDoc: Map<string, boolean> = new Map();
 
   constructor(
     private readonly pageRepo: PageRepo,
@@ -87,6 +103,23 @@ export class PersistenceExtension implements Extension {
     if (!page) {
       this.logger.warn('page not found');
       return;
+    }
+
+    // Cache the workspace htmlEmbed toggle for this document (Gitea #26). We
+    // already have the page (hence its workspaceId) here, so resolve the toggle
+    // once and cache it keyed by documentName. onChange reads this to decide
+    // whether to schedule the early guard at all — when OFF we skip the guard
+    // entirely (no timer, no fromYdoc, no DB read). Cleared in
+    // afterUnloadDocument. See htmlEmbedToggleByDoc for the staleness note.
+    try {
+      const enabled = isHtmlEmbedFeatureEnabled(
+        (await this.workspaceRepo.findById(page.workspaceId))?.settings,
+      );
+      this.htmlEmbedToggleByDoc.set(documentName, enabled);
+    } catch (err) {
+      // Fail OFF: if the toggle can't be resolved, never schedule the early
+      // guard; the onStoreDocument backstop still strips on persist.
+      this.htmlEmbedToggleByDoc.set(documentName, false);
     }
 
     if (page.ydoc) {
@@ -158,18 +191,25 @@ export class PersistenceExtension implements Extension {
     // the next store, and the persisted row plus every share/readonly read path
     // remain protected by the strip.
     //
-    // ACCEPTED RESIDUAL RISK (pre-persist broadcast window): this strip runs in
-    // the debounced onStoreDocument, but hocuspocus broadcasts each inbound Yjs
-    // update to connected clients immediately, so a non-admin's transient
-    // htmlEmbed can execute in OTHER open editors' browsers in the brief window
-    // before this persist strips it. The exposure is limited to concurrent
-    // AUTHENTICATED space members who have the doc open with Edit rights
-    // (semi-trusted) — anonymous public-share/readonly viewers do NOT open a
-    // collab socket (ReadonlyPageEditor renders fetched, already-stripped
-    // content; HocuspocusProvider is only used by the authenticated editable
-    // page-editor), and the PERSISTED page row plus every share/readonly read
-    // path are protected by this strip. The window is therefore accepted rather
-    // than mitigated with an inbound beforeBroadcast strip.
+    // RESIDUAL RISK (pre-persist broadcast window) — NOW MITIGATED (Gitea #26):
+    // this strip runs in the debounced onStoreDocument (up to 10s), but
+    // hocuspocus broadcasts each inbound Yjs update to connected clients
+    // immediately, so a non-admin's transient htmlEmbed can execute in OTHER open
+    // editors' browsers in the window before this persist strips it. The exposure
+    // is limited to concurrent AUTHENTICATED space members who have the doc open
+    // with Edit rights (semi-trusted) — anonymous public-share/readonly viewers do
+    // NOT open a collab socket (ReadonlyPageEditor renders fetched,
+    // already-stripped content; HocuspocusProvider is only used by the
+    // authenticated editable page-editor), and the PERSISTED page row plus every
+    // share/readonly read path are protected by this strip.
+    // The window is now SHRUNK to sub-second by an onChange-debounced early guard
+    // (~300ms) — see guardHtmlEmbed() — which runs the SAME preserve/strip gate as
+    // this block and re-encodes the cleaned ydoc, converging the doc for all
+    // clients long before this 10s store debounce fires. This onStoreDocument
+    // strip remains the authoritative backstop for persistence. The irreducible
+    // residual is only the VERY FIRST inbound broadcast before the ~300ms debounce
+    // fires: hocuspocus exposes no synchronous beforeBroadcast filter to drop the
+    // node before that first relay, so it cannot be eliminated entirely.
     // Toggle-AND-admin gate: htmlEmbed survives only when the workspace feature
     // toggle is ON and the storing user is an admin/owner. OFF (default) =>
     // stripped for everyone (existing embeds get cleaned up on next save).
@@ -389,12 +429,168 @@ export class PersistenceExtension implements Extension {
     if (data.context?.actor === 'agent') {
       this.agentTouched.set(documentName, true);
     }
+
+    // Early htmlEmbed guard scheduling (Gitea #26). Schedule the short debounced
+    // guard ONLY when (a) this document's workspace toggle is cached ON and
+    // (b) the changing connection's user is a NON-admin (cannot author
+    // htmlEmbed). When the toggle is OFF/unknown we schedule NOTHING — no timer,
+    // no fromYdoc, no DB read — killing the OFF-case overhead (the common
+    // default); the onStoreDocument strip is the backstop and an OFF embed does
+    // not execute in editable mode anyway. We do NO expensive work here — we only
+    // (re)schedule the timer; the debounce coalesces rapid edits into a single
+    // guard check.
+    if (
+      userId &&
+      this.htmlEmbedToggleByDoc.get(documentName) === true &&
+      !canAuthorHtmlEmbed(data.context?.user?.role)
+    ) {
+      const existing = this.htmlEmbedGuardTimers.get(documentName);
+      if (existing) {
+        clearTimeout(existing);
+      }
+      const timer = setTimeout(() => {
+        this.htmlEmbedGuardTimers.delete(documentName);
+        void this.guardHtmlEmbed(documentName, data.document, data.context);
+      }, 300);
+      this.htmlEmbedGuardTimers.set(documentName, timer);
+    }
+  }
+
+  /**
+   * Early, onChange-debounced htmlEmbed strip (Gitea #26). Mirrors the
+   * onStoreDocument admin gate but runs ~300ms after a non-admin edit instead of
+   * waiting for the 10s store debounce, so a non-admin's transient embed is
+   * removed from the shared ydoc — and re-broadcast as cleaned state — for all
+   * connected clients in sub-second time. onStoreDocument remains the
+   * authoritative persistence backstop; this is an ADDITIONAL early pass.
+   *
+   * CONCURRENCY (the critical invariant): the Y.Doc mutation is a single
+   * SYNCHRONOUS block with NO `await` between the fromYdoc snapshot and the
+   * applyUpdate write. ALL async work (the workspace toggle lookup and the
+   * persisted-content read for the allow-list) happens FIRST, before that block.
+   * Because JS is single-threaded, a synchronous block cannot interleave with
+   * inbound Yjs update handlers, so a concurrent edit that lands while we await
+   * cannot be CLOBBERED: we re-snapshot the live doc only after all awaits, then
+   * delete + rebuild + applyUpdate without yielding. (An earlier version awaited
+   * DB reads BETWEEN the snapshot and the write, so a concurrent edit in that gap
+   * was lost — this restructure fixes that.)
+   *
+   * The allow-list is a best-effort snapshot read outside any lock (TOCTOU
+   * accepted, same as onStoreDocument): worst case one embed is transiently kept
+   * or dropped; it converges on the next guard/store, with no auth bypass.
+   *
+   * Loop-safety: the corrective applyUpdate has a null origin, so the re-fired
+   * onChange carries no userId and is not rescheduled; and after a strip no
+   * htmlEmbed remains, so a subsequent guard fire is a cheap no-op (the
+   * hasHtmlEmbedNode early-exit). NEVER throws — an unhandled rejection in a timer
+   * would crash the process — so the whole body is wrapped in try/catch.
+   */
+  private async guardHtmlEmbed(
+    documentName: string,
+    document: Y.Doc,
+    context: any,
+  ): Promise<void> {
+    // Defensive: ensure no stale timer entry survives for this document.
+    this.htmlEmbedGuardTimers.delete(documentName);
+    try {
+      // Re-check defensively: onChange only schedules for non-admins, but if an
+      // admin/owner somehow reaches here, the embed is authored content — do
+      // nothing (onStoreDocument's toggle-AND-admin gate handles persistence).
+      if (canAuthorHtmlEmbed(context?.user?.role)) {
+        return;
+      }
+
+      // ---- ASYNC PHASE: do ALL awaits up front, before touching the ydoc. ----
+      // Resolve the workspace toggle exactly as onStoreDocument does. When OFF we
+      // strip everything; when ON we use the preserve logic (keep admin-vetted
+      // embeds, strip only the non-admin's newly-introduced ones).
+      const enabled = isHtmlEmbedFeatureEnabled(
+        (await this.workspaceRepo.findById(context?.user?.workspaceId))
+          ?.settings,
+      );
+
+      // The allow-list (admin-vetted sources already in the persisted content).
+      // null => strip ALL (toggle OFF). Read here, BEFORE the synchronous block,
+      // so no await sits between the doc snapshot and the doc write.
+      let allowed: Set<string> | null = null;
+      if (enabled !== false) {
+        const prior = await this.pageRepo.findById(getPageId(documentName), {
+          includeContent: true,
+        });
+        allowed = collectHtmlEmbedSources(prior?.content);
+      }
+
+      // The awaits above may have let the document be unloaded/destroyed. If so,
+      // bail — mutating a destroyed doc is pointless and could throw (the
+      // try/catch is the ultimate safety net regardless).
+      if ((document as { isDestroyed?: boolean }).isDestroyed) {
+        return;
+      }
+
+      // ---- SYNCHRONOUS PHASE: snapshot -> strip -> reflect, NO await here. ----
+      // Because there is no await between fromYdoc and applyUpdate, no inbound
+      // Yjs update can interleave, so a concurrent edit cannot be lost.
+      const json = TiptapTransformer.fromYdoc(document, 'default');
+
+      // Cheap exit: nothing to guard if the doc has no embed at all. This is also
+      // why a post-strip re-fire is a no-op (loop-safe).
+      if (!hasHtmlEmbedNode(json)) {
+        return;
+      }
+
+      const strippedJson =
+        allowed === null
+          ? stripHtmlEmbedNodes(json)
+          : stripDisallowedHtmlEmbedNodes(json, allowed);
+
+      // Nothing was stripped (e.g. the only embed is an admin-vetted one) — do
+      // not churn the shared ydoc for all clients.
+      if (isDeepStrictEqual(strippedJson, json)) {
+        return;
+      }
+
+      // Reflect the stripped content back into the shared ydoc EXACTLY as
+      // onStoreDocument does, so the node is removed for all connected clients,
+      // not just on the eventual persist. This re-encode broadcasts the cleaned
+      // state; after it hasHtmlEmbedNode is false, so any later guard fire is a
+      // cheap no-op (loop-safe).
+      const fragment = document.getXmlFragment('default');
+      if (fragment.length > 0) {
+        fragment.delete(0, fragment.length);
+      }
+      const cleanDoc = TiptapTransformer.toYdoc(
+        strippedJson,
+        'default',
+        tiptapExtensions,
+      );
+      Y.applyUpdate(document, Y.encodeStateAsUpdate(cleanDoc));
+
+      this.logger.warn(
+        `Stripping htmlEmbed node(s) via early onChange guard by user ${context?.user?.id} on ${documentName}`,
+      );
+    } catch (err) {
+      // NEVER rethrow out of a timer-scheduled call.
+      this.logger.error(
+        `Early htmlEmbed guard failed on ${documentName}`,
+        err,
+      );
+    }
   }
 
   async afterUnloadDocument(data: afterUnloadDocumentPayload) {
     const documentName = data.documentName;
     this.contributors.delete(documentName);
     this.agentTouched.delete(documentName);
+    // Drop the cached toggle for this document so a reload re-resolves it (and
+    // picks up a mid-session admin toggle flip).
+    this.htmlEmbedToggleByDoc.delete(documentName);
+    // Clear any pending early-guard timer so it cannot fire after the document
+    // is unloaded (leak / use-after-unload prevention).
+    const timer = this.htmlEmbedGuardTimers.get(documentName);
+    if (timer) {
+      clearTimeout(timer);
+      this.htmlEmbedGuardTimers.delete(documentName);
+    }
   }
 
   private consumeContributors(documentName: string): string[] {
