@@ -15,6 +15,7 @@ import {
   Text,
   Textarea,
   TextInput,
+  Tooltip,
   useMantineTheme,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
@@ -60,8 +61,15 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-// Status of an endpoint card, drives the little status dot color.
-type CardStatus = "ok" | "error" | "idle";
+// Four-state endpoint health shown by the header dot. Derived synchronously
+// from the form values + feature toggle — never from a network probe (the
+// "Test endpoint" button still surfaces the live probe result as text).
+//   "ready"     (green)  — required fields filled AND the feature is ON
+//   "configured"(yellow) — required fields filled but the feature is OFF
+//   "off"       (gray)   — required fields missing (nothing to enable)
+//   "warning"   (orange) — feature is ON but required fields are missing
+//                          (a real misconfiguration: it won't work as-is)
+type CardStatus = "ready" | "configured" | "off" | "warning";
 
 // Resolve a "Base URL + path" hint defensively: trim a single trailing slash
 // off the base, then append the path. Empty base falls back to `fallback`
@@ -71,21 +79,53 @@ function resolveUrl(base: string, path: string, fallback = ""): string {
   return `${trimmed}${path}`;
 }
 
-// Small colored dot used in each card header.
-function StatusDot({ status }: { status: CardStatus }) {
+// Pure + unit-testable. `configured` = the endpoint has the fields it needs
+// to work; `enabled` = the workspace feature toggle for this endpoint is ON.
+// The "enabled && !configured" case is surfaced as "warning" instead of "off"
+// so a misconfiguration (feature on, endpoint not filled) is not hidden.
+export function resolveCardStatus(
+  configured: boolean,
+  enabled: boolean,
+): CardStatus {
+  if (configured) return enabled ? "ready" : "configured";
+  return enabled ? "warning" : "off";
+}
+
+// Translate the dot's tooltip label. Kept in one place so all three endpoint
+// cards share identical wording.
+function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
+  switch (status) {
+    case "ready":
+      return t("Configured and enabled");
+    case "configured":
+      return t("Configured but disabled");
+    case "warning":
+      return t("Enabled but not configured");
+    default:
+      return t("Not configured");
+  }
+}
+
+// Small colored dot used in each card header, with a tooltip label so the
+// state is readable without relying on color alone (colorblind access).
+function StatusDot({ status, label }: { status: CardStatus; label: string }) {
   const theme = useMantineTheme();
   const color =
-    status === "ok"
+    status === "ready"
       ? theme.colors.green[6]
-      : status === "error"
-        ? theme.colors.red[6]
-        : theme.colors.gray[5];
+      : status === "configured"
+        ? theme.colors.yellow[6]
+        : status === "warning"
+          ? theme.colors.orange[6]
+          : theme.colors.gray[5];
   return (
-    <Box
-      w={9}
-      h={9}
-      style={{ borderRadius: "50%", background: color, flex: "none" }}
-    />
+    <Tooltip label={label} position="top" withArrow>
+      <Box
+        w={9}
+        h={9}
+        style={{ borderRadius: "50%", background: color, flex: "none" }}
+      />
+    </Tooltip>
   );
 }
 
@@ -353,21 +393,23 @@ export default function AiProviderSettings() {
     );
   }
 
-  const chatStatus: CardStatus = chatTest.data
-    ? chatTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
-  const embedStatus: CardStatus = embedTest.data
-    ? embedTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
-  const sttStatus: CardStatus = sttTest.data
-    ? sttTest.data.ok
-      ? "ok"
-      : "error"
-    : "idle";
+  // Per-endpoint "configured" predicate, derived from the LIVE form values
+  // (the dot reacts as the admin types). A key is NOT required — local
+  // servers (Ollama, speaches) work without one. Embeddings and Voice
+  // inherit the chat base URL when their own is empty (see resolveUrl).
+  const v = form.values;
+  const chatBase = v.baseUrl.trim();
+  const chatConfigured = v.chatModel.trim() !== "" && chatBase !== "";
+  const embedConfigured =
+    v.embeddingModel.trim() !== "" &&
+    (v.embeddingBaseUrl.trim() !== "" || chatBase !== "");
+  const sttConfigured =
+    v.sttModel.trim() !== "" &&
+    (v.sttBaseUrl.trim() !== "" || chatBase !== "");
+
+  const chatStatus = resolveCardStatus(chatConfigured, chatEnabled);
+  const embedStatus = resolveCardStatus(embedConfigured, searchEnabled);
+  const sttStatus = resolveCardStatus(sttConfigured, dictationEnabled);
 
   const chatResolved = resolveUrl(form.values.baseUrl, "/chat/completions");
   const embedResolved = resolveUrl(
@@ -404,7 +446,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={chatStatus} />
+            <StatusDot status={chatStatus} label={cardStatusLabel(chatStatus, t)} />
             <Text fw={600}>{t("Chat / LLM")}</Text>
             <Badge size="sm" variant="light" color="gray">
               {t("root")}
@@ -514,7 +556,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={embedStatus} />
+            <StatusDot status={embedStatus} label={cardStatusLabel(embedStatus, t)} />
             <Text fw={600}>{t("Embeddings")}</Text>
           </Group>
           <Switch
@@ -631,7 +673,7 @@ export default function AiProviderSettings() {
       <Paper withBorder radius="md" p="lg">
         <Group justify="space-between" align="center" wrap="nowrap">
           <Group gap="xs" align="center" wrap="nowrap">
-            <StatusDot status={sttStatus} />
+            <StatusDot status={sttStatus} label={cardStatusLabel(sttStatus, t)} />
             <Text fw={600}>{t("Voice / STT")}</Text>
           </Group>
           <Switch
