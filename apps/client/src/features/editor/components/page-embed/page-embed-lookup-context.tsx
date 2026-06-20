@@ -55,7 +55,9 @@ export function PageEmbedLookupProvider({
 
     try {
       const { items } = await lookupTemplate({ sourcePageIds: ids });
+      const returned = new Set<string>();
       for (const r of items) {
+        returned.add(r.sourcePageId);
         resultCacheRef.current.set(r.sourcePageId, r);
         inFlightRef.current.delete(r.sourcePageId);
         const subs = subscribersRef.current.get(r.sourcePageId);
@@ -63,6 +65,17 @@ export function PageEmbedLookupProvider({
           for (const set of subs) set(r);
         }
         resolveWaiters(r.sourcePageId);
+      }
+      // Harden against a partial/short server response: any requested id not
+      // present in `items` would otherwise stay in `inFlightRef` forever
+      // (subscribe/refresh are guarded by `!inFlightRef.has(id)`) and its
+      // refresh() promise would never resolve. Clear + resolve those ids,
+      // mirroring the catch branch, so no id can be stranded in-flight.
+      for (const id of ids) {
+        if (!returned.has(id)) {
+          inFlightRef.current.delete(id);
+          resolveWaiters(id);
+        }
       }
     } catch (err) {
       // Surface the failure: errors must never be swallowed silently.

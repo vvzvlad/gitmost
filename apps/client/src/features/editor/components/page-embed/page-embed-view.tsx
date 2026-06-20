@@ -2,10 +2,9 @@ import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import {
   IconAlertTriangle,
-  IconArrowsMaximize,
   IconDots,
-  IconExternalLink,
   IconEyeOff,
+  IconFileText,
   IconInfoCircle,
   IconRefresh,
   IconRepeat,
@@ -138,20 +137,6 @@ function PageEmbedBody({
           <IconRefresh size={14} />
         </ActionIcon>
       </Tooltip>
-      {sourceHref && (
-        <Tooltip label={t("Open source page")}>
-          <ActionIcon
-            component={Link}
-            to={sourceHref}
-            variant="subtle"
-            color="gray"
-            size="sm"
-            style={{ textDecoration: "none", borderBottom: "none" }}
-          >
-            <IconExternalLink size={14} />
-          </ActionIcon>
-        </Tooltip>
-      )}
       <Menu position="bottom-end" withinPortal onChange={trackOpen}>
         <Menu.Target>
           <ActionIcon variant="subtle" color="gray" size="sm">
@@ -172,13 +157,18 @@ function PageEmbedBody({
   ) : null;
 
   const header =
-    sourceTitle || sourceIcon ? (
+    // Render the badge whenever the source resolves (sourceHref), not only when
+    // it has a title/icon — the title link is now the single way to open the
+    // source, so it must not disappear when title and icon are both empty.
+    sourceTitle || sourceIcon || sourceHref ? (
       <div className={classes.transclusionBadge}>
-        {sourceIcon ? `${sourceIcon} ` : <IconArrowsMaximize size={12} />}
+        {sourceIcon ? `${sourceIcon} ` : <IconFileText size={12} />}
         {sourceHref ? (
           <Link
             to={sourceHref}
             style={{ borderBottom: "none", textDecoration: "none" }}
+            title={t("Open source page")}
+            aria-label={t("Open source page")}
           >
             {sourceTitle || t("Untitled")}
           </Link>
@@ -226,7 +216,17 @@ function PageEmbedBody({
         sourcePageId={sourcePageId}
         hostPageId={hostPageId}
       >
-        <PageEmbedContent content={result.content} />
+        {/*
+          Tiptap's EditorProvider consumes `content` only at initial mount, so a
+          changed `content` prop (e.g. after Refresh re-fetches fresh content)
+          would not update the read-only sub-editor. Key on the source's
+          updatedAt to remount PageEmbedContent (and its inner EditorProvider)
+          whenever the source page changes, applying the refreshed content.
+        */}
+        <PageEmbedContent
+          key={result.sourceUpdatedAt}
+          content={result.content}
+        />
       </PageEmbedAncestryProvider>
     );
   } else if (embedState === "no_access") {
