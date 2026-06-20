@@ -76,13 +76,18 @@
 .definition {
   display: flex;
   align-items: flex-start;
-  gap: var(--mantine-spacing-xs);
+  /* Tight number→text spacing (~one space) so it reads like "1. text"
+     instead of leaving a wide gap after the period. */
+  gap: 0.4em;
   padding: 2px 0;
 }
 
 .definitionMarker {
   flex: 0 0 auto;
   min-width: 1.5em;
+  /* Right-align within the narrow column so the period sits next to the text
+     and multi-digit numbers (10, 11, …) stay aligned on their right edge. */
+  text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--mantine-color-dimmed);
   user-select: none;
