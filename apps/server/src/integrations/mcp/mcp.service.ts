@@ -154,6 +154,15 @@ export class McpService implements OnModuleDestroy {
   private async verifyMcpBearer(
     token: string,
   ): Promise<{ sub?: string; email?: string }> {
+    // Resolve THIS instance's workspace so verifyBearerAccess can bind the
+    // token's `workspaceId` claim to it (mirrors JwtStrategy). The community
+    // build is single-workspace (findFirst), so this is the default workspace
+    // and the check is a no-op here; it only rejects a foreign-workspace token
+    // in a multi-workspace deployment. Undefined (no workspace configured) means
+    // no check — the credentials path would already have failed with no
+    // workspace, and an undefined here keeps the helper a no-op rather than
+    // rejecting every token.
+    const instanceWorkspace = await this.workspaceRepo.findFirst();
     // The revocation/disabled decision logic lives in the framework-free
     // verifyBearerAccess helper (unit-testable without the heavy auth graph);
     // this method only wires in the concrete TokenService + repos.
@@ -163,6 +172,7 @@ export class McpService implements OnModuleDestroy {
       verifyJwt: bindAccessJwtVerifier(this.tokenService) as (
         t: string,
       ) => Promise<JwtPayload>,
+      expectedWorkspaceId: instanceWorkspace?.id,
       findUser: (sub, workspaceId) =>
         this.userRepo.findById(sub, workspaceId),
       findActiveSession: (sessionId) =>

@@ -41,6 +41,20 @@ import {
 } from '../../../integrations/audit/audit.service';
 import { EnvironmentService } from '../../../integrations/environment/environment.service';
 
+// A valid bcrypt hash (cost 10, of an arbitrary throwaway string) used ONLY to
+// equalize timing in verifyUserCredentials: when the email does not exist or
+// the user is disabled, we still run ONE bcrypt comparison against this hash
+// before throwing, so the missing/disabled path takes about the same time as
+// the real-user wrong-password path. Without it, the "no bcrypt at all" branch
+// returns measurably faster, leaking whether an email is registered (a user-
+// enumeration timing oracle, now reachable via /mcp where throttling is only a
+// spoofable in-memory limiter). This is never used as a real credential.
+// The cost factor MUST match the production saltRounds (12 — see
+// common/helpers/utils.ts hashPassword), otherwise the dummy compare runs
+// faster than a real wrong-password compare and the timing oracle survives.
+const DUMMY_PASSWORD_HASH =
+  '$2b$12$q/l637TULK3vU3Cmji0y8utpJS/UiftMi3Jdm4Tsi5EIv/0FE7WV.';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -82,6 +96,12 @@ export class AuthService {
     // recognises this exact message via isCredentialsFailure.
     const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
     if (!user || isUserDisabled(user)) {
+      // Constant-time intent: run ONE bcrypt comparison (against a dummy hash)
+      // even when the user is missing/disabled, so this path takes about the
+      // same time as the real-user wrong-password path below. This closes the
+      // user-enumeration timing oracle (registered vs. not). The result is
+      // intentionally discarded — we always throw the same credentials error.
+      await comparePasswordHash(loginDto.password, DUMMY_PASSWORD_HASH);
       throw new UnauthorizedException(errorMessage);
     }
 

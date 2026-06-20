@@ -264,6 +264,31 @@ describe('verifyBearerAccess (Bearer revocation/disabled checks)', () => {
       ),
     ).rejects.toThrow('jwt expired');
   });
+
+  // Item 3: bind the Bearer token to THIS instance's workspace (mirrors
+  // JwtStrategy). A token whose workspaceId claim differs from the instance
+  // workspace must be rejected; matching/absent expectedWorkspaceId is allowed.
+  it('rejects a token from a DIFFERENT workspace when expectedWorkspaceId is set', async () => {
+    await expect(
+      verifyBearerAccess('t', {
+        ...bearerDeps(),
+        expectedWorkspaceId: 'ws-OTHER',
+      }),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('accepts a token whose workspace matches expectedWorkspaceId', async () => {
+    const res = await verifyBearerAccess('t', {
+      ...bearerDeps(),
+      expectedWorkspaceId: 'ws-1',
+    });
+    expect(res).toEqual({ sub: 'user-1', email: 'u@e.com' });
+  });
+
+  it('does NOT enforce a workspace when expectedWorkspaceId is undefined (single-workspace no-op)', async () => {
+    const res = await verifyBearerAccess('t', bearerDeps());
+    expect(res).toEqual({ sub: 'user-1', email: 'u@e.com' });
+  });
 });
 
 describe('resolveMcpSessionConfig', () => {
@@ -587,23 +612,48 @@ describe('resolveMcpSessionConfig', () => {
   });
 });
 
-describe('isInitializeRequestBody (session-INIT detection)', () => {
-  it('true only for a single JSON-RPC object with method === "initialize"', () => {
-    expect(isInitializeRequestBody({ jsonrpc: '2.0', method: 'initialize' })).toBe(
-      true,
-    );
+// A full, valid JSON-RPC InitializeRequest as the @modelcontextprotocol/sdk
+// `isInitializeRequest` predicate (which isInitializeRequestBody now delegates
+// to) requires: jsonrpc + id + method === 'initialize' + params.protocolVersion.
+const fullInitializeRequest = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'test-client', version: '1.0.0' },
+  },
+};
+
+describe('isInitializeRequestBody (session-INIT detection, matches SDK predicate)', () => {
+  it('true for a FULL valid InitializeRequest (the SDK predicate signal)', () => {
+    expect(isInitializeRequestBody(fullInitializeRequest)).toBe(true);
+  });
+
+  it('false for a bare { method: "initialize" } with no id/params (item 1)', () => {
+    // Item 1: this previously returned true (method-only check) and let an
+    // authenticated client POST a params-less body with no mcp-session-id, which
+    // ran the side-effecting login() before http.ts 400'd it. The SDK predicate
+    // rejects it (no id, no params.protocolVersion), so it no longer mints a
+    // session / audit row.
+    expect(isInitializeRequestBody({ method: 'initialize' })).toBe(false);
+    expect(
+      isInitializeRequestBody({ jsonrpc: '2.0', method: 'initialize' }),
+    ).toBe(false);
+    expect(
+      isInitializeRequestBody({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    ).toBe(false);
   });
 
   it('false for a non-initialize method (e.g. tools/call)', () => {
     expect(
-      isInitializeRequestBody({ jsonrpc: '2.0', method: 'tools/call' }),
+      isInitializeRequestBody({ ...fullInitializeRequest, method: 'tools/call' }),
     ).toBe(false);
   });
 
   it('false for a batch (array) body, null/undefined, or a non-object', () => {
-    expect(
-      isInitializeRequestBody([{ jsonrpc: '2.0', method: 'initialize' }]),
-    ).toBe(false);
+    expect(isInitializeRequestBody([fullInitializeRequest])).toBe(false);
     expect(isInitializeRequestBody(undefined)).toBe(false);
     expect(isInitializeRequestBody(null)).toBe(false);
     expect(isInitializeRequestBody('initialize')).toBe(false);
@@ -618,8 +668,14 @@ describe('isSessionInit decision (no mcp-session-id AND initialize body)', () =>
   const decide = (sessionId: string | undefined, body: unknown): boolean =>
     !sessionId && isInitializeRequestBody(body);
 
-  it('no header + initialize body -> init', () => {
-    expect(decide(undefined, { method: 'initialize' })).toBe(true);
+  it('no header + full initialize body -> init', () => {
+    expect(decide(undefined, fullInitializeRequest)).toBe(true);
+  });
+
+  it('no header + bare params-less initialize body -> NOT init (item 1)', () => {
+    // A header-less { method: 'initialize' } with no params is no longer treated
+    // as an init by the SDK predicate, so it does not mint a session via login().
+    expect(decide(undefined, { method: 'initialize' })).toBe(false);
   });
 
   it('no header + non-initialize body -> NOT init (verifyCredentials path)', () => {
@@ -627,7 +683,7 @@ describe('isSessionInit decision (no mcp-session-id AND initialize body)', () =>
   });
 
   it('has session-id -> never init regardless of body', () => {
-    expect(decide('sess-1', { method: 'initialize' })).toBe(false);
+    expect(decide('sess-1', fullInitializeRequest)).toBe(false);
   });
 });
 
