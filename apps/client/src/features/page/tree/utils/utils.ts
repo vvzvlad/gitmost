@@ -216,3 +216,33 @@ export function mergeRootTrees(
 
   return sortPositionKeys(merged);
 }
+
+// Collect every node id in the tree (roots, branches, leaves). Used by
+// collapseAll to clear the open-state map for all current-space nodes.
+export function collectAllIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      ids.push(n.id);
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+// Collect ids of branch nodes (nodes that have children). Used by expandAll to
+// open every branch in the open-state map; leaves need no entry.
+export function collectBranchIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      if (n.children?.length) {
+        ids.push(n.id);
+        walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return ids;
+}

@@ -579,6 +579,49 @@ export class PageController {
   }
 
   @HttpCode(HttpStatus.OK)
+  @Post('/tree')
+  async getPagesTree(
+    @Body() dto: SidebarPageDto,
+    @AuthUser() user: User,
+  ) {
+    if (!dto.spaceId && !dto.pageId) {
+      throw new BadRequestException(
+        'Either spaceId or pageId must be provided',
+      );
+    }
+
+    let spaceId = dto.spaceId;
+
+    if (dto.pageId) {
+      const page = await this.pageRepo.findById(dto.pageId);
+      if (!page) {
+        throw new ForbiddenException();
+      }
+
+      spaceId = page.spaceId;
+    }
+
+    const ability = await this.spaceAbility.createForUser(user, spaceId);
+    if (ability.cannot(SpaceCaslAction.Read, SpaceCaslSubject.Page)) {
+      throw new ForbiddenException();
+    }
+
+    const spaceCanEdit = ability.can(
+      SpaceCaslAction.Edit,
+      SpaceCaslSubject.Page,
+    );
+
+    const items = await this.pageService.getSidebarPagesTree(
+      spaceId,
+      user.id,
+      spaceCanEdit,
+      dto.pageId,
+    );
+
+    return { items };
+  }
+
+  @HttpCode(HttpStatus.OK)
   @Post('move-to-space')
   async movePageToSpace(
     @Body() dto: MovePageToSpaceDto,

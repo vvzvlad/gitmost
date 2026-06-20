@@ -16,6 +16,11 @@ import { treeModel } from '../model/tree-model';
 import { DocTreeRow } from './doc-tree-row';
 import styles from '../styles/tree.module.css';
 
+// Page-tree row heights. STANDARD is the safe default density; COMPACT is the
+// denser layout gated behind the COMPACT_PAGE_TREE feature flag.
+export const ROW_HEIGHT_STANDARD = 32;
+export const ROW_HEIGHT_COMPACT = 26;
+
 export type RenderRowProps<T extends object> = {
   node: TreeNode<T>;
   level: number;
@@ -122,11 +127,11 @@ function DocTreeInner<T extends object>(
     selectedId,
     renderRow,
     indentPerLevel = 8,
-    // Compact vertical density: each virtualized row occupies exactly this
-    // many px (the virtualizer stride). Row content is ~22px (18px icon /
-    // 14px text / 20px action icons), so 26px keeps a small, even gap between
-    // nodes without clipping. Lower => denser tree.
-    rowHeight = 26,
+    // Each virtualized row occupies exactly this many px (the virtualizer
+    // stride). Default is standard density (32px); the denser compact layout
+    // (26px) is opt-in and driven by the COMPACT_PAGE_TREE feature flag in
+    // consumers. Lower => denser tree.
+    rowHeight = ROW_HEIGHT_STANDARD,
     onMove,
     onToggle,
     onSelect,

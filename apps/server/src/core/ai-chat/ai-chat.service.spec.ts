@@ -3,6 +3,9 @@ import {
   assistantParts,
   serializeSteps,
   rowToUiMessage,
+  prepareAgentStep,
+  MAX_AGENT_STEPS,
+  FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
 import type { AiChatMessage } from '@docmost/db/types/entity.types';
 
@@ -188,5 +191,41 @@ describe('rowToUiMessage', () => {
     const ui = rowToUiMessage(row);
     expect(ui.role).toBe('user');
     expect(ui.parts).toEqual([{ type: 'text', text: 'hi there' }]);
+  });
+});
+
+/**
+ * Unit tests for prepareAgentStep: the pure helper that decides per-step
+ * overrides for the agent loop. Early steps return undefined (default
+ * behavior); the final allowed step (stepNumber === MAX_AGENT_STEPS - 1) forces
+ * a text-only synthesis answer (toolChoice 'none') with the FINAL_STEP_INSTRUCTION
+ * appended onto — not replacing — the original system prompt.
+ */
+describe('prepareAgentStep', () => {
+  it('returns undefined for the first step', () => {
+    expect(prepareAgentStep(0, 'SYS')).toBeUndefined();
+  });
+
+  it('returns undefined for a non-final step (just before the last)', () => {
+    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
+  });
+
+  it('forces a text-only synthesis on the final allowed step', () => {
+    const result = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
+    expect(result).toBeDefined();
+    expect(result?.toolChoice).toBe('none');
+    // The original persona is preserved (prefix), not replaced.
+    expect(result?.system.startsWith('SYS')).toBe(true);
+    // The synthesis instruction is appended.
+    expect(result?.system).toContain(FINAL_STEP_INSTRUCTION);
+  });
+
+  it('pins the off-by-one boundary (MAX-2 is not final, MAX-1 is)', () => {
+    // Boundary expressed via the constant, not a hardcoded 18/19, so the test
+    // tracks MAX_AGENT_STEPS if the cap ever changes.
+    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
+    const atBoundary = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
+    expect(atBoundary).toBeDefined();
+    expect(atBoundary?.toolChoice).toBe('none');
   });
 });

@@ -25,7 +25,10 @@ import {
   DocTree,
   type DocTreeApi,
   type RenderRowProps,
+  ROW_HEIGHT_COMPACT,
+  ROW_HEIGHT_STANDARD,
 } from "@/features/page/tree/components/doc-tree";
+import { isCompactPageTreeEnabled } from "@/lib/config.ts";
 import { openSharedTreeNodesAtom } from "@/features/share/atoms/open-shared-tree-nodes-atom";
 
 interface SharedTreeProps {
@@ -36,6 +39,7 @@ export default function SharedTree({ sharedPageTree }: SharedTreeProps) {
   const { t } = useTranslation();
   const treeRef = useRef<DocTreeApi | null>(null);
   const { pageSlug } = useParams();
+  const compactTree = isCompactPageTreeEnabled();
   const [openTreeNodes, setOpenTreeNodes] = useAtom(openSharedTreeNodesAtom);
 
   const currentNodeId = extractPageSlugId(pageSlug);
@@ -100,6 +104,7 @@ export default function SharedTree({ sharedPageTree }: SharedTreeProps) {
         renderRow={SharedTreeRow}
         onMove={noopMove}
         onToggle={handleToggle}
+        rowHeight={compactTree ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_STANDARD}
         getDragLabel={getDragLabel}
         aria-label={t("Pages")}
       />
