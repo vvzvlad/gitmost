@@ -14,6 +14,22 @@ import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
+import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
+import { SecretBoxService } from '../crypto/secret-box';
+import { AiDriver } from './ai.types';
+
+/**
+ * Optional chat-model override carried by an agent role (`ai_agent_roles.
+ * model_config`). `chatModel` swaps the model id; `driver` (optional) switches
+ * the whole provider, in which case its creds come from `ai_provider_credentials`
+ * for that driver. `roleName` is only used to produce a clear 503 message when
+ * the chosen driver is not configured.
+ */
+export interface ChatModelOverride {
+  driver?: AiDriver;
+  chatModel?: string;
+  roleName?: string;
+}
 
 /**
  * Builds AI SDK language models from per-workspace config and runs cheap
@@ -27,23 +43,96 @@ import { describeProviderError } from './ai-error.util';
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  constructor(private readonly aiSettings: AiSettingsService) {}
+  constructor(
+    private readonly aiSettings: AiSettingsService,
+    private readonly aiProviderCredentialsRepo: AiProviderCredentialsRepo,
+    private readonly secretBox: SecretBoxService,
+  ) {}
 
   /**
    * Resolve the workspace config and build the chat language model.
    * Throws AiNotConfiguredException (→ 503) when the config is incomplete.
+   *
+   * `override` optionally swaps the model id and/or the whole provider:
+   *  - `override.chatModel` replaces the workspace chat model id;
+   *  - `override.driver` (when it differs from the workspace driver) switches the
+   *    provider, pulling that driver's creds from `ai_provider_credentials`. When
+   *    those creds are missing the call throws a 503 naming the role's driver — a
+   *    deliberate, explicit failure rather than a silent fallback. Resolved
+   *    BEFORE the stream starts so the 503 surfaces as clean JSON.
+   *
+   * Two callers: an agent role's `model_config` (may set driver + model), and
+   * the anonymous public-share assistant, which passes ONLY `chatModel` (the
+   * cheap `publicShareChatModel`) so the driver/baseUrl/apiKey stay the
+   * workspace's configured chat provider. A blank override falls back to the
+   * workspace `chatModel`.
    */
-  async getChatModel(workspaceId: string): Promise<LanguageModel> {
+  async getChatModel(
+    workspaceId: string,
+    override?: ChatModelOverride,
+  ): Promise<LanguageModel> {
     const cfg = await this.aiSettings.resolve(workspaceId);
-    if (
-      !cfg?.driver ||
-      !cfg?.chatModel ||
-      (cfg.driver !== 'ollama' && !cfg.apiKey)
-    ) {
+    if (!cfg?.driver) {
       throw new AiNotConfiguredException();
     }
 
-    switch (cfg.driver) {
+    // Determine the effective driver + model + creds, applying the override.
+    const overrideDriver = override?.driver;
+    const driver: AiDriver = overrideDriver ?? cfg.driver;
+    const chatModel = override?.chatModel?.trim() || cfg.chatModel;
+
+    let apiKey = cfg.apiKey;
+    let baseUrl = cfg.baseUrl;
+
+    // A driver override that differs from the workspace driver needs that
+    // driver's own creds (the workspace driver's key would be wrong/absent).
+    if (overrideDriver && overrideDriver !== cfg.driver) {
+      if (overrideDriver === 'ollama') {
+        // Cross-driver override to ollama: the workspace driver is NOT ollama, so
+        // there is no configured ollama endpoint. `cfg.baseUrl` belongs to the
+        // workspace driver (e.g. an OpenAI/OpenRouter gateway) and pointing the
+        // ollama client at it would silently send requests to the wrong server.
+        // Fail explicitly (503) — a dedicated per-driver ollama endpoint is not
+        // supported yet. The same-driver ollama case (handled outside this block)
+        // legitimately reuses the workspace's ollama endpoint and is unaffected.
+        const who = override?.roleName ? ` for role "${override.roleName}"` : '';
+        throw new AiNotConfiguredException(
+          `An ollama model override${who} requires a dedicated ollama endpoint, ` +
+            `which is not supported when the workspace driver is "${cfg.driver}". ` +
+            `Set the role's driver to "${cfg.driver}" or switch the workspace ` +
+            `to ollama.`,
+        );
+      } else {
+        const creds = await this.aiProviderCredentialsRepo.find(
+          workspaceId,
+          overrideDriver,
+        );
+        apiKey = creds?.apiKeyEnc
+          ? this.secretBox.decryptSecret(creds.apiKeyEnc)
+          : undefined;
+        if (!apiKey) {
+          // Explicit 503: the role chose a provider that is not set up. Name the
+          // driver (and role, when known) so the admin can fix it — no silent
+          // fallback to the workspace model (error-handling convention).
+          const who = override?.roleName ? ` for role "${override.roleName}"` : '';
+          throw new AiNotConfiguredException(
+            `The model provider "${overrideDriver}"${who} is selected but not ` +
+              `configured (no API key). Configure ${overrideDriver} in AI ` +
+              `settings or change the role's model.`,
+          );
+        }
+        // A cross-driver override does not carry the workspace baseUrl (that URL
+        // belongs to the workspace driver); use the provider default for the
+        // overridden driver.
+        baseUrl = undefined;
+      }
+    }
+
+    if (!chatModel || (driver !== 'ollama' && !apiKey)) {
+      throw new AiNotConfiguredException();
+    }
+
+    switch (driver) {
       case 'openai':
         // baseURL (when set) covers openai-compatible endpoints. Use Chat
         // Completions (/chat/completions) — the portable OpenAI-compatible
@@ -51,14 +140,12 @@ export class AiService {
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
-        return createOpenAI({ apiKey: cfg.apiKey, baseURL: cfg.baseUrl }).chat(
-          cfg.chatModel,
-        );
+        return createOpenAI({ apiKey, baseURL: baseUrl }).chat(chatModel);
       case 'gemini':
-        return createGoogleGenerativeAI({ apiKey: cfg.apiKey })(cfg.chatModel);
+        return createGoogleGenerativeAI({ apiKey })(chatModel);
       case 'ollama':
         // Ollama needs no API key.
-        return createOllama({ baseURL: cfg.baseUrl })(cfg.chatModel);
+        return createOllama({ baseURL: baseUrl })(chatModel);
       default:
         throw new AiNotConfiguredException();
     }

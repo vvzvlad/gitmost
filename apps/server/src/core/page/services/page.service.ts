@@ -819,9 +819,14 @@ export class PageService {
     }
 
     const insertedPageIds = insertablePages.map((page) => page.id);
+    // `spaceId` is the single destination space for the whole copy/duplicate
+    // (every inserted page above gets `spaceId: spaceId`). It lets the WS
+    // listener trigger a root refetch for the bulk subtree (no `pages` snapshot
+    // here on purpose — we want the refetch fallback, not per-node addTreeNode).
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: insertedPageIds,
       workspaceId: authUser.workspaceId,
+      spaceId,
     });
 
     //TODO: best to handle this in a queue
@@ -948,6 +953,35 @@ export class PageService {
       },
       dto.pageId,
     );
+
+    // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
+    // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
+    // content-save and carries neither oldParentId nor the new position. Emit a
+    // dedicated PAGE_MOVED so the WS listener can build a precise moveTreeNode
+    // without a DB read (variant A: snapshot in the event).
+    //
+    // `parentPageId` is `undefined` when only the position changed (same
+    // parent); resolve it back to the page's actual parent for the snapshot.
+    const newParentPageId =
+      parentPageId === undefined ? movedPage.parentPageId : parentPageId;
+
+    this.eventEmitter.emit(EventName.PAGE_MOVED, {
+      workspaceId: movedPage.workspaceId,
+      oldParentId: movedPage.parentPageId ?? null,
+      // `hasChildren` is selected by findById({ includeHasChildren: true }) in
+      // the controller; it isn't on the base Page type, hence the cast.
+      hasChildren:
+        (movedPage as Page & { hasChildren?: boolean }).hasChildren ?? false,
+      node: {
+        id: movedPage.id,
+        slugId: movedPage.slugId,
+        title: movedPage.title,
+        icon: movedPage.icon,
+        position: dto.position,
+        spaceId: movedPage.spaceId,
+        parentPageId: newParentPageId ?? null,
+      },
+    });
   }
 
   async getPageBreadCrumbs(childPageId: string) {
@@ -1198,7 +1232,7 @@ export class PageService {
     T extends { id: string; parentPageId: string | null },
   >(
     pages: T[],
-    rootPageId: string,
+    rootPageId: string | null,
     userId: string,
     spaceId?: string,
   ): Promise<T[]> {
@@ -1214,6 +1248,15 @@ export class PageService {
     );
     const accessibleSet = new Set(accessibleIds);
 
+    // When no explicit root is given (whole-space tree), every page whose
+    // parent is outside the returned set acts as a root (space root pages have
+    // parentPageId === null). This mirrors the single-root case below.
+    const pageIdSet = new Set(pageIds);
+    const isRoot = (page: T): boolean => {
+      if (rootPageId !== null) return page.id === rootPageId;
+      return !page.parentPageId || !pageIdSet.has(page.parentPageId);
+    };
+
     // Prune: include a page only if it's accessible AND its parent chain to root is included
     const includedIds = new Set<string>();
 
@@ -1227,7 +1270,7 @@ export class PageService {
         if (!accessibleSet.has(page.id)) continue;
 
         // Root page: include if accessible
-        if (page.id === rootPageId) {
+        if (isRoot(page)) {
           includedIds.add(page.id);
           changed = true;
           continue;
@@ -1242,5 +1285,124 @@ export class PageService {
     }
 
     return pages.filter((p) => includedIds.has(p.id));
+  }
+
+  /**
+   * Whole subtree (pageId) or whole space tree (spaceId only) in a single
+   * query, permission-filtered, returned as a flat list matching the sidebar
+   * item shape (id, slugId, title, icon, position, parentPageId, spaceId,
+   * hasChildren, canEdit) ordered by position. content is never fetched.
+   *
+   * Reproduces the exact two-branch permission logic of getSidebarPages():
+   *  - open space (no restrictions): every returned page is visible, canEdit =
+   *    spaceCanEdit, hasChildren derived from the returned set.
+   *  - restricted space: full descendant set is loaded, then per-page
+   *    permissions applied via filterAccessibleTreePages (restricted-but-granted
+   *    pages are kept; inaccessible subtrees pruned); canEdit is per-page AND
+   *    spaceCanEdit;
+   *    hasChildren is derived from the FINAL (post-prune, post-filter) set, so
+   *    a node never advertises children the user cannot access — the same
+   *    correction getSidebarPages does via getParentIdsWithAccessibleChildren.
+   */
+  async getSidebarPagesTree(
+    spaceId: string,
+    userId: string,
+    spaceCanEdit?: boolean,
+    pageId?: string,
+  ): Promise<
+    Array<
+      Pick<
+        Page,
+        | 'id'
+        | 'slugId'
+        | 'title'
+        | 'icon'
+        | 'position'
+        | 'parentPageId'
+        | 'spaceId'
+      > & { hasChildren: boolean; canEdit: boolean }
+    >
+  > {
+    const hasRestrictions =
+      await this.pagePermissionRepo.hasRestrictedPagesInSpace(spaceId);
+
+    // Seed: a single page subtree, or all root pages of the space.
+    // Always seed with the FULL (non-excluding) descendant set — in a restricted
+    // space the per-page filtering below (filterAccessibleTreePages) does the
+    // pruning, exactly like getSidebarPages. Seeding with *ExcludingRestricted
+    // would wrongly drop restricted pages the user has an explicit grant for
+    // (and never recurse into their children), diverging from the sidebar.
+    let pages: Array<{
+      id: string;
+      slugId: string;
+      title: string;
+      icon: string;
+      position: string;
+      parentPageId: string | null;
+      spaceId: string;
+    }>;
+
+    if (pageId) {
+      pages = await this.pageRepo.getPageAndDescendants(pageId, {
+        includeContent: false,
+      });
+    } else {
+      pages = await this.pageRepo.getSpaceDescendants(spaceId, {
+        includeContent: false,
+      });
+    }
+
+    let permissionMap: Map<string, boolean> | undefined;
+
+    if (hasRestrictions) {
+      // Fine-grained per-page permissions on top of restricted pruning.
+      pages = await this.filterAccessibleTreePages(
+        pages,
+        pageId ?? null,
+        userId,
+        spaceId,
+      );
+
+      // Per-page canEdit, same source as getSidebarPages.
+      const accessiblePages =
+        await this.pagePermissionRepo.filterAccessiblePageIdsWithPermissions(
+          pages.map((p) => p.id),
+          userId,
+        );
+      permissionMap = new Map(accessiblePages.map((p) => [p.id, p.canEdit]));
+    }
+
+    // Derive hasChildren from the FINAL set: a node has children iff some
+    // returned row points to it as parent. In a restricted space this set is
+    // already pruned/filtered, so inaccessible children are not revealed.
+    const parentIds = new Set<string>();
+    for (const p of pages) {
+      if (p.parentPageId) parentIds.add(p.parentPageId);
+    }
+
+    const shaped = pages.map((p) => ({
+      id: p.id,
+      slugId: p.slugId,
+      title: p.title,
+      icon: p.icon,
+      position: p.position,
+      parentPageId: p.parentPageId,
+      spaceId: p.spaceId,
+      hasChildren: parentIds.has(p.id),
+      canEdit: hasRestrictions
+        ? Boolean(permissionMap?.get(p.id)) && (spaceCanEdit ?? true)
+        : (spaceCanEdit ?? true),
+    }));
+
+    // Order by position with byte order, matching the sidebar's
+    // `position collate "C"` SQL ordering. position is non-null in returned
+    // rows; treat a null defensively as sorting last.
+    shaped.sort((a, b) => {
+      if (a.position == null) return b.position == null ? 0 : 1;
+      if (b.position == null) return -1;
+      return Buffer.compare(Buffer.from(a.position), Buffer.from(b.position));
+    });
+
+    return shaped;
   }
 }

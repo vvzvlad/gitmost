@@ -597,9 +597,13 @@ export class FileImportTaskService {
         }
 
         if (validPageIds.size > 0) {
+          // Carry the destination spaceId so the WS listener can trigger a root
+          // refetch for the imported subtree (no `pages` snapshot -> refetch
+          // fallback rather than per-node addTreeNode).
           this.eventEmitter.emit(EventName.PAGE_CREATED, {
             pageIds: Array.from(validPageIds),
             workspaceId: fileTask.workspaceId,
+            spaceId: fileTask.spaceId,
           });
         }
 

@@ -4,16 +4,12 @@ import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
+import { isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
   messages: UIMessage[];
   isStreaming: boolean;
-}
-
-/** True for AI SDK tool parts (static `tool-*` or `dynamic-tool`). */
-function isToolPart(type: string): boolean {
-  return type.startsWith("tool-") || type === "dynamic-tool";
 }
 
 // Distance (px) from the bottom within which the viewport still counts as

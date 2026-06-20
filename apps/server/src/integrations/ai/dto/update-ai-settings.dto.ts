@@ -57,4 +57,16 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   sttApiKey?: string;
+
+  // Cheap model id for the anonymous public-share assistant; reuses the chat
+  // driver/baseUrl/apiKey. Empty → the assistant falls back to chatModel.
+  @IsOptional()
+  @IsString()
+  publicShareChatModel?: string;
+
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  @IsOptional()
+  @IsString()
+  publicShareAssistantRoleId?: string;
 }

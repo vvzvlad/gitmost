@@ -5,6 +5,9 @@ import {
   IAiChatListParams,
   IAiChatMessageRow,
   IAiChatMessagesParams,
+  IAiRole,
+  IAiRoleCreate,
+  IAiRoleUpdate,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 
 /**
@@ -45,4 +48,34 @@ export async function renameAiChat(data: {
 /** Soft-delete a chat. */
 export async function deleteAiChat(chatId: string): Promise<void> {
   await api.post("/ai-chat/delete", { chatId });
+}
+
+/**
+ * Agent roles API (`/ai-chat/roles`). `list` is available to any workspace
+ * member (for the chat-creation picker); create/update/delete are admin-only
+ * (the server enforces this). Same `{ data }` unwrap convention as above.
+ */
+
+/** List the workspace's agent roles. */
+export async function getAiRoles(): Promise<IAiRole[]> {
+  const req = await api.post<IAiRole[]>("/ai-chat/roles");
+  return req.data;
+}
+
+/** Create a role (admin). */
+export async function createAiRole(data: IAiRoleCreate): Promise<IAiRole> {
+  const req = await api.post<IAiRole>("/ai-chat/roles/create", data);
+  return req.data;
+}
+
+/** Update a role (admin). */
+export async function updateAiRole(data: IAiRoleUpdate): Promise<IAiRole> {
+  const req = await api.post<IAiRole>("/ai-chat/roles/update", data);
+  return req.data;
+}
+
+/** Soft-delete a role (admin). */
+export async function deleteAiRole(id: string): Promise<{ success: true }> {
+  const req = await api.post<{ success: true }>("/ai-chat/roles/delete", { id });
+  return req.data;
 }

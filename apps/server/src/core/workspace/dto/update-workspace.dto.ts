@@ -60,6 +60,10 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   htmlEmbed: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  aiPublicShareAssistant: boolean;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   trashRetentionDays: number;

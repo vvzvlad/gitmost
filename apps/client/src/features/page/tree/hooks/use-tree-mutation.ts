@@ -19,7 +19,6 @@ import {
 } from "@/features/page/queries/page-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { getSpaceUrl } from "@/lib/config.ts";
-import { useQueryEmit } from "@/features/websocket/use-query-emit.ts";
 
 export type UseTreeMutation = {
   handleMove: (sourceId: string, op: DropOp) => Promise<void>;
@@ -41,12 +40,11 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
   const movePageMutation = useMovePageMutation();
   const navigate = useNavigate();
   const { spaceSlug, pageSlug } = useParams();
-  const emit = useQueryEmit();
 
   const handleMove = useCallback(
     async (sourceId: string, op: DropOp) => {
       const before = store.get(treeDataAtom);
-      const { tree: after, result } = treeModel.move(before, sourceId, op);
+      const { tree: after } = treeModel.move(before, sourceId, op);
       if (after === before) return;
 
       const payload = dropOpToMovePayload(before, sourceId, op);
@@ -112,22 +110,12 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
         pageData,
       );
 
-      setTimeout(() => {
-        emit({
-          operation: "moveTreeNode",
-          spaceId: spaceId,
-          payload: {
-            id: sourceId,
-            parentId: payload.parentPageId,
-            oldParentId,
-            index: result.index,
-            position: payload.position,
-            pageData,
-          },
-        });
-      }, 50);
+      // Realtime broadcast is now server-authoritative: the server emits
+      // `moveTreeNode` to the space room on PAGE_MOVED. The old client relay
+      // (emit + setTimeout(50)) was removed; the optimistic local update above
+      // stays for instant feedback to the author.
     },
-    [setData, store, movePageMutation, spaceId, emit, t],
+    [setData, store, movePageMutation, spaceId, t],
   );
 
   const handleCreate = useCallback(
@@ -166,20 +154,23 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
         lastIndex = parent?.children?.length ?? 0;
       }
 
-      setData((prev) => treeModel.insert(prev, parentId, newNode, lastIndex));
+      // Idempotent by id: the tree is server-authoritative and the server's
+      // `addTreeNode` broadcast (now ~ms over same-origin) can win the race and
+      // insert this node before this optimistic update runs. Inserting again
+      // un-guarded would duplicate the row in the author's sidebar. Mirror the
+      // `addTreeNode` socket guard: skip when the node already exists. The
+      // optimistic node's id IS the real created page id (createdPage.id), so
+      // the ids match exactly regardless of which path runs first.
+      setData((prev) => {
+        if (treeModel.find(prev, newNode.id)) return prev;
+        return treeModel.insert(prev, parentId, newNode, lastIndex);
+      });
 
-      setTimeout(() => {
-        emit({
-          operation: "addTreeNode",
-          spaceId,
-          payload: {
-            parentId,
-            index: lastIndex,
-            data: newNode,
-          },
-        });
-      }, 50);
-
+      // Realtime broadcast is now server-authoritative: the server emits
+      // `addTreeNode` to the space room on PAGE_CREATED. The old client relay
+      // (emit + setTimeout(50)) was removed; the optimistic insert above stays
+      // for instant feedback to the author (the server event is idempotent and
+      // a no-op for the author whose node already exists).
       const pageUrl = buildPageUrl(
         spaceSlug,
         createdPage.slugId,
@@ -187,7 +178,7 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
       );
       navigate(pageUrl);
     },
-    [spaceId, createPageMutation, setData, store, emit, navigate, spaceSlug],
+    [spaceId, createPageMutation, setData, store, navigate, spaceSlug],
   );
 
   const handleRename = useCallback(
@@ -238,19 +229,15 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
           navigate(getSpaceUrl(spaceSlug));
         }
 
-        setTimeout(() => {
-          if (!node) return;
-          emit({
-            operation: "deleteTreeNode",
-            spaceId,
-            payload: { node },
-          });
-        }, 50);
+        // Realtime broadcast is now server-authoritative: the server emits
+        // `deleteTreeNode` to the space room on PAGE_SOFT_DELETED. The old
+        // client relay (emit + setTimeout(50)) was removed; the optimistic
+        // removal above stays for instant feedback to the author.
       } catch (error) {
         console.error("Failed to delete page:", error);
       }
     },
-    [removePageMutation, setData, store, pageSlug, navigate, spaceSlug, emit, spaceId],
+    [removePageMutation, setData, store, pageSlug, navigate, spaceSlug],
   );
 
   return { handleMove, handleCreate, handleRename, handleDelete };
