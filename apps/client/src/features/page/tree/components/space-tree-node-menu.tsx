@@ -12,6 +12,7 @@ import {
   IconLink,
   IconStar,
   IconStarFilled,
+  IconTemplate,
   IconTrash,
 } from "@tabler/icons-react";
 
@@ -30,6 +31,7 @@ import {
   useRemoveFavoriteMutation,
 } from "@/features/favorite/queries/favorite-query";
 
+import { useToggleTemplateMutation } from "@/features/page-embed/queries/page-embed-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
@@ -63,6 +65,26 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const addFavorite = useAddFavoriteMutation();
   const removeFavorite = useRemoveFavoriteMutation();
   const isFavorited = favoriteIds.has(node.id);
+  const toggleTemplate = useToggleTemplateMutation();
+  const isTemplate = !!node.isTemplate;
+
+  const handleToggleTemplate = async () => {
+    const next = !isTemplate;
+    try {
+      await toggleTemplate.mutateAsync({ pageId: node.id, isTemplate: next });
+      // Reflect the new flag locally so the menu label updates immediately.
+      setData((prev) =>
+        treeModel.update(prev, node.id, { isTemplate: next } as any),
+      );
+      notifications.show({
+        message: next
+          ? t("Page marked as template")
+          : t("Page is no longer a template"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
 
   const handleCopyLink = () => {
     const pageUrl =
@@ -215,6 +237,17 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 }}
               >
                 {t("Copy to space")}
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={<IconTemplate size={16} />}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleToggleTemplate();
+                }}
+              >
+                {isTemplate ? t("Unset as template") : t("Make template")}
               </Menu.Item>
 
               <Menu.Divider />

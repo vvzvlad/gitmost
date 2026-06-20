@@ -319,6 +319,7 @@ export class PageService {
         'parentPageId',
         'spaceId',
         'creatorId',
+        'isTemplate',
         'deletedAt',
       ])
       .select((eb) => this.pageRepo.withHasChildren(eb))
@@ -665,6 +666,18 @@ export class PageService {
             }
           }
 
+          // Remap whole-page embeds (pageEmbed) the same way: if the embedded
+          // source page is also part of the copied set, point at its new copy;
+          // otherwise leave it pointing at the original (live embed of original).
+          if (node.type.name === 'pageEmbed') {
+            const sourcePageId = node.attrs.sourcePageId;
+            if (sourcePageId && pageMap.has(sourcePageId)) {
+              const mappedPage = pageMap.get(sourcePageId);
+              //@ts-ignore
+              node.attrs.sourcePageId = mappedPage.newPageId;
+            }
+          }
+
           // Update internal page links in link marks
           for (const mark of node.marks) {
             if (
@@ -753,6 +766,21 @@ export class PageService {
     } catch (err) {
       this.logger.error(
         'Failed to insert transclusion references for duplicated pages',
+        err,
+      );
+    }
+
+    try {
+      await this.transclusionService.insertTemplateReferencesForPages(
+        insertablePages.map((p) => ({
+          id: p.id,
+          workspaceId: p.workspaceId,
+          content: p.content,
+        })),
+      );
+    } catch (err) {
+      this.logger.error(
+        'Failed to insert page template references for duplicated pages',
         err,
       );
     }

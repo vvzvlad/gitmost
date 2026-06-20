@@ -60,6 +60,7 @@ import {
   Status,
   TransclusionSource,
   TransclusionReference,
+  PageEmbed,
   TableView,
 } from "@docmost/editor-ext";
 import {
@@ -91,6 +92,7 @@ import PdfView from "@/features/editor/components/pdf/pdf-view.tsx";
 import SubpagesView from "@/features/editor/components/subpages/subpages-view.tsx";
 import TransclusionView from "@/features/editor/components/transclusion/transclusion-view.tsx";
 import TransclusionReferenceView from "@/features/editor/components/transclusion/transclusion-reference-view.tsx";
+import PageEmbedView from "@/features/editor/components/page-embed/page-embed-view.tsx";
 import { common, createLowlight } from "lowlight";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import powershell from "highlight.js/lib/languages/powershell";
@@ -230,7 +232,7 @@ export const mainExtensions = [
   Typography,
   TrailingNode,
   GlobalDragHandle.configure({
-    customNodes: ["transclusionSource", "transclusionReference"],
+    customNodes: ["transclusionSource", "transclusionReference", "pageEmbed"],
   }),
   TextStyle,
   Color,
@@ -381,6 +383,9 @@ export const mainExtensions = [
   TransclusionReference.configure({
     view: TransclusionReferenceView,
   }),
+  PageEmbed.configure({
+    view: PageEmbedView,
+  }),
   MarkdownClipboard.configure({
     transformPastedText: true,
   }),
@@ -420,7 +425,8 @@ const TEMPLATE_EXCLUDED_SLASH_ITEMS = new Set([
   "Draw.io (diagrams.net)",
   "Excalidraw (Whiteboard)",
   "Audio",
-  "Synced block"
+  "Synced block",
+  "Embed page"
 ]);
 
 const TemplateSlashCommand = Command.configure({

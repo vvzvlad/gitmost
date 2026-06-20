@@ -10,17 +10,27 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
 import { PageTransclusionsRepo } from '@docmost/db/repos/page-transclusions/page-transclusions.repo';
 import { PageTransclusionReferencesRepo } from '@docmost/db/repos/page-transclusions/page-transclusion-references.repo';
+import { PageTemplateReferencesRepo } from '@docmost/db/repos/page-template-references/page-template-references.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { AttachmentRepo } from '@docmost/db/repos/attachment/attachment.repo';
 import { StorageService } from '../../../integrations/storage/storage.service';
 import {
+  collectPageEmbedsFromPmJson,
   collectReferencesFromPmJson,
   collectTransclusionsFromPmJson,
 } from './utils/transclusion-prosemirror.util';
 import { rewriteAttachmentsForUnsync } from './utils/transclusion-unsync.util';
-import { TransclusionLookup } from './transclusion.types';
+import {
+  PageTemplateLookup,
+  TransclusionLookup,
+} from './transclusion.types';
+import {
+  getProsemirrorContent,
+  removeMarkTypeFromDoc,
+} from '../../../common/helpers/prosemirror/utils';
+import { jsonToNode } from '../../../collaboration/collaboration.util';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
 
@@ -41,6 +51,7 @@ export class TransclusionService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly pageTransclusionsRepo: PageTransclusionsRepo,
     private readonly pageTransclusionReferencesRepo: PageTransclusionReferencesRepo,
+    private readonly pageTemplateReferencesRepo: PageTemplateReferencesRepo,
     private readonly pageRepo: PageRepo,
     private readonly pagePermissionRepo: PagePermissionRepo,
     private readonly spaceMemberRepo: SpaceMemberRepo,
@@ -217,6 +228,153 @@ export class TransclusionService {
     return { inserted: rows.length };
   }
 
+  // ---------------------------------------------------------------------------
+  // Whole-page live embeds (pageEmbed node)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Diff `page_template_references` for a host page against the `pageEmbed`
+   * nodes currently in its content. Mirror of `syncPageReferences` but keyed by
+   * `sourcePageId` only (whole-page, no transclusionId). Idempotent.
+   */
+  async syncPageTemplateReferences(
+    referencePageId: string,
+    workspaceId: string,
+    pmJson: unknown,
+    trx?: KyselyTransaction,
+  ): Promise<{ inserted: number; deleted: number }> {
+    const desired = collectPageEmbedsFromPmJson(pmJson);
+    const desiredIds = new Set(desired.map((d) => d.sourcePageId));
+
+    const existing =
+      await this.pageTemplateReferencesRepo.findByReferencePageId(
+        referencePageId,
+        trx,
+      );
+    const existingIds = new Set(existing.map((e) => e.sourcePageId));
+
+    const toInsert = desired
+      .filter((d) => !existingIds.has(d.sourcePageId))
+      .map((d) => ({
+        workspaceId,
+        referencePageId,
+        sourcePageId: d.sourcePageId,
+      }));
+
+    const toDelete = existing
+      .filter((e) => !desiredIds.has(e.sourcePageId))
+      .map((e) => e.sourcePageId);
+
+    if (toInsert.length > 0) {
+      await this.pageTemplateReferencesRepo.insertMany(toInsert, trx);
+    }
+    if (toDelete.length > 0) {
+      await this.pageTemplateReferencesRepo.deleteByReferenceAndSources(
+        referencePageId,
+        toDelete,
+        trx,
+      );
+    }
+
+    return { inserted: toInsert.length, deleted: toDelete.length };
+  }
+
+  /**
+   * Bulk-insert `page_template_references` for brand-new pages (duplication,
+   * import) where there is nothing to diff against.
+   */
+  async insertTemplateReferencesForPages(
+    pages: Array<{ id: string; workspaceId: string; content: unknown }>,
+    trx?: KyselyTransaction,
+  ): Promise<{ inserted: number }> {
+    const rows: Array<{
+      workspaceId: string;
+      referencePageId: string;
+      sourcePageId: string;
+    }> = [];
+    for (const page of pages) {
+      const embeds = collectPageEmbedsFromPmJson(page.content);
+      for (const e of embeds) {
+        rows.push({
+          workspaceId: page.workspaceId,
+          referencePageId: page.id,
+          sourcePageId: e.sourcePageId,
+        });
+      }
+    }
+    if (rows.length === 0) return { inserted: 0 };
+    await this.pageTemplateReferencesRepo.insertMany(rows, trx);
+    return { inserted: rows.length };
+  }
+
+  /**
+   * Resolve whole-page content for a set of source page ids on behalf of an
+   * authenticated viewer. For each accessible page returns its current content
+   * with `comment` marks stripped (comments belong to the source). Inaccessible
+   * pages return `no_access`, missing/deleted pages return `not_found`. Does NOT
+   * require `is_template` — any accessible page can be embedded (the template
+   * flag only affects picker discovery).
+   */
+  async lookupTemplate(
+    sourcePageIds: string[],
+    viewerUserId: string,
+    workspaceId: string,
+  ): Promise<{ items: PageTemplateLookup[] }> {
+    if (sourcePageIds.length === 0) return { items: [] };
+
+    const uniqueIds = Array.from(new Set(sourcePageIds));
+    const accessibleSet = new Set(
+      await this.filterViewerAccessiblePageIds(
+        uniqueIds,
+        viewerUserId,
+        workspaceId,
+      ),
+    );
+
+    const accessibleIds = uniqueIds.filter((id) => accessibleSet.has(id));
+    const pages = await this.pageRepo.findManyByIds(accessibleIds, {
+      workspaceId,
+      includeContent: true,
+    });
+    const pageById = new Map(pages.map((p) => [p.id, p]));
+
+    const items: PageTemplateLookup[] = sourcePageIds.map((sourcePageId) => {
+      if (!accessibleSet.has(sourcePageId)) {
+        return { sourcePageId, status: 'no_access' as const };
+      }
+      const page = pageById.get(sourcePageId);
+      if (!page) {
+        return { sourcePageId, status: 'not_found' as const };
+      }
+
+      let content: unknown = null;
+      try {
+        const pmJson = getProsemirrorContent(page.content);
+        const doc = jsonToNode(pmJson);
+        content = doc ? removeMarkTypeFromDoc(doc, 'comment').toJSON() : pmJson;
+      } catch (err) {
+        this.logger.error(
+          { err, sourcePageId },
+          'Failed to prepare template content for lookup',
+        );
+        // Never return content carrying the source's comment marks. If the
+        // happy-path stripping failed, treat the page as not resolvable.
+        return { sourcePageId, status: 'not_found' as const };
+      }
+
+      return {
+        sourcePageId,
+        slugId: page.slugId,
+        title: page.title ?? null,
+        icon: page.icon ?? null,
+        content,
+        sourceUpdatedAt: page.updatedAt,
+      };
+    });
+
+    return { items };
+  }
+
   /**
    * Resolve viewer access for source page IDs supplied by an authenticated
    * caller. Restricts candidates to pages the viewer can see at the space
@@ -224,7 +382,7 @@ export class TransclusionService {
    * cannot read a sync block from a private space they don't belong to via
    * an unrestricted source page.
    */
-  private async filterViewerAccessiblePageIds(
+  async filterViewerAccessiblePageIds(
     pageIds: string[],
     viewerUserId: string,
     workspaceId: string,

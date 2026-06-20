@@ -59,6 +59,10 @@ export class SearchSuggestionDTO {
   includePages?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  onlyTemplates?: boolean;
+
+  @IsOptional()
   @IsString()
   spaceId?: string;
 

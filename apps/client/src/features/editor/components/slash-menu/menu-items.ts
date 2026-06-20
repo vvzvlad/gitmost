@@ -28,7 +28,9 @@ import {
   IconTag,
   IconMoodSmile,
   IconRotate2,
+  IconArrowsMaximize,
 } from "@tabler/icons-react";
+import { PAGE_EMBED_PICKER_EVENT } from "@/features/editor/components/page-embed/page-embed-picker";
 import {
   CommandProps,
   SlashMenuGroupedItemsType,
@@ -533,6 +535,29 @@ const CommandGroups: SlashMenuGroupedItemsType = {
           .deleteRange(range)
           .insertTransclusionSource()
           .run();
+      },
+    },
+    {
+      title: "Embed page",
+      description: "Insert a live, read-only copy of another page.",
+      searchTerms: [
+        "template",
+        "embed",
+        "embed page",
+        "page",
+        "live",
+        "include",
+        "reuse",
+      ],
+      icon: IconArrowsMaximize,
+      command: ({ editor, range }: CommandProps) => {
+        // @ts-ignore - editor.storage.pageId is set by the host editor
+        const hostPageId: string | undefined = editor.storage?.pageId;
+        document.dispatchEvent(
+          new CustomEvent(PAGE_EMBED_PICKER_EVENT, {
+            detail: { editor, range, hostPageId },
+          }),
+        );
       },
     },
     {

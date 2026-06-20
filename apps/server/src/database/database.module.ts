@@ -13,6 +13,7 @@ import { PagePermissionRepo } from './repos/page/page-permission.repo';
 import { CommentRepo } from './repos/comment/comment.repo';
 import { PageTransclusionsRepo } from './repos/page-transclusions/page-transclusions.repo';
 import { PageTransclusionReferencesRepo } from './repos/page-transclusions/page-transclusion-references.repo';
+import { PageTemplateReferencesRepo } from './repos/page-template-references/page-template-references.repo';
 import { PageHistoryRepo } from './repos/page/page-history.repo';
 import { AttachmentRepo } from './repos/attachment/attachment.repo';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
@@ -85,6 +86,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     PagePermissionRepo,
     PageTransclusionsRepo,
     PageTransclusionReferencesRepo,
+    PageTemplateReferencesRepo,
     PageHistoryRepo,
     CommentRepo,
     FavoriteRepo,
@@ -115,6 +117,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     PagePermissionRepo,
     PageTransclusionsRepo,
     PageTransclusionReferencesRepo,
+    PageTemplateReferencesRepo,
     PageHistoryRepo,
     CommentRepo,
     FavoriteRepo,
