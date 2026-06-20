@@ -1,6 +1,164 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file guides AI agents (Claude Code, opencode, …) working in this
+repository. It has two layers: **how to run a task end-to-end** (the
+sections below), and **how the codebase is built** (the technical sections
+further down, formerly in `CLAUDE.md`).
+
+## Жизненный цикл задачи
+
+### 1. Старт: синхронизация с develop
+
+Перед началом **любой** работы обнови локальный `develop` и ветвись от него:
+
+```bash
+git checkout develop
+git fetch gitea
+git pull --ff-only gitea develop
+git checkout -b <короткое-имя-фичи>
+```
+
+Никогда не пилит фичу прямо в `develop` и не ветвись от устаревшего
+`develop` — иначе PR будет содержать лишние коммиты или конфликтовать.
+
+### 2. Реализация
+
+Веди задачу по workflow из системного промпта (Phase 1 анализ → Phase 3
+реализация → Phase 4 review → Phase 5 верификация → Phase 6 отчёт). Большие
+изменения делегируй в general subagent, ревьюй через review subagent.
+
+### 3. Коммит — ТОЛЬКО в Gitea и ТОЛЬКО от `claude_code`
+
+Это правило без исключений:
+
+- **Куда:** единственный remote для коммитов/пушей — **`gitea`**
+  (`gitea.vvzvlad.xyz`). **Никогда** не пушь в `origin` (GitHub-зеркало) и
+  тем более в `upstream` (оригинальный Docmost). GitHub-зеркало обновляется
+  CI-процессом владельца, не агентом.
+- **От кого:** коммить **только** от агентского identity. Любой коммит,
+  у которого author или committer — `vvzvlad`, считается ошибкой и должен
+  быть переписан.
+  - **name:** `claude_code`
+  - **email:** `claude_code@vvzvlad.xyz`
+
+Используй `--reset-author` при amend, иначе git оставит оригинального
+автора (по умолчанию config на этой машине — `vvzvlad`, поэтому проверяй
+после каждого коммита):
+
+```bash
+GIT_AUTHOR_NAME="claude_code" \
+GIT_AUTHOR_EMAIL="claude_code@vvzvlad.xyz" \
+GIT_COMMITTER_NAME="claude_code" \
+GIT_COMMITTER_EMAIL="claude_code@vvzvlad.xyz" \
+git commit --amend --no-edit --reset-author
+```
+
+Для обычного нового коммита достаточно один раз выставить локальный
+config ветки и коммитить штатно:
+
+```bash
+git config user.name "claude_code"
+git config user.email "claude_code@vvzvlad.xyz"
+```
+
+Проверка перед push:
+
+```bash
+git log -1 --format='Author: %an <%ae>%nCommitter: %cn <%ce>'
+# обе строки должны показать claude_code <claude_code@vvzvlad.xyz>
+```
+
+### 4. Push и PR в develop
+
+PR всегда в `develop`. Пароль `claude_code` лежит в macOS keychain как
+**generic password** под service `gitea-claude-code` (не дублируй его как
+internet-password для `gitea.vvzvlad.xyz` — это создаст конфликт с учёткой
+владельца в git credential helper):
+
+```bash
+AGENT_PASS=$(security find-generic-password -s gitea-claude-code -w)
+```
+
+Push — через временную подстановку кредов в remote URL, после чего URL
+обязательно возвращается в чистый вид (пароль не должен оседать в git
+config / reflog):
+
+```bash
+ORIG_URL=$(git remote get-url gitea)
+SAFE_PASS=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$AGENT_PASS")
+git remote set-url gitea "https://claude_code:${SAFE_PASS}@gitea.vvzvlad.xyz/vvzvlad/gitmost.git"
+git push -u gitea <branch>
+git remote set-url gitea "$ORIG_URL"
+unset AGENT_PASS SAFE_PASS
+```
+
+PR создаётся через Gitea REST API (Basic Auth от `claude_code`):
+
+```bash
+curl -s -X POST \
+  -u "claude_code:$(security find-generic-password -s gitea-claude-code -w)" \
+  -H "Content-Type: application/json" \
+  -d @pr_body.json \
+  "https://gitea.vvzvlad.xyz/api/v1/repos/vvzvlad/gitmost/pulls"
+```
+
+`base: develop`, `head: <branch>`. В теле PR — что сделано, что вне scope,
+результаты верификации (tsc/lint/tests).
+
+> Если push падает с `User permission denied for writing` — значит у
+> `claude_code` нет коллабораторских прав на репо. Попроси владельца
+> добавить (один раз, через Gitea UI или
+> `PUT /api/v1/repos/vvzvlad/gitmost/collaborators/claude_code` с
+> `{"permission":"write"}` от его учётки).
+
+### 5. Мерж и cleanup
+
+- **Мерж PR в develop делает пользователь** (не агент). Агент не жмёт
+  кнопку merge.
+- **После реализации задачи удали её план из `docs/backlog/<task>.md`** —
+  это часть закрытия задачи, не пользовательская работа. Файлы в
+  `docs/backlog/` — это очередь работы, выполненное из неё вычищается.
+  Сделай это в отдельном коммите от того же `claude_code` в той же ветке
+  (или попроси пользователя удалить, если PR уже открыт и ты не хочешь
+  его перепушивать).
+- Не закоммичен ли мусор в рабочем дереве? Проверь `git status` перед
+  финальным отчётом.
+
+## Релизный цикл: набор на новую версию
+
+Когда в `develop` накопилось достаточно изменений для релиза, запускается
+**финальное ревью тремя скиллами-оркестраторами** перед мержем/тегом:
+
+1. **test-orchestrator** (skill `code-review-orchestrator` с фокусом на
+   тестовом покрытии) — проверяет, что новый код покрыт тестами и нет
+   регрессий в существующих.
+2. **review-orchestrator** (skill `code-review-orchestrator`) —
+   мульти-аспектный код-ревью: безопасность, стабильность, соответствие
+   конвенциям, регрессии, перегруженность.
+3. **red-team-orchestrator** (red-team скилл) — адверсариальный анализ
+   атакующих сценариев на затронутые компоненты.
+
+Порядок: оркестраторы возвращают списки находок → агент правит всё, что
+они нашли (через subagent или сам, по правилам делегирования) → повторно
+прогоняет ревью затронутых мест → режет тег по процедуре «Cutting a
+release» ниже.
+
+## Шпаргалка по учёткам и endpoint'ам
+
+| Что | Значение |
+| --- | --- |
+| Единственный remote для коммитов | `gitea` → `https://vvzvlad@gitea.vvzvlad.xyz/vvzvlad/gitmost.git` |
+| Агентский user (Gitea/git) | `claude_code` |
+| Агентский email | `claude_code@vvzvlad.xyz` |
+| Пароль в keychain | `security find-generic-password -s gitea-claude-code -w` |
+| PR API | `https://gitea.vvzvlad.xyz/api/v1/repos/vvzvlad/gitmost/pulls` (тут `gitmost` — реальный slug репо на сервере) |
+| Базовая ветка | `develop` |
+| `origin` | GitHub-зеркало `vvzvlad/gitmost` — **не пушить**, обновляется CI владельца |
+| `upstream` | Оригинальный Docmost — **не пушить никогда** |
+
+---
+
+# Архитектура и кодовая база
 
 ## What this is
 
@@ -119,7 +277,6 @@ The git tag is the source of truth for the displayed version (UI reads `git desc
 4. Update `CHANGELOG.md` (Keep a Changelog format): add a `## [X.Y.Z] - YYYY-MM-DD` section summarising `git log vPREV..HEAD --no-merges` grouped by type (Breaking / Added / Changed / Fixed / Removed), and add the `compare/vPREV...vX.Y.Z` link at the bottom. Fold the bump + changelog into the release commit.
 5. Tag the release commit with a **lightweight** tag (existing release tags are lightweight): `git tag vX.Y.Z`.
 6. Push commit and tag: `git push origin main && git push origin vX.Y.Z`. Pushing the `v*` tag triggers `release.yml` (multi-arch GHCR images + a draft GitHub Release).
-
 
 ## Planning docs
 
