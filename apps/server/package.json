@@ -23,6 +23,7 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "pretest": "pnpm --filter @docmost/editor-ext build",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -162,7 +163,8 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "tsx"
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
@@ -182,7 +184,7 @@
           ]
         }
       ],
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "transformIgnorePatterns": [
       "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom)(@|/))"
