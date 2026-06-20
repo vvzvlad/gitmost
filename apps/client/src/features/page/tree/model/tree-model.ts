@@ -215,6 +215,30 @@ export const treeModel = {
     return treeModel.insert(removed, to.parentId, source, to.index);
   },
 
+  // Position-aware move for server-authoritative `moveTreeNode` broadcasts. Like
+  // `place`, but instead of an absolute index (which the sender computed against
+  // its own loaded set), it inserts the moved node among the destination's
+  // already-loaded siblings ordered by the node's fractional `position`. This
+  // keeps the visible order correct for every receiver — `place(..., index: 0)`
+  // would wrongly drop the node at the TOP of its new sibling list.
+  // Returns the same array reference (like `place`) when the source is missing
+  // or the destination parent isn't loaded on this client, so callers can detect
+  // that and fall back to removing the node.
+  placeByPosition<T extends { position?: string }>(
+    tree: TreeNode<T>[],
+    sourceId: string,
+    to: { parentId: string | null; position?: string },
+  ): TreeNode<T>[] {
+    const source = treeModel.find(tree, sourceId);
+    if (!source) return tree;
+    if (to.parentId !== null && !treeModel.find(tree, to.parentId)) return tree;
+    const removed = treeModel.remove(tree, sourceId);
+    // Reuse the same position-ordered insertion as `insertByPosition` by
+    // stamping the authoritative position onto the moved node first.
+    const positioned = { ...source, position: to.position } as TreeNode<T>;
+    return treeModel.insertByPosition(removed, to.parentId, positioned);
+  },
+
   move<T extends object>(
     tree: TreeNode<T>[],
     sourceId: string,

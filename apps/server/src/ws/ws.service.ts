@@ -127,6 +127,62 @@ export class WsService {
     this.server.to(getSpaceRoomName(spaceId)).emit('message', data);
   }
 
+  // Broadcast `data` (a deleteTreeNode) to every socket in the space room whose
+  // user is NOT authorized to see `pageId`. Used to compensate a move that pushes
+  // a previously-visible page UNDER a restricted ancestor: authorized users get
+  // the moveTreeNode (via emitTreeEvent), everyone else gets a deleteTreeNode so
+  // the now-restricted node disappears from their tree instead of lingering with
+  // its real title/slugId/icon. The two event sets are disjoint by construction
+  // (a user is either authorized or not), so no socket receives both.
+  async emitDeleteToUnauthorized(
+    spaceId: string,
+    pageId: string,
+    data: any,
+  ): Promise<void> {
+    const room = getSpaceRoomName(spaceId);
+    const sockets = await this.server.in(room).fetchSockets();
+    if (sockets.length === 0) return;
+
+    const userIds = Array.from(
+      new Set(
+        sockets
+          .map((s) => s.data.userId as string)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    if (userIds.length === 0) return;
+
+    const authorizedUserIds =
+      await this.pagePermissionRepo.getUserIdsWithPageAccess(pageId, userIds);
+    const authorizedSet = new Set(authorizedUserIds);
+
+    for (const socket of sockets) {
+      const userId = socket.data.userId as string;
+      // Unauthenticated sockets (no userId) cannot see restricted content; send
+      // them the delete too so a leaked node can't linger.
+      if (!userId || !authorizedSet.has(userId)) {
+        socket.emit('message', data);
+      }
+    }
+  }
+
+  // Server-origin broadcast of `data` to exactly the users in the space room who
+  // ARE authorized to see `pageId`. This is the counterpart of
+  // emitDeleteToUnauthorized: both resolve the authorized set from the SAME
+  // fetchSockets + getUserIdsWithPageAccess call shape, so a caller that drives
+  // both from one decision gets two disjoint sets (authorized vs. not) with no
+  // socket in both. Unlike emitTreeEvent, this does NOT consult the cached
+  // spaceHasRestrictions: the caller already knows the page is restricted, so we
+  // must not risk a stale cache fanning the move out to the whole room.
+  async emitToAuthorizedUsers(
+    spaceId: string,
+    pageId: string,
+    data: any,
+  ): Promise<void> {
+    const room = getSpaceRoomName(spaceId);
+    await this.broadcastToAuthorizedUsers(room, null, pageId, data);
+  }
+
   async emitToUsers(userIds: string[], data: any): Promise<void> {
     if (userIds.length === 0) return;
     const rooms = userIds.map((id) => getUserRoomName(id));

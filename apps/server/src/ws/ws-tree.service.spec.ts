@@ -21,16 +21,33 @@ const snapshot: TreeNodeSnapshot = {
 
 describe('WsTreeService', () => {
   let service: WsTreeService;
-  let wsService: { emitTreeEvent: jest.Mock; emitToSpaceRoom: jest.Mock };
+  let wsService: {
+    emitTreeEvent: jest.Mock;
+    emitToSpaceRoom: jest.Mock;
+    emitDeleteToUnauthorized: jest.Mock;
+    emitToAuthorizedUsers: jest.Mock;
+  };
+  let pagePermissionRepo: { hasRestrictedAncestor: jest.Mock };
 
   beforeEach(async () => {
     wsService = {
       emitTreeEvent: jest.fn().mockResolvedValue(undefined),
       emitToSpaceRoom: jest.fn(),
+      emitDeleteToUnauthorized: jest.fn().mockResolvedValue(undefined),
+      emitToAuthorizedUsers: jest.fn().mockResolvedValue(undefined),
+    };
+    pagePermissionRepo = {
+      // Default: not restricted, so broadcastPageMoved skips the compensating
+      // delete unless a test opts in.
+      hasRestrictedAncestor: jest.fn().mockResolvedValue(false),
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [WsTreeService, { provide: WsService, useValue: wsService }],
+      providers: [
+        WsTreeService,
+        { provide: WsService, useValue: wsService },
+        { provide: PagePermissionRepo, useValue: pagePermissionRepo },
+      ],
     }).compile();
 
     service = module.get<WsTreeService>(WsTreeService);
@@ -114,6 +131,76 @@ describe('WsTreeService', () => {
             hasChildren: true,
           }),
         }),
+      }),
+    );
+  });
+
+  it('broadcastPageMoved into an UNrestricted location does NOT emit a compensating delete', async () => {
+    pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(false);
+
+    const event: PageMovedEvent = {
+      workspaceId: 'ws-1',
+      oldParentId: 'old-parent',
+      hasChildren: false,
+      node: { ...snapshot, parentPageId: 'new-parent', position: 'a5' },
+    };
+
+    await service.broadcastPageMoved(event);
+
+    // Normal path: move goes to the whole room via emitTreeEvent, and neither
+    // the authorized-only move path nor the compensating delete fire.
+    expect(wsService.emitTreeEvent).toHaveBeenCalledTimes(1);
+    expect(wsService.emitToAuthorizedUsers).not.toHaveBeenCalled();
+    expect(wsService.emitDeleteToUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('broadcastPageMoved into a RESTRICTED subtree routes the move to authorized users only AND emits a compensating delete to unauthorized — from one fresh decision', async () => {
+    // Destination is now under a restricted ancestor.
+    pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(true);
+
+    const event: PageMovedEvent = {
+      workspaceId: 'ws-1',
+      oldParentId: 'old-parent',
+      hasChildren: false,
+      node: { ...snapshot, parentPageId: 'restricted-parent', position: 'a5' },
+    };
+
+    await service.broadcastPageMoved(event);
+
+    // The single fresh restriction decision was read exactly once...
+    expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalledTimes(1);
+    expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalledWith(
+      'page-1',
+    );
+
+    // ...and it must NOT go through the cache-gated room-wide emitTreeEvent,
+    // which could leak the move to the whole room during the stale-cache window.
+    expect(wsService.emitTreeEvent).not.toHaveBeenCalled();
+
+    // The move is delivered to authorized users only.
+    expect(wsService.emitToAuthorizedUsers).toHaveBeenCalledTimes(1);
+    expect(wsService.emitToAuthorizedUsers).toHaveBeenCalledWith(
+      'space-1',
+      'page-1',
+      expect.objectContaining({
+        operation: 'moveTreeNode',
+        spaceId: 'space-1',
+        payload: expect.objectContaining({ id: 'page-1' }),
+      }),
+    );
+
+    // The users who lost access get a deleteTreeNode for the moved node, scoped
+    // to the same page id (same fresh authorized set → disjoint from the move).
+    expect(wsService.emitDeleteToUnauthorized).toHaveBeenCalledTimes(1);
+    expect(wsService.emitDeleteToUnauthorized).toHaveBeenCalledWith(
+      'space-1',
+      'page-1',
+      expect.objectContaining({
+        operation: 'deleteTreeNode',
+        spaceId: 'space-1',
+        payload: {
+          node: expect.objectContaining({ id: 'page-1', slugId: 'slug-1' }),
+        },
       }),
     );
   });
@@ -202,5 +289,31 @@ describe('WsService.emitTreeEvent', () => {
     expect(roomEmit).not.toHaveBeenCalled();
     expect(okEmit).toHaveBeenCalledWith('message', data);
     expect(noEmit).not.toHaveBeenCalled();
+  });
+
+  it('emitDeleteToUnauthorized sends ONLY to sockets whose user lacks page access', async () => {
+    pagePermissionRepo.getUserIdsWithPageAccess.mockResolvedValue(['user-ok']);
+
+    const okEmit = jest.fn();
+    const noEmit = jest.fn();
+    const anonEmit = jest.fn();
+    const sockets = [
+      { id: 's1', data: { userId: 'user-ok' }, emit: okEmit },
+      { id: 's2', data: { userId: 'user-no' }, emit: noEmit },
+      // Unauthenticated socket (no userId) — must also receive the delete.
+      { id: 's3', data: {}, emit: anonEmit },
+    ];
+    server.in.mockReturnValue({
+      fetchSockets: jest.fn().mockResolvedValue(sockets),
+    });
+
+    const data = { operation: 'deleteTreeNode' };
+    await service.emitDeleteToUnauthorized('space-1', 'page-1', data);
+
+    // Authorized user does NOT get the delete (they got the move instead).
+    expect(okEmit).not.toHaveBeenCalled();
+    // Unauthorized + anonymous sockets DO get the delete.
+    expect(noEmit).toHaveBeenCalledWith('message', data);
+    expect(anonEmit).toHaveBeenCalledWith('message', data);
   });
 });

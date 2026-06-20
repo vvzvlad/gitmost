@@ -280,6 +280,108 @@ describe('handleCreate optimistic-insert idempotency (find-then-skip)', () => {
   });
 });
 
+// moveTreeNode socket-handler semantics: the receiver must place the moved node
+// by `position` (NOT index 0) and apply the `pageData` the payload carries so a
+// moved node's title/icon/chevron stay correct. This mirrors the reducer in
+// use-tree-socket.ts so the contract is unit-tested without rendering the hook.
+describe('moveTreeNode handler (place by position + apply pageData)', () => {
+  type P = TreeNode<{
+    name: string;
+    position?: string;
+    icon?: string;
+    hasChildren?: boolean;
+    parentPageId?: string | null;
+  }>;
+
+  const applyMoveTreeNode = (
+    tree: P[],
+    payload: {
+      id: string;
+      parentId: string | null;
+      position: string;
+      pageData?: { title?: string | null; icon?: string | null; hasChildren?: boolean };
+    },
+  ): P[] => {
+    if (!treeModel.find(tree, payload.id)) return tree;
+    const placed = treeModel.placeByPosition(tree, payload.id, {
+      parentId: payload.parentId,
+      position: payload.position,
+    });
+    if (placed === tree) return treeModel.remove(tree, payload.id);
+    const patch: Partial<P> = {
+      position: payload.position,
+      parentPageId: payload.parentId,
+    } as Partial<P>;
+    const pd = payload.pageData;
+    if (pd) {
+      if (pd.title !== undefined) (patch as { name?: string }).name = pd.title ?? '';
+      if (pd.icon !== undefined) (patch as { icon?: string }).icon = pd.icon ?? undefined;
+      if (pd.hasChildren !== undefined)
+        (patch as { hasChildren?: boolean }).hasChildren = pd.hasChildren;
+    }
+    return treeModel.update(placed, payload.id, patch);
+  };
+
+  const tree: P[] = [
+    {
+      id: 'dst',
+      name: 'DST',
+      position: 'a0',
+      children: [
+        { id: 'c1', name: 'C1', position: 'a1' },
+        { id: 'c2', name: 'C2', position: 'a3' },
+        { id: 'c3', name: 'C3', position: 'a5' },
+      ],
+    },
+    { id: 'src', name: 'SRC', position: 'a9' },
+  ];
+
+  it('lands the moved node in the correct MIDDLE slot, not at index 0', () => {
+    const t = applyMoveTreeNode(tree, {
+      id: 'src',
+      parentId: 'dst',
+      position: 'a4',
+    });
+    expect(treeModel.find(t, 'dst')?.children?.map((n) => n.id)).toEqual([
+      'c1', 'c2', 'src', 'c3',
+    ]);
+  });
+
+  it('lands the moved node at the END when position sorts last', () => {
+    const t = applyMoveTreeNode(tree, {
+      id: 'src',
+      parentId: 'dst',
+      position: 'a8',
+    });
+    expect(treeModel.find(t, 'dst')?.children?.map((n) => n.id)).toEqual([
+      'c1', 'c2', 'c3', 'src',
+    ]);
+  });
+
+  it('applies pageData (title/icon/hasChildren) to the moved node', () => {
+    const t = applyMoveTreeNode(tree, {
+      id: 'src',
+      parentId: 'dst',
+      position: 'a4',
+      pageData: { title: 'Renamed', icon: '🔥', hasChildren: true },
+    });
+    const moved = treeModel.find(t, 'src');
+    expect(moved?.name).toBe('Renamed');
+    expect(moved?.icon).toBe('🔥');
+    expect(moved?.hasChildren).toBe(true);
+    expect(moved?.position).toBe('a4');
+  });
+
+  it('falls back to removing the node when the destination parent is not loaded', () => {
+    const t = applyMoveTreeNode(tree, {
+      id: 'src',
+      parentId: 'not-loaded',
+      position: 'a4',
+    });
+    expect(treeModel.find(t, 'src')).toBeNull();
+  });
+});
+
 describe('treeModel.remove', () => {
   it('removes a leaf', () => {
     const t = treeModel.remove(fixture, 'a2');
@@ -389,6 +491,118 @@ describe('treeModel.place', () => {
     expect(
       treeModel.place(fixture, 'a1', { parentId: 'ghost', index: 0 }),
     ).toBe(fixture);
+  });
+});
+
+describe('treeModel.placeByPosition', () => {
+  // Server-authoritative `moveTreeNode` ships the moved node's fractional
+  // `position`; the receiver must sort it into the correct slot among the new
+  // siblings — NOT drop it at index 0.
+  type P = TreeNode<{ name: string; position?: string }>;
+
+  const tree: P[] = [
+    {
+      id: 'dst',
+      name: 'DST',
+      position: 'a0',
+      children: [
+        { id: 'c1', name: 'C1', position: 'a1' },
+        { id: 'c2', name: 'C2', position: 'a3' },
+        { id: 'c3', name: 'C3', position: 'a5' },
+      ],
+    },
+    { id: 'src', name: 'SRC', position: 'a9' },
+  ];
+
+  it('places the moved node in the MIDDLE of new siblings by position', () => {
+    const t = treeModel.placeByPosition(tree, 'src', {
+      parentId: 'dst',
+      position: 'a4',
+    });
+    expect(treeModel.find(t, 'dst')?.children?.map((n) => n.id)).toEqual([
+      'c1', 'c2', 'src', 'c3',
+    ]);
+  });
+
+  it('places the moved node at the END when its position sorts last', () => {
+    const t = treeModel.placeByPosition(tree, 'src', {
+      parentId: 'dst',
+      position: 'a8',
+    });
+    expect(treeModel.find(t, 'dst')?.children?.map((n) => n.id)).toEqual([
+      'c1', 'c2', 'c3', 'src',
+    ]);
+  });
+
+  it('places the moved node at the FRONT only when its position sorts first', () => {
+    const t = treeModel.placeByPosition(tree, 'src', {
+      parentId: 'dst',
+      position: 'a0',
+    });
+    expect(treeModel.find(t, 'dst')?.children?.map((n) => n.id)).toEqual([
+      'src', 'c1', 'c2', 'c3',
+    ]);
+  });
+
+  it('stamps the authoritative position onto the moved node', () => {
+    const t = treeModel.placeByPosition(tree, 'src', {
+      parentId: 'dst',
+      position: 'a4',
+    });
+    expect(treeModel.find(t, 'src')?.position).toBe('a4');
+  });
+
+  it('reorders within the same parent by position (not to index 0)', () => {
+    const same: P[] = [
+      {
+        id: 'p',
+        name: 'P',
+        position: 'a0',
+        children: [
+          { id: 'x', name: 'X', position: 'a1' },
+          { id: 'y', name: 'Y', position: 'a2' },
+          { id: 'z', name: 'Z', position: 'a3' },
+        ],
+      },
+    ];
+    // Move x to between y and z.
+    const t = treeModel.placeByPosition(same, 'x', {
+      parentId: 'p',
+      position: 'a25',
+    });
+    expect(treeModel.find(t, 'p')?.children?.map((n) => n.id)).toEqual([
+      'y', 'x', 'z',
+    ]);
+  });
+
+  it('returns same array reference for unknown source', () => {
+    expect(
+      treeModel.placeByPosition(tree, 'ghost', { parentId: 'dst', position: 'a4' }),
+    ).toBe(tree);
+  });
+
+  it('returns same array reference when destination parent is not loaded', () => {
+    expect(
+      treeModel.placeByPosition(tree, 'src', { parentId: 'ghost', position: 'a4' }),
+    ).toBe(tree);
+  });
+
+  it('moves a node to root by position', () => {
+    const roots: P[] = [
+      { id: 'r1', name: 'R1', position: 'a1' },
+      { id: 'r2', name: 'R2', position: 'a5' },
+      {
+        id: 'rp',
+        name: 'RP',
+        position: 'a7',
+        children: [{ id: 'child', name: 'CHILD', position: 'a1' }],
+      },
+    ];
+    const t = treeModel.placeByPosition(roots, 'child', {
+      parentId: null,
+      position: 'a3',
+    });
+    expect(t.map((n) => n.id)).toEqual(['r1', 'child', 'r2', 'rp']);
   });
 });
 
