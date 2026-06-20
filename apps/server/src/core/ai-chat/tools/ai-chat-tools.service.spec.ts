@@ -211,3 +211,174 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
     expect(parsed).not.toHaveProperty('deleteComments');
   });
 });
+
+/**
+ * JSON-string coercion for node arguments (fix 59b99dba): under OpenAI tool
+ * calls the model sometimes serializes `node`/`content` as a JSON STRING. The
+ * tools parse a string into an object before forwarding it to the client (which
+ * type-checks for an object), throw a documented message on invalid JSON, and
+ * `updatePageJson` distinguishes undefined (title-only) from object/string.
+ */
+describe('AiChatToolsService node-arg JSON-string coercion', () => {
+  // Records the positional args forwarded to each write method so we can assert
+  // the coerced (parsed) value reaches the client.
+  const patchNodeCalls: unknown[][] = [];
+  const insertNodeCalls: unknown[][] = [];
+  const updatePageJsonCalls: unknown[][] = [];
+
+  const fakeClient: Partial<DocmostClientLike> = {
+    patchNode: (...args: unknown[]) => {
+      patchNodeCalls.push(args);
+      return Promise.resolve({ ok: true });
+    },
+    insertNode: (...args: unknown[]) => {
+      insertNodeCalls.push(args);
+      return Promise.resolve({ ok: true });
+    },
+    updatePageJson: (...args: unknown[]) => {
+      updatePageJsonCalls.push(args);
+      return Promise.resolve({ ok: true });
+    },
+  };
+
+  const tokenServiceStub = {
+    generateAccessToken: jest.fn().mockResolvedValue('access-token'),
+    generateCollabToken: jest.fn().mockResolvedValue('collab-token'),
+  };
+
+  let service: AiChatToolsService;
+
+  beforeEach(() => {
+    patchNodeCalls.length = 0;
+    insertNodeCalls.length = 0;
+    updatePageJsonCalls.length = 0;
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue({
+      DocmostClient: function () {
+        return fakeClient as DocmostClientLike;
+      } as unknown as loader.DocmostClientCtor,
+    });
+    service = new AiChatToolsService(
+      tokenServiceStub as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function buildTools() {
+    return service.forUser(
+      { id: 'user-1', email: 'u@example.com', workspaceId: 'ws-1' } as never,
+      'session-1',
+      'ws-1',
+      'chat-1',
+    );
+  }
+
+  const NODE_OBJ = {
+    type: 'paragraph',
+    content: [{ type: 'text', text: 'Hello' }],
+  };
+
+  it('patchNode parses a JSON-string node and forwards it as an object', async () => {
+    const tools = await buildTools();
+    await tools.patchNode.execute(
+      { pageId: 'p1', nodeId: 'n1', node: JSON.stringify(NODE_OBJ) } as never,
+      {} as never,
+    );
+    expect(patchNodeCalls).toHaveLength(1);
+    expect(patchNodeCalls[0]).toEqual(['p1', 'n1', NODE_OBJ]);
+  });
+
+  it('patchNode passes an object node through unchanged', async () => {
+    const tools = await buildTools();
+    await tools.patchNode.execute(
+      { pageId: 'p1', nodeId: 'n1', node: NODE_OBJ } as never,
+      {} as never,
+    );
+    expect(patchNodeCalls[0]).toEqual(['p1', 'n1', NODE_OBJ]);
+  });
+
+  it('patchNode throws the documented message on invalid JSON string', async () => {
+    const tools = await buildTools();
+    await expect(
+      tools.patchNode.execute(
+        { pageId: 'p1', nodeId: 'n1', node: '{not json' } as never,
+        {} as never,
+      ),
+    ).rejects.toThrow('node was a string but not valid JSON');
+    expect(patchNodeCalls).toHaveLength(0);
+  });
+
+  it('insertNode parses a JSON-string node and forwards it as an object', async () => {
+    const tools = await buildTools();
+    await tools.insertNode.execute(
+      {
+        pageId: 'p1',
+        node: JSON.stringify(NODE_OBJ),
+        position: 'append',
+      } as never,
+      {} as never,
+    );
+    expect(insertNodeCalls).toHaveLength(1);
+    const [pageId, node] = insertNodeCalls[0];
+    expect(pageId).toBe('p1');
+    expect(node).toEqual(NODE_OBJ);
+  });
+
+  it('insertNode throws the documented message on invalid JSON string', async () => {
+    const tools = await buildTools();
+    await expect(
+      tools.insertNode.execute(
+        { pageId: 'p1', node: 'nope', position: 'append' } as never,
+        {} as never,
+      ),
+    ).rejects.toThrow('node was a string but not valid JSON');
+    expect(insertNodeCalls).toHaveLength(0);
+  });
+
+  it('updatePageJson forwards doc=undefined for a title-only update (content undefined)', async () => {
+    const tools = await buildTools();
+    await tools.updatePageJson.execute(
+      { pageId: 'p1', title: 'New title' } as never,
+      {} as never,
+    );
+    expect(updatePageJsonCalls).toHaveLength(1);
+    expect(updatePageJsonCalls[0]).toEqual(['p1', undefined, 'New title']);
+  });
+
+  it('updatePageJson passes an object content through unchanged', async () => {
+    const tools = await buildTools();
+    const doc = { type: 'doc', content: [] };
+    await tools.updatePageJson.execute(
+      { pageId: 'p1', content: doc } as never,
+      {} as never,
+    );
+    expect(updatePageJsonCalls[0]).toEqual(['p1', doc, undefined]);
+  });
+
+  it('updatePageJson parses a JSON-string content', async () => {
+    const tools = await buildTools();
+    const doc = { type: 'doc', content: [] };
+    await tools.updatePageJson.execute(
+      { pageId: 'p1', content: JSON.stringify(doc) } as never,
+      {} as never,
+    );
+    expect(updatePageJsonCalls[0]).toEqual(['p1', doc, undefined]);
+  });
+
+  it('updatePageJson throws the documented message on invalid JSON string content', async () => {
+    const tools = await buildTools();
+    await expect(
+      tools.updatePageJson.execute(
+        { pageId: 'p1', content: '{bad' } as never,
+        {} as never,
+      ),
+    ).rejects.toThrow('content was a string but not valid JSON');
+    expect(updatePageJsonCalls).toHaveLength(0);
+  });
+});

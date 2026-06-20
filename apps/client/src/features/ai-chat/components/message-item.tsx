@@ -3,18 +3,13 @@ import { IconAlertTriangle } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
-import { ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
+import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageItemProps {
   message: UIMessage;
-}
-
-/** True for AI SDK tool parts (static `tool-*` or `dynamic-tool`). */
-function isToolPart(type: string): boolean {
-  return type.startsWith("tool-") || type === "dynamic-tool";
 }
 
 /**

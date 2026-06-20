@@ -538,7 +538,9 @@ function compactValue(value: unknown, depth: number): unknown {
  * recovers the name. Falls back to a single `text` part built from
  * `fallbackText` when the steps carry no text.
  */
-function assistantParts(
+// Exported only so the unit tests can import this pure helper; exporting it
+// does not change runtime behavior.
+export function assistantParts(
   steps: ReadonlyArray<StepLike> | undefined,
   fallbackText: string,
 ): UIMessage['parts'] {
@@ -596,7 +598,7 @@ function assistantParts(
  * stored parts when available; assistant messages restore the reconstructable
  * parts from metadata, falling back to a single text part from `content`.
  */
-function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
+export function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
   id: string;
 } {
   const role = row.role === 'assistant' ? 'assistant' : 'user';
@@ -613,7 +615,7 @@ function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
  * `tool_calls` column. Stores only what the UI action-log and history need —
  * never raw provider payloads or keys.
  */
-function serializeSteps(
+export function serializeSteps(
   steps: ReadonlyArray<{
     toolCalls?: ReadonlyArray<{ toolName?: string; input?: unknown }>;
     toolResults?: ReadonlyArray<{ toolName?: string; output?: unknown }>;

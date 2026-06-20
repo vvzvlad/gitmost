@@ -47,6 +47,21 @@ interface AiMcpServerFormProps {
   onClose: () => void;
 }
 
+// Build the form's field values from a (possibly undefined) server. Used both
+// for the initial mount and for re-hydration when the modal is reused for a
+// different server, so the two stay in sync. authHeader is always empty: it is
+// a write-only secret buffer never echoed back from the server.
+function buildInitialValues(server?: IAiMcpServer): FormValues {
+  return {
+    name: server?.name ?? "",
+    transport: server?.transport ?? "http",
+    url: server?.url ?? "",
+    authHeader: "",
+    toolAllowlist: server?.toolAllowlist ?? [],
+    enabled: server?.enabled ?? true,
+  };
+}
+
 // Tavily preset (§8.10): the API key goes in the Authorization HEADER, not the URL.
 const TAVILY_PRESET = {
   name: "Tavily",
@@ -72,26 +87,12 @@ export default function AiMcpServerForm({
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
-    initialValues: {
-      name: server?.name ?? "",
-      transport: server?.transport ?? "http",
-      url: server?.url ?? "",
-      authHeader: "",
-      toolAllowlist: server?.toolAllowlist ?? [],
-      enabled: server?.enabled ?? true,
-    },
+    initialValues: buildInitialValues(server),
   });
 
   // Re-hydrate when the target server changes (e.g. reusing the modal).
   useEffect(() => {
-    form.setValues({
-      name: server?.name ?? "",
-      transport: server?.transport ?? "http",
-      url: server?.url ?? "",
-      authHeader: "",
-      toolAllowlist: server?.toolAllowlist ?? [],
-      enabled: server?.enabled ?? true,
-    });
+    form.setValues(buildInitialValues(server));
     form.resetDirty();
     setHasHeaders(server?.hasHeaders ?? false);
     setHeadersCleared(false);

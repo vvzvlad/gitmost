@@ -400,7 +400,16 @@ export default function AiChatWindow() {
           >
             <div
               className={classes.historyHeader}
+              role="button"
+              tabIndex={0}
+              aria-expanded={historyOpen}
               onClick={() => setHistoryOpen((o) => !o)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setHistoryOpen((o) => !o);
+                }
+              }}
             >
               <IconChevronDown
                 size={12}
