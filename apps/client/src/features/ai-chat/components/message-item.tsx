@@ -10,6 +10,18 @@ import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageItemProps {
   message: UIMessage;
+  /**
+   * Forwarded to ToolCallCard: whether tool cards render page citation links.
+   * Defaults to true (internal chat). The public share passes false.
+   */
+  showCitations?: boolean;
+  /**
+   * Neutralize internal/relative markdown links in the rendered answer (drop
+   * their href so they become inert text). Defaults to false (internal chat,
+   * links stay clickable). The anonymous public share passes true so internal
+   * UUIDs/routes in the assistant's markdown don't leak as clickable links.
+   */
+  neutralizeInternalLinks?: boolean;
 }
 
 /**
@@ -24,7 +36,11 @@ interface MessageItemProps {
  * `message` prop identity (and its `parts`) changes each tick. Re-rendering the
  * text parts on each delta is what makes the answer stream in progressively.
  */
-export default function MessageItem({ message }: MessageItemProps) {
+export default function MessageItem({
+  message,
+  showCitations = true,
+  neutralizeInternalLinks = false,
+}: MessageItemProps) {
   const { t } = useTranslation();
   const isUser = message.role === "user";
 
@@ -53,7 +69,9 @@ export default function MessageItem({ message }: MessageItemProps) {
           // starts with an empty text part before the first token arrives); the
           // typing indicator covers that gap until real content streams in.
           if (!part.text.trim()) return null;
-          const html = renderChatMarkdown(part.text);
+          const html = renderChatMarkdown(part.text, {
+            neutralizeInternalLinks,
+          });
           if (html) {
             return (
               <div
@@ -73,7 +91,13 @@ export default function MessageItem({ message }: MessageItemProps) {
         }
 
         if (isToolPart(part.type)) {
-          return <ToolCallCard key={index} part={part as unknown as ToolUiPart} />;
+          return (
+            <ToolCallCard
+              key={index}
+              part={part as unknown as ToolUiPart}
+              showCitations={showCitations}
+            />
+          );
         }
 
         return null;
