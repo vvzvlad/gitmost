@@ -12,6 +12,7 @@ import { useNotificationSocket } from "@/features/notification/hooks/use-notific
 import { useCollabToken } from "@/features/auth/queries/auth-query.tsx";
 import { Error404 } from "@/components/ui/error-404.tsx";
 import { queryClient } from "@/main.tsx";
+import { makeConnectHandler } from "@/features/user/connect-resync.ts";
 
 export function UserProvider({ children }: React.PropsWithChildren) {
   const [, setCurrentUser] = useAtom(currentUserAtom);
@@ -34,19 +35,16 @@ export function UserProvider({ children }: React.PropsWithChildren) {
     // @ts-ignore
     setSocket(newSocket);
 
-    // Distinguish the first connect from a reconnect so we only resync after a gap.
-    let firstConnect = true;
+    // Distinguish the first connect from a reconnect so we only resync after a
+    // gap. The handler owns the first-connect-vs-reconnect decision through a
+    // private closure flag (see makeConnectHandler): on RECONNECT it refetches
+    // the sidebar tree through the authorized API so the view re-converges after
+    // a gap where ws events were missed (wifi blip, laptop sleep), invalidating
+    // both the root level and the nested-page levels of every space tree.
+    const handleConnect = makeConnectHandler(queryClient);
     newSocket.on("connect", () => {
       console.log("ws connected");
-      if (!firstConnect) {
-        // On RECONNECT (not the first connect) refetch the sidebar tree through the
-        // authorized API so the view re-converges after a gap where ws events were
-        // missed (wifi blip, laptop sleep). Invalidate both the root level and the
-        // nested-page levels of every space tree.
-        queryClient.invalidateQueries({ queryKey: ["root-sidebar-pages"] });
-        queryClient.invalidateQueries({ queryKey: ["sidebar-pages"] });
-      }
-      firstConnect = false;
+      handleConnect();
     });
 
     return () => {
