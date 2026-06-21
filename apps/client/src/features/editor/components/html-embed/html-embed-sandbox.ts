@@ -7,6 +7,48 @@
 /** postMessage type the sandboxed iframe uses to report its content height. */
 export const HTML_EMBED_HEIGHT_MESSAGE = "gitmost-html-embed-height";
 
+// Sane bounds for the auto-resized iframe so a runaway embed cannot blow up the
+// page layout, and a sensible default before the first height message arrives.
+export const MIN_IFRAME_HEIGHT = 40;
+export const MAX_IFRAME_HEIGHT = 4000;
+export const DEFAULT_IFRAME_HEIGHT = 150;
+
+/**
+ * Sandbox tokens for the embed iframe. Intentionally does NOT include
+ * `allow-same-origin`: the content must run in an opaque ("null") origin so it
+ * cannot read the viewer's cookies/session/API.
+ */
+export const HTML_EMBED_SANDBOX = "allow-scripts allow-popups allow-forms";
+
+/** Clamp a reported/configured height into the sane iframe bounds. */
+export function clampHeight(h: number): number {
+  return Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, h));
+}
+
+/**
+ * Guard for the auto-resize `message` handler. Returns the clamped numeric
+ * height ONLY when the event is a trusted resize report; otherwise null.
+ *
+ * Trusted means ALL of:
+ *  - `event.source` is this iframe's own `contentWindow` (the sandboxed srcdoc
+ *    has an opaque "null" origin, so we cannot match by `event.origin` — we
+ *    match by source instead). A message from any OTHER window is rejected.
+ *  - the payload `type` is exactly our agreed resize message type.
+ *  - the reported `height` is a finite number (rejects NaN/Infinity).
+ */
+export function isTrustedHeightMessage(
+  event: Pick<MessageEvent, "source" | "data">,
+  iframeEl: { contentWindow: Window | null } | null,
+): boolean {
+  // Reject when there is no contentWindow to match against; otherwise a `null`
+  // event.source would spuriously equal a `null` contentWindow.
+  if (!iframeEl?.contentWindow) return false;
+  if (event.source !== iframeEl.contentWindow) return false;
+  const data = event.data as { type?: string; height?: number } | null;
+  if (data?.type !== HTML_EMBED_HEIGHT_MESSAGE) return false;
+  return Number.isFinite(Number(data.height));
+}
+
 /**
  * Build the `srcdoc` document for the sandboxed embed iframe.
  *
