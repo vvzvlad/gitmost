@@ -45,6 +45,10 @@ export interface ISharedPage extends IShare {
   // Whether the anonymous public-share AI assistant is enabled for the
   // workspace (server-resolved). Gates the "Ask AI" widget.
   aiAssistant?: boolean;
+  // Display name of the configured assistant identity (agent role name), used
+  // to label the public-share chat. Null/absent when no identity is set →
+  // the widget falls back to the generic "AI agent" label.
+  aiAssistantName?: string | null;
 }
 
 export interface IShareForPage extends IShare {

@@ -79,7 +79,11 @@ export default function SharedPage() {
       {/* Anonymous "Ask AI" widget — only when the workspace enables the
           public-share assistant (server-resolved flag on /shares/page-info). */}
       {data?.aiAssistant && data.share?.id && data.page?.id && (
-        <ShareAiWidget shareId={data.share.id} pageId={data.page.id} />
+        <ShareAiWidget
+          shareId={data.share.id}
+          pageId={data.page.id}
+          assistantName={data.aiAssistantName ?? undefined}
+        />
       )}
     </div>
   );

@@ -22,6 +22,11 @@ interface MessageItemProps {
    * UUIDs/routes in the assistant's markdown don't leak as clickable links.
    */
   neutralizeInternalLinks?: boolean;
+  /**
+   * Display name for the dimmed assistant label. Defaults to "AI agent" when
+   * absent; the public share passes the configured identity (agent role) name.
+   */
+  assistantName?: string;
 }
 
 /**
@@ -40,6 +45,7 @@ export default function MessageItem({
   message,
   showCitations = true,
   neutralizeInternalLinks = false,
+  assistantName,
 }: MessageItemProps) {
   const { t } = useTranslation();
   const isUser = message.role === "user";
@@ -61,7 +67,7 @@ export default function MessageItem({
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
-        {t("AI agent")}
+        {assistantName?.trim() || t("AI agent")}
       </Text>
       {message.parts.map((part, index) => {
         if (part.type === "text") {

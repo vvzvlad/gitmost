@@ -1143,6 +1143,7 @@
   "Current context size": "Current context size",
   "AI agent": "AI agent",
   "AI agent is typing…": "AI agent is typing…",
+  "{{name}} is typing…": "{{name}} is typing…",
   "Send": "Send",
   "Stop": "Stop",
   "Chat menu": "Chat menu",
