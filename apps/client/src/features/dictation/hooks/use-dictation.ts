@@ -16,6 +16,8 @@ interface UseDictationResult {
   start: () => Promise<void>;
   stop: () => void;
   cancel: () => void;
+  // Smoothed live microphone level in the 0..1 range while recording (0 when idle).
+  audioLevel: number;
 }
 
 // Candidate container/codec combinations in preference order. The first one the
@@ -56,6 +58,7 @@ export function useDictation(
 ): UseDictationResult {
   const { t } = useTranslation();
   const [status, setStatus] = useState<DictationStatus>("idle");
+  const [audioLevel, setAudioLevel] = useState(0);
 
   // Keep the latest callbacks in a ref so the recorder's onstop closure always
   // calls the current handlers without re-creating the recorder.
@@ -70,6 +73,15 @@ export function useDictation(
   const canceledRef = useRef(false);
   const startingRef = useRef(false);
 
+  // Web Audio metering: derives a live input level from the captured stream.
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  // Exponentially smoothed level, and the last value pushed to React state.
+  const smoothedLevelRef = useRef(0);
+  const emittedLevelRef = useRef(0);
+
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
@@ -80,6 +92,91 @@ export function useDictation(
   const stopTracks = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+  }, []);
+
+  // Tear the audio meter down fully. Safe to call multiple times and on any exit
+  // path; defensive try/catch so cleanup never throws.
+  const stopMeter = useCallback(() => {
+    // Cancel the rAF first so getByteTimeDomainData can't run on a closed context.
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    try {
+      sourceRef.current?.disconnect();
+      sourceRef.current = null;
+      analyserRef.current = null;
+      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+        void audioContextRef.current.close();
+      }
+      audioContextRef.current = null;
+    } catch (err) {
+      // Cleanup must never throw; just log for diagnosis.
+      console.warn("[dictation] audio meter teardown failed", err);
+    }
+    smoothedLevelRef.current = 0;
+    emittedLevelRef.current = 0;
+    setAudioLevel(0);
+  }, []);
+
+  // Set up Web Audio metering on the already-captured stream. Reuses the existing
+  // MediaStream — never requests a second mic. Failure here must not break
+  // recording: on any error we warn and return, leaving the recorder running.
+  const startMeter = useCallback((stream: MediaStream) => {
+    try {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctor) return;
+
+      const audioContext = new Ctor();
+      // Some browsers start the context suspended; resume so the loop produces
+      // data. Swallow rejection (e.g. context already closed by a fast
+      // start/stop race) to avoid an unhandled promise rejection.
+      audioContext.resume().catch(() => {});
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.5;
+      // Connect ONLY to the analyser — never to destination, which would echo the
+      // mic back to the speakers.
+      source.connect(analyser);
+
+      audioContextRef.current = audioContext;
+      sourceRef.current = source;
+      analyserRef.current = analyser;
+
+      // Allocate the time-domain buffer once and reuse it on every tick.
+      const data = new Uint8Array(analyser.fftSize);
+
+      const tick = () => {
+        const a = analyserRef.current;
+        if (!a) return;
+        a.getByteTimeDomainData(data);
+        // RMS of the centered waveform (samples are 0..255, midpoint 128).
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / data.length);
+        // Boost + clamp so normal speech maps to a visible 0..1 range.
+        const level = Math.min(1, rms * 3);
+        // Exponential smoothing to avoid jitter.
+        smoothedLevelRef.current = smoothedLevelRef.current * 0.8 + level * 0.2;
+        // Throttle React re-renders: only push when it changed meaningfully.
+        if (Math.abs(smoothedLevelRef.current - emittedLevelRef.current) > 0.01) {
+          emittedLevelRef.current = smoothedLevelRef.current;
+          setAudioLevel(smoothedLevelRef.current);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch (err) {
+      // Web Audio unavailable or threw: recording continues without the meter.
+      console.warn("[dictation] audio meter unavailable", err);
+    }
   }, []);
 
   const start = useCallback(async (): Promise<void> => {
@@ -163,8 +260,9 @@ export function useDictation(
       const recordedMime = recorder.mimeType || mimeType || "audio/webm";
       const wasCanceled = canceledRef.current;
 
-      // Stop the mic tracks regardless of how we got here.
+      // Stop the mic tracks and the audio meter regardless of how we got here.
       stopTracks();
+      stopMeter();
       recorderRef.current = null;
 
       if (wasCanceled) {
@@ -237,34 +335,49 @@ export function useDictation(
     // Recording has truly begun; release the synchronous start guard.
     startingRef.current = false;
 
+    // Start the live audio meter on the stream we already acquired.
+    startMeter(stream);
+
     const maxDurationMs = optionsRef.current.maxDurationMs ?? 120000;
     timerRef.current = setTimeout(() => {
       if (recorderRef.current?.state === "recording") {
         recorderRef.current.stop();
       }
     }, maxDurationMs);
-  }, [status, t, clearTimer, stopTracks]);
+  }, [status, t, clearTimer, stopTracks, startMeter, stopMeter]);
 
   const stop = useCallback((): void => {
     clearTimer();
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
+      // Normal path: onstop tears down tracks + meter and runs transcription.
       recorder.stop();
+    } else {
+      // No live recorder (e.g. the track ended on its own): tear everything
+      // down directly so the meter/AudioContext and stream don't leak, and
+      // recover the UI to idle.
+      stopTracks();
+      stopMeter();
+      recorderRef.current = null;
+      chunksRef.current = [];
+      setStatus("idle");
     }
-  }, [clearTimer]);
+  }, [clearTimer, stopTracks, stopMeter]);
 
   const cancel = useCallback((): void => {
     clearTimer();
     canceledRef.current = true;
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
-      // onstop sees canceledRef and skips transcription; it also stops tracks.
+      // onstop sees canceledRef and skips transcription; it also stops tracks
+      // and the meter.
       recorder.stop();
     } else {
       stopTracks();
+      stopMeter();
     }
     setStatus("idle");
-  }, [clearTimer, stopTracks]);
+  }, [clearTimer, stopTracks, stopMeter]);
 
   // Clean up on unmount: stop any live recorder/stream and clear the timers.
   useEffect(() => {
@@ -280,8 +393,9 @@ export function useDictation(
         recorder.stop();
       }
       stopTracks();
+      stopMeter();
     };
-  }, [clearTimer, stopTracks]);
+  }, [clearTimer, stopTracks, stopMeter]);
 
-  return { status, start, stop, cancel };
+  return { status, start, stop, cancel, audioLevel };
 }

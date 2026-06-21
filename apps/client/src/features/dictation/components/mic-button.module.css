@@ -1,0 +1,22 @@
+.recordingWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Translucent red halo that sits behind the stop button and scales with the
+   live microphone level (scale set inline from audioLevel). */
+.pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background-color: var(--mantine-color-red-5);
+  opacity: 0.35;
+  transform-origin: center;
+  transform: scale(1);
+  transition: transform 90ms linear;
+  pointer-events: none;
+  will-change: transform;
+  z-index: 0;
+}

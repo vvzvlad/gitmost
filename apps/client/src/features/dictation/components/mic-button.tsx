@@ -1,8 +1,10 @@
 import { FC } from "react";
 import { ActionIcon, Loader, Tooltip } from "@mantine/core";
+import { useReducedMotion } from "@mantine/hooks";
 import { IconMicrophone, IconPlayerStopFilled } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useDictation } from "@/features/dictation/hooks/use-dictation";
+import classes from "./mic-button.module.css";
 
 interface MicButtonProps {
   onText: (text: string) => void;
@@ -26,21 +28,32 @@ export const MicButton: FC<MicButtonProps> = ({
   size = "lg",
 }) => {
   const { t } = useTranslation();
-  const { status, start, stop } = useDictation({ onText, onStart });
+  const { status, start, stop, audioLevel } = useDictation({ onText, onStart });
+  const reduceMotion = useReducedMotion();
   const iconSize = size === "lg" ? 18 : 16;
 
   if (status === "recording") {
+    // Live volume-driven halo, or a static halo when the user prefers reduced motion.
+    const haloScale = reduceMotion ? 1.15 : 1 + Math.min(1, audioLevel) * 0.9;
     return (
       <Tooltip label={t("Stop recording")} withArrow>
-        <ActionIcon
-          size={size}
-          color="red"
-          variant="light"
-          onClick={stop}
-          aria-label={t("Stop recording")}
-        >
-          <IconPlayerStopFilled size={iconSize} />
-        </ActionIcon>
+        <span className={classes.recordingWrap}>
+          <span
+            className={classes.pulse}
+            style={{ transform: `scale(${haloScale})` }}
+            aria-hidden="true"
+          />
+          <ActionIcon
+            size={size}
+            color="red"
+            variant="light"
+            onClick={stop}
+            aria-label={t("Stop recording")}
+            style={{ position: "relative", zIndex: 1 }}
+          >
+            <IconPlayerStopFilled size={iconSize} />
+          </ActionIcon>
+        </span>
       </Tooltip>
     );
   }
