@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **MCP shared-token auth moved to its own header.** The `/mcp` shared guard
+  no longer reads `Authorization: Bearer <MCP_TOKEN>`; it now reads only the
+  `X-MCP-Token` header. Existing MCP clients (e.g. Claude Desktop) configured
+  with `Authorization: Bearer <MCP_TOKEN>` must be reconfigured to send
+  `X-MCP-Token: <MCP_TOKEN>` instead. The `Authorization` header is now
+  reserved for per-user HTTP Basic / Bearer access JWT credentials. See
+  `MCP_TOKEN` in `.env.example`. As a one-time aid, the server logs a single
+  migration warning when it sees the old-style header.
+
 ## [0.91.0] - 2026-06-18
 
 Gitmost is a community-focused fork of Docmost. This release drops the

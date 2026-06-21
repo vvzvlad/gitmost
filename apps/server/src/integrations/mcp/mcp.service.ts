@@ -57,6 +57,12 @@ interface McpHttpModule {
 // failure return a clean 401 JSON instead of tearing a hijacked response.
 const MCP_RESOLVED = Symbol('mcpResolvedConfig');
 
+// One-time-per-process latch for the legacy-auth migration warning. The shared
+// MCP token used to be sent as `Authorization: Bearer <MCP_TOKEN>`; it now lives
+// in its own `X-MCP-Token` header. When we still see the old style we log ONCE
+// (never the token value) so operators can migrate without log spam.
+let warnedLegacyMcpAuth = false;
+
 // TS with module:commonjs downlevels a literal import() to require(), which
 // cannot load the ESM-only @docmost/mcp package. Indirect through Function so
 // the real dynamic import() survives compilation and can load ESM from
@@ -353,6 +359,33 @@ export class McpService implements OnModuleDestroy {
     const sharedTokenOk = sharedToken
       ? sharedTokenMatches(sharedToken, req.headers['x-mcp-token'])
       : true;
+
+    // Back-compat hint (does NOT change the auth decision). When MCP_TOKEN is
+    // configured but the request carries no `X-MCP-Token` and instead sends the
+    // legacy `Authorization: Bearer <MCP_TOKEN>`, warn ONCE per process so the
+    // operator migrates the client. The token value is never logged; the bearer
+    // value is compared in constant time via sharedTokenMatches.
+    if (
+      sharedToken &&
+      !warnedLegacyMcpAuth &&
+      req.headers['x-mcp-token'] === undefined
+    ) {
+      const auth = req.headers['authorization'];
+      const header = Array.isArray(auth) ? auth[0] : auth;
+      const bearer =
+        typeof header === 'string' && header.startsWith('Bearer ')
+          ? header.slice('Bearer '.length)
+          : undefined;
+      if (bearer !== undefined && sharedTokenMatches(sharedToken, bearer)) {
+        warnedLegacyMcpAuth = true;
+        this.logger.warn(
+          'MCP shared token received via `Authorization: Bearer <MCP_TOKEN>` ' +
+            '(legacy). This is no longer accepted: send the shared token in the ' +
+            '`X-MCP-Token` header instead, and reserve `Authorization` for ' +
+            'per-user credentials. Reconfigure the MCP client to migrate.',
+        );
+      }
+    }
 
     // Short-circuit checks (shared token, enablement) that do not need the auth
     // resolution. Compute them up front so the response mapping is a single pure
