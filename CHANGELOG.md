@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Admin-only "Analytics / tracker" workspace setting: a raw HTML/JS snippet
+  injected into the `<head>` of public share pages only (for analytics such as
+  Google Analytics or Yandex.Metrika).
+
+### Changed
+
+- HTML embed blocks now render inside a sandboxed iframe (separate origin) and,
+  when the workspace HTML-embed toggle is on, can be inserted by any member
+  (previously admin-only). Turning the toggle off hides existing embeds and
+  stops serving them on public share pages.
+- Remove the server-side role-based stripping of HTML-embed blocks from the
+  write paths (collab/REST/MCP, page create/duplicate, import, transclusion
+  unsync); sandboxing makes per-write gating unnecessary. The only remaining
+  server-side strip is the public-share read path, which still honors the
+  workspace HTML-embed toggle.
+
 ### Breaking Changes
 
 - **MCP shared-token auth moved to its own header.** The `/mcp` shared guard

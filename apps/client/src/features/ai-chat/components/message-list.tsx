@@ -30,6 +30,12 @@ interface MessageListProps {
    * UUIDs/routes don't leak as clickable links to anonymous readers.
    */
   neutralizeInternalLinks?: boolean;
+  /**
+   * Display name for the assistant's dimmed row label and typing indicator.
+   * Defaults to "AI agent" when absent. The public share passes the configured
+   * identity (agent role) name; the internal chat omits it.
+   */
+  assistantName?: string;
 }
 
 // Distance (px) from the bottom within which the viewport still counts as
@@ -67,6 +73,7 @@ export default function MessageList({
   emptyState,
   showCitations = true,
   neutralizeInternalLinks = false,
+  assistantName,
 }: MessageListProps) {
   const { t } = useTranslation();
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -148,9 +155,10 @@ export default function MessageList({
             message={message}
             showCitations={showCitations}
             neutralizeInternalLinks={neutralizeInternalLinks}
+            assistantName={assistantName}
           />
         ))}
-        {typing && <TypingIndicator />}
+        {typing && <TypingIndicator assistantName={assistantName} />}
       </Stack>
     </ScrollArea>
   );

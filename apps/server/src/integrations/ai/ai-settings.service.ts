@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QueueName, QueueJob } from '../queue/constants';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
@@ -49,6 +50,7 @@ export interface UpdateAiSettingsInput {
 export class AiSettingsService {
   constructor(
     private readonly workspaceRepo: WorkspaceRepo,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
     private readonly aiProviderCredentialsRepo: AiProviderCredentialsRepo,
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
@@ -108,6 +110,26 @@ export class AiSettingsService {
       ai?: { publicShareAssistant?: boolean };
     };
     return settings?.ai?.publicShareAssistant === true;
+  }
+
+  /**
+   * Resolve the display name of the agent role acting as the public-share
+   * assistant's identity, so the anonymous widget can label messages with the
+   * persona name instead of the generic "AI agent". Returns null when no role
+   * is configured, or the referenced role is missing/disabled (built-in persona
+   * → the client falls back to "AI agent"). Mirrors the role resolution in
+   * PublicShareChatService.resolveShareRole.
+   */
+  async resolvePublicShareAssistantName(
+    workspaceId: string,
+  ): Promise<string | null> {
+    const resolved = await this.resolve(workspaceId);
+    const roleId = resolved?.publicShareAssistantRoleId;
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
+    if (!role || !role.enabled) return null;
+    const name = role.name?.trim();
+    return name ? name : null;
   }
 
   /** Read the stored non-secret provider settings for a workspace. */

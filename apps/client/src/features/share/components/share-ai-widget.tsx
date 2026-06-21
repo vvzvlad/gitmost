@@ -28,6 +28,8 @@ interface ShareAiWidgetProps {
   shareId: string;
   /** The page the reader currently has open (context for "this page"). */
   pageId: string;
+  /** Display name of the configured assistant identity; falls back to 'AI agent' when absent. */
+  assistantName?: string;
 }
 
 /**
@@ -48,7 +50,11 @@ interface ShareAiWidgetProps {
  * links (so internal UUIDs/auth-gated routes in the answer don't leak as
  * clickable links), and a documentation-focused empty state.
  */
-export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
+export default function ShareAiWidget({
+  shareId,
+  pageId,
+  assistantName,
+}: ShareAiWidgetProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -153,6 +159,7 @@ export default function ShareAiWidget({ shareId, pageId }: ShareAiWidgetProps) {
           <MessageList
             messages={messages}
             isStreaming={isStreaming}
+            assistantName={assistantName}
             showCitations={false}
             // Anonymous reader: neutralize internal/relative links in the
             // assistant's markdown so internal UUIDs/auth-gated routes don't

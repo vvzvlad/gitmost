@@ -32,11 +32,6 @@ import {
   removeMarkTypeFromDoc,
 } from '../../../common/helpers/prosemirror/utils';
 import {
-  isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedIfNotAllowed,
-} from '../../../common/helpers/prosemirror/html-embed.util';
-import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
-import {
   htmlToJson,
   jsonToNode,
   jsonToText,
@@ -81,7 +76,6 @@ export class PageService {
     private collaborationGateway: CollaborationGateway,
     private readonly watcherService: WatcherService,
     private readonly transclusionService: TransclusionService,
-    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
 
   async findById(
@@ -101,10 +95,6 @@ export class PageService {
     userId: string,
     workspaceId: string,
     createPageDto: CreatePageDto,
-    // Workspace role of the caller. Used to enforce the htmlEmbed admin gate on
-    // the create write path (see below). Optional/typed loosely so unknown or
-    // missing roles fall through to the non-admin (strip) branch by default.
-    callerRole?: string | null,
     // Optional agent-edit provenance (from the signed access claim). When the
     // actor is 'agent', stamp the page's source marker so a freshly created page
     // shows it was created by the AI agent (§14 N2) — create goes through REST,
@@ -135,34 +125,10 @@ export class PageService {
     let ydoc = undefined;
 
     if (createPageDto?.content && createPageDto?.format) {
-      let prosemirrorJson = await this.parseProsemirrorContent(
+      const prosemirrorJson = await this.parseProsemirrorContent(
         createPageDto.content,
         createPageDto.format,
       );
-
-      // SECURITY (Variant C admin gate, plain page-create write path):
-      // create() builds content/textContent/ydoc directly and persists them via
-      // insertPage, bypassing the collab onStoreDocument strip. htmlEmbed renders
-      // raw, unsanitized JS in readers' browsers, so only workspace admins/owners
-      // may author it. The create controller requires only space Edit, so a
-      // regular member could otherwise POST a doc (json, or the markdown/html
-      // <!--html-embed:BASE64--> forms that parse to the same node) containing an
-      // htmlEmbed and store XSS for every reader. Strip every htmlEmbed node when
-      // the caller is not an admin, BEFORE deriving textContent/ydoc/insert.
-      // The gate is toggle-AND-admin: htmlEmbed survives only when the workspace
-      // feature toggle is ON and the caller is an admin/owner. OFF (default) =>
-      // stripped for everyone. Cheap settings read keyed to the workspace.
-      const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
-        (await this.workspaceRepo.findById(workspaceId))?.settings,
-      );
-      prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
-        featureEnabled: htmlEmbedEnabled,
-        role: callerRole,
-        onStrip: () =>
-          this.logger.warn(
-            `Stripping htmlEmbed node(s) from page creation by user ${userId} (space ${createPageDto.spaceId})`,
-          ),
-      });
 
       content = prosemirrorJson;
       textContent = jsonToText(prosemirrorJson);
@@ -653,12 +619,6 @@ export class PageService {
 
     const attachmentMap = new Map<string, ICopyPageAttachment>();
 
-    // Resolve the htmlEmbed toggle ONCE for the workspace; the per-page gate
-    // below is toggle-AND-admin (OFF default => stripped for everyone).
-    const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
-      (await this.workspaceRepo.findById(rootPage.workspaceId))?.settings,
-    );
-
     const insertablePages: InsertablePage[] = await Promise.all(
       pages.map(async (page) => {
         const pageContent = getProsemirrorContent(page.content);
@@ -769,24 +729,7 @@ export class PageService {
           }
         });
 
-        let prosemirrorJson = prosemirrorDoc.toJSON();
-
-        // SECURITY (Variant C admin gate, duplication write path):
-        // Duplication builds the ydoc directly and bypasses the collab
-        // onStoreDocument strip. htmlEmbed renders raw, unsanitized JS in
-        // readers' browsers, so only workspace admins/owners may author it. A
-        // non-admin with space Edit could otherwise duplicate an admin page
-        // that contains an embed into a new page authored by them. Strip every
-        // htmlEmbed node from each duplicated page when the duplicating user is
-        // not an admin, BEFORE computing textContent/ydoc/insert.
-        prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
-          featureEnabled: htmlEmbedEnabled,
-          role: authUser.role,
-          onStrip: () =>
-            this.logger.warn(
-              `Stripping htmlEmbed node(s) from page duplication by user ${authUser.id} (source page ${page.id})`,
-            ),
-        });
+        const prosemirrorJson = prosemirrorDoc.toJSON();
 
         // Add "Copy of " prefix to the root page title only for duplicates in same space
         let title = page.title;

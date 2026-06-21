@@ -20,7 +20,6 @@ describe('PageService', () => {
       {} as any, // collaborationGateway
       {} as any, // watcherService
       {} as any, // transclusionService
-      {} as any, // workspaceRepo
     );
   });
 

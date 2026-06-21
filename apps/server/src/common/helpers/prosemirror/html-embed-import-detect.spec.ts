@@ -3,20 +3,17 @@ import { htmlToJson } from '../../../collaboration/collaboration.util';
 import { hasHtmlEmbedNode, stripHtmlEmbedNodes } from './html-embed.util';
 
 /**
- * CONTRACT (security): an attacker who controls imported markdown/HTML could try
- * to smuggle an htmlEmbed in the *serialized* DOM form —
+ * CONTRACT: imported markdown/HTML can carry an htmlEmbed in the *serialized*
+ * DOM form —
  *   <div data-type="htmlEmbed" data-source="...">
  * — directly, bypassing the editor's `<!--html-embed:-->` comment marker.
  *
- * This exercises the REAL server import conversion path that ImportService uses
+ * The block renders inside a sandboxed iframe, so this is not an XSS surface;
+ * this exercises the REAL server import conversion path that ImportService uses
  * (`markdownToHtml` then `htmlToJson`; `processHTML` adds only a cheerio
  * link/iframe normalize pass which does not touch htmlEmbed divs) and asserts
- * the ACTUAL behaviour so we know whether the strip gate can be bypassed.
- *
- * FINDING (documented): the raw embed div DOES round-trip through marked +
- * htmlToJson into a real `htmlEmbed` node, so `hasHtmlEmbedNode` returns true and
- * `stripHtmlEmbedNodes` removes it. The serialized-form bypass is therefore
- * detectable and STRIPPABLE — the write-path gate covers it.
+ * that such a node is DETECTED and STRIPPABLE — so the share read path's
+ * master-toggle strip can remove it when the workspace toggle is OFF.
  */
 describe('htmlEmbed smuggled via the raw serialized div in imported markdown/HTML', () => {
   it('round-trips through markdownToHtml -> htmlToJson and is DETECTED (base64 data-source)', async () => {
@@ -38,7 +35,7 @@ describe('htmlEmbed smuggled via the raw serialized div in imported markdown/HTM
     // The div parses into a real htmlEmbed node carrying the decoded source.
     expect(hasHtmlEmbedNode(json)).toBe(true);
 
-    // Because it is detected, the write-path gate can strip it for non-admins.
+    // Because it is detected, the share master-toggle strip can remove it.
     const stripped = stripHtmlEmbedNodes(json);
     expect(hasHtmlEmbedNode(stripped)).toBe(false);
     // Surrounding non-embed content is retained.

@@ -39,11 +39,6 @@ import {
 } from '../casl/interfaces/space-ability.type';
 import SpaceAbilityFactory from '../casl/abilities/space-ability.factory';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
-import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
-import {
-  isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
-} from '../../common/helpers/prosemirror/html-embed.util';
 import { RecentPageDto } from './dto/recent-page.dto';
 import { CreatedByUserDto } from './dto/created-by-user.dto';
 import { DuplicatePageDto } from './dto/duplicate-page.dto';
@@ -68,7 +63,6 @@ export class PageController {
   constructor(
     private readonly pageService: PageService,
     private readonly pageRepo: PageRepo,
-    private readonly workspaceRepo: WorkspaceRepo,
     private readonly pageHistoryService: PageHistoryService,
     private readonly spaceAbility: SpaceAbilityFactory,
     private readonly pageAccessService: PageAccessService,
@@ -97,18 +91,6 @@ export class PageController {
       await this.pageAccessService.validateCanViewWithPermissions(page, user);
 
     const permissions = { canEdit, hasRestriction };
-
-    if (page.content) {
-      const workspace = await this.workspaceRepo.findById(page.workspaceId);
-      if (!isHtmlEmbedFeatureEnabled(workspace?.settings)) {
-        // Kill-switch: when the workspace feature is OFF, never serve raw
-        // htmlEmbed nodes on the read path (mirrors the public-share strip),
-        // so disabling the feature is an immediate, total kill-switch and not
-        // dependent on the page being re-saved. Admin-authored content only.
-        // Fail-closed: a missing workspace resolves to OFF and is stripped.
-        page.content = stripHtmlEmbedNodes(page.content) as any;
-      }
-    }
 
     if (dto.format && dto.format !== 'json' && page.content) {
       const contentOutput =
@@ -255,9 +237,6 @@ export class PageController {
       user.id,
       workspace.id,
       createPageDto,
-      // Pass the caller's workspace role so create() can enforce the htmlEmbed
-      // admin gate (non-admins cannot author raw-JS embeds).
-      user.role,
       provenance,
     );
 
@@ -553,16 +532,6 @@ export class PageController {
     }
 
     await this.pageAccessService.validateCanView(page, user);
-
-    if (history.content) {
-      const workspace = await this.workspaceRepo.findById(page.workspaceId);
-      if (!isHtmlEmbedFeatureEnabled(workspace?.settings)) {
-        // Kill-switch: history snapshots are an authenticated read path too, so
-        // strip htmlEmbed when the workspace feature is OFF (same as /info and
-        // the public-share path). Fail-closed on a missing workspace.
-        history.content = stripHtmlEmbedNodes(history.content) as any;
-      }
-    }
 
     return history;
   }

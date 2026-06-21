@@ -57,7 +57,6 @@ function buildService(opts: {
     {} as any, // attachmentRepo
     {} as any, // storageService
     {} as any, // pageAccessService
-    {} as any, // workspaceRepo
   );
 }
 

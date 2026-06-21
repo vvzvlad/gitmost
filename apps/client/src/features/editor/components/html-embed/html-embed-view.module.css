@@ -2,9 +2,16 @@
   position: relative;
 }
 
-/* The container the raw source is injected into. */
+/* Fallback container used only for the empty, non-editor case. */
 .htmlEmbedContent {
   width: 100%;
+}
+
+/* The sandboxed iframe the embed source is rendered into. */
+.htmlEmbedFrame {
+  display: block;
+  width: 100%;
+  border: none;
 }
 
 /* Edit affordance overlay, only shown while editing the document. */

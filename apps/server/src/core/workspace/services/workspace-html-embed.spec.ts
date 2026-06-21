@@ -108,4 +108,38 @@ describe('WorkspaceService.update — htmlEmbed toggle persistence (real code)',
     expect(logged.changes.before.htmlEmbed).toBe(false);
     expect(logged.changes.after.htmlEmbed).toBe(true);
   });
+
+  it('persists trackerHead via updateSetting with the trackerHead key', async () => {
+    const { service, updateSetting } = buildService({});
+
+    await service.update('w1', { trackerHead: '<script>ga()</script>' } as any);
+
+    expect(updateSetting).toHaveBeenCalledWith(
+      'w1',
+      'trackerHead',
+      '<script>ga()</script>',
+      expect.anything(),
+    );
+  });
+
+  it('does NOT call updateSetting when trackerHead is undefined in the dto', async () => {
+    const { service, updateSetting } = buildService({});
+
+    await service.update('w1', { name: 'New name' } as any);
+
+    expect(updateSetting).not.toHaveBeenCalled();
+  });
+
+  it('audits the trackerHead change (before/after) when the value changes', async () => {
+    const { service, auditService } = buildService({
+      settingsBefore: { trackerHead: '' },
+    });
+
+    await service.update('w1', { trackerHead: '<script>m()</script>' } as any);
+
+    expect(auditService.log).toHaveBeenCalledTimes(1);
+    const logged = auditService.log.mock.calls[0][0];
+    expect(logged.changes.before.trackerHead).toBe('');
+    expect(logged.changes.after.trackerHead).toBe('<script>m()</script>');
+  });
 });

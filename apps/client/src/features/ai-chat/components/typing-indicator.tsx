@@ -2,22 +2,33 @@ import { Box, Group, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
+interface TypingIndicatorProps {
+  /**
+   * Display name for the dimmed label and the "… is typing…" line. Defaults to
+   * "AI agent" when absent; the public share passes the configured identity
+   * (agent role) name.
+   */
+  assistantName?: string;
+}
+
 /**
- * Live "AI agent is typing…" placeholder shown while a turn is in flight but the
- * latest assistant message has no visible content yet (no rendered text/tool
- * parts). It covers the gap between sending and the first streamed token, and is
- * replaced by the real assistant message once content starts arriving.
+ * Live "… is typing…" placeholder shown while a turn is in flight but the latest
+ * assistant message has no visible content yet (no rendered text/tool parts). It
+ * covers the gap between sending and the first streamed token, and is replaced by
+ * the real assistant message once content starts arriving.
  *
- * Mirrors the assistant row layout in MessageItem (the dimmed "AI agent" label),
- * so it reads as the assistant's bubble taking shape.
+ * Mirrors the assistant row layout in MessageItem (the dimmed label), so it reads
+ * as the assistant's bubble taking shape. The label and typing line use the
+ * configured identity name when provided, otherwise the generic "AI agent".
  */
-export default function TypingIndicator() {
+export default function TypingIndicator({ assistantName }: TypingIndicatorProps) {
   const { t } = useTranslation();
+  const name = assistantName?.trim();
 
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
-        {t("AI agent")}
+        {name || t("AI agent")}
       </Text>
       <Group gap={8} align="center">
         <span className={classes.typingDots} aria-hidden="true">
@@ -26,7 +37,7 @@ export default function TypingIndicator() {
           <span />
         </span>
         <Text size="sm" c="dimmed">
-          {t("AI agent is typing…")}
+          {name ? t("{{name}} is typing…", { name }) : t("AI agent is typing…")}
         </Text>
       </Group>
     </Box>

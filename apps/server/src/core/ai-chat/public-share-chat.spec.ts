@@ -5,6 +5,8 @@ import { buildShareSystemPrompt } from './public-share-chat.prompt';
 import {
   PublicShareChatService,
   filterShareTranscript,
+  resolveShareAiMaxOutputTokens,
+  SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT,
 } from './public-share-chat.service';
 import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
 import {
@@ -400,6 +402,44 @@ describe('resolveShareAiWorkspaceMax (env-overridable per-workspace cap)', () =>
   });
 });
 
+describe('resolveShareAiMaxOutputTokens (env-overridable per-request output cap)', () => {
+  const ENV = 'SHARE_AI_MAX_OUTPUT_TOKENS';
+  const original = process.env[ENV];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  });
+
+  it('falls back to the default when unset', () => {
+    delete process.env[ENV];
+    expect(resolveShareAiMaxOutputTokens()).toBe(
+      SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT,
+    );
+    expect(SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT).toBe(512);
+  });
+
+  it('uses (and floors) a valid positive value from the env', () => {
+    process.env[ENV] = '1024.9';
+    expect(resolveShareAiMaxOutputTokens()).toBe(1024);
+  });
+
+  it('falls back to the default for zero, a negative, or a non-numeric value', () => {
+    process.env[ENV] = '0';
+    expect(resolveShareAiMaxOutputTokens()).toBe(
+      SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT,
+    );
+    process.env[ENV] = '-5';
+    expect(resolveShareAiMaxOutputTokens()).toBe(
+      SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT,
+    );
+    process.env[ENV] = 'not-a-number';
+    expect(resolveShareAiMaxOutputTokens()).toBe(
+      SHARE_AI_MAX_OUTPUT_TOKENS_DEFAULT,
+    );
+  });
+});
+
 describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace cap)', () => {
   it('allows up to the cap within a window, then 429s (returns false)', async () => {
     const limiter = makeLimiter(3, 60_000, () => 1_000);
@@ -482,9 +522,11 @@ describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace
   });
 
   it('FAILS CLOSED (returns false) when the Redis eval rejects', async () => {
-    // FAIL CLOSED (#62): if Redis is down we cannot prove the workspace is under
-    // its cap, so DENY (the controller 429s) rather than admit an unmetered,
-    // billable anonymous call. The feature is optional, so denial is harmless.
+    // The per-workspace cap is the COST backstop for an OPTIONAL anonymous
+    // assistant. If Redis is unavailable we cannot prove the workspace is under
+    // its cap, so we DENY (controller 429s) rather than admit an unmetered,
+    // billable call — a brief Redis blip disabling the assistant is safer than
+    // an unbounded provider bill.
     const failingRedis = {
       eval: () => Promise.reject(new Error('redis down')),
     } as unknown as import('ioredis').Redis;

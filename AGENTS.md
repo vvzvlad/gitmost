@@ -280,4 +280,4 @@ The git tag is the source of truth for the displayed version (UI reads `git desc
 
 ## Planning docs
 
-`docs/*.md` hold design plans for in-progress / planned features (mobile app, offline sync, RAG improvements, streaming dictation). Arbitrary HTML embed has **shipped** (admin-gated by the `htmlEmbed` workspace toggle in Workspace settings) and is no longer a planning doc. `docs/backlog/*.md` track known issues / follow-ups (e.g. AI-chat review follow-ups). Consult the relevant plan before working on one of those areas.
+`docs/*.md` hold design plans for in-progress / planned features (mobile app, offline sync, RAG improvements, voice dictation). Arbitrary HTML embed has **shipped** — it renders inside a sandboxed iframe and, when the `htmlEmbed` workspace toggle is on, is insertable by any member (no longer admin-only); turning the toggle off hides/stops serving existing embeds on public share pages. `docs/backlog/*.md` track known issues / follow-ups (e.g. AI-chat review follow-ups). Consult the relevant plan before working on one of those areas.

@@ -68,7 +68,6 @@ describe('TransclusionService — template access core (real filter)', () => {
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
 
     return { service, db, pageRepo, spaceMemberRepo, pagePermissionRepo };
@@ -227,7 +226,6 @@ describe('TransclusionService.filterViewerAccessiblePageIds — AND ordering (co
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
 
     return { service, filterAccessiblePageIds };
@@ -324,7 +322,6 @@ describe('TransclusionService.syncPageTemplateReferences — workspace scoping',
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
 
     return {
@@ -471,7 +468,6 @@ describe('TransclusionService.insertTemplateReferencesForPages — per-workspace
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
     return { service, insertMany };
   }

@@ -10,7 +10,6 @@ describe('PageController', () => {
     controller = new PageController(
       {} as any, // pageService
       {} as any, // pageRepo
-      {} as any, // workspaceRepo
       {} as any, // pageHistoryService
       {} as any, // spaceAbility
       {} as any, // pageAccessService

@@ -41,7 +41,6 @@ describe('TransclusionService.lookupTemplate — anti-leak catch branch', () => 
       {} as any, // attachmentRepo
       {} as any, // storageService
       {} as any, // pageAccessService
-      {} as any, // workspaceRepo
     );
 
     // Stub the access decision; we are testing the content-prep stage, not access.
@@ -155,7 +154,6 @@ describe('TransclusionService.lookupTemplate — soft-deleted source via real fi
       pageRepo as any,
       pagePermissionRepo as any,
       spaceMemberRepo as any,
-      {} as any,
       {} as any,
       {} as any,
       {} as any,

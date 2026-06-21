@@ -524,12 +524,14 @@ export class ShareService {
    *    not leak structure (existence, location, count, resolved state, or
    *    comment ids) to public viewers.
    *
-   * 3. Strip `htmlEmbed` nodes when the workspace feature toggle is OFF. This
-   *    makes the toggle a SERVER-AUTHORITATIVE kill-switch for shared content:
-   *    when OFF the embed is never served to the anonymous viewer (who can't
-   *    read the per-workspace toggle), when ON the embed is served so the
-   *    read-only client executes it. `htmlEmbedEnabled` is resolved fail-closed
-   *    by the callers (missing workspace => OFF => strip).
+   * 3. Strip `htmlEmbed` nodes when the workspace master toggle is OFF. The
+   *    block renders inside a sandboxed iframe on the client (harmless, no
+   *    same-origin access), so this is NOT an XSS guard — it is the
+   *    SERVER-AUTHORITATIVE enforcement of the workspace master toggle for
+   *    anonymous shares: an anonymous viewer cannot read the per-workspace
+   *    toggle, so when OFF the block is never served, and when ON it is served
+   *    and rendered in its sandboxed frame. `htmlEmbedEnabled` is resolved
+   *    fail-closed by the callers (missing workspace => OFF => strip).
    *
    * Both share-content paths — the host page (`updatePublicAttachments`) and
    * the share-scoped transclusion lookup (`lookupTransclusionForShare`) —
@@ -544,8 +546,9 @@ export class ShareService {
   ): Promise<Node | null> {
     let pmJson = getProsemirrorContent(content);
 
-    // Kill-switch: when the workspace toggle is OFF, never serve htmlEmbed
-    // nodes to public viewers. Strip before tokenizing/serializing.
+    // Master-toggle enforcement: when the workspace toggle is OFF, never serve
+    // htmlEmbed nodes to anonymous public viewers (who cannot read the toggle).
+    // Strip before tokenizing/serializing.
     if (!htmlEmbedEnabled) {
       pmJson = stripHtmlEmbedNodes(pmJson);
     }
