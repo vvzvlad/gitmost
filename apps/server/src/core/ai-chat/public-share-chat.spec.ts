@@ -575,7 +575,6 @@ describe('PublicShareChatToolsService share scoping', () => {
       shareService as never,
       {} as never,
       {} as never,
-      {} as never,
     );
 
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -608,7 +607,6 @@ describe('PublicShareChatToolsService share scoping', () => {
       shareService as never,
       {} as never,
       {} as never,
-      {} as never,
     );
 
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -632,7 +630,6 @@ describe('PublicShareChatToolsService share scoping', () => {
     const svc = new PublicShareChatToolsService(
       {} as never,
       searchService as never,
-      {} as never,
       {} as never,
     );
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -772,7 +769,6 @@ describe('public-share assistant boundary locks (red-team regression guards)', (
     };
     const svc = new PublicShareChatToolsService(
       shareService as never,
-      {} as never,
       {} as never,
       {} as never,
     );

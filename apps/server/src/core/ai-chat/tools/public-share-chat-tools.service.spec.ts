@@ -24,14 +24,12 @@ describe('PublicShareChatToolsService.forShare', () => {
     };
     const searchService = { searchPage: over.searchPage ?? jest.fn() };
     const pageRepo = { findById: over.findById ?? jest.fn() };
-    const pagePermissionRepo = { hasRestrictedAncestor: jest.fn() };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       searchService as never,
       pageRepo as never,
-      pagePermissionRepo as never,
     );
-    return { svc, shareService, searchService, pageRepo, pagePermissionRepo };
+    return { svc, shareService, searchService, pageRepo };
   }
 
   describe('listSharePages', () => {
