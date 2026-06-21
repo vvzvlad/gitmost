@@ -1,17 +1,23 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { PageController } from './page.controller';
-import { PageService } from './services/page.service';
 
+// Direct instantiation with stub deps. The Test.createTestingModule form failed
+// to resolve PageService's injected tokens at compile(), and this smoke test only
+// needs the controller to construct.
 describe('PageController', () => {
   let controller: PageController;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [PageController],
-      providers: [PageService],
-    }).compile();
-
-    controller = module.get<PageController>(PageController);
+  beforeEach(() => {
+    controller = new PageController(
+      {} as any, // pageService
+      {} as any, // pageRepo
+      {} as any, // workspaceRepo
+      {} as any, // pageHistoryService
+      {} as any, // spaceAbility
+      {} as any, // pageAccessService
+      {} as any, // backlinkService
+      {} as any, // labelService
+      {} as any, // auditService
+    );
   });
 
   it('should be defined', () => {

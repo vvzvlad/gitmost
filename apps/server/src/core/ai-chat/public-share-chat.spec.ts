@@ -477,11 +477,10 @@ describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace
     expect(await limiter.tryConsume('ws-1')).toBe(true);
   });
 
-  it('FAILS OPEN (returns true) when the Redis eval rejects', async () => {
-    // The per-workspace cap is a COST backstop, not an access boundary: the
-    // funnel access gates and the per-IP throttle still apply. A transient
-    // Redis failure must therefore ADMIT the call (true) rather than 500/429,
-    // so a Redis blip cannot take the public-share assistant fully offline.
+  it('FAILS CLOSED (returns false) when the Redis eval rejects', async () => {
+    // FAIL CLOSED (#62): if Redis is down we cannot prove the workspace is under
+    // its cap, so DENY (the controller 429s) rather than admit an unmetered,
+    // billable anonymous call. The feature is optional, so denial is harmless.
     const failingRedis = {
       eval: () => Promise.reject(new Error('redis down')),
     } as unknown as import('ioredis').Redis;
@@ -495,7 +494,7 @@ describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace
     const errSpy = jest
       .spyOn(Logger.prototype, 'error')
       .mockImplementation(() => undefined);
-    expect(await limiter.tryConsume('ws-1')).toBe(true);
+    expect(await limiter.tryConsume('ws-1')).toBe(false);
     expect(errSpy).toHaveBeenCalled(); // the failure MUST be logged, not swallowed
     errSpy.mockRestore();
   });

@@ -1,17 +1,14 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { UserController } from './user.controller';
-import { UserService } from './user.service';
 
+// Direct instantiation with stub deps, mirroring the rest of these unit specs.
 describe('UserController', () => {
   let controller: UserController;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [UserController],
-      providers: [UserService],
-    }).compile();
-
-    controller = module.get<UserController>(UserController);
+  beforeEach(() => {
+    controller = new UserController(
+      {} as any, // userService
+      {} as any, // workspaceRepo
+    );
   });
 
   it('should be defined', () => {

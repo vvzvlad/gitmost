@@ -1,15 +1,14 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { TokenService } from './token.service';
 
+// Direct instantiation with stub deps, mirroring the rest of these unit specs.
 describe('TokenService', () => {
   let service: TokenService;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TokenService],
-    }).compile();
-
-    service = module.get<TokenService>(TokenService);
+  beforeEach(() => {
+    service = new TokenService(
+      {} as any, // jwtService
+      {} as any, // environmentService
+    );
   });
 
   it('should be defined', () => {
