@@ -1,0 +1,23 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts", "tsx"],
+  "rootDir": "..",
+  "testRegex": ".*\\.int-spec\\.ts$",
+  "testPathIgnorePatterns": ["/node_modules/"],
+  "transform": {
+    "^.+\\.(t|j)sx?$": "ts-jest"
+  },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
+  ],
+  "testEnvironment": "node",
+  "testTimeout": 60000,
+  "maxWorkers": 1,
+  "globalSetup": "<rootDir>/test/integration/global-setup.ts",
+  "globalTeardown": "<rootDir>/test/integration/global-teardown.ts",
+  "moduleNameMapper": {
+    "^@docmost/db/(.*)$": "<rootDir>/src/database/$1",
+    "^@docmost/transactional/(.*)$": "<rootDir>/src/integrations/transactional/$1",
+    "^@docmost/ee/(.*)$": "<rootDir>/src/ee/$1",
+    "^src/(.*)$": "<rootDir>/src/$1"
+  }
+}
