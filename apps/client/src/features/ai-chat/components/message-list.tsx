@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
-import { isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
+import { isToolPart, toolRunState, ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
@@ -43,23 +43,38 @@ interface MessageListProps {
 const BOTTOM_THRESHOLD = 40;
 
 /**
- * Whether to show the standalone "AI is typing…" indicator. It bridges the
- * gap between sending and the first streamed content, so it shows only while a
- * turn is in flight AND the latest assistant message has nothing visible yet:
+ * Whether to show the standalone "AI is typing…" indicator. It bridges every
+ * gap in a turn where the assistant is working but nothing visible is actively
+ * being produced yet — so it shows while a turn is in flight AND the latest
+ * assistant message's LAST part is not live output:
  *  - the last message is still the user's (assistant hasn't started a row), or
- *  - the last (assistant) message has no non-empty text and no tool part.
- * Once any text/tool part arrives, MessageItem renders it and this hides.
+ *  - the assistant row has no parts yet, or
+ *  - its last part is an empty/whitespace text part, or
+ *  - its last part is a finished/errored tool (the model is thinking about the
+ *    next step between tool calls).
+ * It hides only while output is actively rendering: a non-empty streaming text
+ * part, or a tool that is still running (ToolCallCard shows its own Loader).
  */
 export function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boolean {
   if (!isStreaming) return false;
   const last = messages[messages.length - 1];
   if (!last) return true; // submitted with nothing rendered yet.
   if (last.role !== "assistant") return true; // assistant row not started.
-  const hasVisible = last.parts.some(
-    (p) =>
-      (p.type === "text" && p.text.trim().length > 0) || isToolPart(p.type),
-  );
-  return !hasVisible;
+  const lastPart = last.parts[last.parts.length - 1];
+  if (!lastPart) return true; // assistant row exists but has no parts yet.
+  // The answer text is actively streaming in -> MessageItem renders it; no dots.
+  if (lastPart.type === "text" && lastPart.text.trim().length > 0) return false;
+  // A tool still in flight shows its own Loader in ToolCallCard -> no dots.
+  if (
+    isToolPart(lastPart.type) &&
+    toolRunState((lastPart as unknown as ToolUiPart).state) === "running"
+  ) {
+    return false;
+  }
+  // Otherwise the turn is in flight but nothing is actively producing visible
+  // output yet: a finished/errored tool with no follow-up content, or an empty
+  // trailing text part. The model is thinking between steps -> show the dots.
+  return true;
 }
 
 /**

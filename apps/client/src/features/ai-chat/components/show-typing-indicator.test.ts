@@ -52,4 +52,34 @@ describe("showTypingIndicator", () => {
       showTypingIndicator([msg("assistant", [toolPart])], true),
     ).toBe(false);
   });
+
+  it("shows while streaming after a tool has finished (thinking between steps)", () => {
+    const doneTool = { type: "tool-getPage", state: "output-available" } as unknown as UIMessage["parts"][number];
+    expect(
+      showTypingIndicator([msg("assistant", [doneTool])], true),
+    ).toBe(true);
+  });
+
+  it("shows while streaming when a finished tool is the last part after some text", () => {
+    const text = { type: "text", text: "Let me check" } as unknown as UIMessage["parts"][number];
+    const doneTool = { type: "tool-getPage", state: "output-available" } as unknown as UIMessage["parts"][number];
+    expect(
+      showTypingIndicator([msg("assistant", [text, doneTool])], true),
+    ).toBe(true);
+  });
+
+  it("hides while a tool is still running", () => {
+    const runningTool = { type: "tool-getPage", state: "input-available" } as unknown as UIMessage["parts"][number];
+    expect(
+      showTypingIndicator([msg("assistant", [runningTool])], true),
+    ).toBe(false);
+  });
+
+  it("hides once the assistant streams non-empty text after a finished tool", () => {
+    const doneTool = { type: "tool-getPage", state: "output-available" } as unknown as UIMessage["parts"][number];
+    const text = { type: "text", text: "The answer is 42" } as unknown as UIMessage["parts"][number];
+    expect(
+      showTypingIndicator([msg("assistant", [doneTool, text])], true),
+    ).toBe(false);
+  });
 });
