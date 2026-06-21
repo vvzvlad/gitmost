@@ -4,9 +4,11 @@ import { MicButton } from "@/features/dictation/components/mic-button";
 
 interface Props {
   editor: Editor;
+  color?: string;
+  iconSize?: number;
 }
 
-export const DictationGroup: FC<Props> = ({ editor }) => {
+export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
 
   const handleStart = () => {
@@ -56,6 +58,8 @@ export const DictationGroup: FC<Props> = ({ editor }) => {
       onStart={handleStart}
       onText={handleText}
       disabled={!editor.isEditable}
+      color={color}
+      iconSize={iconSize}
     />
   );
 };

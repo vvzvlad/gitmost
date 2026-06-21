@@ -12,6 +12,11 @@ interface MicButtonProps {
   // Mantine ActionIcon size token; "lg" matches the chat composer, "md" the
   // editor toolbar.
   size?: "md" | "lg";
+  // Optional Mantine color override for the idle/transcribing states (the
+  // recording state stays red). Defaults to the theme primary when omitted.
+  color?: string;
+  // Optional explicit glyph size override; defaults to the size-token value.
+  iconSize?: number;
 }
 
 /**
@@ -25,10 +30,12 @@ export const MicButton: FC<MicButtonProps> = ({
   onStart,
   disabled,
   size = "lg",
+  color,
+  iconSize,
 }) => {
   const { t } = useTranslation();
   const { status, start, stop, audioLevel } = useDictation({ onText, onStart });
-  const iconSize = size === "lg" ? 18 : 16;
+  const resolvedIconSize = iconSize ?? (size === "lg" ? 18 : 16);
 
   if (status === "recording") {
     // Live volume-driven halo: the scale follows the current mic level.
@@ -49,7 +56,7 @@ export const MicButton: FC<MicButtonProps> = ({
             aria-label={t("Stop recording")}
             style={{ position: "relative", zIndex: 1 }}
           >
-            <IconPlayerStopFilled size={iconSize} />
+            <IconPlayerStopFilled size={resolvedIconSize} />
           </ActionIcon>
         </span>
       </Tooltip>
@@ -62,6 +69,7 @@ export const MicButton: FC<MicButtonProps> = ({
         <ActionIcon
           size={size}
           variant="subtle"
+          color={color}
           disabled
           aria-label={t("Transcribing…")}
         >
@@ -76,11 +84,12 @@ export const MicButton: FC<MicButtonProps> = ({
       <ActionIcon
         size={size}
         variant="subtle"
+        color={color}
         onClick={() => void start()}
         disabled={disabled}
         aria-label={t("Start dictation")}
       >
-        <IconMicrophone size={iconSize} />
+        <IconMicrophone size={resolvedIconSize} />
       </ActionIcon>
     </Tooltip>
   );

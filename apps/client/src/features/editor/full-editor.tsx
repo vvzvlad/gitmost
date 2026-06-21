@@ -222,19 +222,23 @@ function PageByline({
           </Popover.Dropdown>
         </Popover>
       )}
-      <Tooltip label={t("Details")} withArrow openDelay={250}>
-        <ActionIcon
-          variant="subtle"
-          color="gray"
-          aria-label={t("Details")}
-          {...detailsTriggerProps}
-        >
-          <IconInfoCircle size={20} stroke={1.5} />
-        </ActionIcon>
-      </Tooltip>
-      {/* Shown only in edit mode when workspace dictation is enabled, so
-          dictation stays reachable even when the fixed toolbar is hidden. */}
-      {showDictation && editor && <DictationGroup editor={editor} />}
+      <Group gap={4} wrap="nowrap">
+        <Tooltip label={t("Details")} withArrow openDelay={250}>
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            aria-label={t("Details")}
+            {...detailsTriggerProps}
+          >
+            <IconInfoCircle size={20} stroke={1.5} />
+          </ActionIcon>
+        </Tooltip>
+        {/* Shown only in edit mode when workspace dictation is enabled, so
+            dictation stays reachable even when the fixed toolbar is hidden. */}
+        {showDictation && editor && (
+          <DictationGroup editor={editor} color="gray" iconSize={20} />
+        )}
+      </Group>
     </Group>
   );
 }
