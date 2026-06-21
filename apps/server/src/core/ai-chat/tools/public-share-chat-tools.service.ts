@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { ShareService } from '../../share/share.service';
 import { SearchService } from '../../search/search.service';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
-import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { jsonToMarkdown } from '../../../collaboration/collaboration.util';
 
 /**
@@ -35,7 +34,6 @@ export class PublicShareChatToolsService {
     private readonly shareService: ShareService,
     private readonly searchService: SearchService,
     private readonly pageRepo: PageRepo,
-    private readonly pagePermissionRepo: PagePermissionRepo,
   ) {}
 
   /**
