@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   encodeHtmlEmbedSource,
   decodeHtmlEmbedSource,
+  parseHtmlEmbedHeight,
+  renderHtmlEmbedHeight,
 } from "./html-embed";
 
 // Unit coverage for the base64 codec used by the htmlEmbed node's
@@ -115,6 +117,45 @@ describe("html-embed codec — encode failure fallback", () => {
       throw new Error("boom");
     };
     expect(encodeHtmlEmbedSource(src)).toBe("");
+  });
+});
+
+describe("html-embed height — parseHtmlEmbedHeight (data-height -> px | null)", () => {
+  it('parses a numeric string ("300" -> 300)', () => {
+    expect(parseHtmlEmbedHeight("300")).toBe(300);
+  });
+
+  it("parses an absent value (null -> null = auto-resize)", () => {
+    expect(parseHtmlEmbedHeight(null)).toBeNull();
+    expect(parseHtmlEmbedHeight("")).toBeNull();
+  });
+
+  it('rejects a non-numeric value ("abc" -> null) — pins the NaN guard (BUG-2)', () => {
+    // Without Number.isFinite this would be NaN (typeof "number"), disabling
+    // auto-resize and yielding an unclamped iframe height downstream.
+    expect(parseHtmlEmbedHeight("abc")).toBeNull();
+  });
+
+  it('parses a trailing-unit value ("120px" -> 120) via parseInt', () => {
+    expect(parseHtmlEmbedHeight("120px")).toBe(120);
+  });
+});
+
+describe("html-embed height — renderHtmlEmbedHeight (px -> data-height | {})", () => {
+  it("renders a fixed height (120 -> { data-height: '120' })", () => {
+    expect(renderHtmlEmbedHeight(120)).toEqual({ "data-height": "120" });
+  });
+
+  it("renders auto-resize as no attribute (null -> {})", () => {
+    expect(renderHtmlEmbedHeight(null)).toEqual({});
+  });
+
+  it("renders 0 as no attribute (0 is auto -> {})", () => {
+    expect(renderHtmlEmbedHeight(0)).toEqual({});
+  });
+
+  it("renders undefined as no attribute (absent -> {})", () => {
+    expect(renderHtmlEmbedHeight(undefined)).toEqual({});
   });
 });
 

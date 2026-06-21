@@ -69,6 +69,30 @@ export function decodeHtmlEmbedSource(encoded: string): string {
   }
 }
 
+/**
+ * Parse the `data-height` attribute value into a fixed iframe height in px.
+ *
+ * Returns null (auto-resize) when the value is absent, empty, or non-numeric.
+ * A non-numeric `data-height` (e.g. a crafted/corrupted import) must NOT become
+ * NaN: NaN is typeof "number" and would disable auto-resize and yield an
+ * unclamped iframe height downstream. The Number.isFinite guard pins that fix.
+ */
+export function parseHtmlEmbedHeight(value: string | null): number | null {
+  if (!value) return null;
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Render a fixed height back to a `data-height` attribute. A null/0/absent
+ * height means auto-resize, so no attribute is emitted.
+ */
+export function renderHtmlEmbedHeight(
+  height: number | null | undefined,
+): { "data-height": string } | Record<string, never> {
+  return height ? { "data-height": String(height) } : {};
+}
+
 export const HtmlEmbed = Node.create<HtmlEmbedOptions>({
   name: "htmlEmbed",
   inline: false,
@@ -103,17 +127,9 @@ export const HtmlEmbed = Node.create<HtmlEmbedOptions>({
       // Fixed iframe height in px. null/absent => auto-resize on the client.
       height: {
         default: null,
-        parseHTML: (el) => {
-          const v = el.getAttribute("data-height");
-          if (!v) return null;
-          const n = parseInt(v, 10);
-          // A non-numeric data-height (e.g. crafted/corrupted import) must not
-          // become NaN: NaN is typeof "number" and would disable auto-resize and
-          // yield an unclamped iframe height downstream. Treat it as auto (null).
-          return Number.isFinite(n) ? n : null;
-        },
+        parseHTML: (el) => parseHtmlEmbedHeight(el.getAttribute("data-height")),
         renderHTML: (attrs: HtmlEmbedAttributes) =>
-          attrs.height ? { "data-height": String(attrs.height) } : {},
+          renderHtmlEmbedHeight(attrs.height),
       },
     };
   },
