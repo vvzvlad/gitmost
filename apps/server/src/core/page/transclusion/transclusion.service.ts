@@ -395,6 +395,15 @@ export class TransclusionService {
    * pages return `no_access`, missing/deleted pages return `not_found`. Does NOT
    * require `is_template` — any accessible page can be embedded (the template
    * flag only affects picker discovery).
+   *
+   * FLAT, single-level by design: this returns each requested page's own content
+   * verbatim and never recurses. If a returned page itself contains a `pageEmbed`
+   * node pointing at another page, that embed is left unresolved — the client
+   * issues a follow-up lookup for it. Because there is no server-side recursive
+   * expansion, there is no server depth/cycle to guard here: the embed depth/cycle
+   * cap (PAGE_EMBED_MAX_DEPTH) is purely a client RENDER concern. A scripted client
+   * that walks the graph manually is bounded by the per-user throttle (30/60s) on
+   * the controller plus the DTO's ArrayMaxSize(50) per call.
    */
   async lookupTemplate(
     sourcePageIds: string[],
