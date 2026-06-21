@@ -4,6 +4,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { DocmostClient } from "./client.js";
+import { parseNodeArg } from "./lib/parse-node-arg.js";
 // Re-export the client and its config type so embedding hosts (e.g. the gitmost
 // NestJS server) can `import('@docmost/mcp')` and construct a DocmostClient
 // directly — for the credentials variant OR the per-user getToken variant.
@@ -245,16 +246,9 @@ export function createDocmostMcpServer(config) {
         if (content === undefined || content === null) {
             doc = undefined;
         }
-        else if (typeof content === "string") {
-            try {
-                doc = JSON.parse(content);
-            }
-            catch {
-                throw new Error("content was a string but not valid JSON");
-            }
-        }
         else {
-            doc = content;
+            // String -> JSON.parse (throwing on invalid); object passes through.
+            doc = parseNodeArg(content, "content was a string but not valid JSON");
         }
         const result = await docmostClient.updatePageJson(pageId, doc, title);
         return jsonContent(result);
@@ -379,18 +373,7 @@ export function createDocmostMcpServer(config) {
                 "JSON object or JSON string both accepted."),
         },
     }, async ({ pageId, nodeId, node }) => {
-        let parsedNode;
-        if (typeof node === "string") {
-            try {
-                parsedNode = JSON.parse(node);
-            }
-            catch {
-                throw new Error("node was a string but not valid JSON");
-            }
-        }
-        else {
-            parsedNode = node;
-        }
+        const parsedNode = parseNodeArg(node);
         const result = await docmostClient.patchNode(pageId, nodeId, parsedNode);
         return jsonContent(result);
     });
@@ -425,18 +408,7 @@ export function createDocmostMcpServer(config) {
             anchorText: z.string().optional(),
         },
     }, async ({ pageId, node, position, anchorNodeId, anchorText }) => {
-        let parsedNode;
-        if (typeof node === "string") {
-            try {
-                parsedNode = JSON.parse(node);
-            }
-            catch {
-                throw new Error("node was a string but not valid JSON");
-            }
-        }
-        else {
-            parsedNode = node;
-        }
+        const parsedNode = parseNodeArg(node);
         const result = await docmostClient.insertNode(pageId, parsedNode, {
             position,
             anchorNodeId,
