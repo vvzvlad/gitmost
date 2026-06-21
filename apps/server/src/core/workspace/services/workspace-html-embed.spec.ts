@@ -142,4 +142,62 @@ describe('WorkspaceService.update — htmlEmbed toggle persistence (real code)',
     expect(logged.changes.before.trackerHead).toBe('');
     expect(logged.changes.after.trackerHead).toBe('<script>m()</script>');
   });
+
+  it('still persists trackerHead on a no-op re-save (prev === input)', async () => {
+    // updateSetting must run even when the value is unchanged: the toggle write
+    // is idempotent and should not be skipped just because the audit diff is
+    // empty.
+    const { service, updateSetting } = buildService({
+      settingsBefore: { trackerHead: '<script>same()</script>' },
+    });
+
+    await service.update('w1', {
+      trackerHead: '<script>same()</script>',
+    } as any);
+
+    expect(updateSetting).toHaveBeenCalledWith(
+      'w1',
+      'trackerHead',
+      '<script>same()</script>',
+      expect.anything(),
+    );
+  });
+
+  it('does NOT audit a no-op trackerHead re-save (no before/after diff)', async () => {
+    // prev === input, and trackerHead is the only field touched, so the audit
+    // diff is empty and auditService.log must NOT fire — trackerHead never
+    // enters the audit payload on a no-op.
+    const { service, auditService } = buildService({
+      settingsBefore: { trackerHead: '<script>same()</script>' },
+    });
+
+    await service.update('w1', {
+      trackerHead: '<script>same()</script>',
+    } as any);
+
+    expect(auditService.log).not.toHaveBeenCalled();
+  });
+
+  it('keeps trackerHead OUT of the audit diff on a no-op while another field changes', async () => {
+    // trackerHead is re-saved identically (no-op) but htmlEmbed flips, so an
+    // audit IS logged — yet it must carry only htmlEmbed, never the unchanged
+    // trackerHead key.
+    const { service, auditService } = buildService({
+      settingsBefore: {
+        trackerHead: '<script>same()</script>',
+        htmlEmbed: false,
+      },
+    });
+
+    await service.update('w1', {
+      trackerHead: '<script>same()</script>',
+      htmlEmbed: true,
+    } as any);
+
+    expect(auditService.log).toHaveBeenCalledTimes(1);
+    const logged = auditService.log.mock.calls[0][0];
+    expect(logged.changes.after.htmlEmbed).toBe(true);
+    expect('trackerHead' in logged.changes.before).toBe(false);
+    expect('trackerHead' in logged.changes.after).toBe(false);
+  });
 });
