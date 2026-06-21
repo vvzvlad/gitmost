@@ -99,9 +99,11 @@ export class PublicShareWorkspaceLimiter {
   /**
    * Account one call for `key`. Returns true if it is within the cap (allowed),
    * false if the cap over the trailing window is exceeded (caller must 429).
-   * On a Redis failure we FAIL OPEN (return true): the cap is a cost backstop,
-   * not an auth boundary, and the access funnel + per-IP throttle still apply —
-   * we never want a transient Redis blip to take the assistant fully offline.
+   * On a Redis failure we FAIL CLOSED (return false): if Redis is down we cannot
+   * prove the workspace is under its cap, so we DENY rather than admit an
+   * unmetered, billable anonymous call. The feature is optional, so the
+   * temporary denial is harmless. (Operators wanting a tighter steady-state cap
+   * can lower the default via SHARE_AI_WORKSPACE_MAX_PER_HOUR, e.g. =100.)
    */
   async tryConsume(key: string): Promise<boolean> {
     const t = this.now();
@@ -120,15 +122,14 @@ export class PublicShareWorkspaceLimiter {
       );
       return admitted === 1;
     } catch (err) {
-      // Fail OPEN: this per-workspace cap is a COST backstop, not an access
-      // control — the funnel access gates and the per-IP throttle still apply.
-      // A transient Redis failure must not take the public-share assistant
-      // fully offline, so we admit the call rather than 500 the request.
+      // FAIL CLOSED: if Redis is down we cannot prove the workspace is under its
+      // cap, so DENY (controller 429s) rather than admit an unmetered, billable
+      // anonymous call. The feature is optional, so denial is harmless.
       this.logger.error(
-        `share-ai workspace limiter Redis failure for key "${key}"; failing open`,
+        `share-ai workspace limiter Redis failure for key "${key}"; failing closed`,
         err as Error,
       );
-      return true;
+      return false;
     }
   }
 }
