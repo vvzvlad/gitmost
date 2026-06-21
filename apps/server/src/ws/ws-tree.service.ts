@@ -4,6 +4,7 @@ import { WsService } from './ws.service';
 import {
   PageMovedEvent,
   TreeNodeSnapshot,
+  TreeUpdateSnapshot,
 } from '../database/listeners/page.listener';
 
 @Injectable()
@@ -39,6 +40,29 @@ export class WsTreeService {
           hasChildren: false,
           children: [],
         },
+      },
+    });
+  }
+
+  // Rename / icon change: patch the in-tree node's title/icon on every client in
+  // the space. Routed through the restriction-aware `emitTreeEvent` so a
+  // restricted page's new title/icon never leaks to sockets that can't see it.
+  // The payload mirrors the client `UpdateEvent` shape consumed by
+  // `applyUpdateOne` (entity ["pages"], `id`, `payload.title` / `payload.icon`);
+  // only the fields that actually changed are sent (the snapshot omits the rest).
+  async broadcastPageUpdated(node: TreeUpdateSnapshot): Promise<void> {
+    await this.wsService.emitTreeEvent(node.spaceId, node.id, {
+      operation: 'updateOne',
+      spaceId: node.spaceId,
+      entity: ['pages'],
+      id: node.id,
+      payload: {
+        slugId: node.slugId,
+        parentPageId: node.parentPageId,
+        // Only include changed fields; an absent field leaves the client node
+        // untouched (applyUpdateOne checks `!== undefined` per field).
+        ...(node.title !== undefined ? { title: node.title } : {}),
+        ...(node.icon !== undefined ? { icon: node.icon } : {}),
       },
     });
   }

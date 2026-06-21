@@ -270,6 +270,17 @@ export class PageService {
 
     const isAgent = provenance?.actor === 'agent';
 
+    // Detect a real title/icon change so the WS tree listener can broadcast an
+    // `updateOne` to the space (rename / icon swap) WITHOUT re-broadcasting on a
+    // content-only save. Only treat a field as changed when the DTO actually
+    // carries it AND its value differs from what is already stored — a no-op
+    // save (same title, or a content-only update where these are undefined)
+    // produces no tree snapshot, so the listener stays quiet.
+    const titleChanged =
+      updatePageDto.title !== undefined && updatePageDto.title !== page.title;
+    const iconChanged =
+      updatePageDto.icon !== undefined && updatePageDto.icon !== page.icon;
+
     await this.pageRepo.updatePage(
       {
         title: updatePageDto.title,
@@ -287,6 +298,22 @@ export class PageService {
         contributorIds: contributorIds,
       },
       page.id,
+      undefined,
+      // Enrich PAGE_UPDATED only when title/icon actually changed. The snapshot
+      // values come from the server-side data being persisted (DTO when present,
+      // otherwise the unchanged stored value), never relayed from the client.
+      titleChanged || iconChanged
+        ? {
+            treeUpdate: {
+              id: page.id,
+              slugId: page.slugId,
+              spaceId: page.spaceId,
+              parentPageId: page.parentPageId ?? null,
+              ...(titleChanged ? { title: updatePageDto.title } : {}),
+              ...(iconChanged ? { icon: updatePageDto.icon } : {}),
+            },
+          }
+        : undefined,
     );
 
     this.generalQueue

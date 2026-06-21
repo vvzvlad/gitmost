@@ -34,6 +34,30 @@ export class PageEvent {
   // Set on PAGE_RESTORED so the WS listener can scope a refetchRootTreeNodeEvent
   // to the affected space (restore can re-attach a whole subtree).
   spaceId?: string;
+  // Set on a PAGE_UPDATED that actually changed the page's title and/or icon
+  // (a rename or icon swap). Content-only saves leave this undefined, which is
+  // how the WS listener distinguishes a tree-relevant metadata change from a
+  // noisy content save and avoids re-broadcasting on every keystroke-flush.
+  // Server-authoritative: built from the values being persisted, not relayed
+  // from the client.
+  treeUpdate?: TreeUpdateSnapshot;
+}
+
+/**
+ * Thin snapshot carried on a PAGE_UPDATED event when the title and/or icon
+ * changed, so the WS tree listener can broadcast an `updateOne` without a DB
+ * read. Only the fields the client tree receiver (`applyUpdateOne`) consumes
+ * are included.
+ */
+export interface TreeUpdateSnapshot {
+  id: string;
+  slugId: string;
+  spaceId: string;
+  parentPageId: string | null;
+  // Present only when that field actually changed; an undefined field is left
+  // untouched by the client reducer.
+  title?: string | null;
+  icon?: string | null;
 }
 
 /**

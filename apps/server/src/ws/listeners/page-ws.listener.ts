@@ -16,12 +16,14 @@ import { WsTreeService } from '../ws-tree.service';
  * keeps it safe against the in-transaction visibility race (a synchronous
  * SELECT here could run before the emitting `trx` committed).
  *
- * Scope of this PR: create, move, soft-delete/delete, restore.
+ * Scope: create, move, soft-delete/delete, restore, rename / icon change.
+ *
+ * Rename / icon change rides PAGE_UPDATED, which ALSO fires on every content
+ * save. The emit site (PageService.update) attaches a `treeUpdate` snapshot ONLY
+ * when the title or icon actually changed, so the handler below can gate strictly
+ * on that snapshot and stay silent on content-only saves.
  *
  * Deferred follow-ups (intentionally NOT handled here):
- *  - rename / icon change: would broadcast `updateOne` on PAGE_UPDATED, but
- *    PAGE_UPDATED also fires on every content save, so it needs a title/icon
- *    diff filter to avoid noise.
  *  - cross-space move (`movePageToSpace` / PAGE_MOVED_TO_SPACE): needs a
  *    deleteTreeNode in the old space + addTreeNode/refetch in the new space.
  */
@@ -66,6 +68,17 @@ export class PageWsListener {
   @OnEvent(EventName.PAGE_MOVED)
   async onPageMoved(event: PageMovedEvent): Promise<void> {
     await this.wsTree.broadcastPageMoved(event);
+  }
+
+  // Rename / icon change. PAGE_UPDATED also fires on every content save, so we
+  // only act when the emit site flagged a real title/icon change via
+  // `treeUpdate` — content-only saves carry no snapshot and are ignored here
+  // (no noisy re-broadcast). The broadcast is restriction-aware (emitTreeEvent),
+  // so a restricted page's title/icon can't leak to unauthorized sockets.
+  @OnEvent(EventName.PAGE_UPDATED)
+  async onPageUpdated(event: PageEvent): Promise<void> {
+    if (!event.treeUpdate) return;
+    await this.wsTree.broadcastPageUpdated(event.treeUpdate);
   }
 
   @OnEvent(EventName.PAGE_RESTORED)
