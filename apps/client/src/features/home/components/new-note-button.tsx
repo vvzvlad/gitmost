@@ -1,27 +1,22 @@
 import { Button, Menu, Text } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { createMongoAbility } from "@casl/ability";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useGetSpacesQuery } from "@/features/space/queries/space-query.ts";
 import { useCreatePageMutation } from "@/features/page/queries/page-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { ISpace } from "@/features/space/types/space.types.ts";
-import {
-  SpaceAbility,
-  SpaceCaslAction,
-  SpaceCaslSubject,
-} from "@/features/space/permissions/permissions.type.ts";
+import { SpaceRole } from "@/lib/types.ts";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 
-// A space is writable when the member's CASL rules allow managing pages —
-// mirrors the create-page gate used in the space sidebar.
+// The /spaces list endpoint returns membership.role but NOT membership.permissions
+// (only /spaces/info includes CASL rules). Mirror the server space-ability mapping:
+// ADMIN and WRITER can manage pages, READER is read-only. So a space is writable
+// for the current user when their role is ADMIN or WRITER.
 function canCreatePage(space: ISpace): boolean {
-  const ability = createMongoAbility<SpaceAbility>(
-    (space.membership?.permissions ?? []) as any,
-  );
-  return ability.can(SpaceCaslAction.Manage, SpaceCaslSubject.Page);
+  const role = space.membership?.role;
+  return role === SpaceRole.ADMIN || role === SpaceRole.WRITER;
 }
 
 // Prominent home-screen action to create a new note (page). Because the home
