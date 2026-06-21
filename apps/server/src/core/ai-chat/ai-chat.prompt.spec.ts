@@ -82,3 +82,82 @@ describe('buildSystemPrompt role layering', () => {
     expect(prompt).toContain(SAFETY_MARKER);
   });
 });
+
+/**
+ * Unit tests for the "current page" context injected by buildSystemPrompt. When
+ * the client supplies an openedPage with a non-blank id, a CONTEXT line names
+ * the page (title or "Untitled") and its pageId so the agent can resolve "this
+ * page". When no usable id is present, nothing is added. The line always sits
+ * inside the safety sandwich, before the trailing SAFETY copy.
+ */
+describe('buildSystemPrompt current-page context', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+  const SAFETY_MARKER = 'Operating rules (always in effect)';
+
+  it('includes the page title and pageId when both are present', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: 'pg-123', title: 'Audio Tract' },
+    });
+    expect(prompt).toContain('currently viewing the page');
+    expect(prompt).toContain('pageId: pg-123');
+    expect(prompt).toContain('"Audio Tract"');
+  });
+
+  it('falls back to "Untitled" when the title is missing', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: 'pg-123' },
+    });
+    expect(prompt).toContain('pageId: pg-123');
+    expect(prompt).toContain('"Untitled"');
+  });
+
+  it('falls back to "Untitled" when the title is only whitespace', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: 'pg-123', title: '   ' },
+    });
+    expect(prompt).toContain('pageId: pg-123');
+    expect(prompt).toContain('"Untitled"');
+  });
+
+  it('adds no page context when openedPage is null', () => {
+    const prompt = buildSystemPrompt({ workspace, openedPage: null });
+    expect(prompt).not.toContain('currently viewing the page');
+    expect(prompt).not.toContain('pageId:');
+  });
+
+  it('adds no page context when openedPage is omitted', () => {
+    const prompt = buildSystemPrompt({ workspace });
+    expect(prompt).not.toContain('currently viewing the page');
+    expect(prompt).not.toContain('pageId:');
+  });
+
+  it('adds no page context when openedPage has no id', () => {
+    const prompt = buildSystemPrompt({ workspace, openedPage: { title: 'x' } });
+    expect(prompt).not.toContain('currently viewing the page');
+    expect(prompt).not.toContain('pageId:');
+  });
+
+  it('adds no page context when the id is only whitespace', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: '   ' },
+    });
+    expect(prompt).not.toContain('currently viewing the page');
+    expect(prompt).not.toContain('pageId:');
+  });
+
+  it('places the page context inside the safety sandwich (before the closing SAFETY)', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: 'pg-123', title: 'Audio Tract' },
+    });
+    const pageIdx = prompt.indexOf('currently viewing the page');
+    const firstSafety = prompt.indexOf(SAFETY_MARKER);
+    const lastSafety = prompt.lastIndexOf(SAFETY_MARKER);
+    expect(pageIdx).toBeGreaterThan(firstSafety);
+    expect(pageIdx).toBeLessThan(lastSafety);
+  });
+});
