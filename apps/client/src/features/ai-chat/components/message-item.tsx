@@ -5,6 +5,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
+import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -67,7 +68,7 @@ export default function MessageItem({
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
-        {assistantName?.trim() || t("AI agent")}
+        {resolveAssistantName(assistantName) ?? t("AI agent")}
       </Text>
       {message.parts.map((part, index) => {
         if (part.type === "text") {

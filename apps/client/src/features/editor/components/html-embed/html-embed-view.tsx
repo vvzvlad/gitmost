@@ -24,19 +24,14 @@ import classes from "./html-embed-view.module.css";
 import {
   buildSandboxSrcdoc,
   canEdit as computeCanEdit,
-  HTML_EMBED_HEIGHT_MESSAGE,
+  clampHeight,
+  DEFAULT_IFRAME_HEIGHT,
+  HTML_EMBED_SANDBOX,
+  isTrustedHeightMessage,
+  MAX_IFRAME_HEIGHT,
+  MIN_IFRAME_HEIGHT,
   shouldRender as computeShouldRender,
 } from "./html-embed-sandbox.ts";
-
-// Sane bounds for the auto-resized iframe so a runaway embed cannot blow up the
-// page layout, and a sensible default before the first height message arrives.
-const MIN_IFRAME_HEIGHT = 40;
-const MAX_IFRAME_HEIGHT = 4000;
-const DEFAULT_IFRAME_HEIGHT = 150;
-
-// Clamp a reported/configured height into the sane iframe bounds.
-const clampHeight = (h: number) =>
-  Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, h));
 
 export default function HtmlEmbedView(props: NodeViewProps) {
   const { t } = useTranslation();
@@ -81,11 +76,8 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   // auto shows the current content height with no iframe reload.
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      if (event.source !== iframeRef.current?.contentWindow) return;
-      const data = event.data as { type?: string; height?: number };
-      if (data?.type !== HTML_EMBED_HEIGHT_MESSAGE) return;
-      const next = Number(data.height);
-      if (!Number.isFinite(next)) return;
+      if (!isTrustedHeightMessage(event, iframeRef.current)) return;
+      const next = Number((event.data as { height?: number }).height);
       setAutoHeight(clampHeight(next));
     }
     window.addEventListener("message", onMessage);
@@ -153,7 +145,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
         <iframe
           ref={iframeRef}
           className={classes.htmlEmbedFrame}
-          sandbox="allow-scripts allow-popups allow-forms"
+          sandbox={HTML_EMBED_SANDBOX}
           srcDoc={srcdoc}
           title={t("HTML embed")}
           referrerPolicy="no-referrer"
