@@ -21,12 +21,16 @@ import type { UIMessage } from 'ai';
  */
 describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
   /** A fully-passing dep set; individual tests override single collaborators. */
+  /**
+   * Default share + page resolve: the canonical boundary returns a usable share
+   * (matching SHARE-A) with a live, unrestricted page. The default share id is
+   * SHARE-A so the share-id match passes; tests override `resolveReadableSharePage`
+   * to simulate a cross-share swap / restricted / out-of-tree (all => null).
+   */
   function makeDeps(over: {
     assistantEnabled?: boolean;
-    getShareForPage?: jest.Mock;
+    resolveReadableSharePage?: jest.Mock;
     isSharingAllowed?: jest.Mock;
-    findById?: jest.Mock;
-    hasRestrictedAncestor?: jest.Mock;
     resolveShareRole?: jest.Mock;
     getShareChatModel?: jest.Mock;
     tryConsumeWorkspaceQuota?: jest.Mock;
@@ -37,24 +41,22 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
         .mockResolvedValue(over.assistantEnabled ?? true),
     };
     const shareService = {
-      getShareForPage:
-        over.getShareForPage ??
+      // The SINGLE canonical (shareId, pageId) -> readable page boundary.
+      // Returns { share, page } on success, null on ANY access failure
+      // (out-of-tree / cross-share id swap / deleted / restricted descendant).
+      resolveReadableSharePage:
+        over.resolveReadableSharePage ??
         jest.fn().mockResolvedValue({
-          id: 'SHARE-A',
-          pageId: 'root-page',
-          spaceId: 'space-1',
-          sharedPage: { id: 'root-page', title: 'Root' },
+          share: {
+            id: 'SHARE-A',
+            pageId: 'root-page',
+            spaceId: 'space-1',
+            sharedPage: { id: 'root-page', title: 'Root' },
+          },
+          page: { id: 'opened-uuid' },
         }),
       isSharingAllowed:
         over.isSharingAllowed ?? jest.fn().mockResolvedValue(true),
-    };
-    const pageRepo = {
-      findById:
-        over.findById ?? jest.fn().mockResolvedValue({ id: 'opened-uuid' }),
-    };
-    const pagePermissionRepo = {
-      hasRestrictedAncestor:
-        over.hasRestrictedAncestor ?? jest.fn().mockResolvedValue(false),
     };
     const publicShareChat = {
       resolveShareRole:
@@ -67,16 +69,12 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
     const deps: ShareAssistantDeps = {
       aiSettings: aiSettings as never,
       shareService: shareService as never,
-      pageRepo: pageRepo as never,
-      pagePermissionRepo: pagePermissionRepo as never,
       publicShareChat: publicShareChat as never,
     };
     return {
       deps,
       aiSettings,
       shareService,
-      pageRepo,
-      pagePermissionRepo,
       publicShareChat,
     };
   }
@@ -119,42 +117,46 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
   });
 
   it('assistant disabled => 404 and NO share/page/model lookups', async () => {
-    const { deps, shareService, pageRepo, publicShareChat } = makeDeps({
+    const { deps, shareService, publicShareChat } = makeDeps({
       assistantEnabled: false,
     });
     expect(await statusOf(deps, body())).toBe(404);
-    expect(shareService.getShareForPage).not.toHaveBeenCalled();
-    expect(pageRepo.findById).not.toHaveBeenCalled();
+    // The whole share/page resolve is skipped when the feature is off.
+    expect(shareService.resolveReadableSharePage).not.toHaveBeenCalled();
     expect(publicShareChat.getShareChatModel).not.toHaveBeenCalled();
   });
 
   it('share.id !== body.shareId => 404 (cross-share id swap rejected)', async () => {
-    const { deps, publicShareChat } = makeDeps({
-      getShareForPage: jest.fn().mockResolvedValue({
-        id: 'OTHER-SHARE',
-        pageId: 'root',
-        spaceId: 'space-1',
-        sharedPage: null,
-      }),
+    // A cross-share id swap makes the canonical boundary return null (it checks
+    // share.id === requested shareId internally).
+    const { deps, shareService, publicShareChat } = makeDeps({
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
     });
     expect(await statusOf(deps, body({ shareId: 'SHARE-A' }))).toBe(404);
+    expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
+      'SHARE-A',
+      'opened-page',
+      'ws-1',
+    );
     // Never reached the model resolution for an unusable share.
     expect(publicShareChat.getShareChatModel).not.toHaveBeenCalled();
   });
 
-  it('opened page unresolvable (pageRepo.findById -> null) => fail-closed 404', async () => {
+  it('opened page unresolvable / deleted (resolve -> null) => fail-closed 404', async () => {
     const { deps } = makeDeps({
-      findById: jest.fn().mockResolvedValue(null),
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
     });
     expect(await statusOf(deps, body())).toBe(404);
   });
 
   it('restricted descendant => 404 (same as out-of-tree, no existence leak)', async () => {
-    const { deps, pagePermissionRepo } = makeDeps({
-      hasRestrictedAncestor: jest.fn().mockResolvedValue(true),
+    // The canonical boundary folds the restricted-ancestor gate in: a restricted
+    // descendant resolves to null, indistinguishable from an out-of-tree page.
+    const { deps, shareService } = makeDeps({
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
     });
     expect(await statusOf(deps, body())).toBe(404);
-    expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalled();
+    expect(shareService.resolveReadableSharePage).toHaveBeenCalled();
   });
 
   it('getShareChatModel throws AiNotConfiguredException => 503', async () => {

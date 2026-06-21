@@ -128,28 +128,82 @@ export class ShareService {
     }
   }
 
-  async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
-    const share = await this.getShareForPage(dto.pageId, workspaceId);
+  /**
+   * THE share access boundary in ONE place.
+   *
+   * Answers exactly: "does this (shareId, pageId) pair resolve to a usable,
+   * non-restricted, live page WITHIN this share?" Returns the resolved
+   * `{ share, page }` on success, or `null` on ANY failure (share not found /
+   * wrong workspace / out-of-tree page / share-id mismatch / missing /
+   * soft-deleted / restricted ancestor).
+   *
+   * This is the single canonical sequence that every public-share read path
+   * must funnel through, so no path can skip a check (most importantly the
+   * restricted-ancestor gate, which `getShareForPage` does NOT perform on its
+   * own). The checks run in this fixed order:
+   *   1. getShareForPage(pageId, workspaceId)   — page reachable in this ws?
+   *   2. share.id === shareId                   — and it is THIS share?
+   *      (pass `null`/`undefined` shareId to skip the match when the caller has
+   *       no independent requested shareId — getSharedPage resolves the share
+   *       FROM the page, so there is nothing to cross-check.)
+   *   3. pageRepo.findById(pageId, ...)         — page row (+ content/creator)
+   *   4. !page.deletedAt                        — live (defense in depth:
+   *      getShareForPage already excludes deleted anchors)
+   *   5. !hasRestrictedAncestor(page.id)        — not a restricted descendant
+   *
+   * `isSharingAllowed` is intentionally NOT part of this boundary: it is an
+   * orthogonal workspace/space toggle that each call-site layers separately
+   * (share.controller after getSharedPage; the assistant funnel as its own
+   * gate). Folding it in here would silently change those call-sites' grading.
+   */
+  async resolveReadableSharePage(
+    shareId: string | null | undefined,
+    pageId: string,
+    workspaceId: string,
+    opts?: { includeCreator?: boolean },
+  ): Promise<{
+    share: NonNullable<Awaited<ReturnType<ShareService['getShareForPage']>>>;
+    page: Page;
+  } | null> {
+    const share = await this.getShareForPage(pageId, workspaceId);
+    if (!share) return null;
 
-    if (!share) {
-      throw new NotFoundException('Shared page not found');
-    }
+    // Only ever an equality check against the server-resolved share id; an
+    // attacker-supplied shareId can never widen access. Skipped when the caller
+    // passes no shareId (it resolved the share from the page itself).
+    if (shareId != null && share.id !== shareId) return null;
 
-    const page = await this.pageRepo.findById(dto.pageId, {
+    const page = await this.pageRepo.findById(pageId, {
       includeContent: true,
-      includeCreator: true,
+      includeCreator: opts?.includeCreator ?? false,
     });
+    if (!page || page.deletedAt) return null;
 
-    if (!page || page.deletedAt) {
+    // Restricted descendants are hidden from the public view even inside an
+    // includeSubPages share; getShareForPage does NOT exclude them.
+    if (await this.pagePermissionRepo.hasRestrictedAncestor(page.id)) {
+      return null;
+    }
+
+    return { share, page };
+  }
+
+  async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
+    // Resolve via the single canonical boundary. There is no independent
+    // requested shareId here (the share is resolved FROM the page), so no
+    // share-id match is performed.
+    const resolved = await this.resolveReadableSharePage(
+      null,
+      dto.pageId,
+      workspaceId,
+      { includeCreator: true },
+    );
+
+    if (!resolved) {
       throw new NotFoundException('Shared page not found');
     }
 
-    // Block access to restricted pages
-    const isRestricted =
-      await this.pagePermissionRepo.hasRestrictedAncestor(page.id);
-    if (isRestricted) {
-      throw new NotFoundException('Shared page not found');
-    }
+    const { share, page } = resolved;
 
     page.content = await this.updatePublicAttachments(page);
 

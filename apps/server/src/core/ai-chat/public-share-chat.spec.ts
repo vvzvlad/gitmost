@@ -525,17 +525,15 @@ describe('PublicShareChatService.tryConsumeWorkspaceQuota', () => {
 describe('PublicShareChatToolsService share scoping', () => {
   it('getSharePage rejects a page that does not resolve to THIS share (no existence leak)', async () => {
     const shareService = {
-      // The page resolves to a DIFFERENT share id.
-      getShareForPage: jest.fn().mockResolvedValue({ id: 'OTHER-SHARE' }),
+      // An out-of-share / cross-share page => the canonical boundary returns null.
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
       updatePublicAttachments: jest.fn(),
     };
-    const pageRepo = { findById: jest.fn() };
-    const pagePermissionRepo = { hasRestrictedAncestor: jest.fn() };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       {} as never,
-      pageRepo as never,
-      pagePermissionRepo as never,
+      {} as never,
+      {} as never,
     );
 
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -546,37 +544,29 @@ describe('PublicShareChatToolsService share scoping', () => {
     await expect(getSharePage.execute({ pageId: 'p-outside' })).rejects.toThrow(
       /not part of this published share/i,
     );
-    // It must NOT have fetched/returned any content for an out-of-share page.
-    expect(pageRepo.findById).not.toHaveBeenCalled();
+    // The tool delegated the resolve to the canonical boundary with the
+    // forShare-scoped shareId, and returned NO content for a non-resolving page.
+    expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
+      'THIS-SHARE',
+      'p-outside',
+      'ws-1',
+    );
     expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
-    // The restricted check is never even reached for an out-of-share page.
-    expect(pagePermissionRepo.hasRestrictedAncestor).not.toHaveBeenCalled();
   });
 
   it('getSharePage BLOCKS a restricted descendant inside THIS share with the SAME generic error (content leak fix)', async () => {
+    // A restricted descendant resolves to this share but is hidden from the
+    // public view; the canonical boundary folds that gate in and returns null,
+    // so the tool 404s it with the same generic message as out-of-share.
     const shareService = {
-      // The restricted page DOES resolve to this share (includeSubPages tree)...
-      getShareForPage: jest.fn().mockResolvedValue({ id: 'THIS-SHARE' }),
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
       updatePublicAttachments: jest.fn(),
-    };
-    // ...and the page itself exists and is not deleted.
-    const pageRepo = {
-      findById: jest
-        .fn()
-        .mockResolvedValue({ id: 'p-restricted', title: 'Secret', content: {} }),
-    };
-    // ...but it has a restricted ancestor (its own page_permissions row), so the
-    // public view 404s it — the tool must NOT return its content.
-    const pagePermissionRepo = {
-      hasRestrictedAncestor: jest
-        .fn()
-        .mockImplementation(async (id: string) => id === 'p-restricted'),
     };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       {} as never,
-      pageRepo as never,
-      pagePermissionRepo as never,
+      {} as never,
+      {} as never,
     );
 
     const tools = svc.forShare('THIS-SHARE', 'ws-1');
@@ -587,11 +577,7 @@ describe('PublicShareChatToolsService share scoping', () => {
     await expect(
       getSharePage.execute({ pageId: 'p-restricted' }),
     ).rejects.toThrow(/not part of this published share/i);
-    // The restricted check ran on the resolved page id...
-    expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalledWith(
-      'p-restricted',
-    );
-    // ...and no content was ever sanitized/returned.
+    // No content was ever sanitized/returned for the blocked page.
     expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
   });
 
@@ -735,25 +721,32 @@ describe('public-share assistant boundary locks (red-team regression guards)', (
     // Even if a caller forged body.shareId, getSharePage re-derives the share for
     // the requested pageId and rejects anything not resolving to THIS share —
     // exactly the boundary that held under red-team.
+    // forShare is scoped to the FORGED share id the attacker passed; the page
+    // resolves to a DIFFERENT (REAL) share, so the canonical boundary — which
+    // matches share.id === requested shareId internally — returns null.
     const shareService = {
-      getShareForPage: jest.fn().mockResolvedValue({ id: 'REAL-SHARE' }),
+      resolveReadableSharePage: jest.fn().mockResolvedValue(null),
       updatePublicAttachments: jest.fn(),
     };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       {} as never,
-      { findById: jest.fn() } as never,
-      { hasRestrictedAncestor: jest.fn() } as never,
+      {} as never,
+      {} as never,
     );
-    // forShare is scoped to the FORGED share id the attacker passed...
     const tools = svc.forShare('FORGED-SHARE', 'ws-1');
     const getSharePage = tools.getSharePage as {
       execute: (args: { pageId: string }) => Promise<unknown>;
     };
-    // ...but the page resolves to REAL-SHARE, so the re-derivation rejects it.
     await expect(
       getSharePage.execute({ pageId: 'p-elsewhere' }),
     ).rejects.toThrow(/not part of this published share/i);
+    // The forged share id is the scope the boundary re-derivation rejects against.
+    expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
+      'FORGED-SHARE',
+      'p-elsewhere',
+      'ws-1',
+    );
   });
 
   it('transcript injection is filtered: only user|assistant survive; forged tool/system roles are dropped', () => {

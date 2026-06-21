@@ -13,11 +13,13 @@ describe('PublicShareChatToolsService.forShare', () => {
     getShareTree?: jest.Mock;
     findById?: jest.Mock;
     searchPage?: jest.Mock;
-    getShareForPage?: jest.Mock;
+    resolveReadableSharePage?: jest.Mock;
   } = {}) {
     const shareService = {
       getShareTree: over.getShareTree ?? jest.fn(),
-      getShareForPage: over.getShareForPage ?? jest.fn(),
+      // The single canonical (shareId, pageId) -> readable page boundary.
+      resolveReadableSharePage:
+        over.resolveReadableSharePage ?? jest.fn(),
       updatePublicAttachments: jest.fn(),
     };
     const searchService = { searchPage: over.searchPage ?? jest.fn() };
@@ -120,13 +122,15 @@ describe('PublicShareChatToolsService.forShare', () => {
   });
 
   describe('getSharePage blank guard', () => {
-    it('blank pageId => throws "A pageId is required." WITHOUT calling getShareForPage', async () => {
-      const { svc, shareService } = makeService({ getShareForPage: jest.fn() });
+    it('blank pageId => throws "A pageId is required." WITHOUT resolving the share', async () => {
+      const { svc, shareService } = makeService({
+        resolveReadableSharePage: jest.fn(),
+      });
       const tools = svc.forShare('SHARE-A', 'ws-1');
       await expect(
         (tools.getSharePage as unknown as ToolExec).execute({ pageId: '   ' }),
       ).rejects.toThrow('A pageId is required.');
-      expect(shareService.getShareForPage).not.toHaveBeenCalled();
+      expect(shareService.resolveReadableSharePage).not.toHaveBeenCalled();
     });
   });
 
@@ -168,13 +172,15 @@ describe('PublicShareChatToolsService.forShare', () => {
         content: rawContent,
       };
 
-      const { svc, shareService, pageRepo, pagePermissionRepo } = makeService({
-        // getShareForPage resolves to THIS share (id matches the forShare scope).
-        getShareForPage: jest.fn().mockResolvedValue({ id: 'SHARE-A' }),
-        findById: jest.fn().mockResolvedValue(page),
+      const { svc, shareService } = makeService({
+        // The canonical boundary resolves the page to THIS share, live and
+        // unrestricted, returning { share, page }. (Membership + liveness +
+        // restriction are now asserted directly in the resolveReadableSharePage
+        // unit test in share.service.spec.ts.)
+        resolveReadableSharePage: jest
+          .fn()
+          .mockResolvedValue({ share: { id: 'SHARE-A' }, page }),
       });
-      // Page has no restricted ancestor => passes the restriction gate.
-      pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(false);
       // The sanitizer returns the SANITIZED content (raw secrets removed).
       shareService.updatePublicAttachments.mockResolvedValue(sanitizedContent);
 
@@ -183,16 +189,12 @@ describe('PublicShareChatToolsService.forShare', () => {
         pageId: ' page-1 ',
       })) as { title: string; markdown: string };
 
-      // Membership + liveness + restriction checks were all consulted.
-      expect(shareService.getShareForPage).toHaveBeenCalledWith(
+      // The tool delegates the whole access resolve to the canonical boundary,
+      // passing the forShare-scoped shareId + the (trimmed) requested pageId.
+      expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
+        'SHARE-A',
         'page-1',
         'ws-1',
-      );
-      expect(pageRepo.findById).toHaveBeenCalledWith('page-1', {
-        includeContent: true,
-      });
-      expect(pagePermissionRepo.hasRestrictedAncestor).toHaveBeenCalledWith(
-        'page-1',
       );
 
       // CRITICAL: the sanitizer MUST be called with the page before any content
@@ -210,30 +212,23 @@ describe('PublicShareChatToolsService.forShare', () => {
     });
   });
 
-  describe('getSharePage soft-deleted page', () => {
-    it('findById returns a soft-deleted page (deletedAt set) => generic error, NO content fetch (updatePublicAttachments not called, nothing leaked)', async () => {
-      const deletedPage = {
-        id: 'page-1',
-        title: 'Deleted Page',
-        deletedAt: new Date(),
-        content: { type: 'doc', content: [] },
-      };
-      const { svc, shareService, pagePermissionRepo } = makeService({
-        getShareForPage: jest.fn().mockResolvedValue({ id: 'SHARE-A' }),
-        findById: jest.fn().mockResolvedValue(deletedPage),
+  describe('getSharePage non-resolving page (deleted / restricted / out-of-share)', () => {
+    it('resolveReadableSharePage returns null (e.g. soft-deleted page) => generic error, NO content sanitized/returned', async () => {
+      // The canonical boundary 404s a soft-deleted / restricted / out-of-tree
+      // page uniformly by returning null; the tool must surface the SAME generic
+      // message and never sanitize/return any content.
+      const { svc, shareService } = makeService({
+        resolveReadableSharePage: jest.fn().mockResolvedValue(null),
       });
 
       const tools = svc.forShare('SHARE-A', 'ws-1');
-      // Same generic message as an out-of-share page (no info leak).
       await expect(
         (tools.getSharePage as unknown as ToolExec).execute({
           pageId: 'page-1',
         }),
       ).rejects.toThrow('That page is not part of this published share.');
 
-      // Short-circuits before the restriction gate AND before the sanitizer:
-      // no content is ever fetched/returned for a soft-deleted page.
-      expect(pagePermissionRepo.hasRestrictedAncestor).not.toHaveBeenCalled();
+      // No content is ever fetched/returned for a non-resolving page.
       expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
     });
   });
