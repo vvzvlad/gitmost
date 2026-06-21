@@ -31,7 +31,7 @@ import {
 } from './public-share-chat.service';
 import { evaluateShareAssistantFunnel } from './public-share-chat.funnel';
 import { deriveShareAccess } from './public-share-chat.access';
-import type { UIMessage } from 'ai';
+import { isTextUIPart, type UIMessage } from 'ai';
 
 /**
  * Anonymous, read-only AI assistant over a SINGLE public share tree.
@@ -281,6 +281,15 @@ export async function resolveShareAssistantRequest(
     throw new HttpException('Too many messages', 413);
   }
   for (const m of messages) {
+    const parts = Array.isArray(m?.parts) ? m.parts : [];
+    // The server runs no tools on the anonymous path, so a client tool/non-text
+    // part is never legitimate. Reject before the size check: it keeps the char
+    // cap meaningful (a forged tool-result/file/data part would otherwise bypass
+    // it and bloat the model input) and avoids stringifying an attacker-sized
+    // payload via convertToModelMessages.
+    if (parts.some((p) => !isTextUIPart(p))) {
+      throw new HttpException('Unsupported message content', 400);
+    }
     if (uiMessageTextLength(m) > MAX_SHARE_MESSAGE_CHARS) {
       throw new HttpException('Message too long', 413);
     }
