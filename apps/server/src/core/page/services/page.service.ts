@@ -18,6 +18,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { MovePageDto } from '../dto/move-page.dto';
+import { shapeSidebarPagesTree } from './sidebar-pages-tree.util';
 import { generateSlugId } from '../../../common/helpers';
 import { getPageTitle } from '../../../common/helpers';
 import { executeTx } from '@docmost/db/utils';
@@ -1425,37 +1426,13 @@ export class PageService {
       permissionMap = new Map(accessiblePages.map((p) => [p.id, p.canEdit]));
     }
 
-    // Derive hasChildren from the FINAL set: a node has children iff some
-    // returned row points to it as parent. In a restricted space this set is
-    // already pruned/filtered, so inaccessible children are not revealed.
-    const parentIds = new Set<string>();
-    for (const p of pages) {
-      if (p.parentPageId) parentIds.add(p.parentPageId);
-    }
-
-    const shaped = pages.map((p) => ({
-      id: p.id,
-      slugId: p.slugId,
-      title: p.title,
-      icon: p.icon,
-      position: p.position,
-      parentPageId: p.parentPageId,
-      spaceId: p.spaceId,
-      hasChildren: parentIds.has(p.id),
-      canEdit: hasRestrictions
-        ? Boolean(permissionMap?.get(p.id)) && (spaceCanEdit ?? true)
-        : (spaceCanEdit ?? true),
-    }));
-
-    // Order by position with byte order, matching the sidebar's
-    // `position collate "C"` SQL ordering. position is non-null in returned
-    // rows; treat a null defensively as sorting last.
-    shaped.sort((a, b) => {
-      if (a.position == null) return b.position == null ? 0 : 1;
-      if (b.position == null) return -1;
-      return Buffer.compare(Buffer.from(a.position), Buffer.from(b.position));
+    // Shape into sidebar items (derive hasChildren, apply per-branch canEdit,
+    // order by position). Extracted as a pure helper so the load-bearing logic
+    // is unit-testable directly (see sidebar-pages-tree.util.ts / its spec).
+    return shapeSidebarPagesTree(pages, {
+      hasRestrictions,
+      spaceCanEdit,
+      permissionMap,
     });
-
-    return shaped;
   }
 }
