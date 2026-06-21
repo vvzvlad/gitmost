@@ -3,8 +3,10 @@
 // invalid JSON), pass an object through unchanged. Shared by patchNode /
 // insertNode (and the analogous updatePageJson content parsing).
 //
-// This mirrors `packages/mcp/src/lib/parse-node-arg.ts` byte-for-byte. We
-// cannot import that helper here: `@docmost/mcp` is ESM-only and this server
+// This is behaviorally identical to `packages/mcp/src/lib/parse-node-arg.ts`
+// (the function logic, default/explicit throw messages and branch order match;
+// only comments and quote style differ). We cannot import that helper here:
+// `@docmost/mcp` is ESM-only and this server
 // compiles with module:commonjs, so it is loaded at runtime via the
 // `new Function('import()')` trick (see docmost-client.loader.ts). Sharing
 // runtime code across that ESM/CJS boundary by a normal import is impossible,
