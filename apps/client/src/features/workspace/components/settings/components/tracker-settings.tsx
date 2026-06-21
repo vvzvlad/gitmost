@@ -1,7 +1,5 @@
-import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
-import { useAtom } from "jotai";
 import { useState } from "react";
-import { updateWorkspace } from "@/features/workspace/services/workspace-service.ts";
+import { useWorkspaceSetting } from "@/features/workspace/hooks/use-workspace-setting.ts";
 import {
   Button,
   Group,
@@ -10,7 +8,6 @@ import {
   Text,
   Textarea,
 } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import useUserRole from "@/hooks/use-user-role.tsx";
 import { useTranslation } from "react-i18next";
 
@@ -25,36 +22,15 @@ import { useTranslation } from "react-i18next";
  */
 export default function TrackerSettings() {
   const { t } = useTranslation();
-  const [workspace, setWorkspace] = useAtom(workspaceAtom);
+  const { workspace, isLoading, save } = useWorkspaceSetting("trackerHead");
   const { isAdmin } = useUserRole();
 
   const [value, setValue] = useState<string>(
     workspace?.settings?.trackerHead ?? "",
   );
-  const [isLoading, setIsLoading] = useState(false);
 
   async function handleSave() {
-    setIsLoading(true);
-    try {
-      const updated = await updateWorkspace({ trackerHead: value });
-      setWorkspace({
-        ...updated,
-        settings: {
-          ...updated.settings,
-          trackerHead: value,
-        },
-      });
-      notifications.show({ message: t("Updated successfully") });
-    } catch (err) {
-      console.error("Failed to update tracker settings", err);
-      notifications.show({
-        message:
-          (err as any)?.response?.data?.message ?? t("Failed to update data"),
-        color: "red",
-      });
-    } finally {
-      setIsLoading(false);
-    }
+    await save(value);
   }
 
   return (

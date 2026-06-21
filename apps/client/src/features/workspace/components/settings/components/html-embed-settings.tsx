@@ -1,9 +1,6 @@
-import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
-import { useAtom } from "jotai";
 import { useState } from "react";
-import { updateWorkspace } from "@/features/workspace/services/workspace-service.ts";
+import { useWorkspaceSetting } from "@/features/workspace/hooks/use-workspace-setting.ts";
 import { Switch, Stack, Paper, Group, Text, List } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import useUserRole from "@/hooks/use-user-role.tsx";
 import { useTranslation } from "react-i18next";
 
@@ -18,40 +15,18 @@ import { useTranslation } from "react-i18next";
  */
 export default function HtmlEmbedSettings() {
   const { t } = useTranslation();
-  const [workspace, setWorkspace] = useAtom(workspaceAtom);
+  const { workspace, isLoading, save } = useWorkspaceSetting("htmlEmbed");
   const { isAdmin } = useUserRole();
 
   const [checked, setChecked] = useState<boolean>(
     workspace?.settings?.htmlEmbed ?? false,
   );
-  const [isLoading, setIsLoading] = useState(false);
 
   async function handleToggle(value: boolean) {
-    setIsLoading(true);
     const previous = checked;
     setChecked(value); // optimistic update
-    try {
-      const updated = await updateWorkspace({ htmlEmbed: value });
-      // Force settings.htmlEmbed to the new value so the atom is consistent even
-      // if the response shape omits it.
-      setWorkspace({
-        ...updated,
-        settings: {
-          ...updated.settings,
-          htmlEmbed: value,
-        },
-      });
-      notifications.show({ message: t("Updated successfully") });
-    } catch (err) {
-      console.log(err);
-      setChecked(previous); // revert on failure
-      notifications.show({
-        message: t("Failed to update data"),
-        color: "red",
-      });
-    } finally {
-      setIsLoading(false);
-    }
+    const ok = await save(value);
+    if (!ok) setChecked(previous); // revert on failure
   }
 
   return (

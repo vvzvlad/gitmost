@@ -87,9 +87,16 @@ export class ShareController {
       workspace.id,
     );
 
+    // Resolve the identity name only when the assistant is enabled, so the
+    // anonymous widget can label messages with the configured persona name.
+    const aiAssistantName = aiAssistant
+      ? await this.aiSettings.resolvePublicShareAssistantName(workspace.id)
+      : null;
+
     return {
       ...shareData,
       aiAssistant,
+      aiAssistantName,
       features: this.licenseCheckService.resolveFeatures(
         workspace.licenseKey,
         workspace.plan,
