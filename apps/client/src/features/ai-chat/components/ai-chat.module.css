@@ -88,16 +88,18 @@
         opacity: 0.4;
     }
     40% {
-        transform: translateY(-3px);
+        /* Bounce height is driven by --bounce so reduced-motion can dampen it
+           (below) without disabling the animation outright. */
+        transform: translateY(var(--bounce, -6px));
         opacity: 1;
     }
 }
 
-/* Respect reduced-motion preferences: fall back to a static dimmed state. */
+/* Respect reduced-motion preferences: keep a smaller bounce instead of a full
+   stop, so the "thinking" indicator still reads as active rather than frozen. */
 @media (prefers-reduced-motion: reduce) {
     .typingDots span {
-        animation: none;
-        opacity: 0.6;
+        --bounce: -3px;
     }
 }
 
