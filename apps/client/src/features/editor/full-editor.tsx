@@ -14,8 +14,11 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { IconInfoCircle } from "@tabler/icons-react";
-import { useAtom } from "jotai";
-import { userAtom } from "@/features/user/atoms/current-user-atom.ts";
+import { useAtom, useAtomValue } from "jotai";
+import {
+  userAtom,
+  workspaceAtom,
+} from "@/features/user/atoms/current-user-atom.ts";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { useTranslation } from "react-i18next";
 import { IContributor } from "@/features/page/types/page.types.ts";
@@ -24,7 +27,11 @@ import { PageEditMode } from "@/features/user/types/user.types.ts";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
 import { DeletedPageBanner } from "@/features/page/trash/components/deleted-page-banner.tsx";
 import clsx from "clsx";
-import { currentPageEditModeAtom } from "@/features/editor/atoms/editor-atoms.ts";
+import {
+  currentPageEditModeAtom,
+  pageEditorAtom,
+} from "@/features/editor/atoms/editor-atoms.ts";
+import { DictationGroup } from "@/features/editor/components/fixed-toolbar/groups/dictation-group";
 
 const MemoizedTitleEditor = React.memo(TitleEditor);
 const MemoizedPageEditor = React.memo(PageEditor);
@@ -65,6 +72,8 @@ export function FullEditor({
   canComment,
 }: FullEditorProps) {
   const [user] = useAtom(userAtom);
+  const workspace = useAtomValue(workspaceAtom);
+  const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
   const fullPageWidth = user.settings?.preferences?.fullPageWidth;
   const editorToolbarEnabled =
     user.settings?.preferences?.editorToolbar ?? false;
@@ -104,6 +113,9 @@ export function FullEditor({
       <PageByline
         creator={creator}
         contributors={contributors}
+        editable={editable}
+        isEditMode={isEditMode}
+        isDictationEnabled={isDictationEnabled}
       />
       <MemoizedPageEditor
         pageId={pageId}
@@ -118,11 +130,24 @@ export function FullEditor({
 type PageBylineProps = {
   creator?: PageUser;
   contributors?: IContributor[];
+  editable?: boolean;
+  isEditMode?: boolean;
+  isDictationEnabled?: boolean;
 };
 
-function PageByline({ creator, contributors }: PageBylineProps) {
+function PageByline({
+  creator,
+  contributors,
+  editable,
+  isEditMode,
+  isDictationEnabled,
+}: PageBylineProps) {
   const { t } = useTranslation();
   const detailsTriggerProps = useAsideTriggerProps("details");
+  const editor = useAtomValue(pageEditorAtom);
+  const showDictation = Boolean(
+    isDictationEnabled && editable && isEditMode && editor,
+  );
 
   const otherContributors = (contributors ?? []).filter(
     (c) => c.id !== creator?.id,
@@ -207,6 +232,9 @@ function PageByline({ creator, contributors }: PageBylineProps) {
           <IconInfoCircle size={20} stroke={1.5} />
         </ActionIcon>
       </Tooltip>
+      {/* Shown only in edit mode when workspace dictation is enabled, so
+          dictation stays reachable even when the fixed toolbar is hidden. */}
+      {showDictation && editor && <DictationGroup editor={editor} />}
     </Group>
   );
 }
