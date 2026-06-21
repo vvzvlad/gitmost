@@ -672,6 +672,7 @@
   "Take a look at the current document": "Посмотри текущий документ",
   "AI agent is typing…": "AI-агент печатает…",
   "{{name}} is typing…": "{{name}} печатает…",
+  "AI is typing…": "AI печатает…",
   "Agent role": "Роль агента",
   "AI chat": "AI-чат",
   "AI chat is disabled for this workspace.": "AI-чат отключён для этого рабочего пространства.",
