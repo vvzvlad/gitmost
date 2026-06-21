@@ -1,4 +1,5 @@
 import {
+  collectPageEmbedsFromPmJson,
   collectReferencesFromPmJson,
   collectTransclusionsFromPmJson,
 } from '../utils/transclusion-prosemirror.util';
@@ -236,5 +237,50 @@ describe('collectReferencesFromPmJson', () => {
       { sourcePageId: 'p1', transclusionId: 'e1' },
       { sourcePageId: 'p2', transclusionId: 'e2' },
     ]);
+  });
+});
+
+describe('collectPageEmbedsFromPmJson', () => {
+  it('returns [] for null/undefined doc', () => {
+    expect(collectPageEmbedsFromPmJson(null)).toEqual([]);
+    expect(collectPageEmbedsFromPmJson(undefined)).toEqual([]);
+  });
+
+  it('collects unique sourcePageIds from pageEmbed nodes', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'pageEmbed', attrs: { sourcePageId: 'p1' } },
+        { type: 'pageEmbed', attrs: { sourcePageId: 'p1' } },
+        { type: 'pageEmbed', attrs: { sourcePageId: 'p2' } },
+      ],
+    };
+    expect(collectPageEmbedsFromPmJson(doc)).toEqual([
+      { sourcePageId: 'p1' },
+      { sourcePageId: 'p2' },
+    ]);
+  });
+
+  it('does not throw (returns gracefully) on a self-referential / cyclic doc', () => {
+    // A cycle is unreachable via JSON.parse, but a hand-built non-JSON input
+    // could carry one; the depth guard must stop the recursion instead of
+    // overflowing the stack.
+    const node: any = { type: 'doc', content: [] };
+    node.content.push(node); // self-reference
+
+    let got: ReturnType<typeof collectPageEmbedsFromPmJson>;
+    expect(() => {
+      got = collectPageEmbedsFromPmJson(node);
+    }).not.toThrow();
+    expect(got!).toEqual([]);
+  });
+
+  it('does not throw on nesting far beyond the depth cap', () => {
+    // Build a chain deeper than MAX_PM_WALK_DEPTH (1000) ending in a pageEmbed.
+    let inner: any = { type: 'pageEmbed', attrs: { sourcePageId: 'deep' } };
+    for (let i = 0; i < 5000; i++) {
+      inner = { type: 'doc', content: [inner] };
+    }
+    expect(() => collectPageEmbedsFromPmJson(inner)).not.toThrow();
   });
 });

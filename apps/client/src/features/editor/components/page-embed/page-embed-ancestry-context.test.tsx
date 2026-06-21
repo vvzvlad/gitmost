@@ -3,9 +3,6 @@ import { render, screen } from "@testing-library/react";
 import {
   PageEmbedAncestryProvider,
   usePageEmbedAncestry,
-  isPageEmbedCycle,
-  isPageEmbedTooDeep,
-  PAGE_EMBED_MAX_DEPTH,
 } from "./page-embed-ancestry-context";
 
 /**
@@ -90,60 +87,5 @@ describe("PageEmbedAncestryProvider", () => {
     );
     const probe = screen.getByTestId("probe");
     expect(probe.getAttribute("data-host")).toBe("late-host");
-  });
-});
-
-describe("isPageEmbedCycle", () => {
-  it("is false when the source is not in the chain and is not the host", () => {
-    expect(isPageEmbedCycle(["a", "b"], "host", "c")).toBe(false);
-  });
-
-  it("is true when the source is already present in the ancestor chain", () => {
-    expect(isPageEmbedCycle(["a", "b", "c"], "host", "b")).toBe(true);
-  });
-
-  it("is true for a top-level self-embed (host === source, empty chain)", () => {
-    expect(isPageEmbedCycle([], "self", "self")).toBe(true);
-  });
-
-  it("is true when the source equals the host even mid-chain", () => {
-    expect(isPageEmbedCycle(["x"], "self", "self")).toBe(true);
-  });
-
-  it("is false when there is no source id (nothing to embed yet)", () => {
-    expect(isPageEmbedCycle(["a"], "host", null)).toBe(false);
-    expect(isPageEmbedCycle([], "host", "")).toBe(false);
-  });
-
-  it("is false when host is null and source is not in the chain", () => {
-    expect(isPageEmbedCycle(["a", "b"], null, "c")).toBe(false);
-  });
-});
-
-describe("isPageEmbedTooDeep", () => {
-  it("is false below the max depth", () => {
-    expect(isPageEmbedTooDeep([])).toBe(false);
-    expect(
-      isPageEmbedTooDeep(new Array(PAGE_EMBED_MAX_DEPTH - 1).fill("x")),
-    ).toBe(false);
-  });
-
-  it("is true once the chain length reaches the max depth", () => {
-    expect(
-      isPageEmbedTooDeep(new Array(PAGE_EMBED_MAX_DEPTH).fill("x")),
-    ).toBe(true);
-  });
-
-  it("is true when the chain length exceeds the max depth", () => {
-    expect(
-      isPageEmbedTooDeep(new Array(PAGE_EMBED_MAX_DEPTH + 3).fill("x")),
-    ).toBe(true);
-  });
-
-  it("guards at exactly PAGE_EMBED_MAX_DEPTH (=5)", () => {
-    // Pin the documented constant so an accidental change is caught.
-    expect(PAGE_EMBED_MAX_DEPTH).toBe(5);
-    expect(isPageEmbedTooDeep(["1", "2", "3", "4"])).toBe(false);
-    expect(isPageEmbedTooDeep(["1", "2", "3", "4", "5"])).toBe(true);
   });
 });

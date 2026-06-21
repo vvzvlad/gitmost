@@ -19,8 +19,6 @@ import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator'
 import { SkipTransform } from '../../common/decorators/skip-transform.decorator';
 import { PUBLIC_SHARE_AI_THROTTLER } from '../../integrations/throttle/throttler-names';
 import { ShareService } from '../share/share.service';
-import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
-import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { AiNotConfiguredException } from '../../integrations/ai/ai-not-configured.exception';
 import {
@@ -31,7 +29,7 @@ import {
 } from './public-share-chat.service';
 import { evaluateShareAssistantFunnel } from './public-share-chat.funnel';
 import { deriveShareAccess } from './public-share-chat.access';
-import type { UIMessage } from 'ai';
+import { isTextUIPart, type UIMessage } from 'ai';
 
 /**
  * Anonymous, read-only AI assistant over a SINGLE public share tree.
@@ -53,8 +51,6 @@ export class PublicShareChatController {
 
   constructor(
     private readonly shareService: ShareService,
-    private readonly pagePermissionRepo: PagePermissionRepo,
-    private readonly pageRepo: PageRepo,
     private readonly aiSettings: AiSettingsService,
     private readonly publicShareChat: PublicShareChatService,
   ) {}
@@ -89,8 +85,6 @@ export class PublicShareChatController {
       {
         aiSettings: this.aiSettings,
         shareService: this.shareService,
-        pageRepo: this.pageRepo,
-        pagePermissionRepo: this.pagePermissionRepo,
         publicShareChat: this.publicShareChat,
       },
       { workspaceId: workspace.id, body },
@@ -145,12 +139,13 @@ export class PublicShareChatController {
  */
 export interface ShareAssistantDeps {
   aiSettings: Pick<AiSettingsService, 'isPublicShareAssistantEnabled'>;
+  // The (shareId, pageId) -> readable page resolve is the SINGLE canonical
+  // share-access boundary (resolveReadableSharePage); isSharingAllowed remains a
+  // separate workspace/space toggle this funnel layers on top of it.
   shareService: Pick<
     ShareService,
-    'getShareForPage' | 'isSharingAllowed'
+    'resolveReadableSharePage' | 'isSharingAllowed'
   >;
-  pageRepo: Pick<PageRepo, 'findById'>;
-  pagePermissionRepo: Pick<PagePermissionRepo, 'hasRestrictedAncestor'>;
   publicShareChat: Pick<
     PublicShareChatService,
     | 'resolveShareRole'
@@ -162,7 +157,9 @@ export interface ShareAssistantDeps {
 /** The resolved, validated request ready to stream (everything is non-null). */
 export interface ResolvedShareAssistantRequest {
   shareId: string;
-  share: NonNullable<Awaited<ReturnType<ShareService['getShareForPage']>>>;
+  share: NonNullable<
+    Awaited<ReturnType<ShareService['resolveReadableSharePage']>>
+  >['share'];
   model: Awaited<ReturnType<PublicShareChatService['getShareChatModel']>>;
   role: AiAgentRole | null;
   messages: UIMessage[];
@@ -196,33 +193,40 @@ export async function resolveShareAssistantRequest(
   const assistantEnabled =
     await deps.aiSettings.isPublicShareAssistantEnabled(workspaceId);
 
-  // 2/3. Share usable? Page in share? Resolved via the page's share membership,
-  //      since getShareForPage ALSO yields the share + workspace. The opened
-  //      page is then gated by an explicit restricted-ancestor check (which
-  //      getShareForPage does NOT do) so a restricted page hidden from the
-  //      public view is graded not-in-share.
-  let share: Awaited<ReturnType<ShareService['getShareForPage']>> | undefined;
+  // 2/3. Share usable? Page in share? The (shareId, pageId) -> readable page
+  //      resolve is delegated WHOLE to the single canonical share-access
+  //      boundary: resolveReadableSharePage returns non-null ONLY when the page
+  //      resolves to THIS share, matches the requested shareId, is live, and has
+  //      NO restricted ancestor (the gate getShareForPage does NOT itself do).
+  //      So `pageInShare` is exactly "resolve succeeded". `isSharingAllowed`
+  //      stays a SEPARATE workspace/space toggle layered on top (it is NOT part
+  //      of the resolve), feeding `shareUsable` via deriveShareAccess.
+  let share:
+    | NonNullable<
+        Awaited<ReturnType<ShareService['resolveReadableSharePage']>>
+      >['share']
+    | undefined;
   let shareUsable = false;
   let pageInShare = false;
   if (assistantEnabled && shareId && pageId) {
-    share = await deps.shareService.getShareForPage(pageId, workspaceId);
-    if (share && share.id === shareId) {
+    const resolved = await deps.shareService.resolveReadableSharePage(
+      shareId,
+      pageId,
+      workspaceId,
+    );
+    if (resolved) {
+      share = resolved.share;
       const sharingAllowed = await deps.shareService.isSharingAllowed(
         workspaceId,
         share.spaceId,
       );
-      // hasRestrictedAncestor matches on the page UUID only, while the opened
-      // pageId may be a slugId, so resolve to the UUID first (cheap base-fields
-      // lookup). An unresolvable opened page fails closed (not-in-share).
-      const openedPageRow = await deps.pageRepo.findById(pageId);
-      const restricted = openedPageRow
-        ? await deps.pagePermissionRepo.hasRestrictedAncestor(openedPageRow.id)
-        : true;
+      // The resolve already guarantees the page is in THIS share AND not
+      // restricted; deriveShareAccess folds in the orthogonal sharing toggle.
       ({ shareUsable, pageInShare } = deriveShareAccess({
         resolvedShareId: share.id,
         requestedShareId: shareId,
         sharingAllowed,
-        restricted,
+        restricted: false,
       }));
     }
   }
@@ -281,6 +285,15 @@ export async function resolveShareAssistantRequest(
     throw new HttpException('Too many messages', 413);
   }
   for (const m of messages) {
+    const parts = Array.isArray(m?.parts) ? m.parts : [];
+    // The server runs no tools on the anonymous path, so a client tool/non-text
+    // part is never legitimate. Reject before the size check: it keeps the char
+    // cap meaningful (a forged tool-result/file/data part would otherwise bypass
+    // it and bloat the model input) and avoids stringifying an attacker-sized
+    // payload via convertToModelMessages.
+    if (parts.some((p) => !isTextUIPart(p))) {
+      throw new HttpException('Unsupported message content', 400);
+    }
     if (uiMessageTextLength(m) > MAX_SHARE_MESSAGE_CHARS) {
       throw new HttpException('Message too long', 413);
     }

@@ -23,63 +23,70 @@ export class WsService {
   }
 
   // Drop the cached spaceHasRestrictions verdict for a space. spaceHasRestrictions
-  // caches "does this space have ANY restricted page" for WS_CACHE_TTL_MS (30s),
-  // and emitTreeEvent / emitCommentEvent take a room-wide fast path when it is
-  // false. The FIRST time a space gains a restriction (or loses its last one)
-  // this cached verdict goes stale for up to the TTL, during which a title/icon-
-  // bearing tree payload could fan out to the whole room. This MUST be called by
-  // whatever code creates or removes a page's restriction (the page-access /
-  // page-permission grant/revoke/restrict path), passing the affected page's
-  // spaceId, so the next emit re-reads hasRestrictedPagesInSpace.
+  // caches "does this space have ANY restricted page" for WS_CACHE_TTL_MS, and
+  // emitTreeEvent / emitCommentEvent take a room-wide fast path when it is false.
+  // The FIRST time a space gains a restriction (or loses its last one) this cached
+  // verdict goes stale for up to the TTL, during which a title/icon-bearing tree
+  // payload could fan out to the whole room. This MUST be called by whatever code
+  // creates or removes a page's restriction (the page-access / page-permission
+  // grant/revoke/restrict path), passing the affected page's spaceId, so the next
+  // emit re-reads hasRestrictedPagesInSpace immediately instead of serving a
+  // stale cached value.
   //
   // NOTE: on this branch there is no permission-mutation site to call this from —
   // the page-access/page-permission repo mutators (insertPageAccess /
   // insertPagePermissions / deletePagePermission* / updatePagePermissionRole)
   // have ZERO callers in apps/server/src; PageAccessService only validates access.
-  // This primitive is kept (and tested) so that flow, when it lands, has the
-  // correct hook to invalidate the cache.
+  // Because there is nothing to wire the invalidation to yet, the documented
+  // fallback was applied instead: WS_CACHE_TTL_MS was dropped from 30s to 3s (see
+  // ws.utils.ts) to bound the worst-case stale-leak window. This primitive is kept
+  // (and tested) so the restriction-mutation flow, when it lands, has the correct
+  // hook to invalidate the cache.
   //
   // TODO: the future restriction-mutation endpoint (restrict/grant/revoke page
-  // access) MUST call this with the affected page's spaceId.
+  // access) MUST call this with the affected page's spaceId; once wired, the TTL
+  // can be raised back to a higher value if desired.
   async invalidateSpaceRestrictionCache(spaceId: string): Promise<void> {
     await this.cacheManager.del(
       `${WS_SPACE_RESTRICTION_CACHE_PREFIX}${spaceId}`,
     );
   }
 
+  // Comment broadcast. Thin wrapper over the single restriction-aware emit so
+  // comment and tree events share ONE restriction gate (see
+  // emitRestrictedAwareToSpace).
   async emitCommentEvent(
     spaceId: string,
     pageId: string,
     data: any,
   ): Promise<void> {
-    const room = getSpaceRoomName(spaceId);
-
-    const hasRestrictions = await this.spaceHasRestrictions(spaceId);
-    if (!hasRestrictions) {
-      this.server.to(room).emit('message', data);
-      return;
-    }
-
-    const isRestricted =
-      await this.pagePermissionRepo.hasRestrictedAncestor(pageId);
-    if (!isRestricted) {
-      this.server.to(room).emit('message', data);
-      return;
-    }
-
-    await this.broadcastToAuthorizedUsers(room, null, pageId, data);
+    await this.emitRestrictedAwareToSpace(spaceId, pageId, data);
   }
 
-  // Server-origin tree broadcast. Mirrors emitCommentEvent exactly: respects
-  // per-space page restrictions (spaceHasRestrictions -> hasRestrictedAncestor
-  // -> broadcastToAuthorizedUsers), otherwise fans the event out to everyone in
-  // the space room.
+  // Server-origin tree broadcast. Thin wrapper over the single restriction-aware
+  // emit (see emitRestrictedAwareToSpace), identical routing to emitCommentEvent.
   //
   // The author is NOT excluded. The client receiver is idempotent (addTreeNode
   // early-returns if the node id already exists; deleteTreeNode is a no-op if
   // the node is gone), so the UI author's optimistic node is preserved, and
   // non-UI creators (MCP / AI / REST API) still see their own page appear.
   async emitTreeEvent(
+    spaceId: string,
+    pageId: string,
+    data: any,
+  ): Promise<void> {
+    await this.emitRestrictedAwareToSpace(spaceId, pageId, data);
+  }
+
+  // The single restriction-aware space emit. This is the ONLY place that decides
+  // authorized-vs-unauthorized routing for server-origin space-room events
+  // (comment + tree). Both emitCommentEvent and emitTreeEvent forward to it with
+  // their own `data`; the payload/room/event are otherwise identical.
+  //
+  // Routing: if the space has no restrictions at all (cached fast path), or the
+  // page has no restricted ancestor, fan `data` out to the whole space room;
+  // otherwise restrict the broadcast to the users authorized to see `pageId`.
+  private async emitRestrictedAwareToSpace(
     spaceId: string,
     pageId: string,
     data: any,

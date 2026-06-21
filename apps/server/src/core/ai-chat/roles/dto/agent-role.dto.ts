@@ -5,9 +5,10 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, TransformFnParams, Type } from 'class-transformer';
 import { AI_DRIVERS, AiDriver } from '../../../../integrations/ai/ai.types';
 
 /**
@@ -20,8 +21,16 @@ export class RoleModelConfigDto {
   @IsIn(AI_DRIVERS)
   driver?: AiDriver;
 
+  // Free-form provider model id (providers add models constantly, so we don't
+  // pin an allow-list). We still reject empty/whitespace-only garbage at the API
+  // boundary: trim first, then require a non-empty, bounded string. An invalid
+  // model still surfaces as a clear provider 503 at resolve time, not here.
   @IsOptional()
+  @Transform(({ value }: TransformFnParams) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
+  @MinLength(1)
   @MaxLength(200)
   chatModel?: string;
 }

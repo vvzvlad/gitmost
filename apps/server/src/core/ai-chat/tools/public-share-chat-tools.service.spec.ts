@@ -13,23 +13,23 @@ describe('PublicShareChatToolsService.forShare', () => {
     getShareTree?: jest.Mock;
     findById?: jest.Mock;
     searchPage?: jest.Mock;
-    getShareForPage?: jest.Mock;
+    resolveReadableSharePage?: jest.Mock;
   } = {}) {
     const shareService = {
       getShareTree: over.getShareTree ?? jest.fn(),
-      getShareForPage: over.getShareForPage ?? jest.fn(),
+      // The single canonical (shareId, pageId) -> readable page boundary.
+      resolveReadableSharePage:
+        over.resolveReadableSharePage ?? jest.fn(),
       updatePublicAttachments: jest.fn(),
     };
     const searchService = { searchPage: over.searchPage ?? jest.fn() };
     const pageRepo = { findById: over.findById ?? jest.fn() };
-    const pagePermissionRepo = { hasRestrictedAncestor: jest.fn() };
     const svc = new PublicShareChatToolsService(
       shareService as never,
       searchService as never,
       pageRepo as never,
-      pagePermissionRepo as never,
     );
-    return { svc, shareService, searchService, pageRepo, pagePermissionRepo };
+    return { svc, shareService, searchService, pageRepo };
   }
 
   describe('listSharePages', () => {
@@ -120,13 +120,114 @@ describe('PublicShareChatToolsService.forShare', () => {
   });
 
   describe('getSharePage blank guard', () => {
-    it('blank pageId => throws "A pageId is required." WITHOUT calling getShareForPage', async () => {
-      const { svc, shareService } = makeService({ getShareForPage: jest.fn() });
+    it('blank pageId => throws "A pageId is required." WITHOUT resolving the share', async () => {
+      const { svc, shareService } = makeService({
+        resolveReadableSharePage: jest.fn(),
+      });
       const tools = svc.forShare('SHARE-A', 'ws-1');
       await expect(
         (tools.getSharePage as unknown as ToolExec).execute({ pageId: '   ' }),
       ).rejects.toThrow('A pageId is required.');
-      expect(shareService.getShareForPage).not.toHaveBeenCalled();
+      expect(shareService.resolveReadableSharePage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getSharePage positive branch (security-relevant sanitization)', () => {
+    it('page belongs to THIS share, live, not restricted => sanitizes content (updatePublicAttachments) before jsonToMarkdown, returns {title, markdown} derived from SANITIZED content', async () => {
+      // The raw page content carries a comment mark + a raw attachment id that
+      // MUST NOT reach the anonymous model. updatePublicAttachments is the
+      // sanitizer that strips those; we assert the returned markdown is derived
+      // from its OUTPUT, never from the raw page.content.
+      const rawContent = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'SECRET_RAW_ATTACHMENT_ID_should_be_stripped',
+                marks: [{ type: 'comment', attrs: { commentId: 'c-1' } }],
+              },
+            ],
+          },
+        ],
+      };
+      const sanitizedContent = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [{ type: 'text', text: 'sanitized public text' }],
+          },
+        ],
+      };
+
+      const page = {
+        id: 'page-1',
+        title: 'Live Page',
+        deletedAt: null,
+        content: rawContent,
+      };
+
+      const { svc, shareService } = makeService({
+        // The canonical boundary resolves the page to THIS share, live and
+        // unrestricted, returning { share, page }. (Membership + liveness +
+        // restriction are now asserted directly in the resolveReadableSharePage
+        // unit test in share.service.spec.ts.)
+        resolveReadableSharePage: jest
+          .fn()
+          .mockResolvedValue({ share: { id: 'SHARE-A' }, page }),
+      });
+      // The sanitizer returns the SANITIZED content (raw secrets removed).
+      shareService.updatePublicAttachments.mockResolvedValue(sanitizedContent);
+
+      const tools = svc.forShare('SHARE-A', 'ws-1');
+      const out = (await (tools.getSharePage as unknown as ToolExec).execute({
+        pageId: ' page-1 ',
+      })) as { title: string; markdown: string };
+
+      // The tool delegates the whole access resolve to the canonical boundary,
+      // passing the forShare-scoped shareId + the (trimmed) requested pageId.
+      expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
+        'SHARE-A',
+        'page-1',
+        'ws-1',
+      );
+
+      // CRITICAL: the sanitizer MUST be called with the page before any content
+      // is converted. If a future change drops/reorders this, raw comment marks
+      // and attachment ids would leak to the anonymous model.
+      expect(shareService.updatePublicAttachments).toHaveBeenCalledTimes(1);
+      expect(shareService.updatePublicAttachments).toHaveBeenCalledWith(page);
+
+      // The returned markdown derives from the SANITIZED content, not the raw
+      // page.content: it contains the sanitized text and NONE of the secrets.
+      expect(out.title).toBe('Live Page');
+      expect(out.markdown).toContain('sanitized public text');
+      expect(out.markdown).not.toContain('SECRET_RAW_ATTACHMENT_ID');
+      expect(out.markdown).not.toContain('commentId');
+    });
+  });
+
+  describe('getSharePage non-resolving page (deleted / restricted / out-of-share)', () => {
+    it('resolveReadableSharePage returns null (e.g. soft-deleted page) => generic error, NO content sanitized/returned', async () => {
+      // The canonical boundary 404s a soft-deleted / restricted / out-of-tree
+      // page uniformly by returning null; the tool must surface the SAME generic
+      // message and never sanitize/return any content.
+      const { svc, shareService } = makeService({
+        resolveReadableSharePage: jest.fn().mockResolvedValue(null),
+      });
+
+      const tools = svc.forShare('SHARE-A', 'ws-1');
+      await expect(
+        (tools.getSharePage as unknown as ToolExec).execute({
+          pageId: 'page-1',
+        }),
+      ).rejects.toThrow('That page is not part of this published share.');
+
+      // No content is ever fetched/returned for a non-resolving page.
+      expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
     });
   });
 });

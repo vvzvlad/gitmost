@@ -121,6 +121,49 @@ describe('AiAgentRolesService guards', () => {
       expect(repo.findById).toHaveBeenCalledTimes(2);
     });
 
+    it('happy path returns toView(updated) reflecting the POST-update re-fetch (full AgentRoleView shape)', async () => {
+      // The pre-update guard sees the OLD row; the post-update re-fetch returns a
+      // DISTINCT row (the freshly-persisted state). The service must return the
+      // view built from the SECOND findById, not the first — proving update()
+      // returns toView(updated) rather than toView(existing).
+      const { service, repo } = makeService();
+      const oldRow = makeRow({ id: 'r1', name: 'Old name' });
+      const createdAt = new Date('2024-01-01T00:00:00.000Z');
+      const updatedAt = new Date('2024-06-20T00:00:00.000Z');
+      const updatedRow = makeRow({
+        id: 'r1',
+        name: 'New name',
+        emoji: '🤖',
+        description: 'updated description',
+        instructions: 'updated instructions',
+        modelConfig: { driver: 'gemini', chatModel: 'gemini-2.0-flash' } as never,
+        enabled: false,
+        createdAt,
+        updatedAt,
+      });
+      repo.findById
+        .mockResolvedValueOnce(oldRow)
+        .mockResolvedValueOnce(updatedRow);
+
+      const result = await service.update('ws-1', 'r1', {
+        name: 'New name',
+      } as UpdateAgentRoleDto);
+
+      // The returned value is the full admin view of the RE-FETCHED row, with
+      // exactly the fields toView produces (no extra/leaked columns).
+      expect(result).toEqual({
+        id: 'r1',
+        name: 'New name',
+        emoji: '🤖',
+        description: 'updated description',
+        instructions: 'updated instructions',
+        modelConfig: { driver: 'gemini', chatModel: 'gemini-2.0-flash' },
+        enabled: false,
+        createdAt,
+        updatedAt,
+      });
+    });
+
     it('emoji/description tri-state: emoji:"" => null (clear), emoji omitted => undefined (unchanged), description:"  " => null', async () => {
       const { service, repo } = makeService({ existing: makeRow() });
 

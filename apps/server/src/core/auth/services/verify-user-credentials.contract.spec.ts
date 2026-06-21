@@ -108,9 +108,10 @@ describe('AuthService no-side-effect contract (item 4)', () => {
   // source level for the same reason as the rest of this file: AuthService cannot
   // be imported under this jest config to spy on comparePasswordHash live.
   describe('constant-time missing/disabled branch (item 4)', () => {
-    // Isolate the body of the `if (!user || isUserDisabled(user)) { ... }` guard.
+    // Isolate the body of the
+    // `if (!user || isUserDisabled(user) || !user.password) { ... }` guard.
     const guardMatch = verifyBody.match(
-      /if \(!user \|\| isUserDisabled\(user\)\) \{([\s\S]*?)\n {4}\}/,
+      /if \(!user \|\| isUserDisabled\(user\) \|\| !user\.password\) \{([\s\S]*?)\n {4}\}/,
     );
 
     it('the missing/disabled guard runs a bcrypt compare before throwing', () => {
@@ -124,6 +125,25 @@ describe('AuthService no-side-effect contract (item 4)', () => {
       const throwIdx = guardBody.indexOf('throw new');
       expect(compareIdx).toBeGreaterThanOrEqual(0);
       expect(throwIdx).toBeGreaterThan(compareIdx);
+    });
+
+    // null-password (SSO/LDAP-only) accounts have user.password === null. The
+    // missing/disabled guard MUST also short-circuit on a null/empty password,
+    // otherwise comparePasswordHash(loginDto.password, null) feeds null to native
+    // bcrypt, which REJECTS ("data and hash arguments required") — a 500 on
+    // /api/auth/login and a leaky, limiter-evading 401 on /mcp. A regression that
+    // drops this null check fails here.
+    it('the guard also short-circuits null-password (SSO/LDAP-only) accounts', () => {
+      expect(guardMatch).not.toBeNull();
+      // The guard CONDITION includes a null/empty password check...
+      expect(verifyBody).toMatch(
+        /if \(!user \|\| isUserDisabled\(user\) \|\| !user\.password\)/,
+      );
+      // ...and the password-less branch reuses the same dummy-compare-then-throw
+      // body, so it never reaches the real `comparePasswordHash(..., user.password)`.
+      const guardBody = guardMatch![1];
+      expect(guardBody).toContain('comparePasswordHash');
+      expect(guardBody).toContain('throw new');
     });
 
     it('uses a module-level dummy hash constant (never a real credential)', () => {

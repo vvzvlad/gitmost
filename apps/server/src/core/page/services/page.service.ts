@@ -18,6 +18,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { MovePageDto } from '../dto/move-page.dto';
+import { shapeSidebarPagesTree } from './sidebar-pages-tree.util';
 import { generateSlugId } from '../../../common/helpers';
 import { getPageTitle } from '../../../common/helpers';
 import { executeTx } from '@docmost/db/utils';
@@ -232,6 +233,17 @@ export class PageService {
 
     const isAgent = provenance?.actor === 'agent';
 
+    // Detect a real title/icon change so the WS tree listener can broadcast an
+    // `updateOne` to the space (rename / icon swap) WITHOUT re-broadcasting on a
+    // content-only save. Only treat a field as changed when the DTO actually
+    // carries it AND its value differs from what is already stored — a no-op
+    // save (same title, or a content-only update where these are undefined)
+    // produces no tree snapshot, so the listener stays quiet.
+    const titleChanged =
+      updatePageDto.title !== undefined && updatePageDto.title !== page.title;
+    const iconChanged =
+      updatePageDto.icon !== undefined && updatePageDto.icon !== page.icon;
+
     await this.pageRepo.updatePage(
       {
         title: updatePageDto.title,
@@ -249,6 +261,22 @@ export class PageService {
         contributorIds: contributorIds,
       },
       page.id,
+      undefined,
+      // Enrich PAGE_UPDATED only when title/icon actually changed. The snapshot
+      // values come from the server-side data being persisted (DTO when present,
+      // otherwise the unchanged stored value), never relayed from the client.
+      titleChanged || iconChanged
+        ? {
+            treeUpdate: {
+              id: page.id,
+              slugId: page.slugId,
+              spaceId: page.spaceId,
+              parentPageId: page.parentPageId ?? null,
+              ...(titleChanged ? { title: updatePageDto.title } : {}),
+              ...(iconChanged ? { icon: updatePageDto.icon } : {}),
+            },
+          }
+        : undefined,
     );
 
     this.generalQueue
@@ -903,9 +931,27 @@ export class PageService {
       }
     }
 
+    // Server-side cycle guard: a page may not be moved into itself or into any
+    // page within its own subtree. Without this, an MCP/REST/agent caller (or a
+    // fast drag racing the client check) could persist a cycle and broadcast it.
+    // Only relevant when re-parenting under a concrete parent; moving to root
+    // (parentPageId null/undefined) can never create a cycle.
+    if (dto.parentPageId) {
+      if (dto.parentPageId === dto.pageId) {
+        throw new BadRequestException('Cannot move a page into its own subtree');
+      }
+      // Walk the destination parent's ancestor chain (reusing the breadcrumb
+      // ancestor CTE). If the page being moved appears among those ancestors,
+      // the destination lives inside the moved page's subtree -> cycle.
+      const destAncestors = await this.getPageBreadCrumbs(dto.parentPageId);
+      if (destAncestors.some((ancestor) => ancestor.id === dto.pageId)) {
+        throw new BadRequestException('Cannot move a page into its own subtree');
+      }
+    }
+
     const isAgent = provenance?.actor === 'agent';
 
-    await this.pageRepo.updatePage(
+    const updateResult = await this.pageRepo.updatePage(
       {
         position: dto.position,
         parentPageId: parentPageId,
@@ -920,6 +966,13 @@ export class PageService {
       },
       dto.pageId,
     );
+
+    // Guard against a phantom broadcast: if the row was concurrently deleted or
+    // otherwise not updated, skip the PAGE_MOVED event so we don't replay a move
+    // built from the stale pre-read snapshot to every connected client.
+    if (!updateResult || updateResult.numUpdatedRows === 0n) {
+      return;
+    }
 
     // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
     // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
@@ -1339,37 +1392,13 @@ export class PageService {
       permissionMap = new Map(accessiblePages.map((p) => [p.id, p.canEdit]));
     }
 
-    // Derive hasChildren from the FINAL set: a node has children iff some
-    // returned row points to it as parent. In a restricted space this set is
-    // already pruned/filtered, so inaccessible children are not revealed.
-    const parentIds = new Set<string>();
-    for (const p of pages) {
-      if (p.parentPageId) parentIds.add(p.parentPageId);
-    }
-
-    const shaped = pages.map((p) => ({
-      id: p.id,
-      slugId: p.slugId,
-      title: p.title,
-      icon: p.icon,
-      position: p.position,
-      parentPageId: p.parentPageId,
-      spaceId: p.spaceId,
-      hasChildren: parentIds.has(p.id),
-      canEdit: hasRestrictions
-        ? Boolean(permissionMap?.get(p.id)) && (spaceCanEdit ?? true)
-        : (spaceCanEdit ?? true),
-    }));
-
-    // Order by position with byte order, matching the sidebar's
-    // `position collate "C"` SQL ordering. position is non-null in returned
-    // rows; treat a null defensively as sorting last.
-    shaped.sort((a, b) => {
-      if (a.position == null) return b.position == null ? 0 : 1;
-      if (b.position == null) return -1;
-      return Buffer.compare(Buffer.from(a.position), Buffer.from(b.position));
+    // Shape into sidebar items (derive hasChildren, apply per-branch canEdit,
+    // order by position). Extracted as a pure helper so the load-bearing logic
+    // is unit-testable directly (see sidebar-pages-tree.util.ts / its spec).
+    return shapeSidebarPagesTree(pages, {
+      hasRestrictions,
+      spaceCanEdit,
+      permissionMap,
     });
-
-    return shaped;
   }
 }

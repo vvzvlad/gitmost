@@ -16,6 +16,16 @@ import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EventName } from '../../../common/events/event.contants';
+import { TreeUpdateSnapshot } from '../../listeners/page.listener';
+
+/**
+ * Optional extras for the PAGE_UPDATED event emitted by updatePage(s). Lets the
+ * caller attach a tree snapshot for a title/icon change so the WS listener can
+ * broadcast an `updateOne` without re-reading the DB.
+ */
+export interface UpdatePageEventOpts {
+  treeUpdate?: TreeUpdateSnapshot;
+}
 
 @Injectable()
 export class PageRepo {
@@ -138,14 +148,16 @@ export class PageRepo {
     updatablePage: UpdatablePage,
     pageId: string,
     trx?: KyselyTransaction,
+    opts?: UpdatePageEventOpts,
   ) {
-    return this.updatePages(updatablePage, [pageId], trx);
+    return this.updatePages(updatablePage, [pageId], trx, opts);
   }
 
   async updatePages(
     updatePageData: UpdatablePage,
     pageIds: string[],
     trx?: KyselyTransaction,
+    opts?: UpdatePageEventOpts,
   ) {
     const result = await dbOrTx(this.db, trx)
       .updateTable('pages')
@@ -160,6 +172,11 @@ export class PageRepo {
     this.eventEmitter.emit(EventName.PAGE_UPDATED, {
       pageIds: pageIds,
       workspaceId: updatePageData.workspaceId,
+      // Optional tree snapshot for the WS listener (variant A). The caller sets
+      // it ONLY for a title/icon change so the listener can broadcast an
+      // `updateOne` without a DB read; content-only saves omit it and the
+      // listener skips them. Built from server-side data, never client-relayed.
+      ...(opts?.treeUpdate ? { treeUpdate: opts.treeUpdate } : {}),
     });
 
     return result;

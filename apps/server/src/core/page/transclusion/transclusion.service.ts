@@ -267,6 +267,18 @@ export class TransclusionService {
    * accumulate cross-workspace edges, but rows are still NOT per-viewer
    * permission-filtered. EVERY consumer of these rows MUST permission-filter at
    * read time (as `lookupTemplate` does via `filterViewerAccessiblePageIds`).
+   *
+   * NOTE (write-only graph — intentional, not dead): as of now the
+   * `page_template_references` table is WRITE-ONLY in production. It is populated
+   * by three paths (this diff-sync, `insertTemplateReferencesForPages` for new
+   * pages, and the collab persistence flush) but has NO production reader: the
+   * only read of the table is `findByReferencePageId` below, used purely to
+   * compute this sync's insert/delete diff — there is no reverse-navigation
+   * consumer yet (issue #34's dead `findReferencePageIdsBySource` reader was
+   * already removed). The graph is retained deliberately for an upcoming
+   * "used in N pages" reverse-navigation consumer; keep writing it so that
+   * feature has correct history when it lands. Do not remove the write graph or
+   * its migration just because nothing reads it today. (See Gitea #94.)
    */
   async syncPageTemplateReferences(
     referencePageId: string,
@@ -387,6 +399,15 @@ export class TransclusionService {
    * pages return `no_access`, missing/deleted pages return `not_found`. Does NOT
    * require `is_template` — any accessible page can be embedded (the template
    * flag only affects picker discovery).
+   *
+   * FLAT, single-level by design: this returns each requested page's own content
+   * verbatim and never recurses. If a returned page itself contains a `pageEmbed`
+   * node pointing at another page, that embed is left unresolved — the client
+   * issues a follow-up lookup for it. Because there is no server-side recursive
+   * expansion, there is no server depth/cycle to guard here: the embed depth/cycle
+   * cap (PAGE_EMBED_MAX_DEPTH) is purely a client RENDER concern. A scripted client
+   * that walks the graph manually is bounded by the per-user throttle (30/60s) on
+   * the controller plus the DTO's ArrayMaxSize(50) per call.
    */
   async lookupTemplate(
     sourcePageIds: string[],

@@ -19,6 +19,7 @@ import {
   PublicShareWorkspaceLimiter,
   createPublicShareWorkspaceLimiter,
 } from './public-share-workspace-limiter';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 
 /**
  * Loose shape of the anonymous public-share chat POST body. We do NOT bind a
@@ -150,9 +151,11 @@ export class PublicShareChatService {
     const resolved = await this.aiSettings.resolve(workspaceId);
     const roleId = resolved?.publicShareAssistantRoleId;
     if (!roleId) return null;
-    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
-    if (!role || !role.enabled) return null;
-    return role;
+    // Same shared invariant as the authenticated chat: only a live + enabled +
+    // workspace-scoped role applies; otherwise the built-in locked persona does.
+    return (
+      (await this.aiAgentRoleRepo.findLiveEnabled(roleId, workspaceId)) ?? null
+    );
   }
 
   /**
@@ -225,14 +228,10 @@ export class PublicShareChatService {
         maxOutputTokens: resolveShareAiMaxOutputTokens(),
         abortSignal: signal,
         onError: ({ error }) => {
-          const e = error as {
-            statusCode?: number;
-            message?: string;
-            stack?: string;
-          };
-          const errorText = e?.statusCode
-            ? `${e.statusCode}: ${e.message ?? String(error)}`
-            : (e?.message ?? String(error));
+          // Reuse the shared formatter so provider error formatting stays
+          // unified (statusCode + body) with the authenticated path.
+          const e = error as { stack?: string };
+          const errorText = describeProviderError(error, String(error));
           // Never persist anonymous transcripts; just log the failure.
           this.logger.error(
             `Public share chat stream error: ${errorText}`,
@@ -247,10 +246,11 @@ export class PublicShareChatService {
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
-          const e = error as { statusCode?: number; message?: string };
-          return e?.statusCode
-            ? `${e.statusCode}: ${e.message}`
-            : (e?.message ?? 'AI stream error');
+          // Reuse the shared formatter so provider error formatting stays
+          // unified between the log line and the streamed error message — a
+          // share reader sees 402/429/503 causes consistently with the
+          // authenticated path.
+          return describeProviderError(error, 'AI stream error');
         },
       });
 

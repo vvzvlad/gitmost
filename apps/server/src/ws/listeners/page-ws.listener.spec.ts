@@ -5,6 +5,7 @@ import {
   PageEvent,
   PageMovedEvent,
   TreeNodeSnapshot,
+  TreeUpdateSnapshot,
 } from '../../database/listeners/page.listener';
 
 const snapshot: TreeNodeSnapshot = {
@@ -228,5 +229,55 @@ describe('PageWsListener delete/move/restore handlers', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     expect(wsTree.broadcastRefetchRoot).toHaveBeenCalledTimes(1);
     expect(wsTree.broadcastRefetchRoot).toHaveBeenCalledWith('space-9');
+  });
+});
+
+describe('PageWsListener.onPageUpdated (rename / icon change)', () => {
+  let listener: PageWsListener;
+  let wsTree: { broadcastPageUpdated: jest.Mock };
+
+  const treeUpdate: TreeUpdateSnapshot = {
+    id: 'page-1',
+    slugId: 'slug-1',
+    spaceId: 'space-1',
+    parentPageId: null,
+    title: 'Renamed',
+    icon: '🚀',
+  };
+
+  beforeEach(async () => {
+    wsTree = {
+      broadcastPageUpdated: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [PageWsListener, { provide: WsTreeService, useValue: wsTree }],
+    }).compile();
+
+    listener = module.get<PageWsListener>(PageWsListener);
+  });
+
+  it('WITH a title/icon `treeUpdate`: broadcasts updateOne with that snapshot', async () => {
+    const event: PageEvent = {
+      pageIds: ['page-1'],
+      workspaceId: 'ws-1',
+      treeUpdate,
+    };
+
+    await listener.onPageUpdated(event);
+
+    expect(wsTree.broadcastPageUpdated).toHaveBeenCalledTimes(1);
+    expect(wsTree.broadcastPageUpdated).toHaveBeenCalledWith(treeUpdate);
+  });
+
+  it('content-only save (NO `treeUpdate`): does NOT broadcast', async () => {
+    const event: PageEvent = {
+      pageIds: ['page-1'],
+      workspaceId: 'ws-1',
+    };
+
+    await listener.onPageUpdated(event);
+
+    expect(wsTree.broadcastPageUpdated).not.toHaveBeenCalled();
   });
 });

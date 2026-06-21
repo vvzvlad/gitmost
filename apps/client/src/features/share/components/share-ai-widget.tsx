@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import MessageList from "@/features/ai-chat/components/message-list.tsx";
+import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 
 interface ShareAiWidgetProps {
   /** The share id (or key) the assistant is scoped to. */
@@ -181,7 +182,9 @@ export default function ShareAiWidget({
             mb="xs"
             title={t("Something went wrong")}
           >
-            {t("The assistant is unavailable right now. Please try again.")}
+            {/* Surface the real cause (provider/gating message) instead of a
+                generic line — same helper the internal chat uses. */}
+            {describeChatError(error.message ?? "", t)}
           </Alert>
         )}
 

@@ -84,6 +84,39 @@ export class FailedLoginLimiter {
     b.count += 1;
   }
 
+  /**
+   * Atomic check-and-reserve: if the key is already at/over the threshold this
+   * window, return false (blocked). Otherwise count this in-flight attempt
+   * (count += 1) and return true. Being synchronous, concurrent callers cannot
+   * interleave between the check and the increment, so the (threshold+1)-th
+   * concurrent attempt is rejected even before its bcrypt runs.
+   *
+   * This is the brute-force fix for the /mcp Basic path: the increment happens
+   * BEFORE the async credential check, not after it, so N concurrent requests for
+   * one email cannot all observe count=0 and all run bcrypt. A failed login then
+   * leaves the reservation in place (it IS the recorded failure); a SUCCESSFUL
+   * login clears it via reset(); a non-credential business error releases it via
+   * release() so it does not count as a guessed-password signal.
+   */
+  tryReserve(key: string, now: number = Date.now()): boolean {
+    const b = this.bucket(key, now);
+    if (b.count >= this.threshold) return false;
+    b.count += 1;
+    return true;
+  }
+
+  /**
+   * Undo a previous tryReserve for the key within the same window (count -= 1,
+   * floored at 0). Used to release an optimistic in-flight reservation when the
+   * attempt turned out NOT to be a password-guess signal (e.g. an "email not
+   * verified" business error), so it does not burn a victim's limiter budget.
+   * A no-op if the bucket rolled over to a fresh window in the meantime.
+   */
+  release(key: string, now: number = Date.now()): void {
+    const b = this.bucket(key, now);
+    if (b.count > 0) b.count -= 1;
+  }
+
   /** Clear the key after a successful login so it does not accumulate. */
   reset(key: string): void {
     this.buckets.delete(key);
@@ -530,51 +563,84 @@ export async function resolveMcpSessionConfig(
     // trusted proxy is configured; the per-email global key is the part that
     // does NOT depend on a trustworthy IP and is the real brute-force backstop.
     const emailKey = `email:${emailLc}`;
-    if (
-      deps.limiter.isBlocked(ipKey) ||
-      deps.limiter.isBlocked(ipEmailKey) ||
-      deps.limiter.isBlocked(emailKey)
-    ) {
+    // Atomic check-AND-reserve, synchronously and BEFORE any await. The old code
+    // did a read-only isBlocked() pre-check here and only recordFailure()'d the
+    // failure AFTER the awaited bcrypt login — so N concurrent requests for one
+    // email all saw count=0, all ran bcrypt, all failed, and only then all
+    // recorded, blowing far past the threshold. tryReserve() folds the check and
+    // the increment into one synchronous, non-interleavable step: it counts this
+    // in-flight attempt NOW, so the (threshold+1)-th concurrent attempt is
+    // rejected before its bcrypt ever runs. The reservation IS the recorded
+    // failure (no separate recordFailure on the failure path below); a successful
+    // login clears it via reset(), and a non-credential business error releases
+    // it via release(). Reserve ALL keys so each per-key budget is charged.
+    const ipOk = deps.limiter.tryReserve(ipKey);
+    const ipEmailOk = deps.limiter.tryReserve(ipEmailKey);
+    const emailOk = deps.limiter.tryReserve(emailKey);
+    if (!ipOk || !ipEmailOk || !emailOk) {
+      // At least one key is at/over threshold: blocked. Release the keys we DID
+      // manage to reserve in this same call so a rejected (already-throttled)
+      // request does not over-charge the keys that were still under budget — the
+      // same observable outcome as the old isBlocked() pre-check, which never
+      // incremented on a blocked request.
+      if (ipOk) deps.limiter.release(ipKey);
+      if (ipEmailOk) deps.limiter.release(ipEmailKey);
+      if (emailOk) deps.limiter.release(emailKey);
       throw new UnauthorizedException(
         'Too many failed MCP login attempts. Try again later.',
       );
     }
 
-    const workspace = await deps.findWorkspace();
-    if (!workspace) {
-      throw new UnauthorizedException('No workspace is configured.');
-    }
-
-    // SSO/MFA pre-token gate (BLOCKER fix): replicate the AuthController.login
-    // gates BEFORE any token is issued on the Basic path. If the workspace
-    // enforces SSO, or the EE MFA module is bundled and this user/workspace
-    // requires MFA, this throws and we never mint a token. The Bearer path is
-    // intentionally NOT gated here (its JWT was already minted post-gate). This
-    // runs on BOTH init and subsequent Basic requests, but it must run before
-    // login()/verifyCredentials so an SSO/MFA user cannot authenticate at all.
-    // We do NOT count a gate rejection toward the brute-force limiter: it is not
-    // a password-guess signal.
-    if (deps.enforceBasicGate) {
-      await deps.enforceBasicGate(workspace, {
-        email: basic.email,
-        password: basic.password,
-      });
-    }
-
-    // Fix 1 (init vs subsequent):
-    //   - SESSION INIT (no mcp-session-id): full login() mints the user JWT
-    //     (the one allowed session creation + audit event for this MCP
-    //     session). The DocmostClient caches that token, so later tool calls
-    //     never re-login.
-    //   - SUBSEQUENT request (has mcp-session-id): we only need to re-validate
-    //     the caller's credentials for anti-fixation. verifyCredentials() does
-    //     the SAME lookup/password/email-verified/disabled checks as login()
-    //     but mints NO session, writes NO audit row and updates NO lastLoginAt,
-    //     so a correct repeat does not spawn a DB session per request while a
-    //     wrong password still 401s. The getToken here is never used to mint a
-    //     new session: on a subsequent request the existing session already
-    //     holds its token; this config is only consulted at init.
+    // Everything from here through the credential evaluation runs UNDER one
+    // try/catch so a SINGLE rule governs the reservation we took above:
+    // "release the reserved keys unless the error is a genuine credential
+    // failure." That covers all three early-throw paths uniformly —
+    //   (a) findWorkspace() returning null (a CONFIG error),
+    //   (b) the SSO/MFA enforceBasicGate throwing (a BUSINESS error),
+    //   (c) login()/verifyCredentials() throwing a non-credential business error
+    //       (e.g. "email not verified") —
+    // none of which are password-guess signals, so none may burn a victim's
+    // limiter budget. Only a genuine credential failure (isCredentialsFailure)
+    // leaves the reservation in place, because the reservation IS its recorded
+    // failure. Without this, an attacker could exhaust a victim's per-email
+    // backstop with SSO/MFA-gated or misconfigured-workspace requests that never
+    // even run bcrypt. The reservation stays at the TOP (before any await) so the
+    // concurrency race the #83 fix closed is NOT re-introduced.
     try {
+      const workspace = await deps.findWorkspace();
+      if (!workspace) {
+        throw new UnauthorizedException('No workspace is configured.');
+      }
+
+      // SSO/MFA pre-token gate (BLOCKER fix): replicate the AuthController.login
+      // gates BEFORE any token is issued on the Basic path. If the workspace
+      // enforces SSO, or the EE MFA module is bundled and this user/workspace
+      // requires MFA, this throws and we never mint a token. The Bearer path is
+      // intentionally NOT gated here (its JWT was already minted post-gate). This
+      // runs on BOTH init and subsequent Basic requests, but it must run before
+      // login()/verifyCredentials so an SSO/MFA user cannot authenticate at all.
+      // We do NOT count a gate rejection toward the brute-force limiter: it is
+      // not a password-guess signal (the catch below releases the reservation).
+      if (deps.enforceBasicGate) {
+        await deps.enforceBasicGate(workspace, {
+          email: basic.email,
+          password: basic.password,
+        });
+      }
+
+      // Fix 1 (init vs subsequent):
+      //   - SESSION INIT (no mcp-session-id): full login() mints the user JWT
+      //     (the one allowed session creation + audit event for this MCP
+      //     session). The DocmostClient caches that token, so later tool calls
+      //     never re-login.
+      //   - SUBSEQUENT request (has mcp-session-id): we only need to re-validate
+      //     the caller's credentials for anti-fixation. verifyCredentials() does
+      //     the SAME lookup/password/email-verified/disabled checks as login()
+      //     but mints NO session, writes NO audit row and updates NO lastLoginAt,
+      //     so a correct repeat does not spawn a DB session per request while a
+      //     wrong password still 401s. The getToken here is never used to mint a
+      //     new session: on a subsequent request the existing session already
+      //     holds its token; this config is only consulted at init.
       if (deps.isSessionInit) {
         const authToken = await deps.login(
           { email: basic.email, password: basic.password },
@@ -593,14 +659,19 @@ export async function resolveMcpSessionConfig(
         workspace.id,
       );
     } catch (err) {
-      // Only count an actual CREDENTIALS failure (wrong email/password) toward
-      // the brute-force limiter. Business errors like "email not verified" are
-      // a 401/400 surface but are NOT a guessed-password signal, so they must
-      // not let an attacker burn a victim's limiter budget or mask brute-force.
-      if (isCredentialsFailure(err)) {
-        deps.limiter.recordFailure(ipKey);
-        deps.limiter.recordFailure(ipEmailKey);
-        deps.limiter.recordFailure(emailKey);
+      // The in-flight reservation taken above already counted this attempt, so
+      // an actual CREDENTIALS failure (wrong email/password) needs NO separate
+      // recordFailure — the reservation IS the recorded failure (avoiding the
+      // old double-count). But ANY other throw between the reservation and here
+      // — a missing-workspace config error, an SSO/MFA gate rejection, or a
+      // business error like "email not verified" — is a 401/400 surface, NOT a
+      // guessed-password signal, so it must not burn a victim's limiter budget:
+      // release the optimistic reservation (only the keys we actually reserved,
+      // which on this non-blocked path is all three) in that case.
+      if (!isCredentialsFailure(err)) {
+        deps.limiter.release(ipKey);
+        deps.limiter.release(ipEmailKey);
+        deps.limiter.release(emailKey);
       }
       const message =
         err instanceof Error && err.message
@@ -616,8 +687,17 @@ export async function resolveMcpSessionConfig(
     // email. The global email key is reset ONLY on a session-INIT login()
     // success (above), which is a single deliberate authentication, not a
     // high-frequency re-validation.
+    //
+    // Under the reserve model we DID optimistically increment emailKey up front
+    // (tryReserve), so a plain "leave it intact" would let every periodic tool
+    // call of the victim's own live session permanently grow their email bucket
+    // and throttle THEMSELVES. release() undoes exactly the one increment THIS
+    // call took (count -= 1), restoring the pre-request budget — it does NOT
+    // clear a parallel attacker's accumulated failures (that's reset()), so the
+    // brute-force backstop survives while the victim's success is budget-neutral.
     deps.limiter.reset(ipKey);
     deps.limiter.reset(ipEmailKey);
+    deps.limiter.release(emailKey);
     return {
       config: { apiUrl, getToken: async () => '' },
       identity: `basic:${emailLc}`,

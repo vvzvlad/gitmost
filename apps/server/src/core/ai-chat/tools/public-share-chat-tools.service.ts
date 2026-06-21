@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { ShareService } from '../../share/share.service';
 import { SearchService } from '../../search/search.service';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
-import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { jsonToMarkdown } from '../../../collaboration/collaboration.util';
 
 /**
@@ -22,10 +21,10 @@ import { jsonToMarkdown } from '../../../collaboration/collaboration.util';
  *  - search uses the existing share-scoped FTS branch
  *    (`shareId && !spaceId && !userId`), which itself restricts results to the
  *    share's pages and excludes restricted descendants;
- *  - reading a page first confirms, via `getShareForPage`, that the page
- *    resolves to THIS share AND (because getShareForPage does NOT itself
- *    exclude restricted descendants) that the page has no restricted ancestor,
- *    before returning any content.
+ *  - reading a page first confirms, via the single canonical
+ *    `ShareService.resolveReadableSharePage` boundary, that the page resolves
+ *    to THIS share, is live, and has no restricted ancestor (which
+ *    getShareForPage does NOT itself check), before returning any content.
  */
 @Injectable()
 export class PublicShareChatToolsService {
@@ -35,7 +34,6 @@ export class PublicShareChatToolsService {
     private readonly shareService: ShareService,
     private readonly searchService: SearchService,
     private readonly pageRepo: PageRepo,
-    private readonly pagePermissionRepo: PagePermissionRepo,
   ) {}
 
   /**
@@ -99,38 +97,23 @@ export class PublicShareChatToolsService {
           if (!id) {
             throw new Error('A pageId is required.');
           }
-          // Confirm the page resolves to THIS share (recursive CTE up the tree,
-          // honouring includeSubPages + workspace check). NOTE: getShareForPage
-          // joins only the `shares` table — it does NOT exclude restricted
-          // descendants — so membership alone is not sufficient (see the
-          // explicit restricted check below, which the public view also does).
-          // Not in this share => tool error WITHOUT leaking whether the page
-          // exists at all.
-          const share = await this.shareService.getShareForPage(
+          // Resolve via the SINGLE canonical share-access boundary: confirms the
+          // page resolves to THIS share (recursive CTE up the tree, honouring
+          // includeSubPages + workspace), the share id matches, the page is live
+          // (not soft-deleted), and it has NO restricted ancestor (a restricted
+          // descendant is hidden from the public view even inside an
+          // includeSubPages share). Any failure => null. Use the SAME generic
+          // message for every failure so the model cannot distinguish
+          // "restricted" / "deleted" / "not in share" / "doesn't exist".
+          const resolved = await this.shareService.resolveReadableSharePage(
+            shareId,
             id,
             workspaceId,
           );
-          if (!share || share.id !== shareId) {
+          if (!resolved) {
             throw new Error('That page is not part of this published share.');
           }
-
-          const page = await this.pageRepo.findById(id, {
-            includeContent: true,
-          });
-          if (!page || page.deletedAt) {
-            throw new Error('That page is not part of this published share.');
-          }
-
-          // A restricted descendant (a page with its own page_permissions /
-          // pageAccess row) is hidden from the public share view even when it
-          // sits inside an includeSubPages share. getShareForPage does NOT
-          // exclude it, so we must replicate the public view's restricted-
-          // ancestor gate here (ShareService.getSharedPage). Use the SAME
-          // generic message as an out-of-share page so the model cannot
-          // distinguish "restricted" from "not in share" (no info leak).
-          if (await this.pagePermissionRepo.hasRestrictedAncestor(page.id)) {
-            throw new Error('That page is not part of this published share.');
-          }
+          const { page } = resolved;
 
           // Reuse the public share-content sanitizer: strips comment marks and
           // tokenizes attachments for public delivery, exactly as the public

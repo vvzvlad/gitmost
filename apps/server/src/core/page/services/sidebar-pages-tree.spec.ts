@@ -1,68 +1,23 @@
 /**
- * Pure-logic test for getSidebarPagesTree's shaping/permission logic.
+ * Unit test for the REAL sidebar-tree shaping/permission logic.
  *
- * NOTE: We cannot import PageService directly here — its dependency chain
- * imports `src/collaboration/collaboration.util` via a bare `src/...` path, and
- * the server's jest config (package.json "jest".moduleNameMapper) has no
- * `^src/(.*)$` mapping, so the module fails to resolve under jest. That is a
- * pre-existing config gap unrelated to this feature. To still cover the
- * load-bearing logic we replicate the exact shaping algorithm from
- * PageService.getSidebarPagesTree below and assert against it. If the service
- * logic changes, keep this mirror in sync.
+ * PageService.getSidebarPagesTree delegates its load-bearing shaping (deriving
+ * hasChildren, applying the open/restricted-space canEdit branches, and
+ * position ordering) to the pure `shapeSidebarPagesTree` helper. We import and
+ * exercise that production helper directly here, so a regression in the real
+ * logic is caught. (The full PageService is not needed because the shaping is a
+ * self-contained pure transform over an already-fetched/filtered page set.)
  */
-
-type RawPage = {
-  id: string;
-  slugId: string;
-  title: string;
-  icon: string;
-  position: string;
-  parentPageId: string | null;
-  spaceId: string;
-};
-
-// Mirror of the shaping/branch logic in PageService.getSidebarPagesTree.
-function shapeTree(
-  pages: RawPage[],
-  opts: {
-    hasRestrictions: boolean;
-    spaceCanEdit?: boolean;
-    permissionMap?: Map<string, boolean>;
-  },
-) {
-  const parentIds = new Set<string>();
-  for (const p of pages) {
-    if (p.parentPageId) parentIds.add(p.parentPageId);
-  }
-
-  const shaped = pages.map((p) => ({
-    id: p.id,
-    slugId: p.slugId,
-    title: p.title,
-    icon: p.icon,
-    position: p.position,
-    parentPageId: p.parentPageId,
-    spaceId: p.spaceId,
-    hasChildren: parentIds.has(p.id),
-    canEdit: opts.hasRestrictions
-      ? Boolean(opts.permissionMap?.get(p.id)) && (opts.spaceCanEdit ?? true)
-      : (opts.spaceCanEdit ?? true),
-  }));
-
-  shaped.sort((a, b) => {
-    if (a.position == null) return b.position == null ? 0 : 1;
-    if (b.position == null) return -1;
-    return Buffer.compare(Buffer.from(a.position), Buffer.from(b.position));
-  });
-
-  return shaped;
-}
+import {
+  shapeSidebarPagesTree,
+  SidebarPageRow,
+} from './sidebar-pages-tree.util';
 
 const page = (
   id: string,
   parentPageId: string | null,
   position: string,
-): RawPage => ({
+): SidebarPageRow => ({
   id,
   slugId: `slug-${id}`,
   title: `Page ${id}`,
@@ -80,7 +35,7 @@ describe('getSidebarPagesTree shaping logic', () => {
       page('leaf', 'child', 'a0'),
     ];
 
-    const result = shapeTree(pages, {
+    const result = shapeSidebarPagesTree(pages, {
       hasRestrictions: false,
       spaceCanEdit: true,
     });
@@ -94,7 +49,7 @@ describe('getSidebarPagesTree shaping logic', () => {
 
   it('open space: spaceCanEdit=false makes every node read-only', () => {
     const pages = [page('root', null, 'a0'), page('child', 'root', 'a0')];
-    const result = shapeTree(pages, {
+    const result = shapeSidebarPagesTree(pages, {
       hasRestrictions: false,
       spaceCanEdit: false,
     });
@@ -105,7 +60,7 @@ describe('getSidebarPagesTree shaping logic', () => {
     // Simulates the filterAccessibleTreePages result: "child" was pruned, so
     // the returned set has no row with parent === root.
     const prunedPages = [page('root', null, 'a0')];
-    const result = shapeTree(prunedPages, {
+    const result = shapeSidebarPagesTree(prunedPages, {
       hasRestrictions: true,
       spaceCanEdit: true,
       permissionMap: new Map([['root', true]]),
@@ -116,11 +71,8 @@ describe('getSidebarPagesTree shaping logic', () => {
   });
 
   it('restricted space: canEdit is per-page AND spaceCanEdit', () => {
-    const pages = [
-      page('root', null, 'a0'),
-      page('child', 'root', 'a0'),
-    ];
-    const result = shapeTree(pages, {
+    const pages = [page('root', null, 'a0'), page('child', 'root', 'a0')];
+    const result = shapeSidebarPagesTree(pages, {
       hasRestrictions: true,
       spaceCanEdit: true,
       permissionMap: new Map([
@@ -136,7 +88,7 @@ describe('getSidebarPagesTree shaping logic', () => {
 
   it('restricted space: spaceCanEdit=false overrides per-page canEdit', () => {
     const pages = [page('root', null, 'a0')];
-    const result = shapeTree(pages, {
+    const result = shapeSidebarPagesTree(pages, {
       hasRestrictions: true,
       spaceCanEdit: false,
       permissionMap: new Map([['root', true]]),
@@ -150,7 +102,7 @@ describe('getSidebarPagesTree shaping logic', () => {
       page('c', null, 'a2'),
       page('a', null, 'a0'),
     ];
-    const result = shapeTree(pages, {
+    const result = shapeSidebarPagesTree(pages, {
       hasRestrictions: false,
       spaceCanEdit: true,
     });
@@ -158,7 +110,7 @@ describe('getSidebarPagesTree shaping logic', () => {
   });
 
   it('shape contains exactly the sidebar item fields', () => {
-    const result = shapeTree([page('root', null, 'a0')], {
+    const result = shapeSidebarPagesTree([page('root', null, 'a0')], {
       hasRestrictions: false,
       spaceCanEdit: true,
     });
