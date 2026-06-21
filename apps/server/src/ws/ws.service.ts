@@ -118,19 +118,42 @@ export class WsService {
     this.server.to(getSpaceRoomName(spaceId)).emit('message', data);
   }
 
-  // Broadcast `data` (a deleteTreeNode) to every socket in the space room whose
-  // user is NOT authorized to see `pageId`. Used to compensate a move that pushes
-  // a previously-visible page UNDER a restricted ancestor: authorized users get
-  // the moveTreeNode (via emitTreeEvent), everyone else gets a deleteTreeNode so
-  // the now-restricted node disappears from their tree instead of lingering with
-  // its real title/slugId/icon. The two event sets are disjoint by construction
-  // (a user is either authorized or not), so no socket receives both.
-  async emitDeleteToUnauthorized(
+  // Single-snapshot move broadcast. This is the ONE place that fans out a move
+  // under a restricted ancestor together with its compensating delete, resolving
+  // the audience EXACTLY ONCE so the two never disagree.
+  //
+  // It takes a SINGLE socket snapshot (`this.server.in(room).fetchSockets()` is
+  // called exactly once) and a SINGLE authorization resolution
+  // (`getUserIdsWithPageAccess` is called exactly once). From that one snapshot it
+  // partitions the room into two groups and emits to each:
+  //   - authorized users (their userId is in the authorized set) receive
+  //     `movePayload` (the moveTreeNode);
+  //   - everyone else — unauthorized users AND anonymous/no-userId sockets —
+  //     receive `deletePayload` (the compensating deleteTreeNode) so a now-hidden
+  //     node disappears from their tree instead of lingering with its real
+  //     title/slugId/icon.
+  // Because both groups are derived from the same socket array and the same
+  // authorized set, the partition is guaranteed DISJOINT (no socket gets both)
+  // and COMPLETE (every socket gets exactly one). This closes the race window
+  // that existed when the move and the compensating delete each ran their own
+  // independent fetchSockets + getUserIdsWithPageAccess: between those two
+  // snapshots a socket could connect/disconnect or its access change, so a socket
+  // could end up in both sets (leaking the restricted node, then no delete) or in
+  // neither (losing the compensating delete).
+  //
+  // It deliberately does NOT consult the cached spaceHasRestrictions: the caller
+  // (broadcastPageMoved) has already established, freshly and uncached, that the
+  // page is restricted, so we must not risk a stale cache fanning the move out to
+  // the whole room.
+  async emitMoveWithRestrictionSplit(
     spaceId: string,
     pageId: string,
-    data: any,
+    movePayload: any,
+    deletePayload: any,
   ): Promise<void> {
     const room = getSpaceRoomName(spaceId);
+
+    // ONE socket snapshot for the whole partition.
     const sockets = await this.server.in(room).fetchSockets();
     if (sockets.length === 0) return;
 
@@ -141,37 +164,24 @@ export class WsService {
           .filter((id): id is string => !!id),
       ),
     );
-    if (userIds.length === 0) return;
 
-    const authorizedUserIds =
-      await this.pagePermissionRepo.getUserIdsWithPageAccess(pageId, userIds);
+    // ONE authorization resolution for the whole partition.
+    const authorizedUserIds = userIds.length
+      ? await this.pagePermissionRepo.getUserIdsWithPageAccess(pageId, userIds)
+      : [];
     const authorizedSet = new Set(authorizedUserIds);
 
     for (const socket of sockets) {
       const userId = socket.data.userId as string;
-      // Unauthenticated sockets (no userId) cannot see restricted content; send
-      // them the delete too so a leaked node can't linger.
-      if (!userId || !authorizedSet.has(userId)) {
-        socket.emit('message', data);
+      if (userId && authorizedSet.has(userId)) {
+        // Authorized: deliver the move.
+        socket.emit('message', movePayload);
+      } else {
+        // Unauthorized OR anonymous (no userId): deliver the compensating
+        // delete so the now-hidden node can't linger.
+        socket.emit('message', deletePayload);
       }
     }
-  }
-
-  // Server-origin broadcast of `data` to exactly the users in the space room who
-  // ARE authorized to see `pageId`. This is the counterpart of
-  // emitDeleteToUnauthorized: both resolve the authorized set from the SAME
-  // fetchSockets + getUserIdsWithPageAccess call shape, so a caller that drives
-  // both from one decision gets two disjoint sets (authorized vs. not) with no
-  // socket in both. Unlike emitTreeEvent, this does NOT consult the cached
-  // spaceHasRestrictions: the caller already knows the page is restricted, so we
-  // must not risk a stale cache fanning the move out to the whole room.
-  async emitToAuthorizedUsers(
-    spaceId: string,
-    pageId: string,
-    data: any,
-  ): Promise<void> {
-    const room = getSpaceRoomName(spaceId);
-    await this.broadcastToAuthorizedUsers(room, null, pageId, data);
   }
 
   private async broadcastToAuthorizedUsers(

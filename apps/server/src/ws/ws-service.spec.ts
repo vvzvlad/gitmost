@@ -16,9 +16,9 @@ import {
  *    fan-out per user, sockets with no userId skipped).
  *
  * Both private methods are exercised through their public entry points:
- * spaceHasRestrictions via emitTreeEvent, broadcastToAuthorizedUsers via
- * emitToAuthorizedUsers. WsService is constructed with mocked cache + repo and a
- * mocked socket.io server, so no live infra is needed.
+ * spaceHasRestrictions via emitTreeEvent, broadcastToAuthorizedUsers via the
+ * restricted-page path of emitTreeEvent. WsService is constructed with mocked
+ * cache + repo and a mocked socket.io server, so no live infra is needed.
  */
 
 describe('WsService.spaceHasRestrictions (cache lifecycle, via emitTreeEvent)', () => {
@@ -127,7 +127,7 @@ describe('WsService.spaceHasRestrictions (cache lifecycle, via emitTreeEvent)', 
   });
 });
 
-describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUsers)', () => {
+describe('WsService.broadcastToAuthorizedUsers fan-out (via emitTreeEvent restricted path)', () => {
   let service: WsService;
   let pagePermissionRepo: {
     hasRestrictedPagesInSpace: jest.Mock;
@@ -167,6 +167,12 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
       in: serverIn,
     };
     service.setServer(server as never);
+
+    // Reach broadcastToAuthorizedUsers through emitTreeEvent's restricted path:
+    // the space has restrictions (cache miss -> repo says true) and the page has
+    // a restricted ancestor, so the emit is scoped to the authorized users.
+    pagePermissionRepo.hasRestrictedPagesInSpace.mockResolvedValue(true);
+    pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(true);
   });
 
   it('only sockets whose userId is in getUserIdsWithPageAccess receive the event', async () => {
@@ -180,7 +186,7 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
     ]);
 
     const data = { operation: 'moveTreeNode' };
-    await service.emitToAuthorizedUsers('space-1', 'page-1', data);
+    await service.emitTreeEvent('space-1', 'page-1', data);
 
     // The authorized set is resolved from the candidate userIds present on the
     // sockets (deduped), then only those users' sockets get the event.
@@ -203,7 +209,7 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
     ]);
 
     const data = { operation: 'moveTreeNode' };
-    await service.emitToAuthorizedUsers('space-1', 'page-1', data);
+    await service.emitTreeEvent('space-1', 'page-1', data);
 
     // Both of the authorized user's sockets (e.g. two browser tabs) receive it.
     expect(tab1).toHaveBeenCalledWith('message', data);
@@ -227,7 +233,7 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
     ]);
 
     const data = { operation: 'moveTreeNode' };
-    await service.emitToAuthorizedUsers('space-1', 'page-1', data);
+    await service.emitTreeEvent('space-1', 'page-1', data);
 
     expect(okEmit).toHaveBeenCalledWith('message', data);
     expect(anonEmit).not.toHaveBeenCalled();
@@ -241,7 +247,7 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
   it('no sockets in the room -> no repo lookup, no emit', async () => {
     fetchSockets.mockResolvedValue([]);
 
-    await service.emitToAuthorizedUsers('space-1', 'page-1', { op: 'x' });
+    await service.emitTreeEvent('space-1', 'page-1', { op: 'x' });
 
     expect(pagePermissionRepo.getUserIdsWithPageAccess).not.toHaveBeenCalled();
   });
@@ -252,7 +258,7 @@ describe('WsService.broadcastToAuthorizedUsers fan-out (via emitToAuthorizedUser
       { id: 's1', data: { userId: 'u' }, emit: jest.fn() },
     ]);
 
-    await service.emitToAuthorizedUsers('space-7', 'page-1', { op: 'x' });
+    await service.emitTreeEvent('space-7', 'page-1', { op: 'x' });
 
     expect(serverIn).toHaveBeenCalledWith(getSpaceRoomName('space-7'));
   });

@@ -131,22 +131,20 @@ export class WsTreeService {
     }
 
     // Restricted case: a move can push a previously-visible page UNDER a
-    // restricted ancestor. Route the move to authorized users ONLY (same fresh
-    // getUserIdsWithPageAccess set the delete uses) and send the compensating
-    // delete to everyone else. Both sets come from one fresh decision, so they
-    // are guaranteed disjoint: authorized users get exactly the moveTreeNode,
-    // unauthorized users get exactly the deleteTreeNode, nobody gets both.
+    // restricted ancestor. The move (to authorized users) and the compensating
+    // delete (to everyone else) are now driven from ONE socket/access snapshot:
+    // emitMoveWithRestrictionSplit performs a single fetchSockets + a single
+    // getUserIdsWithPageAccess and partitions the room from that one snapshot.
+    // This eliminates the race window that existed when the move and the delete
+    // each resolved the audience independently — a socket could otherwise have
+    // landed in both sets (leaking the restricted node) or in neither (losing the
+    // compensating delete). Authorized users get exactly the moveTreeNode,
+    // everyone else (unauthorized + anonymous) gets exactly the deleteTreeNode.
     //
     // Users who LOSE visibility need the delete because otherwise the node would
     // linger in their tree at its old parent with its real title/slugId/icon
     // (existence + metadata leak).
-    await this.wsService.emitToAuthorizedUsers(
-      node.spaceId,
-      node.id,
-      movePayload,
-    );
-
-    await this.wsService.emitDeleteToUnauthorized(node.spaceId, node.id, {
+    await this.wsService.emitMoveWithRestrictionSplit(node.spaceId, node.id, movePayload, {
       operation: 'deleteTreeNode',
       spaceId: node.spaceId,
       payload: {
