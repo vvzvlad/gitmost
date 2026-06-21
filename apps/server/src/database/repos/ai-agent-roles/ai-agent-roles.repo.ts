@@ -32,6 +32,29 @@ export class AiAgentRoleRepo {
       .executeTakeFirst();
   }
 
+  /**
+   * Single live (not soft-deleted) AND enabled role scoped to the workspace, or
+   * undefined. This is the SECURITY invariant shared by the authenticated chat
+   * and the anonymous public-share assistant: a role only applies its persona /
+   * model override when it currently exists, is not soft-deleted, and is enabled
+   * — a disabled or deleted role server-authoritatively degrades to the built-in
+   * universal assistant. Single source of truth so the two resolve paths cannot
+   * drift apart.
+   */
+  async findLiveEnabled(
+    id: string,
+    workspaceId: string,
+  ): Promise<AiAgentRole | undefined> {
+    return this.db
+      .selectFrom('aiAgentRoles')
+      .selectAll('aiAgentRoles')
+      .where('id', '=', id)
+      .where('workspaceId', '=', workspaceId)
+      .where('deletedAt', 'is', null)
+      .where('enabled', '=', true)
+      .executeTakeFirst();
+  }
+
   /** All live roles for the workspace (management list + chat picker). */
   async listByWorkspace(workspaceId: string): Promise<AiAgentRole[]> {
     return this.db

@@ -31,13 +31,16 @@ describe('AiChatService.resolveRoleForRequest', () => {
 
   function makeService(opts: {
     chat?: { roleId: string | null } | undefined;
+    // The role returned by findLiveEnabled (the live + enabled + workspace-scoped
+    // lookup). undefined models a missing / soft-deleted / disabled / cross-
+    // workspace role — the repo, not the service, now enforces those filters.
     role?: AiAgentRole | undefined;
   }) {
     const aiChatRepo = {
       findById: jest.fn().mockResolvedValue(opts.chat),
     };
     const aiAgentRoleRepo = {
-      findById: jest.fn().mockResolvedValue(opts.role),
+      findLiveEnabled: jest.fn().mockResolvedValue(opts.role),
     };
     const service = new AiChatService(
       {} as never, // ai
@@ -66,8 +69,11 @@ describe('AiChatService.resolveRoleForRequest', () => {
 
     expect(resolved).toBe(role);
     // The role lookup used the chat's role id, never the body's.
-    expect(aiAgentRoleRepo.findById).toHaveBeenCalledWith('chat-role', 'ws-1');
-    expect(aiAgentRoleRepo.findById).not.toHaveBeenCalledWith(
+    expect(aiAgentRoleRepo.findLiveEnabled).toHaveBeenCalledWith(
+      'chat-role',
+      'ws-1',
+    );
+    expect(aiAgentRoleRepo.findLiveEnabled).not.toHaveBeenCalledWith(
       'attacker-role',
       expect.anything(),
     );
@@ -77,8 +83,8 @@ describe('AiChatService.resolveRoleForRequest', () => {
 
   it('scopes the role lookup to the workspace (cross-workspace roleId => null)', async () => {
     // The repo stub returns undefined to model a roleId that does not exist in
-    // THIS workspace (findById is workspace-scoped). resolveRoleForRequest must
-    // still pass workspace.id to the lookup.
+    // THIS workspace (findLiveEnabled is workspace-scoped). resolveRoleForRequest
+    // must still pass workspace.id to the lookup.
     const { service, aiAgentRoleRepo } = makeService({
       chat: undefined,
       role: undefined,
@@ -88,17 +94,18 @@ describe('AiChatService.resolveRoleForRequest', () => {
     const resolved = await service.resolveRoleForRequest(workspace, body);
 
     expect(resolved).toBeNull();
-    expect(aiAgentRoleRepo.findById).toHaveBeenCalledWith(
+    expect(aiAgentRoleRepo.findLiveEnabled).toHaveBeenCalledWith(
       'role-from-other-ws',
       'ws-1',
     );
   });
 
-  it('role found but disabled (enabled=false) => null (disabled role not applied)', async () => {
-    const role = makeRole({ enabled: false });
+  it('disabled role: findLiveEnabled filters it out (undefined) => null (disabled role not applied)', async () => {
+    // The repo's findLiveEnabled enforces enabled=true, so a disabled role never
+    // comes back; the service just maps that undefined to null.
     const { service } = makeService({
       chat: { roleId: 'role-1' },
-      role,
+      role: undefined,
     });
     const body: AiChatStreamBody = { chatId: 'chat-1' };
 
@@ -130,7 +137,10 @@ describe('AiChatService.resolveRoleForRequest', () => {
     const resolved = await service.resolveRoleForRequest(workspace, body);
 
     expect(resolved).toBe(role);
-    expect(aiAgentRoleRepo.findById).toHaveBeenCalledWith('picked', 'ws-1');
+    expect(aiAgentRoleRepo.findLiveEnabled).toHaveBeenCalledWith(
+      'picked',
+      'ws-1',
+    );
     // No chat lookup happens when there is no chatId.
     expect(aiChatRepo.findById).not.toHaveBeenCalled();
   });
@@ -149,7 +159,10 @@ describe('AiChatService.resolveRoleForRequest', () => {
     const resolved = await service.resolveRoleForRequest(workspace, body);
 
     expect(resolved).toBe(role);
-    expect(aiAgentRoleRepo.findById).toHaveBeenCalledWith('body-role', 'ws-1');
+    expect(aiAgentRoleRepo.findLiveEnabled).toHaveBeenCalledWith(
+      'body-role',
+      'ws-1',
+    );
   });
 
   it('no role anywhere (universal assistant): returns null without a role lookup', async () => {
@@ -163,6 +176,6 @@ describe('AiChatService.resolveRoleForRequest', () => {
 
     expect(resolved).toBeNull();
     // Short-circuit: no roleId means no lookup at all.
-    expect(aiAgentRoleRepo.findById).not.toHaveBeenCalled();
+    expect(aiAgentRoleRepo.findLiveEnabled).not.toHaveBeenCalled();
   });
 });

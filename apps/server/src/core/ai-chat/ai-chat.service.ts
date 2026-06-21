@@ -150,14 +150,14 @@ export class AiChatService {
       roleId = body.roleId;
     }
     if (!roleId) return null;
-    const role = await this.aiAgentRoleRepo.findById(roleId, workspace.id);
-    // A disabled role falls back to the universal assistant: it must not apply
-    // its persona/model override even to a chat that was bound to it earlier.
-    // findById already excludes soft-deleted roles; this also drops disabled
-    // ones, server-authoritatively, for both the new-chat (body.roleId) and
-    // existing-chat (chat.role_id) paths.
-    if (!role || !role.enabled) return null;
-    return role;
+    // A disabled or soft-deleted role falls back to the universal assistant: it
+    // must not apply its persona/model override even to a chat that was bound to
+    // it earlier. findLiveEnabled enforces this (live + enabled + workspace
+    // scope), server-authoritatively, for both the new-chat (body.roleId) and
+    // existing-chat (chat.role_id) paths — the single shared invariant.
+    return (
+      (await this.aiAgentRoleRepo.findLiveEnabled(roleId, workspace.id)) ?? null
+    );
   }
 
   /**

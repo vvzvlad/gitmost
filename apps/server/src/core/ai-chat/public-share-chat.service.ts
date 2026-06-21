@@ -153,9 +153,11 @@ export class PublicShareChatService {
     const resolved = await this.aiSettings.resolve(workspaceId);
     const roleId = resolved?.publicShareAssistantRoleId;
     if (!roleId) return null;
-    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
-    if (!role || !role.enabled) return null;
-    return role;
+    // Same shared invariant as the authenticated chat: only a live + enabled +
+    // workspace-scoped role applies; otherwise the built-in locked persona does.
+    return (
+      (await this.aiAgentRoleRepo.findLiveEnabled(roleId, workspaceId)) ?? null
+    );
   }
 
   /**

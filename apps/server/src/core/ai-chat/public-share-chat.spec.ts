@@ -251,8 +251,10 @@ describe('buildShareSystemPrompt locking', () => {
 
 describe('PublicShareChatService model fallback', () => {
   // `role` (optional) drives both the resolved settings (its id is returned as
-  // publicShareAssistantRoleId) and the role repo's findById mock, so the same
-  // helper exercises the no-role fallback AND the role-override paths.
+  // publicShareAssistantRoleId) and the role repo's findLiveEnabled mock, so the
+  // same helper exercises the no-role fallback AND the role-override paths. The
+  // mock mirrors the real repo: findLiveEnabled only returns a role that is live
+  // AND enabled, so a disabled `role` resolves to undefined here.
   function makeService(
     resolvePublicModel: string | undefined,
     role?: {
@@ -272,7 +274,9 @@ describe('PublicShareChatService model fallback', () => {
     const getChatModel = jest.fn().mockResolvedValue('MODEL');
     const ai = { getChatModel };
     const aiAgentRoleRepo = {
-      findById: jest.fn().mockResolvedValue(role ?? undefined),
+      findLiveEnabled: jest
+        .fn()
+        .mockResolvedValue(role && role.enabled ? role : undefined),
     };
     const redisService = { getOrThrow: () => new FakeRedis() } as never;
     const service = new PublicShareChatService(
@@ -314,14 +318,14 @@ describe('PublicShareChatService model fallback', () => {
       expect(await service.resolveShareRole('ws-1')).toBeNull();
     });
 
-    it('returns null when findById resolves undefined (missing/soft-deleted)', async () => {
+    it('returns null when findLiveEnabled resolves undefined (missing/soft-deleted/disabled)', async () => {
       const { service, aiAgentRoleRepo } = makeService('cheap-model', {
         id: 'r-1',
         name: 'R',
         enabled: true,
       });
-      // The settings point at r-1, but the repo can no longer find it.
-      aiAgentRoleRepo.findById.mockResolvedValue(undefined);
+      // The settings point at r-1, but the repo can no longer find it live+enabled.
+      aiAgentRoleRepo.findLiveEnabled.mockResolvedValue(undefined);
       expect(await service.resolveShareRole('ws-1')).toBeNull();
     });
 
