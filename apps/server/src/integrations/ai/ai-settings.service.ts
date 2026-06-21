@@ -33,6 +33,8 @@ export interface UpdateAiSettingsInput {
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty = auto-detect.
+  sttLanguage?: string;
   sttApiKey?: string;
   publicShareChatModel?: string;
   publicShareAssistantRoleId?: string;
@@ -166,6 +168,8 @@ export class AiSettingsService {
       // Plain passthrough, no fallback; the transcribe path defaults unset to
       // 'multipart' (current behavior).
       sttApiStyle: provider.sttApiStyle,
+      // Plain passthrough; empty/unset = auto-detect at the transcribe path.
+      sttLanguage: provider.sttLanguage,
       baseUrl: provider.baseUrl,
       systemPrompt: provider.systemPrompt,
     };
@@ -240,6 +244,7 @@ export class AiSettingsService {
       sttModel: provider.sttModel,
       sttBaseUrl: provider.sttBaseUrl,
       sttApiStyle: provider.sttApiStyle,
+      sttLanguage: provider.sttLanguage,
       systemPrompt: provider.systemPrompt,
       publicShareChatModel: provider.publicShareChatModel,
       publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
@@ -279,6 +284,7 @@ export class AiSettingsService {
       'sttModel',
       'sttBaseUrl',
       'sttApiStyle',
+      'sttLanguage',
       'systemPrompt',
       'publicShareChatModel',
       'publicShareAssistantRoleId',

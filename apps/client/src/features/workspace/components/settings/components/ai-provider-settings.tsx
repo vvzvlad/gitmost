@@ -42,6 +42,40 @@ import { useAiRolesQuery } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
 import AiMcpServers from "./ai-mcp-servers.tsx";
 
+// Curated ISO-639-1 dictation languages for the STT card. The empty-value
+// "Auto-detect" entry is prepended in render (it needs translation). Values
+// are sent verbatim to the transcription model as the language hint.
+const STT_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "ru", label: "Russian — Русский" },
+  { value: "uk", label: "Ukrainian — Українська" },
+  { value: "de", label: "German — Deutsch" },
+  { value: "fr", label: "French — Français" },
+  { value: "es", label: "Spanish — Español" },
+  { value: "it", label: "Italian — Italiano" },
+  { value: "pt", label: "Portuguese — Português" },
+  { value: "nl", label: "Dutch — Nederlands" },
+  { value: "pl", label: "Polish — Polski" },
+  { value: "tr", label: "Turkish — Türkçe" },
+  { value: "cs", label: "Czech — Čeština" },
+  { value: "sv", label: "Swedish — Svenska" },
+  { value: "fi", label: "Finnish — Suomi" },
+  { value: "da", label: "Danish — Dansk" },
+  { value: "no", label: "Norwegian — Norsk" },
+  { value: "ro", label: "Romanian — Română" },
+  { value: "hu", label: "Hungarian — Magyar" },
+  { value: "el", label: "Greek — Ελληνικά" },
+  { value: "he", label: "Hebrew — עברית" },
+  { value: "ar", label: "Arabic — العربية" },
+  { value: "hi", label: "Hindi — हिन्दी" },
+  { value: "id", label: "Indonesian — Bahasa Indonesia" },
+  { value: "vi", label: "Vietnamese — Tiếng Việt" },
+  { value: "th", label: "Thai — ไทย" },
+  { value: "ja", label: "Japanese — 日本語" },
+  { value: "ko", label: "Korean — 한국어" },
+  { value: "zh", label: "Chinese — 中文" },
+];
+
 // No driver field: every endpoint is OpenAI-compatible, so the form carries only
 // the user-editable fields. `apiKey` / `embeddingApiKey` are write-only buffers
 // (empty means "leave unchanged" unless explicitly cleared).
@@ -63,6 +97,8 @@ const formSchema = z.object({
   sttModel: z.string(),
   sttBaseUrl: z.string(),
   sttApiStyle: z.enum(["multipart", "json"]),
+  // ISO-639-1 dictation language; empty = auto-detect.
+  sttLanguage: z.string(),
   sttApiKey: z.string(),
 });
 
@@ -233,6 +269,7 @@ export default function AiProviderSettings() {
       sttModel: "",
       sttBaseUrl: "",
       sttApiStyle: "multipart" as SttApiStyle,
+      sttLanguage: "",
       sttApiKey: "",
     },
   });
@@ -254,6 +291,7 @@ export default function AiProviderSettings() {
       sttModel: settings.sttModel ?? "",
       sttBaseUrl: settings.sttBaseUrl ?? "",
       sttApiStyle: settings.sttApiStyle ?? "multipart",
+      sttLanguage: settings.sttLanguage ?? "",
       sttApiKey: "",
     });
     form.resetDirty();
@@ -288,6 +326,7 @@ export default function AiProviderSettings() {
       sttModel: values.sttModel,
       sttBaseUrl: values.sttBaseUrl,
       sttApiStyle: values.sttApiStyle,
+      sttLanguage: values.sttLanguage,
     };
 
     // Key semantics (never send the stored key back) — see resolveKeyField:
@@ -921,6 +960,22 @@ export default function AiProviderSettings() {
           allowDeselect={false}
           disabled={isLoading}
           {...form.getInputProps("sttApiStyle")}
+        />
+
+        <Select
+          mt="sm"
+          label={t("Dictation language")}
+          description={t(
+            "Spoken language hint sent to the transcription model. Auto-detect lets the model decide.",
+          )}
+          data={[
+            { value: "", label: t("Auto-detect") },
+            ...STT_LANGUAGE_OPTIONS,
+          ]}
+          searchable
+          allowDeselect={false}
+          disabled={isLoading}
+          {...form.getInputProps("sttLanguage")}
         />
 
         <TextInput

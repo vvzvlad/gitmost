@@ -31,6 +31,8 @@ export interface AiProviderSettings {
   // STT-specific base URL. Falls back to baseUrl when empty/unset.
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty/unset = auto-detect.
+  sttLanguage?: string;
   systemPrompt?: string;
   // Cheap chat model id used ONLY by the anonymous public-share assistant. The
   // driver / baseUrl / apiKey of the main chat provider are reused; this is the
@@ -80,6 +82,8 @@ export interface MaskedAiSettings {
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty/unset = auto-detect.
+  sttLanguage?: string;
   systemPrompt?: string;
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts; empty/unset

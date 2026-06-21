@@ -54,6 +54,11 @@ export class UpdateAiSettingsDto {
   @IsIn(STT_API_STYLES)
   sttApiStyle?: SttApiStyle;
 
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty = auto-detect.
+  @IsOptional()
+  @IsString()
+  sttLanguage?: string;
+
   @IsOptional()
   @IsString()
   sttApiKey?: string;
