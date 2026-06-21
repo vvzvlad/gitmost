@@ -12,6 +12,7 @@ import {
   loadDocmostMcp,
   type DocmostClientLike,
 } from './docmost-client.loader';
+import { resolveCurrentPageResult } from './current-page.util';
 
 /**
  * Per-user, per-request adapter that exposes Docmost READ operations to the
@@ -222,14 +223,7 @@ export class AiChatToolsService {
           'or null if the user is not currently on a page. Call this first whenever ' +
           'the user refers to the current page without giving an explicit id.',
         inputSchema: z.object({}),
-        execute: async () => {
-          if (!openedPage?.id) {
-            return { page: null };
-          }
-          return {
-            page: { id: openedPage.id, title: openedPage.title ?? '' },
-          };
-        },
+        execute: async () => resolveCurrentPageResult(openedPage),
       }),
 
       getPage: tool({
