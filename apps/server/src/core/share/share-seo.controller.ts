@@ -8,6 +8,7 @@ import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { EnvironmentService } from '../../integrations/environment/environment.service';
 import { Workspace } from '@docmost/db/types/entity.types';
 import { htmlEscape } from '../../common/helpers/html-escaper';
+import { injectTrackerHead } from './inject-tracker-head.util';
 
 @Controller('share')
 export class ShareSeoController {
@@ -97,21 +98,19 @@ export class ShareSeoController {
       // pages only. It is trusted content, so it is NOT escaped. The htmlEmbed
       // block itself is sandboxed and is the safe surface for everyone else.
       const trackerHead = (workspace?.settings as any)?.trackerHead;
-      if (typeof trackerHead === 'string' && trackerHead.trim().length > 0) {
-        if (transformedHtml.includes('</head>')) {
-          // Function replacer: the snippet is admin-authored trusted content and
-          // must be injected verbatim. A string replacement would interpret `$&`,
-          // `$'`, `` $` `` and `$$` inside it as substitution patterns and mangle
-          // the tracker; a function return value is inserted literally.
-          transformedHtml = transformedHtml.replace(
-            '</head>',
-            () => `${trackerHead}\n</head>`,
-          );
-        } else {
-          this.logger.warn(
-            'trackerHead is configured but no </head> marker was found in the share index HTML; tracker snippet was not injected.',
-          );
-        }
+      const beforeInjection = transformedHtml;
+      transformedHtml = injectTrackerHead(transformedHtml, trackerHead);
+      if (
+        beforeInjection === transformedHtml &&
+        typeof trackerHead === 'string' &&
+        trackerHead.trim().length > 0
+      ) {
+        // A non-empty snippet was configured but nothing was injected: the only
+        // reason injectTrackerHead leaves the html unchanged for a non-empty
+        // snippet is a missing </head> marker.
+        this.logger.warn(
+          'trackerHead is configured but no </head> marker was found in the share index HTML; tracker snippet was not injected.',
+        );
       }
 
       res.type('text/html').send(transformedHtml);
