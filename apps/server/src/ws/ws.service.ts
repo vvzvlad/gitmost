@@ -52,39 +52,41 @@ export class WsService {
     );
   }
 
+  // Comment broadcast. Thin wrapper over the single restriction-aware emit so
+  // comment and tree events share ONE restriction gate (see
+  // emitRestrictedAwareToSpace).
   async emitCommentEvent(
     spaceId: string,
     pageId: string,
     data: any,
   ): Promise<void> {
-    const room = getSpaceRoomName(spaceId);
-
-    const hasRestrictions = await this.spaceHasRestrictions(spaceId);
-    if (!hasRestrictions) {
-      this.server.to(room).emit('message', data);
-      return;
-    }
-
-    const isRestricted =
-      await this.pagePermissionRepo.hasRestrictedAncestor(pageId);
-    if (!isRestricted) {
-      this.server.to(room).emit('message', data);
-      return;
-    }
-
-    await this.broadcastToAuthorizedUsers(room, null, pageId, data);
+    await this.emitRestrictedAwareToSpace(spaceId, pageId, data);
   }
 
-  // Server-origin tree broadcast. Mirrors emitCommentEvent exactly: respects
-  // per-space page restrictions (spaceHasRestrictions -> hasRestrictedAncestor
-  // -> broadcastToAuthorizedUsers), otherwise fans the event out to everyone in
-  // the space room.
+  // Server-origin tree broadcast. Thin wrapper over the single restriction-aware
+  // emit (see emitRestrictedAwareToSpace), identical routing to emitCommentEvent.
   //
   // The author is NOT excluded. The client receiver is idempotent (addTreeNode
   // early-returns if the node id already exists; deleteTreeNode is a no-op if
   // the node is gone), so the UI author's optimistic node is preserved, and
   // non-UI creators (MCP / AI / REST API) still see their own page appear.
   async emitTreeEvent(
+    spaceId: string,
+    pageId: string,
+    data: any,
+  ): Promise<void> {
+    await this.emitRestrictedAwareToSpace(spaceId, pageId, data);
+  }
+
+  // The single restriction-aware space emit. This is the ONLY place that decides
+  // authorized-vs-unauthorized routing for server-origin space-room events
+  // (comment + tree). Both emitCommentEvent and emitTreeEvent forward to it with
+  // their own `data`; the payload/room/event are otherwise identical.
+  //
+  // Routing: if the space has no restrictions at all (cached fast path), or the
+  // page has no restricted ancestor, fan `data` out to the whole space room;
+  // otherwise restrict the broadcast to the users authorized to see `pageId`.
+  private async emitRestrictedAwareToSpace(
     spaceId: string,
     pageId: string,
     data: any,

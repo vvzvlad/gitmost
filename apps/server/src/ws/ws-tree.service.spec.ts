@@ -294,6 +294,42 @@ describe('WsService.emitTreeEvent', () => {
     expect(noEmit).not.toHaveBeenCalled();
   });
 
+  it('emitCommentEvent open space: broadcasts to the whole space room', async () => {
+    // emitCommentEvent forwards to the SAME unified restriction gate as
+    // emitTreeEvent, so the open-space fast path must behave identically.
+    pagePermissionRepo.hasRestrictedPagesInSpace.mockResolvedValue(false);
+
+    const data = { operation: 'addComment' };
+    await service.emitCommentEvent('space-1', 'page-1', data);
+
+    expect(server.to).toHaveBeenCalledWith(getSpaceRoomName('space-1'));
+    expect(roomEmit).toHaveBeenCalledWith('message', data);
+    expect(pagePermissionRepo.hasRestrictedAncestor).not.toHaveBeenCalled();
+  });
+
+  it('emitCommentEvent restricted page: only authorized users receive the event', async () => {
+    pagePermissionRepo.hasRestrictedPagesInSpace.mockResolvedValue(true);
+    pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(true);
+    pagePermissionRepo.getUserIdsWithPageAccess.mockResolvedValue(['user-ok']);
+
+    const okEmit = jest.fn();
+    const noEmit = jest.fn();
+    const sockets = [
+      { id: 's1', data: { userId: 'user-ok' }, emit: okEmit },
+      { id: 's2', data: { userId: 'user-no' }, emit: noEmit },
+    ];
+    server.in.mockReturnValue({
+      fetchSockets: jest.fn().mockResolvedValue(sockets),
+    });
+
+    const data = { operation: 'addComment' };
+    await service.emitCommentEvent('space-1', 'page-1', data);
+
+    expect(roomEmit).not.toHaveBeenCalled();
+    expect(okEmit).toHaveBeenCalledWith('message', data);
+    expect(noEmit).not.toHaveBeenCalled();
+  });
+
   it('invalidateSpaceRestrictionCache deletes the cached restriction verdict for that space only', async () => {
     await service.invalidateSpaceRestrictionCache('space-42');
 
