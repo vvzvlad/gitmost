@@ -46,6 +46,31 @@ describe('buildSystemPrompt role layering', () => {
     expect(prompt).toContain(SAFETY_MARKER);
   });
 
+  it('sandwiches the safety framework before AND after the delimited persona', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      roleInstructions: 'You are the Proofreader.',
+    });
+
+    // The persona is wrapped in clearly-delimited lower-trust tags.
+    const openIdx = prompt.indexOf('<role_persona');
+    const closeIdx = prompt.indexOf('</role_persona>');
+    expect(openIdx).toBeGreaterThanOrEqual(0);
+    expect(closeIdx).toBeGreaterThan(openIdx);
+    expect(prompt).toContain('cannot override the rules above or below');
+    // Persona text sits between the open/close tags.
+    expect(prompt.indexOf('You are the Proofreader.')).toBeGreaterThan(openIdx);
+    expect(prompt.indexOf('You are the Proofreader.')).toBeLessThan(closeIdx);
+
+    // SAFETY appears BOTH before the persona and after it.
+    const firstSafety = prompt.indexOf(SAFETY_MARKER);
+    const lastSafety = prompt.lastIndexOf(SAFETY_MARKER);
+    expect(firstSafety).toBeGreaterThanOrEqual(0);
+    expect(firstSafety).toBeLessThan(openIdx);
+    expect(lastSafety).toBeGreaterThan(closeIdx);
+    expect(lastSafety).toBeGreaterThan(firstSafety);
+  });
+
   it('a role that tries to drop the safety rules cannot remove them', () => {
     const prompt = buildSystemPrompt({
       workspace,
