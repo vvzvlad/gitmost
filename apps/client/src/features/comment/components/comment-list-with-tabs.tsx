@@ -11,6 +11,8 @@ import {
   Badge,
   Text,
   ScrollArea,
+  Title,
+  Tooltip,
 } from "@mantine/core";
 import CommentListItem from "@/features/comment/components/comment-list-item";
 import {
@@ -26,12 +28,17 @@ import { IPagination } from "@/lib/types.ts";
 import { extractPageSlugId } from "@/lib";
 import { useTranslation } from "react-i18next";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
-import { IconArrowUp, IconMessageOff } from "@tabler/icons-react";
+import { IconArrowUp, IconMessageOff, IconX } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 
-function CommentListWithTabs() {
+interface CommentListWithTabsProps {
+  title?: string;
+  onClose?: () => void;
+}
+
+function CommentListWithTabs({ title, onClose }: CommentListWithTabsProps) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({ pageId: extractPageSlugId(pageSlug) });
@@ -194,28 +201,70 @@ function CommentListWithTabs() {
           overflow: "hidden",
         }}
       >
-        <Tabs.List justify="center">
-          <Tabs.Tab
-            value="open"
-            leftSection={
-              <Badge size="sm" variant="light" color="blue">
-                {activeComments.length}
-              </Badge>
-            }
-          >
-            {t("Open")}
-          </Tabs.Tab>
-          <Tabs.Tab
-            value="resolved"
-            leftSection={
-              <Badge size="sm" variant="light" color="green">
-                {resolvedComments.length}
-              </Badge>
-            }
-          >
-            {t("Resolved")}
-          </Tabs.Tab>
-        </Tabs.List>
+        {/* Single header row: a full-width centered tab list with the panel
+            title overlaid on the left and the close button on the right.
+            Title/close are kept OUTSIDE Tabs.List (which is role="tablist")
+            so the tablist only owns role="tab" children — the tab list still
+            spans full width, so its bottom border line stays full-width. */}
+        <div style={{ position: "relative" }}>
+          {title && (
+            <Title
+              order={2}
+              size="h6"
+              fw={500}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: "50%",
+                transform: "translateY(-50%)",
+                // Non-interactive heading must not intercept clicks meant for the row.
+                pointerEvents: "none",
+              }}
+            >
+              {title}
+            </Title>
+          )}
+          <Tabs.List justify="center">
+            <Tabs.Tab
+              value="open"
+              leftSection={
+                <Badge size="sm" variant="light" color="blue">
+                  {activeComments.length}
+                </Badge>
+              }
+            >
+              {t("Open")}
+            </Tabs.Tab>
+            <Tabs.Tab
+              value="resolved"
+              leftSection={
+                <Badge size="sm" variant="light" color="green">
+                  {resolvedComments.length}
+                </Badge>
+              }
+            >
+              {t("Resolved")}
+            </Tabs.Tab>
+          </Tabs.List>
+          {onClose && (
+            <Tooltip label={t("Close")} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                onClick={onClose}
+                aria-label={t("Close")}
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                }}
+              >
+                <IconX size={18} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+        </div>
 
         <ScrollArea
           style={{ flex: "1 1 auto" }}
