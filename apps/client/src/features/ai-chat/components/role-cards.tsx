@@ -45,7 +45,7 @@ function RoleCard({
         {name}
       </Text>
       {description && (
-        <Text size="xs" lineClamp={3} className={classes.description}>
+        <Text size="xs" className={classes.description}>
           {description}
         </Text>
       )}
