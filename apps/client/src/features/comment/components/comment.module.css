@@ -3,7 +3,12 @@
 }
 
 .textSelection {
-    margin-top: 2px;
+    /* Breathing room below the comment header (author + timestamp) so the
+       quote does not stick to the timestamp when it is the first block. */
+    margin-top: 8px;
+    /* Align the quote's left bar with the comment body text left edge
+       (the comment editor insets its text by 6px). */
+    margin-left: 6px;
     border-left: 2px solid var(--mantine-color-gray-6);
     padding: 6px;
     background: var(--mantine-color-gray-light);

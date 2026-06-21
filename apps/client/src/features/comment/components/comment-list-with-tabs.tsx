@@ -11,7 +11,6 @@ import {
   Badge,
   Text,
   ScrollArea,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import CommentListItem from "@/features/comment/components/comment-list-item";
@@ -34,11 +33,10 @@ import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 
 interface CommentListWithTabsProps {
-  title?: string;
   onClose?: () => void;
 }
 
-function CommentListWithTabs({ title, onClose }: CommentListWithTabsProps) {
+function CommentListWithTabs({ onClose }: CommentListWithTabsProps) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({ pageId: extractPageSlugId(pageSlug) });
@@ -201,29 +199,8 @@ function CommentListWithTabs({ title, onClose }: CommentListWithTabsProps) {
           overflow: "hidden",
         }}
       >
-        {/* Single header row: a full-width centered tab list with the panel
-            title overlaid on the left and the close button on the right.
-            Title/close are kept OUTSIDE Tabs.List (which is role="tablist")
-            so the tablist only owns role="tab" children — the tab list still
-            spans full width, so its bottom border line stays full-width. */}
+        {/* Header row: full-width centered tab list with the close button overlaid on the right. */}
         <div style={{ position: "relative" }}>
-          {title && (
-            <Title
-              order={2}
-              size="h6"
-              fw={500}
-              style={{
-                position: "absolute",
-                left: 0,
-                top: "50%",
-                transform: "translateY(-50%)",
-                // Non-interactive heading must not intercept clicks meant for the row.
-                pointerEvents: "none",
-              }}
-            >
-              {title}
-            </Title>
-          )}
           <Tabs.List justify="center">
             <Tabs.Tab
               value="open"
@@ -257,7 +234,8 @@ function CommentListWithTabs({ title, onClose }: CommentListWithTabsProps) {
                   position: "absolute",
                   right: 0,
                   top: "50%",
-                  transform: "translateY(-50%)",
+                  // Nudge the close button slightly up to align with the tab labels.
+                  transform: "translateY(calc(-50% - 4px))",
                 }}
               >
                 <IconX size={18} />

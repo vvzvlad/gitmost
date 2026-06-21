@@ -27,9 +27,7 @@ export default function Aside() {
 
   switch (tab) {
     case "comments":
-      component = (
-        <CommentListWithTabs title={t("Comments")} onClose={closeAside} />
-      );
+      component = <CommentListWithTabs onClose={closeAside} />;
       title = "Comments";
       break;
     case "toc":
