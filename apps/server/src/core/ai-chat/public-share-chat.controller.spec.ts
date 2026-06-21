@@ -209,6 +209,56 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
     expect(await statusOf(deps, body({ messages: [huge] }))).toBe(413);
   });
 
+  it('a message with a non-text part => 400 Unsupported message content', async () => {
+    // The anonymous path runs no tools, so a client-supplied tool/file/data part
+    // is never legitimate and is rejected before it can reach the model context.
+    const { deps } = makeDeps();
+    const nonText = {
+      role: 'user',
+      parts: [{ type: 'tool-call' }],
+    };
+    let caught: HttpException | null = null;
+    try {
+      await resolveShareAssistantRequest(deps, {
+        workspaceId: 'ws-1',
+        body: body({ messages: [nonText] }) as never,
+      });
+    } catch (err) {
+      caught = err instanceof HttpException ? err : null;
+    }
+    expect(caught).toBeInstanceOf(HttpException);
+    expect(caught!.getStatus()).toBe(400);
+    expect(caught!.message).toBe('Unsupported message content');
+  });
+
+  it('a message mixing a text part AND a non-text part => still 400 (rejected before the 413 size check)', async () => {
+    // A forged non-text part smuggled alongside a legit text part is still
+    // rejected: the non-text guard runs BEFORE the char-cap (413) check, so even
+    // an over-long mixed message surfaces the 400, not the size error.
+    const { deps } = makeDeps();
+    const mixed = {
+      role: 'user',
+      parts: [
+        { type: 'text', text: 'x'.repeat(MAX_SHARE_MESSAGE_CHARS + 1) },
+        { type: 'tool-call' },
+      ],
+    };
+    let caught: HttpException | null = null;
+    try {
+      await resolveShareAssistantRequest(deps, {
+        workspaceId: 'ws-1',
+        body: body({ messages: [mixed] }) as never,
+      });
+    } catch (err) {
+      caught = err instanceof HttpException ? err : null;
+    }
+    expect(caught).toBeInstanceOf(HttpException);
+    // The non-text guard wins over the 413 size cap even though the text part
+    // alone would exceed MAX_SHARE_MESSAGE_CHARS.
+    expect(caught!.getStatus()).toBe(400);
+    expect(caught!.message).toBe('Unsupported message content');
+  });
+
   it('the quota gate is checked BEFORE the payload caps (429 wins over 413)', async () => {
     // Over-cap workspace AND an over-long message: the 429 must surface first, so
     // an over-cap caller is rejected without even paying the payload-cap scan.
