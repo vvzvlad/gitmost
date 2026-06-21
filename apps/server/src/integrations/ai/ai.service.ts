@@ -212,12 +212,22 @@ export class AiService {
     const cfg = await this.aiSettings.resolve(workspaceId);
     if (!cfg?.sttModel) throw new AiSttNotConfiguredException();
     const baseURL = cfg.sttBaseUrl || cfg.baseUrl;
+    // Trimmed language hint; empty/unset = auto-detect (never forward an empty
+    // string to the provider, which would override auto-detect).
+    const sttLanguage = cfg.sttLanguage?.trim() || undefined;
 
     // Explicit, admin-chosen request encoding (no URL guessing). 'json' is the
     // OpenRouter style (JSON + base64 input_audio); everything else uses the
     // OpenAI-compatible multipart path via the AI SDK.
     if (cfg.sttApiStyle === 'json') {
-      return this.transcribeJsonBase64(baseURL, cfg.sttApiKey, cfg.sttModel, audio, format);
+      return this.transcribeJsonBase64(
+        baseURL,
+        cfg.sttApiKey,
+        cfg.sttModel,
+        audio,
+        format,
+        sttLanguage,
+      );
     }
 
     // Standard OpenAI-compatible multipart path (AI SDK). apiKey may be unused for
@@ -226,14 +236,23 @@ export class AiService {
       apiKey: cfg.sttApiKey ?? 'unused',
       baseURL,
     }).transcription(cfg.sttModel);
-    const { text } = await transcribe({ model, audio });
+    const { text } = await transcribe({
+      model,
+      audio,
+      // Forward the language hint only when set; the OpenAI transcription model
+      // reads it from providerOptions.openai.language.
+      ...(sttLanguage
+        ? { providerOptions: { openai: { language: sttLanguage } } }
+        : {}),
+    });
     return text.trim();
   }
 
   /**
    * JSON + base64 transcription body (OpenRouter-style). POSTs
    * { model, input_audio: { data, format } } to {baseURL}/audio/transcriptions
-   * and returns { text }.
+   * and returns { text }. The optional `language` ISO-639-1 hint is included as
+   * a top-level body field only when set (empty/unset = auto-detect).
    */
   private async transcribeJsonBase64(
     baseURL: string | undefined,
@@ -241,6 +260,7 @@ export class AiService {
     model: string,
     audio: Uint8Array,
     format: string,
+    language?: string,
   ): Promise<string> {
     if (!baseURL) {
       throw new BadRequestException(
@@ -256,6 +276,7 @@ export class AiService {
       },
       body: JSON.stringify({
         model,
+        ...(language ? { language } : {}),
         input_audio: {
           data: Buffer.from(audio).toString('base64'),
           format,

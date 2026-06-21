@@ -33,6 +33,8 @@ export interface IAiSettings {
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language; empty = auto-detect.
+  sttLanguage?: string;
   hasSttApiKey: boolean;
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
@@ -60,6 +62,8 @@ export interface IAiSettingsUpdate {
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language; empty = auto-detect.
+  sttLanguage?: string;
   // Write-only STT key (same semantics as `apiKey` / `embeddingApiKey`).
   sttApiKey?: string;
 }
