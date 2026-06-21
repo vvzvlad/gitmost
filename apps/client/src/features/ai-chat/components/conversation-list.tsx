@@ -115,11 +115,28 @@ export default function ConversationList({
               classes.conversationItem,
               isActive && classes.conversationItemActive,
             )}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(chat.id)}
+            onKeyDown={(e) => {
+              // Activate on Enter/Space like a native button; the inner menu
+              // button stops propagation so its own keys never reach this row.
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(chat.id);
+              }
+            }}
           >
-            <Text size="sm" lineClamp={1} style={{ flex: 1 }}>
-              {chat.title || t("Untitled chat")}
-            </Text>
+            <Group gap={4} wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+              {chat.roleName && (
+                <Text size="sm" span title={chat.roleName} style={{ flex: "none" }}>
+                  {chat.roleEmoji || "🤖"}
+                </Text>
+              )}
+              <Text size="sm" lineClamp={1} style={{ flex: 1, minWidth: 0 }}>
+                {chat.title || t("Untitled chat")}
+              </Text>
+            </Group>
             <Menu shadow="md" width={180} position="bottom-end">
               <Menu.Target>
                 <ActionIcon

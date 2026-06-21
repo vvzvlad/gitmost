@@ -60,6 +60,36 @@ agent-claim, `docmost-client.loader.ts:159` — `getCollabToken`; см. план
   встроенный агент получал устаревшую подсказку. Это и есть материализованный
   parity-баг.
 
+## Расширение: дублируется не только описания инструментов — ещё и конвертер (PM ↔ Markdown)
+
+Зафиксировано при планировании встраивания git-синка (`docmost-sync` → gitmost,
+нативная in-process интеграция). Та же болезнь «несколько рукописных копий одного
+кода» теперь касается слоя конвертации ProseMirror ↔ Markdown и его lib, а не
+только метаданных инструментов.
+
+- **Копия в gitmost** — `packages/mcp/src/lib/`: `markdown-converter.ts` (~885
+  строк), `markdown-document.ts` (~136), `node-ops.ts`, `diff.ts`,
+  `docmost-schema.ts`. Канонизатора (`canonicalize.ts`) здесь НЕТ.
+- **Копия в docmost-sync** — `packages/docmost-client/src/lib/`: тот же набор +
+  `canonicalize.ts` (~11 КБ, держит идемпотентность round-trip, SPEC §11) +
+  `markdown-document.ts` с режимом «тело + якоря, без тредов комментов»
+  (`includeCommentThreads:false`, на ~20 строк больше).
+- **Третья копия (планируется)** — план git-синка вендорит чистую часть
+  конвертера в новый `packages/git-sync` (collab-файл не нужен: запись идёт
+  нативно через `openDirectConnection` + `@docmost/editor-ext`).
+
+Копии уже молча разъехались (docmost-sync vs `packages/mcp`): `collaboration.ts`
+~329 изменённых строк, `node-ops.ts` ~53, `markdown-converter.ts` ~24,
+`markdown-document.ts` ~20. Отдельно: `docmost-schema.ts` в lib дублирует
+**реальную** схему сервера `@docmost/editor-ext` (её использует collab/persistence)
+— расхождение схем = риск битой конвертации нод.
+
+Вывод: тот же фикс-вектор (единый источник правды), что и для инструментов, стоит
+распространить на конвертер — общий пакет конвертации, потребляемый `mcp`,
+`git-sync` и (в идеале) сервером. До конвергенции git-sync держит вендоренную
+копию валидированного конвертера с гейтом round-trip против схемы `editor-ext`
+(осознанный долг «третья копия сейчас, объединяем позже»).
+
 ## Фикс
 
 Единый реестр спеков (полное устранение дублирования).** Вынести в

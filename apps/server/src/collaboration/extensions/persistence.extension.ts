@@ -113,6 +113,7 @@ export class PersistenceExtension implements Extension {
     const pageId = getPageId(documentName);
 
     const tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
+
     const ydocState = Buffer.from(Y.encodeStateAsUpdate(document));
 
     let textContent = null;
@@ -369,6 +370,18 @@ export class PersistenceExtension implements Extension {
       this.logger.error(
         { err, pageId },
         'Failed to sync transclusion references for page',
+      );
+    }
+    try {
+      await this.transclusionService.syncPageTemplateReferences(
+        pageId,
+        workspaceId,
+        tiptapJson,
+      );
+    } catch (err) {
+      this.logger.error(
+        { err, pageId },
+        'Failed to sync page template references for page',
       );
     }
   }

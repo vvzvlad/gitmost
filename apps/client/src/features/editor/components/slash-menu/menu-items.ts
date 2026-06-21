@@ -28,7 +28,10 @@ import {
   IconTag,
   IconMoodSmile,
   IconRotate2,
+  IconSuperscript,
+  IconArrowsMaximize,
 } from "@tabler/icons-react";
+import { PAGE_EMBED_PICKER_EVENT } from "@/features/editor/components/page-embed/page-embed-picker";
 import {
   CommandProps,
   SlashMenuGroupedItemsType,
@@ -367,6 +370,14 @@ const CommandGroups: SlashMenuGroupedItemsType = {
         editor.chain().focus().deleteRange(range).setDetails().run(),
     },
     {
+      title: "Footnote",
+      description: "Insert a footnote reference.",
+      searchTerms: ["footnote", "note", "reference", "сноска", "примечание"],
+      icon: IconSuperscript,
+      command: ({ editor, range }: CommandProps) =>
+        editor.chain().focus().deleteRange(range).setFootnote().run(),
+    },
+    {
       title: "Callout",
       description: "Insert callout notice.",
       searchTerms: [
@@ -536,6 +547,29 @@ const CommandGroups: SlashMenuGroupedItemsType = {
       },
     },
     {
+      title: "Embed page",
+      description: "Insert a live, read-only copy of another page.",
+      searchTerms: [
+        "template",
+        "embed",
+        "embed page",
+        "page",
+        "live",
+        "include",
+        "reuse",
+      ],
+      icon: IconArrowsMaximize,
+      command: ({ editor, range }: CommandProps) => {
+        // @ts-ignore - editor.storage.pageId is set by the host editor
+        const hostPageId: string | undefined = editor.storage?.pageId;
+        document.dispatchEvent(
+          new CustomEvent(PAGE_EMBED_PICKER_EVENT, {
+            detail: { editor, range, hostPageId },
+          }),
+        );
+      },
+    },
+    {
       title: "2 Columns",
       description: "Split content into two columns.",
       searchTerms: ["columns", "layout", "split", "side"],
@@ -586,6 +620,21 @@ const CommandGroups: SlashMenuGroupedItemsType = {
           .deleteRange(range)
           .insertColumns({ layout: "five_equal" })
           .run(),
+    },
+    {
+      title: "HTML embed",
+      description: "Embed raw HTML, CSS and JavaScript (sandboxed).",
+      searchTerms: ["html", "css", "js", "javascript", "script", "tracker", "analytics", "raw", "embed"],
+      icon: IconCode,
+      requiresHtmlEmbedFeature: true,
+      command: ({ editor, range }: CommandProps) => {
+        editor
+          .chain()
+          .focus()
+          .deleteRange(range)
+          .setHtmlEmbed({ source: "" })
+          .run();
+      },
     },
     {
       title: "Iframe embed",
@@ -744,6 +793,25 @@ const CommandGroups: SlashMenuGroupedItemsType = {
   ],
 };
 
+/**
+ * Read the workspace-level HTML embed master toggle from the persisted
+ * `currentUser` payload (the same localStorage entry `currentUserAtom` writes,
+ * carrying `workspace.settings`). ABSENT/false => OFF (the default). The slash
+ * `getSuggestionItems` is a plain function (no React/atom context), so we read
+ * the persisted state directly. UI gate only; an anonymous public-share read is
+ * served already-stripped content by the server when the toggle is OFF.
+ */
+export function isHtmlEmbedFeatureEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed?.workspace?.settings?.htmlEmbed === true;
+  } catch {
+    return false;
+  }
+}
+
 export const getSuggestionItems = ({
   query,
   excludeItems,
@@ -753,6 +821,7 @@ export const getSuggestionItems = ({
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
   const filteredGroups: SlashMenuGroupedItemsType = {};
+  const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
   const fuzzyMatch = (query: string, target: string) => {
     let queryIndex = 0;
@@ -767,6 +836,9 @@ export const getSuggestionItems = ({
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
       if (excludeItems?.has(item.title)) return false;
+      // Hide the HTML embed item unless the workspace master toggle is ON.
+      if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
+        return false;
       return (
         fuzzyMatch(search, item.title) ||
         item.description.toLowerCase().includes(search) ||

@@ -25,11 +25,19 @@ export function buildTree(pages: IPage[]): SpaceTreeNode[] {
       spaceId: page.spaceId,
       parentPageId: page.parentPageId,
       canEdit: page.canEdit ?? page.permissions?.canEdit,
+      isTemplate: page.isTemplate,
       children: [],
     };
   });
 
+  // Defense-in-depth: a duplicate id in `pages` would push two references to the
+  // same node, producing a duplicate React key that crashes the sidebar render.
+  // Track ids we've already pushed and skip repeats so a stray duplicate from a
+  // realtime cache write can never break the tree.
+  const seen = new Set<string>();
   pages.forEach((page) => {
+    if (seen.has(page.id)) return;
+    seen.add(page.id);
     tree.push(pageMap[page.id]);
   });
 
@@ -134,11 +142,17 @@ export function buildTreeWithChildren(items: SpaceTreeNode[]): SpaceTreeNode[] {
   // Build the tree array
   items.forEach((item) => {
     const node = nodeMap[item.id];
-    if (item.parentPageId !== null) {
+    // A permission-trimmed response can include a node whose `parentPageId` is
+    // not in the list (the parent was filtered out server-side). Treat such an
+    // orphan as a root instead of dereferencing an absent parent and throwing
+    // "Cannot read properties of undefined". Happy-path behaviour is unchanged:
+    // a node whose parent IS present still nests under it.
+    if (item.parentPageId !== null && nodeMap[item.parentPageId]) {
       // Find the parent node and add the current node to its children
       nodeMap[item.parentPageId].children.push(node);
     } else {
-      // If the item has no parent, it's a root node, so add it to the result array
+      // If the item has no parent (or its parent isn't loaded), it's a root
+      // node, so add it to the result array.
       result.push(node);
     }
   });
@@ -215,4 +229,61 @@ export function mergeRootTrees(
   });
 
   return sortPositionKeys(merged);
+}
+
+// Collect every node id in the tree (roots, branches, leaves). Used by
+// collapseAll to clear the open-state map for all current-space nodes.
+export function collectAllIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      ids.push(n.id);
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+// Collect ids of branch nodes (nodes that have children). Used by expandAll to
+// open every branch in the open-state map; leaves need no entry.
+export function collectBranchIds(nodes: SpaceTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SpaceTreeNode[]) => {
+    for (const n of list) {
+      if (n.children?.length) {
+        ids.push(n.id);
+        walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+
+// The open-state map (`openTreeNodesAtom`) is shared across spaces. Pure
+// next-map helpers for expand/collapse so the merge logic can be unit-tested
+// without rendering SpaceTree. Both return a fresh map and never mutate the
+// input — ids not in `ids` (e.g. other spaces) are carried over untouched.
+
+// Set each id in `ids` to true (open). Pre-existing entries (including other
+// spaces' open state) are preserved.
+export function openBranches(
+  prevMap: Record<string, boolean>,
+  ids: string[],
+): Record<string, boolean> {
+  const next = { ...prevMap };
+  for (const id of ids) next[id] = true;
+  return next;
+}
+
+// Set each id in `ids` to false (closed). Entries not listed (e.g. other
+// spaces' ids) are left exactly as they were.
+export function closeIds(
+  prevMap: Record<string, boolean>,
+  ids: string[],
+): Record<string, boolean> {
+  const next = { ...prevMap };
+  for (const id of ids) next[id] = false;
+  return next;
 }

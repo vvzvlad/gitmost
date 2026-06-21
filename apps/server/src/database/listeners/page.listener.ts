@@ -6,9 +6,70 @@ import { QueueJob, QueueName } from '../../integrations/queue/constants';
 import { Queue } from 'bullmq';
 import { EnvironmentService } from '../../integrations/environment/environment.service';
 
+/**
+ * Thin snapshot of a page node carried inside domain events so the WebSocket
+ * tree listener can broadcast a tree update WITHOUT reading the DB. This is
+ * "variant A" of the realtime-tree design: enriching the event avoids the
+ * in-transaction visibility race where a separate SELECT in the listener could
+ * run before the emitting `trx` has committed and therefore not see the row.
+ */
+export interface TreeNodeSnapshot {
+  id: string;
+  slugId: string;
+  title: string | null;
+  icon: string | null;
+  position: string;
+  spaceId: string;
+  parentPageId: string | null;
+}
+
 export class PageEvent {
   pageIds: string[];
   workspaceId: string;
+  // Optional tree snapshots so the WS listener can broadcast without a DB read
+  // (avoids the in-transaction visibility race on PAGE_CREATED /
+  // PAGE_SOFT_DELETED / PAGE_DELETED). The existing search/AI listeners ignore
+  // this field — they only enqueue work keyed by pageIds.
+  pages?: TreeNodeSnapshot[];
+  // Set on PAGE_RESTORED so the WS listener can scope a refetchRootTreeNodeEvent
+  // to the affected space (restore can re-attach a whole subtree).
+  spaceId?: string;
+  // Set on a PAGE_UPDATED that actually changed the page's title and/or icon
+  // (a rename or icon swap). Content-only saves leave this undefined, which is
+  // how the WS listener distinguishes a tree-relevant metadata change from a
+  // noisy content save and avoids re-broadcasting on every keystroke-flush.
+  // Server-authoritative: built from the values being persisted, not relayed
+  // from the client.
+  treeUpdate?: TreeUpdateSnapshot;
+}
+
+/**
+ * Thin snapshot carried on a PAGE_UPDATED event when the title and/or icon
+ * changed, so the WS tree listener can broadcast an `updateOne` without a DB
+ * read. Only the fields the client tree receiver (`applyUpdateOne`) consumes
+ * are included.
+ */
+export interface TreeUpdateSnapshot {
+  id: string;
+  slugId: string;
+  spaceId: string;
+  parentPageId: string | null;
+  // Present only when that field actually changed; an undefined field is left
+  // untouched by the client reducer.
+  title?: string | null;
+  icon?: string | null;
+}
+
+/**
+ * Emitted by `PageService.movePage` after a successful re-parent / reorder.
+ * Carries both the old and new parent plus the new position so the WS listener
+ * can build a `moveTreeNode` broadcast without a DB read.
+ */
+export class PageMovedEvent {
+  workspaceId: string;
+  oldParentId: string | null;
+  node: TreeNodeSnapshot;
+  hasChildren: boolean;
 }
 
 @Injectable()

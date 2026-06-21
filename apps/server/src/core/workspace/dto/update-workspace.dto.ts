@@ -5,6 +5,8 @@ import {
   IsBoolean,
   IsInt,
   IsOptional,
+  IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -52,6 +54,26 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsOptional()
   @IsBoolean()
   aiDictation: boolean;
+
+  // Workspace master toggle that enables/disables the HTML embed block type.
+  // Persisted at settings.htmlEmbed. ABSENT/false => OFF (default). The block
+  // itself renders in a sandboxed iframe, so this is a feature switch, not a
+  // security gate.
+  @IsOptional()
+  @IsBoolean()
+  htmlEmbed: boolean;
+
+  // Admin-only analytics/tracker snippet (raw HTML/JS) injected verbatim into
+  // the <head> of PUBLIC SHARE pages only (same-origin). Persisted at
+  // settings.trackerHead. Admin-authored trusted content.
+  @IsOptional()
+  @IsString()
+  @MaxLength(20000)
+  trackerHead?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  aiPublicShareAssistant: boolean;
 
   @IsOptional()
   @IsInt()

@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "0.91.0",
+  "version": "0.93.0",
   "description": "",
   "author": "",
   "private": true,
@@ -23,6 +23,7 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "pretest": "pnpm --filter @docmost/editor-ext build",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -162,10 +163,14 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "tsx"
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "testPathIgnorePatterns": [
+      "/node_modules/"
+    ],
     "transform": {
       "happy-dom.+\\.js$": [
         "babel-jest",
@@ -182,10 +187,10 @@
           ]
         }
       ],
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom)(@|/))"
+      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
@@ -195,7 +200,8 @@
     "moduleNameMapper": {
       "^@docmost/db/(.*)$": "<rootDir>/database/$1",
       "^@docmost/transactional/(.*)$": "<rootDir>/integrations/transactional/$1",
-      "^@docmost/ee/(.*)$": "<rootDir>/ee/$1"
+      "^@docmost/ee/(.*)$": "<rootDir>/ee/$1",
+      "^src/(.*)$": "<rootDir>/$1"
     }
   }
 }

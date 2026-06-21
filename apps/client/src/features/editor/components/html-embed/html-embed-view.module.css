@@ -1,0 +1,50 @@
+.htmlEmbedNodeView {
+  position: relative;
+}
+
+/* Fallback container used only for the empty, non-editor case. */
+.htmlEmbedContent {
+  width: 100%;
+}
+
+/* The sandboxed iframe the embed source is rendered into. */
+.htmlEmbedFrame {
+  display: block;
+  width: 100%;
+  border: none;
+}
+
+/* Edit affordance overlay, only shown while editing the document. */
+.htmlEmbedToolbar {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.htmlEmbedNodeView:hover .htmlEmbedToolbar {
+  opacity: 1;
+}
+
+/* Placeholder card shown when the source is empty (edit mode only). */
+.htmlEmbedPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed var(--mantine-color-gray-4);
+  border-radius: 8px;
+  color: var(--mantine-color-dimmed);
+
+  @mixin dark {
+    border-color: var(--mantine-color-dark-3);
+  }
+}
+
+.htmlEmbedSelected {
+  outline: 2px solid var(--mantine-color-blue-5);
+  border-radius: 8px;
+}

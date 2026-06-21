@@ -62,10 +62,10 @@ export class WsGateway
   }
 
   @SubscribeMessage('message')
-  async handleMessage(client: Socket, data: any): Promise<void> {
-    if (this.wsService.isTreeEvent(data)) {
-      await this.wsService.handleTreeEvent(client, data);
-    }
+  handleMessage(_client: Socket, _data: any): void {
+    // Inbound tree events from clients are no longer accepted: tree updates are
+    // now server-authoritative (broadcast by PageWsListener from domain events).
+    // The old client-relay path was removed to close that attack surface.
   }
 
   /*

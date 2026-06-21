@@ -121,8 +121,8 @@ function CommentListWithTabs() {
       <Paper
         shadow="sm"
         radius="md"
-        p="sm"
-        mb="sm"
+        p="xs"
+        mb="xs"
         withBorder
         key={comment.id}
         data-comment-id={comment.id}
@@ -145,7 +145,7 @@ function CommentListWithTabs() {
 
         {!comment.resolvedAt && canComment && (
           <>
-            <Divider my={4} />
+            <Divider my={2} />
             <CommentEditorWithActions
               commentId={comment.id}
               onSave={handleAddReply}

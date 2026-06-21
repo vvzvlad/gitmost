@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QueueName, QueueJob } from '../queue/constants';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
@@ -33,6 +34,8 @@ export interface UpdateAiSettingsInput {
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
   sttApiKey?: string;
+  publicShareChatModel?: string;
+  publicShareAssistantRoleId?: string;
 }
 
 /**
@@ -47,6 +50,7 @@ export interface UpdateAiSettingsInput {
 export class AiSettingsService {
   constructor(
     private readonly workspaceRepo: WorkspaceRepo,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
     private readonly aiProviderCredentialsRepo: AiProviderCredentialsRepo,
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
@@ -94,6 +98,40 @@ export class AiSettingsService {
     );
   }
 
+  /**
+   * Whether the anonymous public-share AI assistant is enabled for a workspace
+   * (single master toggle `settings.ai.publicShareAssistant`, default false).
+   * Used by the public `/api/shares/ai/stream` guardrail funnel: when off, the
+   * route 404s so the feature's existence is not revealed.
+   */
+  async isPublicShareAssistantEnabled(workspaceId: string): Promise<boolean> {
+    const workspace = await this.workspaceRepo.findById(workspaceId);
+    const settings = (workspace?.settings ?? {}) as {
+      ai?: { publicShareAssistant?: boolean };
+    };
+    return settings?.ai?.publicShareAssistant === true;
+  }
+
+  /**
+   * Resolve the display name of the agent role acting as the public-share
+   * assistant's identity, so the anonymous widget can label messages with the
+   * persona name instead of the generic "AI agent". Returns null when no role
+   * is configured, or the referenced role is missing/disabled (built-in persona
+   * → the client falls back to "AI agent"). Mirrors the role resolution in
+   * PublicShareChatService.resolveShareRole.
+   */
+  async resolvePublicShareAssistantName(
+    workspaceId: string,
+  ): Promise<string | null> {
+    const resolved = await this.resolve(workspaceId);
+    const roleId = resolved?.publicShareAssistantRoleId;
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
+    if (!role || !role.enabled) return null;
+    const name = role.name?.trim();
+    return name ? name : null;
+  }
+
   /** Read the stored non-secret provider settings for a workspace. */
   private async readProvider(
     workspaceId: string,
@@ -117,6 +155,12 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Cheap model id for the anonymous public-share assistant; reuses the chat
+      // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
+      publicShareChatModel: provider.publicShareChatModel,
+      // Agent-role id whose persona the public-share assistant adopts; empty/unset
+      // = built-in locked persona.
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       embeddingModel: provider.embeddingModel,
       sttModel: provider.sttModel,
       // Plain passthrough, no fallback; the transcribe path defaults unset to
@@ -197,6 +241,8 @@ export class AiSettingsService {
       sttBaseUrl: provider.sttBaseUrl,
       sttApiStyle: provider.sttApiStyle,
       systemPrompt: provider.systemPrompt,
+      publicShareChatModel: provider.publicShareChatModel,
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
@@ -234,6 +280,8 @@ export class AiSettingsService {
       'sttBaseUrl',
       'sttApiStyle',
       'systemPrompt',
+      'publicShareChatModel',
+      'publicShareAssistantRoleId',
     ] as const) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];

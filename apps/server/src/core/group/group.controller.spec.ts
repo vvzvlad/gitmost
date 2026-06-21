@@ -1,17 +1,15 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { GroupController } from './group.controller';
-import { GroupService } from './services/group.service';
 
+// Direct instantiation with stub deps, mirroring the rest of these unit specs.
 describe('GroupController', () => {
   let controller: GroupController;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [GroupController],
-      providers: [GroupService],
-    }).compile();
-
-    controller = module.get<GroupController>(GroupController);
+  beforeEach(() => {
+    controller = new GroupController(
+      {} as any, // groupService
+      {} as any, // groupUserService
+      {} as any, // workspaceAbility
+    );
   });
 
   it('should be defined', () => {

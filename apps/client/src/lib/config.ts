@@ -43,6 +43,10 @@ export function isCloud(): boolean {
   return castToBoolean(getConfigValue("CLOUD"));
 }
 
+export function isCompactPageTreeEnabled(): boolean {
+  return castToBoolean(getConfigValue("COMPACT_PAGE_TREE", "true"));
+}
+
 export function getAvatarUrl(
   avatarUrl: string,
   type: AvatarIconType = AvatarIconType.AVATAR,

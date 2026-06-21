@@ -10,17 +10,27 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
 import { PageTransclusionsRepo } from '@docmost/db/repos/page-transclusions/page-transclusions.repo';
 import { PageTransclusionReferencesRepo } from '@docmost/db/repos/page-transclusions/page-transclusion-references.repo';
+import { PageTemplateReferencesRepo } from '@docmost/db/repos/page-template-references/page-template-references.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { AttachmentRepo } from '@docmost/db/repos/attachment/attachment.repo';
 import { StorageService } from '../../../integrations/storage/storage.service';
 import {
+  collectPageEmbedsFromPmJson,
   collectReferencesFromPmJson,
   collectTransclusionsFromPmJson,
 } from './utils/transclusion-prosemirror.util';
 import { rewriteAttachmentsForUnsync } from './utils/transclusion-unsync.util';
-import { TransclusionLookup } from './transclusion.types';
+import {
+  PageTemplateLookup,
+  TransclusionLookup,
+} from './transclusion.types';
+import {
+  getProsemirrorContent,
+  removeMarkTypeFromDoc,
+} from '../../../common/helpers/prosemirror/utils';
+import { jsonToNode } from '../../../collaboration/collaboration.util';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
 
@@ -41,6 +51,7 @@ export class TransclusionService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly pageTransclusionsRepo: PageTransclusionsRepo,
     private readonly pageTransclusionReferencesRepo: PageTransclusionReferencesRepo,
+    private readonly pageTemplateReferencesRepo: PageTemplateReferencesRepo,
     private readonly pageRepo: PageRepo,
     private readonly pagePermissionRepo: PagePermissionRepo,
     private readonly spaceMemberRepo: SpaceMemberRepo,
@@ -217,6 +228,247 @@ export class TransclusionService {
     return { inserted: rows.length };
   }
 
+  // ---------------------------------------------------------------------------
+  // Whole-page live embeds (pageEmbed node)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Restrict a set of candidate `pageEmbed` source ids to the pages that
+   * actually live in `workspaceId` (and are not soft-deleted). Defense in depth:
+   * `page_template_references` is NOT access-filtered, so we must never persist a
+   * reference to a cross-workspace source page. This is a single workspace-scoped
+   * existence query; it does NOT do per-viewer permission filtering (that stays
+   * the job of `lookupTemplate` at read time — see the warning below).
+   */
+  private async filterInWorkspaceSourceIds(
+    sourceIds: string[],
+    workspaceId: string,
+    trx?: KyselyTransaction,
+  ): Promise<Set<string>> {
+    if (sourceIds.length === 0) return new Set();
+    const db = trx ?? this.db;
+    const rows = await db
+      .selectFrom('pages')
+      .select('id')
+      .where('id', 'in', sourceIds)
+      .where('workspaceId', '=', workspaceId)
+      .where('deletedAt', 'is', null)
+      .execute();
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * Diff `page_template_references` for a host page against the `pageEmbed`
+   * nodes currently in its content. Mirror of `syncPageReferences` but keyed by
+   * `sourcePageId` only (whole-page, no transclusionId). Idempotent.
+   *
+   * SECURITY: `page_template_references` rows are NOT access-filtered. Inserts
+   * are restricted here to in-workspace source pages so the graph can never
+   * accumulate cross-workspace edges, but rows are still NOT per-viewer
+   * permission-filtered. EVERY consumer of these rows MUST permission-filter at
+   * read time (as `lookupTemplate` does via `filterViewerAccessiblePageIds`).
+   *
+   * NOTE (write-only graph — intentional, not dead): as of now the
+   * `page_template_references` table is WRITE-ONLY in production. It is populated
+   * by three paths (this diff-sync, `insertTemplateReferencesForPages` for new
+   * pages, and the collab persistence flush) but has NO production reader: the
+   * only read of the table is `findByReferencePageId` below, used purely to
+   * compute this sync's insert/delete diff — there is no reverse-navigation
+   * consumer yet (issue #34's dead `findReferencePageIdsBySource` reader was
+   * already removed). The graph is retained deliberately for an upcoming
+   * "used in N pages" reverse-navigation consumer; keep writing it so that
+   * feature has correct history when it lands. Do not remove the write graph or
+   * its migration just because nothing reads it today. (See Gitea #94.)
+   */
+  async syncPageTemplateReferences(
+    referencePageId: string,
+    workspaceId: string,
+    pmJson: unknown,
+    trx?: KyselyTransaction,
+  ): Promise<{ inserted: number; deleted: number }> {
+    const desired = collectPageEmbedsFromPmJson(pmJson);
+    const inWorkspace = await this.filterInWorkspaceSourceIds(
+      desired.map((d) => d.sourcePageId),
+      workspaceId,
+      trx,
+    );
+    const desiredIds = new Set(
+      desired.map((d) => d.sourcePageId).filter((id) => inWorkspace.has(id)),
+    );
+
+    const existing =
+      await this.pageTemplateReferencesRepo.findByReferencePageId(
+        referencePageId,
+        trx,
+      );
+    const existingIds = new Set(existing.map((e) => e.sourcePageId));
+
+    const toInsert = Array.from(desiredIds)
+      .filter((id) => !existingIds.has(id))
+      .map((sourcePageId) => ({
+        workspaceId,
+        referencePageId,
+        sourcePageId,
+      }));
+
+    const toDelete = existing
+      .filter((e) => !desiredIds.has(e.sourcePageId))
+      .map((e) => e.sourcePageId);
+
+    if (toInsert.length > 0) {
+      await this.pageTemplateReferencesRepo.insertMany(toInsert, trx);
+    }
+    if (toDelete.length > 0) {
+      await this.pageTemplateReferencesRepo.deleteByReferenceAndSources(
+        referencePageId,
+        workspaceId,
+        toDelete,
+        trx,
+      );
+    }
+
+    return { inserted: toInsert.length, deleted: toDelete.length };
+  }
+
+  /**
+   * Bulk-insert `page_template_references` for brand-new pages (duplication,
+   * import) where there is nothing to diff against.
+   *
+   * SECURITY: like `syncPageTemplateReferences`, inserts are restricted to
+   * in-workspace source pages so the (non-access-filtered) reference graph never
+   * gains a cross-workspace edge. Read-time per-viewer permission filtering is
+   * still required by every consumer.
+   */
+  async insertTemplateReferencesForPages(
+    pages: Array<{ id: string; workspaceId: string; content: unknown }>,
+    trx?: KyselyTransaction,
+  ): Promise<{ inserted: number }> {
+    // Collect candidate source ids per workspace, then validate each workspace's
+    // set in a single existence query before building insert rows.
+    const candidatesByWorkspace = new Map<string, Set<string>>();
+    const pageEmbeds = pages.map((page) => {
+      const sourceIds = collectPageEmbedsFromPmJson(page.content).map(
+        (e) => e.sourcePageId,
+      );
+      let set = candidatesByWorkspace.get(page.workspaceId);
+      if (!set) {
+        set = new Set();
+        candidatesByWorkspace.set(page.workspaceId, set);
+      }
+      for (const id of sourceIds) set.add(id);
+      return { page, sourceIds };
+    });
+
+    const inWorkspaceByWorkspace = new Map<string, Set<string>>();
+    for (const [workspaceId, candidates] of candidatesByWorkspace) {
+      inWorkspaceByWorkspace.set(
+        workspaceId,
+        await this.filterInWorkspaceSourceIds(
+          Array.from(candidates),
+          workspaceId,
+          trx,
+        ),
+      );
+    }
+
+    const rows: Array<{
+      workspaceId: string;
+      referencePageId: string;
+      sourcePageId: string;
+    }> = [];
+    for (const { page, sourceIds } of pageEmbeds) {
+      const inWorkspace = inWorkspaceByWorkspace.get(page.workspaceId);
+      for (const sourcePageId of sourceIds) {
+        if (!inWorkspace?.has(sourcePageId)) continue;
+        rows.push({
+          workspaceId: page.workspaceId,
+          referencePageId: page.id,
+          sourcePageId,
+        });
+      }
+    }
+    if (rows.length === 0) return { inserted: 0 };
+    await this.pageTemplateReferencesRepo.insertMany(rows, trx);
+    return { inserted: rows.length };
+  }
+
+  /**
+   * Resolve whole-page content for a set of source page ids on behalf of an
+   * authenticated viewer. For each accessible page returns its current content
+   * with `comment` marks stripped (comments belong to the source). Inaccessible
+   * pages return `no_access`, missing/deleted pages return `not_found`. Does NOT
+   * require `is_template` — any accessible page can be embedded (the template
+   * flag only affects picker discovery).
+   *
+   * FLAT, single-level by design: this returns each requested page's own content
+   * verbatim and never recurses. If a returned page itself contains a `pageEmbed`
+   * node pointing at another page, that embed is left unresolved — the client
+   * issues a follow-up lookup for it. Because there is no server-side recursive
+   * expansion, there is no server depth/cycle to guard here: the embed depth/cycle
+   * cap (PAGE_EMBED_MAX_DEPTH) is purely a client RENDER concern. A scripted client
+   * that walks the graph manually is bounded by the per-user throttle (30/60s) on
+   * the controller plus the DTO's ArrayMaxSize(50) per call.
+   */
+  async lookupTemplate(
+    sourcePageIds: string[],
+    viewerUserId: string,
+    workspaceId: string,
+  ): Promise<{ items: PageTemplateLookup[] }> {
+    if (sourcePageIds.length === 0) return { items: [] };
+
+    const uniqueIds = Array.from(new Set(sourcePageIds));
+    const accessibleSet = new Set(
+      await this.filterViewerAccessiblePageIds(
+        uniqueIds,
+        viewerUserId,
+        workspaceId,
+      ),
+    );
+
+    const accessibleIds = uniqueIds.filter((id) => accessibleSet.has(id));
+    const pages = await this.pageRepo.findManyByIds(accessibleIds, {
+      workspaceId,
+      includeContent: true,
+    });
+    const pageById = new Map(pages.map((p) => [p.id, p]));
+
+    const items: PageTemplateLookup[] = sourcePageIds.map((sourcePageId) => {
+      if (!accessibleSet.has(sourcePageId)) {
+        return { sourcePageId, status: 'no_access' as const };
+      }
+      const page = pageById.get(sourcePageId);
+      if (!page) {
+        return { sourcePageId, status: 'not_found' as const };
+      }
+
+      let content: unknown = null;
+      try {
+        const pmJson = getProsemirrorContent(page.content);
+        const doc = jsonToNode(pmJson);
+        content = doc ? removeMarkTypeFromDoc(doc, 'comment').toJSON() : pmJson;
+      } catch (err) {
+        this.logger.error(
+          { err, sourcePageId },
+          'Failed to prepare template content for lookup',
+        );
+        // Never return content carrying the source's comment marks. If the
+        // happy-path stripping failed, treat the page as not resolvable.
+        return { sourcePageId, status: 'not_found' as const };
+      }
+
+      return {
+        sourcePageId,
+        slugId: page.slugId,
+        title: page.title ?? null,
+        icon: page.icon ?? null,
+        content,
+        sourceUpdatedAt: page.updatedAt,
+      };
+    });
+
+    return { items };
+  }
+
   /**
    * Resolve viewer access for source page IDs supplied by an authenticated
    * caller. Restricts candidates to pages the viewer can see at the space
@@ -224,7 +476,7 @@ export class TransclusionService {
    * cannot read a sync block from a private space they don't belong to via
    * an unrestricted source page.
    */
-  private async filterViewerAccessiblePageIds(
+  async filterViewerAccessiblePageIds(
     pageIds: string[],
     viewerUserId: string,
     workspaceId: string,
@@ -461,10 +713,12 @@ export class TransclusionService {
       throw new NotFoundException('Sync block not found');
     }
 
-    const { content, copies } = rewriteAttachmentsForUnsync(
+    let content: unknown;
+    let copies: ReturnType<typeof rewriteAttachmentsForUnsync>['copies'];
+    ({ content, copies } = rewriteAttachmentsForUnsync(
       transclusion.content,
       () => uuid7(),
-    );
+    ));
 
     if (copies.length > 0) {
       const oldIds = copies.map((c) => c.oldAttachmentId);

@@ -214,6 +214,13 @@ export class EnvironmentService {
     return !this.isCloud();
   }
 
+  isCompactPageTreeEnabled(): boolean {
+    const compactTree = this.configService
+      .get<string>('COMPACT_PAGE_TREE', 'true')
+      .toLowerCase();
+    return compactTree === 'true';
+  }
+
   getStripePublishableKey(): string {
     return this.configService.get<string>('STRIPE_PUBLISHABLE_KEY');
   }

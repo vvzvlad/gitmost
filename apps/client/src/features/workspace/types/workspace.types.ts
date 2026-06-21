@@ -25,10 +25,17 @@ export interface IWorkspace {
   mcpEnabled?: boolean;
   aiChat?: boolean;
   aiDictation?: boolean;
+  aiPublicShareAssistant?: boolean;
   trashRetentionDays?: number;
   restrictApiToAdmins?: boolean;
   allowMemberTemplates?: boolean;
   isScimEnabled?: boolean;
+  // Write-only field for updateWorkspace({ htmlEmbed }). Read state lives at
+  // settings.htmlEmbed.
+  htmlEmbed?: boolean;
+  // Write-only field for updateWorkspace({ trackerHead }). Read state lives at
+  // settings.trackerHead.
+  trackerHead?: string;
 }
 
 export interface IWorkspaceSettings {
@@ -36,6 +43,13 @@ export interface IWorkspaceSettings {
   sharing?: IWorkspaceSharingSettings;
   api?: IWorkspaceApiSettings;
   templates?: IWorkspaceTemplateSettings;
+  // HTML embed master toggle (enables/disables the block type). The block
+  // renders in a sandboxed iframe, so this is a feature switch, not a security
+  // gate. ABSENT/false => OFF (default).
+  htmlEmbed?: boolean;
+  // Admin-only analytics/tracker snippet injected into the <head> of public
+  // share pages (same-origin). ABSENT/empty => none.
+  trackerHead?: string;
 }
 
 export interface IWorkspaceApiSettings {
@@ -48,6 +62,7 @@ export interface IWorkspaceAiSettings {
   mcp?: boolean;
   chat?: boolean;
   dictation?: boolean;
+  publicShareAssistant?: boolean;
 }
 
 export interface IWorkspaceSharingSettings {

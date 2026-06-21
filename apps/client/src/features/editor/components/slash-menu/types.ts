@@ -21,6 +21,10 @@ export type SlashMenuItemType = {
   searchTerms: string[];
   command: (props: CommandProps) => void;
   disable?: (editor: ReturnType<typeof useEditor>) => boolean;
+  // When true, the item is hidden unless the workspace HTML embed master toggle
+  // is ON. UI gate only — for anonymous public-share reads the server serves
+  // already-stripped content when the toggle is OFF.
+  requiresHtmlEmbedFeature?: boolean;
 };
 
 export type SlashMenuGroupedItemsType = {

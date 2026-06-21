@@ -216,6 +216,11 @@ export class SearchService {
         .where('workspaceId', '=', workspaceId)
         .limit(limit);
 
+      // Template picker: restrict to pages flagged as templates.
+      if (suggestion.onlyTemplates) {
+        pageSearch = pageSearch.where('isTemplate', '=', true);
+      }
+
       // search all spaces the user has access to, prioritizing the current space
       const userSpaceIds = await this.spaceMemberRepo.getUserSpaceIds(userId);
 
