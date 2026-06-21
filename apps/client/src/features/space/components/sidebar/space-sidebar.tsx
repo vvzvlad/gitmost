@@ -87,7 +87,6 @@ export function SpaceSidebar() {
             spaceName={space?.name}
             spaceSlug={space?.slug}
             spaceIcon={space?.logo}
-            onSettings={openSettings}
           />
         </div>
 

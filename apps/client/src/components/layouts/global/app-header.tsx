@@ -10,7 +10,6 @@ import classes from "./app-header.module.css";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
 import { Link } from "react-router-dom";
-import APP_ROUTE from "@/lib/app-route.ts";
 import { useAtom, useSetAtom } from "jotai";
 import {
   desktopSidebarAtom,
@@ -30,10 +29,6 @@ import {
 } from "@/features/search/constants.ts";
 import { NotificationPopover } from "@/features/notification/components/notification-popover.tsx";
 
-const links = [
-  { link: APP_ROUTE.HOME, label: "Home" },
-];
-
 export function AppHeader() {
   const { t } = useTranslation();
   const [mobileOpened] = useAtom(mobileSidebarAtom);
@@ -46,12 +41,6 @@ export function AppHeader() {
   const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   // AI chat entry point: only shown when the workspace enables it (A7 gate).
   const aiChatEnabled = workspace?.settings?.ai?.chat === true;
-
-  const items = links.map((link) => (
-    <Link key={link.label} to={link.link} className={classes.link}>
-      {t(link.label)}
-    </Link>
-  ));
 
   return (
     <>
@@ -96,10 +85,6 @@ export function AppHeader() {
                 {APP_VERSION}
               </Text>
             </Tooltip>
-          </Group>
-
-          <Group ml="xl" gap={5} className={classes.links} visibleFrom="sm">
-            {items}
           </Group>
         </Group>
 

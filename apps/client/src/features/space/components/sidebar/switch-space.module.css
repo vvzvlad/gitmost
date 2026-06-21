@@ -2,16 +2,6 @@
   width: 100%;
 }
 
-.header {
-  padding: rem(4px) var(--mantine-spacing-sm);
-}
-
-.spaceName {
-  flex: 1;
-  min-width: 0;
-  color: light-dark(var(--mantine-color-dark-4), var(--mantine-color-dark-0));
-}
-
 .grid {
   display: flex;
   flex-wrap: wrap;

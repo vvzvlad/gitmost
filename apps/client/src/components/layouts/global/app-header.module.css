@@ -13,6 +13,7 @@
     text-decoration: none;
     color: inherit;
     cursor: pointer;
+    user-select: none;
 }
 
 .brandIcon {
@@ -32,22 +33,4 @@
        (SVG baseline y=42.689 in a -7.25..65.25 viewBox); for the 30px desktop logo
        that is ~9.3px, minus the font descent (~2px) ≈ 7px. */
     margin-bottom: rem(7px);
-}
-
-.link {
-    display: block;
-    line-height: 1;
-    padding: rem(8px) rem(12px);
-    border-radius: var(--mantine-radius-sm);
-    text-decoration: none;
-    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
-    font-size: var(--mantine-font-size-sm);
-    font-weight: 500;
-    user-select: none;
-    white-space: nowrap;
-    flex-shrink: 0;
-
-    @mixin hover {
-        background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
-    }
 }
