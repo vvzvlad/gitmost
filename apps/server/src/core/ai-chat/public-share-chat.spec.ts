@@ -386,7 +386,7 @@ describe('resolveShareAiWorkspaceMax (env-overridable per-workspace cap)', () =>
   it('falls back to the default for an unparseable / NaN value', () => {
     process.env[ENV] = 'not-a-number';
     expect(resolveShareAiWorkspaceMax()).toBe(SHARE_AI_WORKSPACE_MAX_PER_WINDOW);
-    expect(SHARE_AI_WORKSPACE_MAX_PER_WINDOW).toBe(300);
+    expect(SHARE_AI_WORKSPACE_MAX_PER_WINDOW).toBe(100);
   });
 
   it('falls back to the default when unset', () => {
