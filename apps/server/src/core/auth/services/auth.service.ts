@@ -95,12 +95,19 @@ export class AuthService {
     // Single source of truth (see auth.constants): the /mcp brute-force limiter
     // recognises this exact message via isCredentialsFailure.
     const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
-    if (!user || isUserDisabled(user)) {
+    if (!user || isUserDisabled(user) || !user.password) {
+      // SSO/LDAP-only accounts have no local password hash (user.password is
+      // null): feeding null to native bcrypt makes it REJECT with
+      // "data and hash arguments required", which surfaces as a 500 on
+      // /api/auth/login and as a leaky 401 (not recognised by the /mcp
+      // brute-force limiter) on /mcp. Treat such accounts like a missing user.
+      //
       // Constant-time intent: run ONE bcrypt comparison (against a dummy hash)
-      // even when the user is missing/disabled, so this path takes about the
-      // same time as the real-user wrong-password path below. This closes the
-      // user-enumeration timing oracle (registered vs. not). The result is
-      // intentionally discarded — we always throw the same credentials error.
+      // even when the user is missing/disabled/password-less, so this path takes
+      // about the same time as the real-user wrong-password path below. This
+      // closes the user-enumeration timing oracle (registered vs. not). The
+      // result is intentionally discarded — we always throw the same
+      // credentials error (recognised by isCredentialsFailure on /mcp).
       await comparePasswordHash(loginDto.password, DUMMY_PASSWORD_HASH);
       throw new UnauthorizedException(errorMessage);
     }
@@ -166,6 +173,15 @@ export class AuthService {
 
     if (!user || isUserDisabled(user)) {
       throw new NotFoundException('User not found');
+    }
+
+    // SSO/LDAP-only accounts have no local password hash (user.password is
+    // null). Passing null to native bcrypt makes it REJECT with
+    // "data and hash arguments required" (an unhandled 500), so never call
+    // comparePasswordHash on null. There is no current local password to verify,
+    // so reject the same way a wrong current password is rejected.
+    if (!user.password) {
+      throw new BadRequestException('Current password is incorrect');
     }
 
     const comparePasswords = await comparePasswordHash(
