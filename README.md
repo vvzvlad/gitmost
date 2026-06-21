@@ -101,6 +101,7 @@ community feature, with no enterprise license. Open it from the page header; the
 - ✅ **macOS app** — native macOS app ([gitmost-app](https://github.com/vvzvlad/gitmost-app)) that embeds the UI with multi-server tabs.
 - ✅ **AI chat** — built-in AI agent chat over your wiki content (read + write, RAG search, configurable provider, optional web access via external MCP).
 - ✅ **Voice dictation** — microphone button in the AI agent chat and the page editor; audio is transcribed server-side (Whisper / OpenAI-compatible STT) via the workspace AI provider, with an admin toggle to show/hide it.
+- ✅ **Page templates** — flag a page as a template and embed its whole content live into other pages; edits to the template propagate to every place it is inserted (whole-page transclusion on top of the existing synced blocks).
 
 ### In progress
 
@@ -108,7 +109,6 @@ community feature, with no enterprise license. Open it from the page header; the
 
 ### Planned
 
-- 🔭 **Page templates** — flag a page as a template and embed its whole content live into other pages; edits to the template propagate to every place it is inserted (whole-page transclusion on top of the existing synced blocks). See [docs/page-templates-plan.md](docs/page-templates-plan.md).
 - 🔭 **Viewer comments** — let read-only viewers leave comments.
 - 🔭 **Public-share AI assistant** — let anonymous visitors of a shared page ask the AI agent, scoped strictly to that share's page tree (read-only, share-scoped search), behind a workspace toggle. See [docs/public-share-assistant-plan.md](docs/public-share-assistant-plan.md).
 - 🔭 **Password-protected pages** — protect individual pages / shares with a password.
