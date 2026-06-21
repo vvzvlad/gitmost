@@ -5,7 +5,7 @@ import { showTypingIndicator } from "@/features/ai-chat/components/message-list.
 /**
  * Pure-helper tests for the typing-indicator bridging logic that the internal
  * chat and the public share widget now share. This is the behavior that decides
- * whether the animated "AI agent is typing…" placeholder shows in the gap
+ * whether the animated "AI is typing…" placeholder shows in the gap
  * between sending and the first streamed token.
  */
 const msg = (

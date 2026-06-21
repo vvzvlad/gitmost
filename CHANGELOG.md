@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Public share AI: default per-workspace hourly assistant cap lowered
+  300 → 100.** The limiter falls back to this default whenever
+  `SHARE_AI_WORKSPACE_MAX_PER_HOUR` is unset, so a `0.93.0` deployment that
+  never set the env var has its anonymous public-share assistant hourly cap
+  cut from 300 to 100 on upgrade. Set `SHARE_AI_WORKSPACE_MAX_PER_HOUR` to
+  keep the previous limit. (#62)
+
 ## [0.93.0] - 2026-06-21
 
 This release builds on the 0.91.0 AI foundation: admin-defined AI agent roles,

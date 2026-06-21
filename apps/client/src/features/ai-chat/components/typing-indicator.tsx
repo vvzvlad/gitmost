@@ -19,8 +19,10 @@ interface TypingIndicatorProps {
  * the real assistant message once content starts arriving.
  *
  * Mirrors the assistant row layout in MessageItem (the dimmed label), so it reads
- * as the assistant's bubble taking shape. The label and typing line use the
- * configured identity name when provided, otherwise the generic "AI agent".
+ * as the assistant's bubble taking shape. The dimmed label uses the configured
+ * identity name when provided (otherwise the generic "AI agent"), while the
+ * typing line is always the generic "AI is typing…" (it never includes the
+ * role/identity name).
  */
 export default function TypingIndicator({ assistantName }: TypingIndicatorProps) {
   const { t } = useTranslation();
@@ -38,7 +40,7 @@ export default function TypingIndicator({ assistantName }: TypingIndicatorProps)
           <span />
         </span>
         <Text size="sm" c="dimmed">
-          {name ? t("{{name}} is typing…", { name }) : t("AI agent is typing…")}
+          {t("AI is typing…")}
         </Text>
       </Group>
     </Box>

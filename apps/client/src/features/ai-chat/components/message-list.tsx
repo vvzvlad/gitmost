@@ -43,7 +43,7 @@ interface MessageListProps {
 const BOTTOM_THRESHOLD = 40;
 
 /**
- * Whether to show the standalone "AI agent is typing…" indicator. It bridges the
+ * Whether to show the standalone "AI is typing…" indicator. It bridges the
  * gap between sending and the first streamed content, so it shows only while a
  * turn is in flight AND the latest assistant message has nothing visible yet:
  *  - the last message is still the user's (assistant hasn't started a row), or
