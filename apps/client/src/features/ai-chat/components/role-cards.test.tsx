@@ -22,10 +22,6 @@ beforeAll(() => {
   });
 });
 
-// react-i18next without an I18nextProvider returns the key verbatim, so
-// t("Universal assistant") renders as "Universal assistant" — exactly the label
-// we assert on below.
-
 const roles: IAiRole[] = [
   {
     id: "r1",
@@ -43,57 +39,33 @@ const roles: IAiRole[] = [
   },
 ];
 
-function renderCards(
-  selectedRoleId: string | null,
-  onSelect = vi.fn(),
-) {
+function renderCards(onPick = vi.fn()) {
   render(
     <MantineProvider>
-      <RoleCards
-        roles={roles}
-        selectedRoleId={selectedRoleId}
-        onSelect={onSelect}
-      />
+      <RoleCards roles={roles} onPick={onPick} />
     </MantineProvider>,
   );
-  return onSelect;
+  return onPick;
 }
 
 describe("RoleCards", () => {
-  it("renders a Universal assistant card plus one card per role", () => {
-    renderCards(null);
-    expect(screen.getByText("Universal assistant")).toBeDefined();
+  it("renders one card per role with name, emoji, and description", () => {
+    renderCards();
     expect(screen.getByText("Pirate")).toBeDefined();
+    expect(screen.getByText("Talks like a pirate")).toBeDefined();
     expect(screen.getByText("Grandpa")).toBeDefined();
     // The emoji is shown for the role that has one.
     expect(screen.getByText("🏴‍☠️")).toBeDefined();
   });
 
-  it("highlights the Universal card when nothing is selected", () => {
-    renderCards(null);
-    const universal = screen.getByText("Universal assistant").closest("button");
-    expect(universal?.getAttribute("aria-pressed")).toBe("true");
-    const pirate = screen.getByText("Pirate").closest("button");
-    expect(pirate?.getAttribute("aria-pressed")).toBe("false");
+  it("does NOT render a Universal assistant card", () => {
+    renderCards();
+    expect(screen.queryByText("Universal assistant")).toBeNull();
   });
 
-  it("highlights a role card when that role is selected", () => {
-    renderCards("r1");
-    const universal = screen.getByText("Universal assistant").closest("button");
-    expect(universal?.getAttribute("aria-pressed")).toBe("false");
-    const pirate = screen.getByText("Pirate").closest("button");
-    expect(pirate?.getAttribute("aria-pressed")).toBe("true");
-  });
-
-  it("calls onSelect with the role id when a role card is clicked", () => {
-    const onSelect = renderCards(null);
+  it("calls onPick with the role object when a card is clicked", () => {
+    const onPick = renderCards();
     fireEvent.click(screen.getByText("Pirate"));
-    expect(onSelect).toHaveBeenCalledWith("r1");
-  });
-
-  it("calls onSelect with null when the Universal card is clicked", () => {
-    const onSelect = renderCards("r1");
-    fireEvent.click(screen.getByText("Universal assistant"));
-    expect(onSelect).toHaveBeenCalledWith(null);
+    expect(onPick).toHaveBeenCalledWith(roles[0]);
   });
 });

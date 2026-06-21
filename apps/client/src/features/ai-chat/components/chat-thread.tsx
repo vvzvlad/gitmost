@@ -1,4 +1,4 @@
-import { ReactNode, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import { generateId } from "ai";
 import { Alert, Box, Stack } from "@mantine/core";
 import { IconAlertTriangle } from "@tabler/icons-react";
@@ -7,7 +7,11 @@ import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import MessageList from "@/features/ai-chat/components/message-list.tsx";
 import ChatInput from "@/features/ai-chat/components/chat-input.tsx";
-import { IAiChatMessageRow } from "@/features/ai-chat/types/ai-chat.types.ts";
+import RoleCards from "@/features/ai-chat/components/role-cards.tsx";
+import {
+  IAiChatMessageRow,
+  IAiRole,
+} from "@/features/ai-chat/types/ai-chat.types.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -29,9 +33,15 @@ interface ChatThreadProps {
    *  in the request body so the server persists it on chat creation; ignored by
    *  the server for existing chats (the role is read from the chat row). */
   roleId?: string | null;
-  /** Content shown when the transcript is empty (forwarded to MessageList).
-   *  Used by the new-chat window to render the colored role cards. */
-  emptyState?: ReactNode;
+  /** Enabled roles for the new-chat empty state (only meaningful when
+   *  `chatId === null`). Rendered as the colored role cards. */
+  roles?: IAiRole[];
+  /** Notify the parent which role was picked via a card, so it can update the
+   *  header badge / assistant name for the brand-new chat. */
+  onRolePicked?: (role: IAiRole) => void;
+  /** Display name for the assistant label / typing line (the role name);
+   *  forwarded to MessageList. Absent => the generic "AI agent". */
+  assistantName?: string;
   /** Called when a turn finishes; the parent refreshes the chat list and, for
    *  a new chat, adopts the freshly created chat id. */
   onTurnFinished: () => void;
@@ -69,7 +79,9 @@ export default function ChatThread({
   initialRows,
   openPage,
   roleId,
-  emptyState,
+  roles,
+  onRolePicked,
+  assistantName,
   onTurnFinished,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -163,12 +175,27 @@ export default function ChatThread({
 
   const isStreaming = status === "submitted" || status === "streaming";
 
+  // Clicking a role card both binds the role to THIS new chat and immediately
+  // starts the conversation. roleIdRef is set synchronously here because the
+  // parent's selectedRoleId state update would only reach roleIdRef on the next
+  // render — after this synchronous sendMessage has already read it.
+  const handleRolePick = (role: IAiRole): void => {
+    roleIdRef.current = role.id;
+    onRolePicked?.(role);
+    sendMessage({ text: t("Take a look at the current document") });
+  };
+  const showRoleCards = chatId === null && (roles?.length ?? 0) > 0;
+  const roleCardsEmptyState = showRoleCards ? (
+    <RoleCards roles={roles ?? []} onPick={handleRolePick} />
+  ) : undefined;
+
   return (
     <Box className={classes.panel}>
       <MessageList
         messages={messages}
         isStreaming={isStreaming}
-        emptyState={emptyState}
+        emptyState={roleCardsEmptyState}
+        assistantName={assistantName}
       />
 
       {error && (

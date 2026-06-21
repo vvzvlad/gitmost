@@ -20,9 +20,9 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-width: 100px;
-  max-width: 130px;
-  min-height: 72px;
+  min-width: 140px;
+  max-width: 180px;
+  min-height: 90px;
   padding: 12px 10px;
   border-radius: var(--mantine-radius-md);
   border: 2px solid transparent;
@@ -39,28 +39,15 @@
   box-shadow: var(--mantine-shadow-sm);
 }
 
-/* Selected: brighter/thicker ring. The ring color comes from the inline
-   `--role-card-border` var so it matches the card's palette color. */
-.card.selected {
-  border-color: var(--role-card-border);
-  box-shadow: 0 0 0 1px var(--role-card-border);
-}
-
 .emoji {
   font-size: 22px;
   line-height: 1;
 }
 
-.checkBadge {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  color: var(--mantine-color-white);
-  background: var(--role-card-border);
+/* The description: small and slightly muted, inheriting the card's color. We
+   reduce opacity instead of using Mantine's `c="dimmed"` so it doesn't clash
+   with the card's inline color. */
+.description {
+  opacity: 0.8;
+  line-height: 1.3;
 }
