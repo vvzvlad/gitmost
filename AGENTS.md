@@ -277,6 +277,15 @@ The git tag is the source of truth for the displayed version (UI reads `git desc
 4. Update `CHANGELOG.md` (Keep a Changelog format): add a `## [X.Y.Z] - YYYY-MM-DD` section summarising `git log vPREV..HEAD --no-merges` grouped by type (Breaking / Added / Changed / Fixed / Removed), and add the `compare/vPREV...vX.Y.Z` link at the bottom. Fold the bump + changelog into the release commit.
 5. Tag the release commit with a **lightweight** tag (existing release tags are lightweight): `git tag vX.Y.Z`.
 6. Push commit and tag: `git push origin main && git push origin vX.Y.Z`. Pushing the `v*` tag triggers `release.yml` (multi-arch GHCR images + a draft GitHub Release).
+7. **Back-merge the release into `develop`** so develop builds report the new version: `git checkout develop && git merge --no-ff main && git push origin develop` (push to Gitea as well if that is the canonical remote).
+
+#### Why develop keeps showing the *previous* version (and why step 7 matters)
+
+The UI version is `git describe --tags --always` (see `vite.config.ts`), which walks **backwards from the current commit** and picks the **nearest tag reachable in that commit's ancestry**, then appends `-<commits-since-tag>-g<short-hash>`.
+
+The release tag (`vX.Y.Z`) is created on **`main`'s release merge commit**, and that commit is **not** in `develop`'s history. So until the release is back-merged, `git describe` on `develop` cannot see the new tag and falls back to the *previous* reachable tag. Result: every develop build — and the `ghcr.io/vvzvlad/gitmost:develop` image — keeps reporting e.g. `v0.91.0-NNN-g<hash>` even though `main` is already tagged `v0.93.0`. This is the classic git-flow pitfall: the version on `develop` does **not** advance just because a release was tagged on `main`.
+
+Back-merging `main → develop` (step 7) pulls the tagged release commit into `develop`'s ancestry, after which develop builds correctly show `vX.Y.Z-NNN-g<hash>`. If `develop` already drifted (release tagged but never back-merged), just run step 7 now — no new tag is needed.
 
 ## Planning docs
 
