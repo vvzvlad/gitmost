@@ -88,6 +88,10 @@ export default function ShareAiWidget({
 
   const isStreaming = status === "submitted" || status === "streaming";
 
+  // Same classified-error banner as the internal chat: name the cause instead of a
+  // generic heading.
+  const errorView = error ? describeChatError(error.message ?? "", t) : null;
+
   const handleSend = () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -173,18 +177,18 @@ export default function ShareAiWidget({
           />
         </Box>
 
-        {error && (
+        {errorView && (
           <Alert
             variant="light"
             color="red"
             icon={<IconAlertTriangle size={16} />}
             mx="sm"
             mb="xs"
-            title={t("Something went wrong")}
+            title={errorView.title}
           >
-            {/* Surface the real cause (provider/gating message) instead of a
+            {/* Surface the real cause (provider/gating category) instead of a
                 generic line — same helper the internal chat uses. */}
-            {describeChatError(error.message ?? "", t)}
+            {errorView.detail}
           </Alert>
         )}
 

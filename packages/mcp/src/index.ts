@@ -5,12 +5,19 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { DocmostClient, DocmostMcpConfig } from "./client.js";
 import { parseNodeArg } from "./lib/parse-node-arg.js";
+import { SHARED_TOOL_SPECS, SharedToolSpec } from "./tool-specs.js";
 
 // Re-export the client and its config type so embedding hosts (e.g. the gitmost
 // NestJS server) can `import('@docmost/mcp')` and construct a DocmostClient
 // directly — for the credentials variant OR the per-user getToken variant.
 export { DocmostClient } from "./client.js";
 export type { DocmostMcpConfig } from "./client.js";
+
+// Re-export the zod-agnostic shared tool-spec registry so the in-app AI-SDK
+// service can read it off the loaded module (it cannot import the ESM package's
+// internals directly; it goes through loadDocmostMcp()).
+export { SHARED_TOOL_SPECS } from "./tool-specs.js";
+export type { SharedToolSpec } from "./tool-specs.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -62,29 +69,40 @@ export function createDocmostMcpServer(config: DocmostMcpConfig): McpServer {
     { instructions: SERVER_INSTRUCTIONS },
   );
 
+  // Register a tool from the shared, zod-agnostic spec registry. The spec owns
+  // the canonical name + model-facing description + (optional) schema builder;
+  // only the execute body is supplied per call. buildShape is invoked with THIS
+  // package's zod (v3); the in-app layer passes its own zod (v4).
+  //
+  // The spec's schema builder returns a plain ZodRawShape (Record<string,
+  // unknown> in the shared module since it must stay zod-agnostic), so the
+  // McpServer.registerTool overloads cannot infer the execute arg's shape from
+  // it. We type `execute` loosely and cast the call through `any`; runtime
+  // behaviour is unchanged — each execute body destructures the same fields the
+  // builder declares.
+  const registerShared = (
+    spec: SharedToolSpec,
+    execute: (args: any) => Promise<{ content: { type: "text"; text: string }[] }>,
+  ) =>
+    (server.registerTool as any)(
+      spec.mcpName,
+      spec.buildShape
+        ? { description: spec.description, inputSchema: spec.buildShape(z) }
+        : { description: spec.description },
+      execute,
+    );
+
   // Tool: get_workspace
-  server.registerTool(
-  "get_workspace",
-  {
-    description: "Get the current Docmost workspace",
-  },
-  async () => {
+  registerShared(SHARED_TOOL_SPECS.getWorkspace, async () => {
     const workspace = await docmostClient.getWorkspace();
     return jsonContent(workspace);
-  },
-);
+  });
 
-// Tool: list_spaces
-server.registerTool(
-  "list_spaces",
-  {
-    description: "List all available spaces in Docmost",
-  },
-  async () => {
+  // Tool: list_spaces
+  registerShared(SHARED_TOOL_SPECS.listSpaces, async () => {
     const spaces = await docmostClient.getSpaces();
     return jsonContent(spaces);
-  },
-);
+  });
 
 // Tool: list_pages
 server.registerTool(
@@ -137,63 +155,22 @@ server.registerTool(
 );
 
 // Tool: get_page_json
-server.registerTool(
-  "get_page_json",
-  {
-    description:
-      "Get page details with the raw ProseMirror JSON content (lossless: " +
-      "includes block ids, callouts, tables, link/image attributes) plus the " +
-      "slugId used in URLs. Use together with update_page_json for precise " +
-      "structural edits, or edit_page_text for simple text fixes.",
-    inputSchema: {
-      pageId: z.string().min(1),
-    },
-  },
-  async ({ pageId }) => {
-    const page = await docmostClient.getPageJson(pageId);
-    return jsonContent(page);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.getPageJson, async ({ pageId }) => {
+  const page = await docmostClient.getPageJson(pageId);
+  return jsonContent(page);
+});
 
 // Tool: get_outline
-server.registerTool(
-  "get_outline",
-  {
-    description:
-      "Return a COMPACT outline of a page's top-level blocks ({index, type, " +
-      "id, level, firstText}; tables add rows/cols/header; lists add item " +
-      "count) WITHOUT the full document body. Use it to locate sections/tables " +
-      "and grab block ids cheaply before get_node / patch_node / insert_node.",
-    inputSchema: {
-      pageId: z.string().min(1),
-    },
-  },
-  async ({ pageId }) => {
-    const result = await docmostClient.getOutline(pageId);
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.getOutline, async ({ pageId }) => {
+  const result = await docmostClient.getOutline(pageId);
+  return jsonContent(result);
+});
 
 // Tool: get_node
-server.registerTool(
-  "get_node",
-  {
-    description:
-      "Fetch a single node's full ProseMirror subtree (lossless) without " +
-      "pulling the whole document. `nodeId` is a block id from get_outline/" +
-      "get_page_json (works for headings/paragraphs/callouts/images), OR " +
-      "`#<index>` to fetch a top-level block by its outline index — use the " +
-      "`#<index>` form for tables/rows/cells, which carry no id.",
-    inputSchema: {
-      pageId: z.string().min(1),
-      nodeId: z.string().min(1),
-    },
-  },
-  async ({ pageId, nodeId }) => {
-    const result = await docmostClient.getNode(pageId, nodeId);
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.getNode, async ({ pageId, nodeId }) => {
+  const result = await docmostClient.getNode(pageId, nodeId);
+  return jsonContent(result);
+});
 
 // Tool: table_get
 server.registerTool(
@@ -387,21 +364,8 @@ server.registerTool(
 );
 
 // Tool: import_page_markdown
-server.registerTool(
-  "import_page_markdown",
-  {
-    description:
-      "Replace a page's content from a self-contained Docmost-flavoured " +
-      "Markdown file produced by export_page_markdown. Restores comment " +
-      "highlight anchors and diagrams from their inline HTML. NOTE: comment " +
-      "thread records are NOT created/updated/deleted on the server by this " +
-      "tool — only the page body + inline comment marks are written; manage " +
-      "comment threads via the comment tools/UI.",
-    inputSchema: {
-      pageId: z.string().min(1),
-      markdown: z.string().min(1),
-    },
-  },
+registerShared(
+  SHARED_TOOL_SPECS.importPageMarkdown,
   async ({ pageId, markdown }) => {
     const res = await docmostClient.importPageMarkdown(pageId, markdown);
     return jsonContent(res);
@@ -409,22 +373,8 @@ server.registerTool(
 );
 
 // Tool: copy_page_content
-server.registerTool(
-  "copy_page_content",
-  {
-    description:
-      "Replace targetPageId's content with a copy of sourcePageId's content, " +
-      "entirely server-side — the document is NOT sent through the model. The " +
-      "target keeps its own title and slug; only its body is replaced. Ideal " +
-      "for 'make page A's content equal to B' or 'replace A with B but keep A's URL'.",
-    inputSchema: {
-      sourcePageId: z.string().min(1).describe("Page to copy content FROM"),
-      targetPageId: z
-        .string()
-        .min(1)
-        .describe("Page whose content is REPLACED (title/slug kept)"),
-    },
-  },
+registerShared(
+  SHARED_TOOL_SPECS.copyPageContent,
   async ({ sourcePageId, targetPageId }) => {
     const result = await docmostClient.copyPageContent(
       sourcePageId,
@@ -453,50 +403,10 @@ server.registerTool(
 );
 
 // Tool: edit_page_text
-server.registerTool(
-  "edit_page_text",
-  {
-    description:
-      "Surgical find/replace inside a page's text. Preserves ALL structure: " +
-      "block ids, marks, links, callouts, tables. A `find` MAY cross " +
-      "bold/italic/link boundaries; the replacement inherits marks from the " +
-      "unchanged common prefix/suffix (editing plain text next to a bold word " +
-      "keeps it bold; editing inside a bold word keeps the new text bold). " +
-      "Each `find` must match exactly once (or set replaceAll). The batch " +
-      "applies what it can and returns applied[] + failed[]; a fully-unmatched " +
-      "batch writes nothing and errors. `find` should be the literal rendered " +
-      "text (no markdown). Markdown wrappers (**bold**, *italic*, `code`) and " +
-      "trailing emoji are tolerated via a strip-and-retry fallback, but plain " +
-      "text is preferred. Examples: edits:[{find:\"teh\"," +
-      "replace:\"the\"}]; edits:[{find:\"Hello world\",replace:\"Hello there\"}] " +
-      "(crosses a bold boundary). This is the preferred tool for fixing " +
-      "wording, typos, numbers, names. It edits plain text only and CANNOT " +
-      "change formatting marks: formatting changes (markdown markers in " +
-      "find/replace) are refused — use patch_node/update_page_json to change " +
-      "marks. The result includes a `verify` change-report of what actually " +
-      "changed (text/block/mark deltas).",
-    inputSchema: {
-      pageId: z.string().describe("ID of the page to edit"),
-      edits: z
-        .array(
-          z.object({
-            find: z.string().describe("Exact text to find"),
-            replace: z.string().describe("Replacement text (may be empty)"),
-            replaceAll: z
-              .boolean()
-              .optional()
-              .describe("Replace every occurrence (default: must match once)"),
-          }),
-        )
-        .min(1)
-        .describe("List of find/replace operations, applied in order"),
-    },
-  },
-  async ({ pageId, edits }) => {
-    const result = await docmostClient.editPageText(pageId, edits);
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.editPageText, async ({ pageId, edits }) => {
+  const result = await docmostClient.editPageText(pageId, edits);
+  return jsonContent(result);
+});
 
 // Tool: patch_node
 server.registerTool(
@@ -579,22 +489,10 @@ server.registerTool(
 );
 
 // Tool: delete_node
-server.registerTool(
-  "delete_node",
-  {
-    description:
-      "Remove a single block by its attrs.id (from get_page_json) WITHOUT " +
-      "resending the whole document.",
-    inputSchema: {
-      pageId: z.string().min(1),
-      nodeId: z.string().min(1),
-    },
-  },
-  async ({ pageId, nodeId }) => {
-    const result = await docmostClient.deleteNode(pageId, nodeId);
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.deleteNode, async ({ pageId, nodeId }) => {
+  const result = await docmostClient.deleteNode(pageId, nodeId);
+  return jsonContent(result);
+});
 
 // Tool: insert_image
 server.registerTool(
@@ -705,32 +603,16 @@ server.registerTool(
 );
 
 // Tool: unshare_page
-server.registerTool(
-  "unshare_page",
-  {
-    description: "Remove the public share of a page (revokes the public URL).",
-    inputSchema: {
-      pageId: z.string().min(1).describe("ID of the page to unshare"),
-    },
-  },
-  async ({ pageId }) => {
-    const result = await docmostClient.unsharePage(pageId);
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.unsharePage, async ({ pageId }) => {
+  const result = await docmostClient.unsharePage(pageId);
+  return jsonContent(result);
+});
 
 // Tool: list_shares
-server.registerTool(
-  "list_shares",
-  {
-    description:
-      "List all public shares in the workspace with page titles and public URLs.",
-  },
-  async () => {
-    const result = await docmostClient.listShares();
-    return jsonContent(result);
-  },
-);
+registerShared(SHARED_TOOL_SPECS.listShares, async () => {
+  const result = await docmostClient.listShares();
+  return jsonContent(result);
+});
 
 // Tool: move_page
 server.registerTool(
@@ -1046,28 +928,8 @@ server.registerTool(
 );
 
 // Tool: diff_page_versions
-server.registerTool(
-  "diff_page_versions",
-  {
-    description:
-      "Diff two versions of a page and return a Docmost-equivalent change set " +
-      "(inserted/deleted text, integrity counts for images/links/tables/" +
-      "callouts/footnote markers, and a human-readable markdown summary). " +
-      "`from`/`to` each accept a historyId, or null/'current' for the page's " +
-      "current content (defaults: from=current, to=current — pass a historyId " +
-      "from list_page_history to compare against the live page).",
-    inputSchema: {
-      pageId: z.string().min(1),
-      from: z
-        .string()
-        .optional()
-        .describe("historyId, or 'current'/omit for current content"),
-      to: z
-        .string()
-        .optional()
-        .describe("historyId, or 'current'/omit for current content"),
-    },
-  },
+registerShared(
+  SHARED_TOOL_SPECS.diffPageVersions,
   async ({ pageId, from, to }) => {
     const result = await docmostClient.diffPageVersions(pageId, from, to);
     return jsonContent(result);
@@ -1075,22 +937,8 @@ server.registerTool(
 );
 
 // Tool: list_page_history
-server.registerTool(
-  "list_page_history",
-  {
-    description:
-      "List a page's saved versions (Docmost auto-snapshots on every save), " +
-      "newest first, cursor-paginated. Returns { items, nextCursor }; each " +
-      "item's id is the historyId to pass to diff_page_versions or " +
-      "restore_page_version.",
-    inputSchema: {
-      pageId: z.string().min(1),
-      cursor: z
-        .string()
-        .optional()
-        .describe("Pagination cursor from a previous nextCursor"),
-    },
-  },
+registerShared(
+  SHARED_TOOL_SPECS.listPageHistory,
   async ({ pageId, cursor }) => {
     const result = await docmostClient.listPageHistory(pageId, cursor);
     return jsonContent(result);
@@ -1098,18 +946,8 @@ server.registerTool(
 );
 
 // Tool: restore_page_version
-server.registerTool(
-  "restore_page_version",
-  {
-    description:
-      "Restore a page to a saved version: writes that version's content back " +
-      "as the page's current content (Docmost has no restore endpoint, so " +
-      "this creates a NEW history snapshot — the restore is itself revertible). " +
-      "Get the historyId from list_page_history.",
-    inputSchema: {
-      historyId: z.string().min(1),
-    },
-  },
+registerShared(
+  SHARED_TOOL_SPECS.restorePageVersion,
   async ({ historyId }) => {
     const result = await docmostClient.restorePageVersion(historyId);
     return jsonContent(result);

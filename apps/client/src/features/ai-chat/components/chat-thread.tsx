@@ -175,6 +175,11 @@ export default function ChatThread({
 
   const isStreaming = status === "submitted" || status === "streaming";
 
+  // Classify the turn error into a heading + detail so the banner names the cause
+  // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
+  // of a generic "Something went wrong".
+  const errorView = error ? describeChatError(error.message ?? "", t) : null;
+
   // Clicking a role card both binds the role to THIS new chat and immediately
   // starts the conversation. roleIdRef is set synchronously here because the
   // parent's selectedRoleId state update would only reach roleIdRef on the next
@@ -198,15 +203,15 @@ export default function ChatThread({
         assistantName={assistantName}
       />
 
-      {error && (
+      {errorView && (
         <Alert
           variant="light"
           color="red"
           icon={<IconAlertTriangle size={16} />}
           mb="xs"
-          title={t("Something went wrong")}
+          title={errorView.title}
         >
-          {describeChatError(error.message ?? "", t)}
+          {errorView.detail}
         </Alert>
       )}
 
