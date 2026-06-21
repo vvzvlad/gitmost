@@ -44,10 +44,10 @@ export default function Aside() {
   }
 
   return (
-    <Box p="md" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <Box p={0} style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {component && (
         <>
-          <Group justify="space-between" wrap="nowrap" mb="md">
+          <Group justify="space-between" wrap="nowrap" mb="sm">
             <Title order={2} size="h6" fw={500}>{t(title)}</Title>
             <Tooltip label={t("Close")} withArrow>
               <ActionIcon

@@ -126,7 +126,7 @@ function CommentListItem({
 
         <div style={{ flex: 1 }}>
           <Group justify="space-between" wrap="nowrap">
-            <Text size="xs" fw={500} lineClamp={1}>
+            <Text size="xs" fw={500} lineClamp={1} lh={1.2}>
               {comment.creator.name}
             </Text>
 
@@ -155,7 +155,7 @@ function CommentListItem({
           </Group>
 
           <Group gap="xs">
-            <Text size="xs" fw={500} c="dimmed">
+            <Text size="xs" fw={500} c="dimmed" lh={1.1}>
               {createdAtAgo}
             </Text>
           </Group>

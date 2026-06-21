@@ -94,7 +94,7 @@ export default function GlobalAppShell({
       }}
       aside={
         isPageRoute && {
-          width: 350,
+          width: 420,
           breakpoint: "sm",
           collapsed: { mobile: !isAsideOpen, desktop: !isAsideOpen },
         }
@@ -138,7 +138,7 @@ export default function GlobalAppShell({
           id={ASIDE_PANEL_ID}
           tabIndex={-1}
           className={classes.aside}
-          p="md"
+          p="sm"
           withBorder={false}
           aria-label={
             asideTab === "comments"

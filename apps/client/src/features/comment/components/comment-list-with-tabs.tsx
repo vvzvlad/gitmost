@@ -365,7 +365,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
         flex: "0 0 auto",
         borderTop: "1px solid var(--mantine-color-default-border)",
         paddingTop: "var(--mantine-spacing-sm)",
-        paddingBottom: 25,
+        paddingBottom: 10,
         position: "relative",
       }}
     >
@@ -374,7 +374,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
           size="sm"
           avatarUrl={currentUser?.user?.avatarUrl}
           name={currentUser?.user?.name}
-          style={{ flexShrink: 0, marginTop: 10 }}
+          style={{ flexShrink: 0, marginTop: 2 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
           <CommentEditor
@@ -396,7 +396,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
           onClick={handleSave}
           onMouseDown={(e) => e.preventDefault()}
           loading={isLoading}
-          style={{ position: "absolute", right: 8, bottom: 30 }}
+          style={{ position: "absolute", right: 8, bottom: 15 }}
         >
           <IconArrowUp size={16} />
         </ActionIcon>
