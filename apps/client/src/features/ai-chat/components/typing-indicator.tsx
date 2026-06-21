@@ -21,7 +21,7 @@ interface TypingIndicatorProps {
  * Mirrors the assistant row layout in MessageItem (the dimmed label), so it reads
  * as the assistant's bubble taking shape. The dimmed label uses the configured
  * identity name when provided (otherwise the generic "AI agent"), while the
- * typing line is always the generic "AI is typing…" (it never includes the
+ * typing line is always the generic "Thinking…" (it never includes the
  * role/identity name).
  */
 export default function TypingIndicator({ assistantName }: TypingIndicatorProps) {
@@ -40,7 +40,7 @@ export default function TypingIndicator({ assistantName }: TypingIndicatorProps)
           <span />
         </span>
         <Text size="sm" c="dimmed">
-          {t("AI is typing…")}
+          {t("Thinking…")}
         </Text>
       </Group>
     </Box>

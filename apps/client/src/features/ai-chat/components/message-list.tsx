@@ -43,7 +43,7 @@ interface MessageListProps {
 const BOTTOM_THRESHOLD = 40;
 
 /**
- * Whether to show the standalone "AI is typing…" indicator. It bridges every
+ * Whether to show the standalone "Thinking…" indicator. It bridges every
  * gap in a turn where the assistant is working but nothing visible is actively
  * being produced yet — so it shows while a turn is in flight AND the latest
  * assistant message's LAST part is not live output:
