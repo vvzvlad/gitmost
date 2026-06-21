@@ -19,6 +19,7 @@ import {
   PublicShareWorkspaceLimiter,
   createPublicShareWorkspaceLimiter,
 } from './public-share-workspace-limiter';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 
 /**
  * Loose shape of the anonymous public-share chat POST body. We do NOT bind a
@@ -62,6 +63,24 @@ export interface PublicShareChatStreamArgs {
  */
 export const MAX_SHARE_MESSAGES = 30;
 export const MAX_SHARE_MESSAGE_CHARS = 8000;
+
+/**
+ * Default per-request output cap for the anonymous share assistant. Bounds the
+ * tokens a single anonymous request can generate; worst case = steps x this.
+ */
+export const SHARE_AI_MAX_OUTPUT_TOKENS = 512;
+
+/**
+ * Read the per-request output cap from the environment (overridable seam),
+ * falling back to the sane default. A non-positive / unparseable value uses the
+ * default. Mirrors resolveShareAiWorkspaceMax().
+ */
+export function resolveShareAiMaxOutputTokens(): number {
+  const raw = Number(process.env.SHARE_AI_MAX_OUTPUT_TOKENS);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : SHARE_AI_MAX_OUTPUT_TOKENS;
+}
 
 /**
  * Keep ONLY genuine conversation turns from the client-held transcript. The
@@ -204,16 +223,15 @@ export class PublicShareChatService {
         tools,
         // Bound the agent loop for anonymous callers.
         stopWhen: stepCountIs(5),
+        // Bounds per-request output so one anonymous request can't run up the
+        // provider bill; worst case = steps x this.
+        maxOutputTokens: resolveShareAiMaxOutputTokens(),
         abortSignal: signal,
         onError: ({ error }) => {
-          const e = error as {
-            statusCode?: number;
-            message?: string;
-            stack?: string;
-          };
-          const errorText = e?.statusCode
-            ? `${e.statusCode}: ${e.message ?? String(error)}`
-            : (e?.message ?? String(error));
+          // Reuse the shared formatter so provider error formatting stays
+          // unified (statusCode + body) with the authenticated path.
+          const e = error as { stack?: string };
+          const errorText = describeProviderError(error, String(error));
           // Never persist anonymous transcripts; just log the failure.
           this.logger.error(
             `Public share chat stream error: ${errorText}`,
@@ -228,10 +246,11 @@ export class PublicShareChatService {
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
-          const e = error as { statusCode?: number; message?: string };
-          return e?.statusCode
-            ? `${e.statusCode}: ${e.message}`
-            : (e?.message ?? 'AI stream error');
+          // Reuse the shared formatter so provider error formatting stays
+          // unified between the log line and the streamed error message — a
+          // share reader sees 402/429/503 causes consistently with the
+          // authenticated path.
+          return describeProviderError(error, 'AI stream error');
         },
       });
 
