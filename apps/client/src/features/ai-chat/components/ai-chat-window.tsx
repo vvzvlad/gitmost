@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { generateId } from "ai";
 import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
@@ -134,6 +135,21 @@ export default function AiChatWindow() {
   // can adopt it once the chat list refreshes after the first turn finishes.
   const adoptNewChat = useRef(false);
 
+  // Mount key for ChatThread + the chat the currently-mounted thread represents.
+  // `threadKey` normally tracks the active chat, so selecting a different chat
+  // (incl. from page history) remounts and re-seeds. The ONE exception is
+  // in-place adoption of a brand-new chat's server id: the adopt effect moves
+  // `liveThreadChatId` to the new id TOGETHER with `activeChatId`, so the switch
+  // check below does not fire and the SAME thread stays mounted (its useChat
+  // already holds the just-finished turn) instead of being re-seeded from
+  // not-yet-persisted history.
+  const [threadKey, setThreadKey] = useState<string>(
+    () => activeChatId ?? `new-${generateId()}`,
+  );
+  const [liveThreadChatId, setLiveThreadChatId] = useState<string | null>(
+    activeChatId,
+  );
+
   const { data: chats } = useAiChatsQuery();
   // Roles for the new-chat picker (any member may list them). Only fetched while
   // the window is open.
@@ -167,6 +183,9 @@ export default function AiChatWindow() {
     : null;
 
   const startNewChat = useCallback((): void => {
+    // Cancel any pending adoption so a just-finished new chat can't yank the user
+    // back here after they explicitly started a fresh one.
+    adoptNewChat.current = false;
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
@@ -176,6 +195,8 @@ export default function AiChatWindow() {
 
   const selectChat = useCallback(
     (chatId: string): void => {
+      // Cancel any pending adoption so it can't override an explicit selection.
+      adoptNewChat.current = false;
       setActiveChatId(chatId);
       setHistoryOpen(false);
       setDraft("");
@@ -237,15 +258,35 @@ export default function AiChatWindow() {
     const newest = chats?.items?.[0];
     if (newest) {
       adoptNewChat.current = false;
+      // In-place adoption: move the active chat AND the live-thread marker to the
+      // new id together, so the threadKey derivation below sees no "switch" and
+      // keeps the SAME mounted thread (its useChat already holds the finished
+      // turn) instead of remounting and re-seeding from not-yet-persisted history.
+      // ASSUMPTION: these two updates (jotai atom + useState) must land in ONE
+      // render so the render-phase guard never observes the new activeChatId with
+      // a stale liveThreadChatId (which would wrongly remount). React 18 automatic
+      // batching inside this effect callback guarantees that; if the store/atom
+      // mechanism ever changes, gate adoption on an explicit flag instead.
+      setLiveThreadChatId(newest.id);
       setActiveChatId(newest.id);
     }
   }, [chats, setActiveChatId]);
 
-  // The thread is remounted when the active chat changes so initial messages
-  // re-seed. For a new chat we key on "new"; adopting the id remounts the
-  // thread with the persisted history loaded.
-  const threadKey = activeChatId ?? "new";
-  const waitingForHistory = activeChatId !== null && messagesLoading;
+  // Adjust the derived thread state during render when the active chat genuinely
+  // changes — the React-sanctioned alternative to an effect (it re-renders before
+  // paint, no extra commit, and converges since the next render finds them equal).
+  // In-place adoption of a new chat's id never reaches here because the adopt
+  // effect moves liveThreadChatId in lockstep with activeChatId.
+  if (activeChatId !== liveThreadChatId) {
+    setLiveThreadChatId(activeChatId);
+    setThreadKey(activeChatId ?? `new-${generateId()}`);
+  }
+  // Show the history loader only when freshly OPENING an existing chat (the key
+  // equals the chat id). For a live in-place thread that adopted its id, the key
+  // is still the "new-…" session key, so we keep showing the live thread instead
+  // of unmounting it behind a loader.
+  const waitingForHistory =
+    activeChatId !== null && messagesLoading && threadKey === activeChatId;
 
   // Current context size for the active chat: how much the conversation now
   // occupies in the model's context window — NOT the cumulative tokens spent.

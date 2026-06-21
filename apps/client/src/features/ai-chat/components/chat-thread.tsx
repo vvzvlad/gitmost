@@ -129,7 +129,13 @@ export default function ChatThread({
   // The id only needs to be stable per mount — the parent remounts this via
   // `key` on chat switch, which re-seeds cleanly.
   const stableIdRef = useRef<string>(chatId ?? `new-${generateId()}`);
-  const chatStoreId = chatId ?? stableIdRef.current;
+  // Stable for the LIFETIME of this mount. When a brand-new chat adopts its
+  // server id, the parent now updates the `chatId` prop WITHOUT remounting this
+  // thread, so the store id must NOT follow `chatId`: recreating the useChat
+  // store would wipe the live (just-finished) turn. The server still resolves
+  // the real chat from `chatId` in the request body (see chatIdRef /
+  // prepareSendMessagesRequest), so this purely-client store key can stay fixed.
+  const chatStoreId = stableIdRef.current;
 
   const transport = useMemo(
     () =>
@@ -170,7 +176,12 @@ export default function ChatThread({
     // saves the error message). Run the same post-turn path on error so the
     // failed chat appears in history immediately instead of after a manual
     // refresh. The error itself is still surfaced via `error` below.
-    onError: () => onTurnFinished(),
+    onError: (streamError) => {
+      // Surface the raw failure in the browser console (devtools) for debugging;
+      // the UI separately shows a friendly classified banner (see errorView).
+      console.error("AI chat stream error:", streamError);
+      onTurnFinished();
+    },
   });
 
   const isStreaming = status === "submitted" || status === "streaming";
