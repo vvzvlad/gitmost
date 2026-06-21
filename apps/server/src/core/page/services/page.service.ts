@@ -964,9 +964,27 @@ export class PageService {
       }
     }
 
+    // Server-side cycle guard: a page may not be moved into itself or into any
+    // page within its own subtree. Without this, an MCP/REST/agent caller (or a
+    // fast drag racing the client check) could persist a cycle and broadcast it.
+    // Only relevant when re-parenting under a concrete parent; moving to root
+    // (parentPageId null/undefined) can never create a cycle.
+    if (dto.parentPageId) {
+      if (dto.parentPageId === dto.pageId) {
+        throw new BadRequestException('Cannot move a page into its own subtree');
+      }
+      // Walk the destination parent's ancestor chain (reusing the breadcrumb
+      // ancestor CTE). If the page being moved appears among those ancestors,
+      // the destination lives inside the moved page's subtree -> cycle.
+      const destAncestors = await this.getPageBreadCrumbs(dto.parentPageId);
+      if (destAncestors.some((ancestor) => ancestor.id === dto.pageId)) {
+        throw new BadRequestException('Cannot move a page into its own subtree');
+      }
+    }
+
     const isAgent = provenance?.actor === 'agent';
 
-    await this.pageRepo.updatePage(
+    const updateResult = await this.pageRepo.updatePage(
       {
         position: dto.position,
         parentPageId: parentPageId,
@@ -981,6 +999,13 @@ export class PageService {
       },
       dto.pageId,
     );
+
+    // Guard against a phantom broadcast: if the row was concurrently deleted or
+    // otherwise not updated, skip the PAGE_MOVED event so we don't replay a move
+    // built from the stale pre-read snapshot to every connected client.
+    if (!updateResult || updateResult.numUpdatedRows === 0n) {
+      return;
+    }
 
     // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
     // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
