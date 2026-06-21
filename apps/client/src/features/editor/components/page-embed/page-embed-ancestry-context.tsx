@@ -51,26 +51,3 @@ export function PageEmbedAncestryProvider({
 export function usePageEmbedAncestry() {
   return useContext(PageEmbedAncestryContext);
 }
-
-/**
- * Pure cycle predicate used by the page-embed node view. Returns true when the
- * source page would recurse into itself: either it is already present in the
- * ancestor chain, or it is the host page (top-level self-embed). Extracted so
- * the anti-DoS guard can be unit-tested without mounting the Tiptap NodeView.
- */
-export function isPageEmbedCycle(
-  chain: string[],
-  hostPageId: string | null,
-  sourcePageId: string | null,
-): boolean {
-  if (!sourcePageId) return false;
-  return chain.includes(sourcePageId) || hostPageId === sourcePageId;
-}
-
-/**
- * Pure depth-limit predicate. Returns true once the ancestor chain has reached
- * the hard cap, before a deeper nested editor is mounted.
- */
-export function isPageEmbedTooDeep(chain: string[]): boolean {
-  return chain.length >= PAGE_EMBED_MAX_DEPTH;
-}
