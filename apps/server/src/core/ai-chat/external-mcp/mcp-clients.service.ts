@@ -368,6 +368,28 @@ export class McpClientsService {
 }
 
 /**
+ * Apply the SSRF connect-time rule to a set of DNS-resolved addresses: block if
+ * ANY resolved address is disallowed by `isIpAllowed`, and block an EMPTY set
+ * (nothing safe to connect to). Only an all-public, non-empty set is allowed.
+ *
+ * This is the connect-time half of the DNS-rebinding defense: the dispatcher's
+ * lookup hands net/tls.connect ONLY a set that passed this check, so the kernel
+ * can never connect to an address that did not pass the guard. Pure — no I/O.
+ */
+export function validateResolvedAddresses(
+  addrs: readonly LookupAddress[],
+): { ok: boolean; blockedHost?: string } {
+  if (addrs.length === 0) {
+    return { ok: false };
+  }
+  const blocked = addrs.find((a) => !isIpAllowed(a.address).ok);
+  if (blocked) {
+    return { ok: false, blockedHost: blocked.address };
+  }
+  return { ok: true };
+}
+
+/**
  * Build the SSRF-pinned undici dispatcher. Its custom connect.lookup resolves
  * the host, validates EVERY resolved address with the same ssrf-guard, and
  * returns ONLY a validated address to net/tls.connect — so there is no second,
@@ -388,22 +410,15 @@ function buildPinnedDispatcher(): Agent {
             return;
           }
           const addrs = addresses as LookupAddress[];
-          if (addrs.length === 0) {
-            callback(
-              new Error(`No address resolved for ${hostname}`),
-              '',
-              0,
-            );
-            return;
-          }
-          const blocked = addrs.find((a) => !isIpAllowed(a.address).ok);
-          if (blocked) {
+          const verdict = validateResolvedAddresses(addrs);
+          if (!verdict.ok) {
             // Refuse the connection: net/tls.connect never sees this address.
-            callback(
-              new Error(`Blocked address for ${hostname}`),
-              '',
-              0,
-            );
+            // An empty set is treated as blocked (nothing safe to connect to).
+            const reason =
+              addrs.length === 0
+                ? `No address resolved for ${hostname}`
+                : `Blocked address for ${hostname}`;
+            callback(new Error(reason), '', 0);
             return;
           }
           // undici/net invoke this lookup with `all: true`, so the callback

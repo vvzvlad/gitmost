@@ -7,8 +7,8 @@ import { validate as isValidUUID } from 'uuid';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { EnvironmentService } from '../../integrations/environment/environment.service';
 import { Workspace } from '@docmost/db/types/entity.types';
-import { htmlEscape } from '../../common/helpers/html-escaper';
 import { injectTrackerHead } from './inject-tracker-head.util';
+import { buildShareMetaHtml } from './share-seo.util';
 
 @Controller('share')
 export class ShareSeoController {
@@ -72,24 +72,11 @@ export class ShareSeoController {
         return this.sendIndex(indexFilePath, res);
       }
 
-      const rawTitle = htmlEscape(share?.sharedPage.title ?? 'untitled');
-      const metaTitle =
-        rawTitle.length > 80 ? `${rawTitle.slice(0, 77)}…` : rawTitle;
-
-      const metaTagVar = '<!--meta-tags-->';
-
-      const metaTags = [
-        `<meta property="og:title" content="${metaTitle}" />`,
-        `<meta property="twitter:title" content="${metaTitle}" />`,
-        !share.searchIndexing ? `<meta name="robots" content="noindex" />` : '',
-      ]
-        .filter(Boolean)
-        .join('\n    ');
-
       const html = fs.readFileSync(indexFilePath, 'utf8');
-      let transformedHtml = html
-        .replace(/<title>[\s\S]*?<\/title>/i, `<title>${metaTitle}</title>`)
-        .replace(metaTagVar, metaTags);
+      let transformedHtml = buildShareMetaHtml(html, {
+        title: share?.sharedPage.title,
+        searchIndexing: share.searchIndexing,
+      });
 
       // Deliberate same-origin tracker surface: this is the ONE place where an
       // admin-authored analytics/tracker snippet (settings.trackerHead) is

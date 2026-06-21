@@ -199,21 +199,8 @@ export class AiChatToolsService {
           const accessibleSet = new Set(accessibleIds);
 
           // Keep the best (first — hits are ordered by fused score desc) chunk
-          // per page, capped to `cap`.
-          const seen = new Set<string>();
-          const results: { id: string; title: string; snippet: string }[] = [];
-          for (const hit of hits) {
-            if (!accessibleSet.has(hit.pageId)) continue;
-            if (seen.has(hit.pageId)) continue;
-            seen.add(hit.pageId);
-            results.push({
-              id: hit.pageId,
-              title: hit.title ?? '',
-              snippet: snippet(hit.content),
-            });
-            if (results.length >= cap) break;
-          }
-          return results;
+          // per page, dropping any page the user cannot access, capped to `cap`.
+          return selectAccessibleHits(hits, accessibleSet, cap);
         },
       }),
 
@@ -958,6 +945,44 @@ export class AiChatToolsService {
       }),
     };
   }
+}
+
+/** A single hybrid-search hit: the minimal shape selectAccessibleHits needs. */
+export interface SearchHitLike {
+  pageId: string;
+  title: string | null;
+  content: string;
+}
+
+/**
+ * Post-filter hybrid-search hits into the agent-facing result list. This is the
+ * CASL leak guard for the in-process hybrid search: the hits come from a direct
+ * pgvector + full-text query that does NOT get CASL for free, so an accessible
+ * SPACE does not imply every page in it is accessible (restricted pages).
+ *
+ * Given `hits` (ordered by fused score desc), the `accessibleSet` of page ids
+ * the user may read, and `cap`, it keeps the BEST (first) chunk per page, drops
+ * any page not in `accessibleSet`, and caps the output at `cap`. Pure — no I/O.
+ */
+export function selectAccessibleHits(
+  hits: readonly SearchHitLike[],
+  accessibleSet: Set<string>,
+  cap: number,
+): { id: string; title: string; snippet: string }[] {
+  const seen = new Set<string>();
+  const results: { id: string; title: string; snippet: string }[] = [];
+  for (const hit of hits) {
+    if (!accessibleSet.has(hit.pageId)) continue;
+    if (seen.has(hit.pageId)) continue;
+    seen.add(hit.pageId);
+    results.push({
+      id: hit.pageId,
+      title: hit.title ?? '',
+      snippet: snippet(hit.content),
+    });
+    if (results.length >= cap) break;
+  }
+  return results;
 }
 
 /**

@@ -228,25 +228,14 @@ export class AiChatController {
     }
     if (!file) throw new BadRequestException('No audio uploaded');
 
-    // Whitelist audio container types produced by browser MediaRecorder
-    // (Chrome/FF: webm/opus, Safari: mp4) plus common STT-accepted formats.
-    const allowedMime = new Set([
-      'audio/webm',
-      'audio/ogg',
-      'audio/mp4',
-      'audio/mpeg',
-      'audio/wav',
-      'audio/x-wav',
-      'audio/wave',
-      'audio/m4a',
-      'audio/x-m4a',
-    ]);
-    // MediaRecorder mimetypes carry parameters (e.g. "audio/webm;codecs=opus");
-    // compare only the base type.
-    const baseMime = file.mimetype.split(';')[0].trim().toLowerCase();
-    if (!allowedMime.has(baseMime)) {
+    // Resolve + whitelist the upload's container type (MediaRecorder mimetypes
+    // carry parameters, e.g. "audio/webm;codecs=opus"). A non-whitelisted type
+    // is rejected; an allowed one yields the STT container-format hint.
+    const resolved = resolveAudioFormat(file.mimetype);
+    if (!resolved.ok) {
       throw new BadRequestException('Unsupported audio format');
     }
+    const { format } = resolved;
 
     let buf: Buffer;
     try {
@@ -259,20 +248,6 @@ export class AiChatController {
       }
       throw err;
     }
-    // Container hint for JSON-style STT providers (e.g. OpenRouter); multipart
-    // endpoints ignore it.
-    const formatMap: Record<string, string> = {
-      'audio/webm': 'webm',
-      'audio/ogg': 'ogg',
-      'audio/mp4': 'mp4',
-      'audio/mpeg': 'mp3',
-      'audio/wav': 'wav',
-      'audio/x-wav': 'wav',
-      'audio/wave': 'wav',
-      'audio/m4a': 'm4a',
-      'audio/x-m4a': 'm4a',
-    };
-    const format = formatMap[baseMime] ?? 'webm';
     let text: string;
     try {
       text = await this.aiTranscription.transcribe(workspace.id, buf, format);
@@ -301,4 +276,40 @@ export class AiChatController {
       throw new ForbiddenException();
     }
   }
+}
+
+/**
+ * Whitelist audio container types produced by browser MediaRecorder (Chrome/FF:
+ * webm/opus, Safari: mp4) plus common STT-accepted formats. The value maps each
+ * allowed base mime to the container-format hint passed to JSON-style STT
+ * providers (e.g. OpenRouter); multipart endpoints ignore the hint.
+ */
+const AUDIO_FORMAT_MAP: Record<string, string> = {
+  'audio/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'audio/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/m4a': 'm4a',
+  'audio/x-m4a': 'm4a',
+};
+
+/**
+ * Resolve and whitelist an uploaded clip's mimetype. MediaRecorder mimetypes
+ * carry parameters (e.g. "audio/webm;codecs=opus"), so the base type is split
+ * out (lowercased, trimmed) before the whitelist check. Returns ok=false for a
+ * non-whitelisted container; otherwise the base mime and its STT format hint.
+ * Pure — the caller throws BadRequestException on !ok.
+ */
+export function resolveAudioFormat(
+  mimetype: string,
+): { ok: true; baseMime: string; format: string } | { ok: false } {
+  const baseMime = mimetype.split(';')[0].trim().toLowerCase();
+  const format = AUDIO_FORMAT_MAP[baseMime];
+  if (format === undefined) {
+    return { ok: false };
+  }
+  return { ok: true, baseMime, format };
 }
