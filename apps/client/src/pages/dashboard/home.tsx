@@ -1,5 +1,6 @@
 import { Container, Space } from "@mantine/core";
 import HomeTabs from "@/features/home/components/home-tabs";
+import NewNoteButton from "@/features/home/components/new-note-button";
 import SpaceCarousel from "@/features/space/components/space-carousel.tsx";
 import { getAppName } from "@/lib/config.ts";
 import { Helmet } from "react-helmet-async";
@@ -16,6 +17,10 @@ export default function Home() {
         </title>
       </Helmet>
       <Container size={"900"} pt="xl">
+        <NewNoteButton />
+
+        <Space h="xl" />
+
         <SpaceCarousel />
 
         <Space h="xl" />
