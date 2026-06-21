@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Group, Loader, Select, Tooltip } from "@mantine/core";
+import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
   IconCheck,
@@ -37,6 +37,7 @@ import {
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
+import RoleCards from "@/features/ai-chat/components/role-cards.tsx";
 import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
 import {
   shouldCollapseOnOutsidePointer,
@@ -145,6 +146,19 @@ export default function AiChatWindow() {
     () => (roles ?? []).filter((r) => r.enabled === true),
     [roles],
   );
+
+  // Role cards become the empty-state ONLY for a brand-new chat that has roles.
+  // Once the chat has messages, MessageList no longer renders the empty-state,
+  // so `selectedRoleId` staying null naturally falls back to Universal assistant
+  // (no "reset on send" logic needed).
+  const roleCardsNode =
+    activeChatId === null && enabledRoles.length > 0 ? (
+      <RoleCards
+        roles={enabledRoles}
+        selectedRoleId={selectedRoleId}
+        onSelect={setSelectedRoleId}
+      />
+    ) : undefined;
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
@@ -537,28 +551,10 @@ export default function AiChatWindow() {
           )}
         </div>
 
-        {/* Role picker — only for a NEW chat (before it is created). Once the
-            chat exists, its role is fixed and shown as a header badge instead.
-            Defaults to "Universal assistant" (no role). */}
-        {activeChatId === null && (enabledRoles?.length ?? 0) > 0 && (
-          <div style={{ padding: "4px 8px 0" }}>
-            <Select
-              size="xs"
-              label={t("Agent role")}
-              value={selectedRoleId ?? ""}
-              onChange={(value) => setSelectedRoleId(value || null)}
-              allowDeselect={false}
-              comboboxProps={{ withinPortal: true }}
-              data={[
-                { value: "", label: t("Universal assistant") },
-                ...enabledRoles.map((r) => ({
-                  value: r.id,
-                  label: `${r.emoji ? `${r.emoji} ` : ""}${r.name}`,
-                })),
-              ]}
-            />
-          </div>
-        )}
+        {/* The role picker for a NEW chat is rendered as the chat's empty-state
+            (colored role cards centered in the empty window); see roleCardsNode
+            above. Once the chat exists, its role is fixed and shown as a header
+            badge instead. */}
 
         {/* body: active chat thread */}
         <div className={classes.body}>
@@ -574,6 +570,7 @@ export default function AiChatWindow() {
               openPage={openPage}
               // Honoured only for a new chat; null = universal assistant.
               roleId={activeChatId === null ? selectedRoleId : null}
+              emptyState={roleCardsNode}
               onTurnFinished={onTurnFinished}
             />
           )}

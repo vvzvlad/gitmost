@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { ReactNode, useMemo, useRef } from "react";
 import { generateId } from "ai";
 import { Alert, Box, Stack } from "@mantine/core";
 import { IconAlertTriangle } from "@tabler/icons-react";
@@ -29,6 +29,9 @@ interface ChatThreadProps {
    *  in the request body so the server persists it on chat creation; ignored by
    *  the server for existing chats (the role is read from the chat row). */
   roleId?: string | null;
+  /** Content shown when the transcript is empty (forwarded to MessageList).
+   *  Used by the new-chat window to render the colored role cards. */
+  emptyState?: ReactNode;
   /** Called when a turn finishes; the parent refreshes the chat list and, for
    *  a new chat, adopts the freshly created chat id. */
   onTurnFinished: () => void;
@@ -66,6 +69,7 @@ export default function ChatThread({
   initialRows,
   openPage,
   roleId,
+  emptyState,
   onTurnFinished,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -161,7 +165,11 @@ export default function ChatThread({
 
   return (
     <Box className={classes.panel}>
-      <MessageList messages={messages} isStreaming={isStreaming} />
+      <MessageList
+        messages={messages}
+        isStreaming={isStreaming}
+        emptyState={emptyState}
+      />
 
       {error && (
         <Alert
