@@ -4,6 +4,31 @@ import { PostgresJSDialect } from 'kysely-postgres-js';
 import * as postgres from 'postgres';
 
 /**
+ * db.ts — THE canonical place to seed prerequisite rows for integration tests.
+ *
+ * Seeders here use minimal, explicit `insertInto(...).values(...)` calls and are
+ * DELIBERATELY decoupled from the app's repo `insert*` methods. Those repo
+ * methods carry side effects integration specs do not want — password hashing,
+ * validation, default/derived columns, event emission — so reproducing only the
+ * columns a test needs keeps the fixtures small, fast and predictable.
+ *
+ * CONVENTIONS:
+ *  - New entity seeders go HERE (a `createX(db, ...)` helper) rather than as raw
+ *    `insertInto` calls scattered across spec files, so the schema knowledge
+ *    lives in one place.
+ *  - Each seeder inserts only the NOT NULL / uniquely-constrained columns plus
+ *    whatever the consuming tests assert on; everything else is left to DB
+ *    defaults.
+ *  - Plain `randomUUID()` (v4) is fine for FK integrity; the app uses uuid v7,
+ *    but tests never depend on id ordering.
+ *
+ * TRADE-OFF: because the column/constraint knowledge below is mirrored from the
+ * Kysely schema rather than derived from it, a migration that changes a NOT NULL
+ * column or a unique constraint can make an insert here fail. When that happens
+ * the fix is to update the relevant seeder, not the spec that calls it.
+ */
+
+/**
  * Isolated test database connection string. The dev DB is `docmost`; tests run
  * against a dedicated `docmost_test` that global-setup drops + recreates +
  * migrates so nothing here touches dev data. Overridable via env (global-setup
@@ -58,21 +83,27 @@ export async function destroyTestDb(): Promise<void> {
 }
 
 // --- Seeding helpers ---------------------------------------------------------
-// Insert minimal valid rows (only the columns the tests need + NOT NULL ones).
-// Plain randomUUID() is fine for FK integrity in tests (the app uses uuid v7).
+// Each helper inserts a minimal valid row (only the columns the tests need plus
+// the NOT NULL / uniquely-constrained ones) and returns the generated id. See
+// the module doc comment above for why these bypass the app's repo layer.
+
+// Short, human-readable suffix derived from a row's uuid. Used to build unique
+// names/slugs/hostnames for seeded rows so unique constraints never collide.
+const shortId = (id: string): string => id.slice(0, 8);
 
 export async function createWorkspace(
   db: Kysely<any>,
   overrides: { settings?: unknown; name?: string } = {},
 ): Promise<{ id: string; settings: any }> {
   const id = randomUUID();
+  const suffix = shortId(id);
   const row = await db
     .insertInto('workspaces')
     .values({
       id,
-      name: overrides.name ?? `ws-${id.slice(0, 8)}`,
+      name: overrides.name ?? `ws-${suffix}`,
       // hostname is uniquely constrained; keep it unique per workspace.
-      hostname: `host-${id.slice(0, 8)}`,
+      hostname: `host-${suffix}`,
       settings: overrides.settings === undefined ? null : (overrides.settings as any),
     })
     .returning(['id', 'settings'])
@@ -86,12 +117,13 @@ export async function createUser(
   overrides: { email?: string; name?: string } = {},
 ): Promise<{ id: string }> {
   const id = randomUUID();
+  const suffix = shortId(id);
   const row = await db
     .insertInto('users')
     .values({
       id,
-      email: overrides.email ?? `user-${id.slice(0, 8)}@example.test`,
-      name: overrides.name ?? `user-${id.slice(0, 8)}`,
+      email: overrides.email ?? `user-${suffix}@example.test`,
+      name: overrides.name ?? `user-${suffix}`,
       workspaceId,
     })
     .returning(['id'])
@@ -105,13 +137,14 @@ export async function createSpace(
   overrides: { slug?: string; name?: string } = {},
 ): Promise<{ id: string }> {
   const id = randomUUID();
+  const suffix = shortId(id);
   const row = await db
     .insertInto('spaces')
     .values({
       id,
-      name: overrides.name ?? `space-${id.slice(0, 8)}`,
+      name: overrides.name ?? `space-${suffix}`,
       // slug is unique per workspace + NOT NULL.
-      slug: overrides.slug ?? `space-${id.slice(0, 8)}`,
+      slug: overrides.slug ?? `space-${suffix}`,
       workspaceId,
     })
     .returning(['id'])
@@ -124,13 +157,14 @@ export async function createPage(
   args: { workspaceId: string; spaceId: string; title?: string },
 ): Promise<{ id: string }> {
   const id = randomUUID();
+  const suffix = shortId(id);
   const row = await db
     .insertInto('pages')
     .values({
       id,
       // slug_id is NOT NULL + globally unique.
-      slugId: `slug-${id.slice(0, 8)}`,
-      title: args.title ?? `page-${id.slice(0, 8)}`,
+      slugId: `slug-${suffix}`,
+      title: args.title ?? `page-${suffix}`,
       spaceId: args.spaceId,
       workspaceId: args.workspaceId,
     })
@@ -186,7 +220,7 @@ export async function createChat(
       workspaceId: args.workspaceId,
       creatorId: args.creatorId,
       roleId: args.roleId ?? null,
-      title: args.title ?? `chat-${id.slice(0, 8)}`,
+      title: args.title ?? `chat-${shortId(id)}`,
     })
     .returning(['id'])
     .executeTakeFirstOrThrow();

@@ -11,6 +11,7 @@ import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo'
 import {
   loadDocmostMcp,
   type DocmostClientLike,
+  type SharedToolSpec,
 } from './docmost-client.loader';
 import { resolveCurrentPageResult } from './current-page.util';
 import { parseNodeArg } from './parse-node-arg';
@@ -84,12 +85,28 @@ export class AiChatToolsService {
         aiChatId,
       });
 
-    const { DocmostClient } = await loadDocmostMcp();
+    const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
     const client: DocmostClientLike = new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
     });
+
+    // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the
+    // canonical description + (optional) schema builder, which is invoked with
+    // THIS layer's zod (v4); only the execute body is supplied per call. No-arg
+    // specs (no buildShape) get an empty object schema.
+    const sharedTool = (
+      spec: SharedToolSpec,
+      execute: Tool['execute'],
+    ): Tool =>
+      tool({
+        description: spec.description,
+        inputSchema: spec.buildShape
+          ? z.object(spec.buildShape(z) as z.ZodRawShape)
+          : z.object({}),
+        execute,
+      });
 
     return {
       searchPages: tool({
@@ -416,20 +433,15 @@ export class AiChatToolsService {
 
       // --- READ tools (added) ---
 
-      getWorkspace: tool({
-        description:
-          'Fetch metadata about the current workspace (name, settings).',
-        inputSchema: z.object({}),
-        execute: async () => await client.getWorkspace(),
-      }),
+      getWorkspace: sharedTool(
+        sharedToolSpecs.getWorkspace,
+        async () => await client.getWorkspace(),
+      ),
 
-      listSpaces: tool({
-        description:
-          'List the spaces the current user can access. Returns the array ' +
-          'of spaces (id, name, slug, ...).',
-        inputSchema: z.object({}),
-        execute: async () => await client.getSpaces(),
-      }),
+      listSpaces: sharedTool(
+        sharedToolSpecs.listSpaces,
+        async () => await client.getSpaces(),
+      ),
 
       listPages: tool({
         description:
@@ -477,43 +489,20 @@ export class AiChatToolsService {
           await client.listSidebarPages(spaceId, pageId),
       }),
 
-      getOutline: tool({
-        description:
-          "Compact outline of a page's top-level blocks, with block ids. Use " +
-          'it to locate sections/tables and grab block ids before drilling in ' +
-          'with getNode / patchNode / insertNode.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-        }),
-        execute: async ({ pageId }) => await client.getOutline(pageId),
-      }),
+      getOutline: sharedTool(
+        sharedToolSpecs.getOutline,
+        async ({ pageId }) => await client.getOutline(pageId),
+      ),
 
-      getPageJson: tool({
-        description:
-          'Fetch a page as lossless ProseMirror JSON (preserves block ids and ' +
-          'marks). Use this when you need exact structure for node-level edits.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-        }),
-        execute: async ({ pageId }) => await client.getPageJson(pageId),
-      }),
+      getPageJson: sharedTool(
+        sharedToolSpecs.getPageJson,
+        async ({ pageId }) => await client.getPageJson(pageId),
+      ),
 
-      getNode: tool({
-        description:
-          "Fetch a single block's full ProseMirror subtree (lossless) by " +
-          'reference.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-          nodeId: z
-            .string()
-            .describe(
-              'A block id from getOutline, or "#<index>" to select a ' +
-                'top-level block by its outline index (e.g. a table).',
-            ),
-        }),
-        execute: async ({ pageId, nodeId }) =>
-          await client.getNode(pageId, nodeId),
-      }),
+      getNode: sharedTool(
+        sharedToolSpecs.getNode,
+        async ({ pageId, nodeId }) => await client.getNode(pageId, nodeId),
+      ),
 
       getTable: tool({
         description:
@@ -570,27 +559,16 @@ export class AiChatToolsService {
           await client.checkNewComments(spaceId, since, parentPageId),
       }),
 
-      listShares: tool({
-        description:
-          'List all public shares in the workspace, each with its public URL.',
-        inputSchema: z.object({}),
-        execute: async () => await client.listShares(),
-      }),
+      listShares: sharedTool(
+        sharedToolSpecs.listShares,
+        async () => await client.listShares(),
+      ),
 
-      listPageHistory: tool({
-        description:
-          'List the saved versions (history snapshots) of a page, newest ' +
-          'first. Returns one cursor-paginated page of results.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-          cursor: z
-            .string()
-            .optional()
-            .describe('Optional pagination cursor from a previous call.'),
-        }),
-        execute: async ({ pageId, cursor }) =>
+      listPageHistory: sharedTool(
+        sharedToolSpecs.listPageHistory,
+        async ({ pageId, cursor }) =>
           await client.listPageHistory(pageId, cursor),
-      }),
+      ),
 
       getPageHistory: tool({
         description:
@@ -603,24 +581,11 @@ export class AiChatToolsService {
           await client.getPageHistory(historyId),
       }),
 
-      diffPageVersions: tool({
-        description:
-          'Diff two versions of a page and return the change set. from/to ' +
-          "each accept a historyId or 'current' (or omit for current).",
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-          from: z
-            .string()
-            .optional()
-            .describe("A historyId, or 'current'/omit for current content."),
-          to: z
-            .string()
-            .optional()
-            .describe("A historyId, or 'current'/omit for current content."),
-        }),
-        execute: async ({ pageId, from, to }) =>
+      diffPageVersions: sharedTool(
+        sharedToolSpecs.diffPageVersions,
+        async ({ pageId, from, to }) =>
           await client.diffPageVersions(pageId, from, to),
-      }),
+      ),
 
       exportPageMarkdown: tool({
         description:
@@ -638,46 +603,10 @@ export class AiChatToolsService {
 
       // --- WRITE tools (added; reversible via page history/trash) ---
 
-      editPageText: tool({
-        description:
-          'Surgical find/replace inside a page\'s text, preserving all block ' +
-          'ids and marks. A find MAY cross bold/italic/link boundaries; the ' +
-          'replacement inherits marks from the unchanged common prefix/suffix ' +
-          '(so editing plain text next to a bold word keeps it bold, and ' +
-          'editing inside a bold word keeps the new text bold). Each find must ' +
-          'match exactly once unless replaceAll is set. The batch applies what ' +
-          'it can and returns applied[] + failed[] plus a verify change-report ' +
-          '(the text/marks/structure that ACTUALLY changed — read it to confirm ' +
-          'your edit landed; do not assume success); a fully-unmatched batch ' +
-          'writes nothing and errors. find and replace are LITERAL text, not ' +
-          'markdown. This tool edits plain text ONLY and CANNOT add or remove ' +
-          'formatting marks: a formatting change — find/replace that differ only ' +
-          'in markdown markers (e.g. find:"~~x~~", replace:"x"), or a replace ' +
-          'containing **bold**/~~strike~~/`code` wrappers — is REFUSED into ' +
-          'failed[]. To change bold/italic/strike/code/link, read the block with ' +
-          'getPageJson and use patchNode (or updatePageJson) to set its marks. ' +
-          'Examples: edits:[{find:"teh",replace:"the"}]; edits:[{find:"Hello ' +
-          'world",replace:"Hello there"}] (crosses a bold boundary). Reversible: ' +
-          'the previous version is kept in page history.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page to edit.'),
-          edits: z
-            .array(
-              z.object({
-                find: z.string().describe('Exact text to find.'),
-                replace: z.string().describe('Replacement text.'),
-                replaceAll: z
-                  .boolean()
-                  .optional()
-                  .describe('Replace every occurrence (default: one match).'),
-              }),
-            )
-            .min(1)
-            .describe('One or more find/replace edits.'),
-        }),
-        execute: async ({ pageId, edits }) =>
-          await client.editPageText(pageId, edits),
-      }),
+      editPageText: sharedTool(
+        sharedToolSpecs.editPageText,
+        async ({ pageId, edits }) => await client.editPageText(pageId, edits),
+      ),
 
       patchNode: tool({
         description:
@@ -767,17 +696,10 @@ export class AiChatToolsService {
         },
       }),
 
-      deleteNode: tool({
-        description:
-          'Remove a content BLOCK by its id (NOT a page). Reversible: the ' +
-          'previous version is kept in page history.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page.'),
-          nodeId: z.string().describe('The block id to remove.'),
-        }),
-        execute: async ({ pageId, nodeId }) =>
-          await client.deleteNode(pageId, nodeId),
-      }),
+      deleteNode: sharedTool(
+        sharedToolSpecs.deleteNode,
+        async ({ pageId, nodeId }) => await client.deleteNode(pageId, nodeId),
+      ),
 
       updatePageJson: tool({
         description:
@@ -866,35 +788,17 @@ export class AiChatToolsService {
           await client.tableUpdateCell(pageId, tableRef, row, col, text),
       }),
 
-      copyPageContent: tool({
-        description:
-          "Replace the target page's BODY with the source page's body " +
-          '(title/slug are kept). Runs server-side — no document passes ' +
-          'through the model. Reversible: the target keeps page history.',
-        inputSchema: z.object({
-          sourcePageId: z.string().describe('The id of the source page.'),
-          targetPageId: z
-            .string()
-            .describe('The id of the target page to overwrite.'),
-        }),
-        execute: async ({ sourcePageId, targetPageId }) =>
+      copyPageContent: sharedTool(
+        sharedToolSpecs.copyPageContent,
+        async ({ sourcePageId, targetPageId }) =>
           await client.copyPageContent(sourcePageId, targetPageId),
-      }),
+      ),
 
-      importPageMarkdown: tool({
-        description:
-          "Replace a page's body from Docmost-flavoured Markdown (as produced " +
-          'by exportPageMarkdown). Reversible: the previous version is kept in ' +
-          'page history.',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page to overwrite.'),
-          markdown: z
-            .string()
-            .describe('Docmost-flavoured Markdown for the page body.'),
-        }),
-        execute: async ({ pageId, markdown }) =>
+      importPageMarkdown: sharedTool(
+        sharedToolSpecs.importPageMarkdown,
+        async ({ pageId, markdown }) =>
           await client.importPageMarkdown(pageId, markdown),
-      }),
+      ),
 
       sharePage: tool({
         description:
@@ -912,27 +816,15 @@ export class AiChatToolsService {
           await client.sharePage(pageId, searchIndexing),
       }),
 
-      unsharePage: tool({
-        description:
-          'Remove the public share of a page (reverses sharePage).',
-        inputSchema: z.object({
-          pageId: z.string().describe('The id of the page to unshare.'),
-        }),
-        execute: async ({ pageId }) => await client.unsharePage(pageId),
-      }),
+      unsharePage: sharedTool(
+        sharedToolSpecs.unsharePage,
+        async ({ pageId }) => await client.unsharePage(pageId),
+      ),
 
-      restorePageVersion: tool({
-        description:
-          'Restore a past version by writing its content back as the current ' +
-          'page content. Itself reversible: it creates a new history snapshot.',
-        inputSchema: z.object({
-          historyId: z
-            .string()
-            .describe('The id of the history version to restore.'),
-        }),
-        execute: async ({ historyId }) =>
-          await client.restorePageVersion(historyId),
-      }),
+      restorePageVersion: sharedTool(
+        sharedToolSpecs.restorePageVersion,
+        async ({ historyId }) => await client.restorePageVersion(historyId),
+      ),
 
       transformPage: tool({
         description:

@@ -167,8 +167,29 @@ export interface DocmostClientCtor {
   new (config: DocmostClientConfig): DocmostClientLike;
 }
 
+/**
+ * Local hand-mirror of the `SharedToolSpec` shape exported from
+ * `@docmost/mcp` (packages/mcp/src/tool-specs.ts). Same approach as
+ * `DocmostClientLike`: we do not import the ESM package's types directly across
+ * the CJS/ESM boundary. The registry itself has no runtime deps, but keeping the
+ * type local avoids coupling the server build to the package's type surface.
+ *
+ * `buildShape` is intentionally zod-agnostic: it returns a plain ZodRawShape
+ * built with whatever zod namespace the caller passes (the server passes its own
+ * zod v4; the MCP package passes its zod v3). See the registry module comment.
+ */
+export interface SharedToolSpec {
+  mcpName: string;
+  inAppKey: string;
+  description: string;
+  // Loose `z` on purpose: the registry is zod-agnostic so the server can pass
+  // its own zod (v4) and the MCP package its own (v3) into the same builder.
+  buildShape?: (z: any) => Record<string, unknown>;
+}
+
 interface DocmostMcpModule {
   DocmostClient: DocmostClientCtor;
+  SHARED_TOOL_SPECS: Record<string, SharedToolSpec>;
 }
 
 // TS with module:commonjs downlevels a literal `import()` to `require()`, which
@@ -191,6 +212,7 @@ let modulePromise: Promise<DocmostMcpModule> | null = null;
  */
 export async function loadDocmostMcp(): Promise<{
   DocmostClient: DocmostClientCtor;
+  sharedToolSpecs: Record<string, SharedToolSpec>;
 }> {
   if (!modulePromise) {
     modulePromise = (async () => {
@@ -206,5 +228,15 @@ export async function loadDocmostMcp(): Promise<{
     });
   }
   const mod = await modulePromise;
-  return { DocmostClient: mod.DocmostClient };
+  if (!mod.SHARED_TOOL_SPECS) {
+    // A stale @docmost/mcp build (missing the shared registry export) would
+    // otherwise surface as a confusing TypeError deep in the tools service.
+    throw new Error(
+      '@docmost/mcp is stale: SHARED_TOOL_SPECS missing — rebuild the package (pnpm --filter @docmost/mcp build).',
+    );
+  }
+  return {
+    DocmostClient: mod.DocmostClient,
+    sharedToolSpecs: mod.SHARED_TOOL_SPECS,
+  };
 }

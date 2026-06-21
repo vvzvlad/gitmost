@@ -1,6 +1,19 @@
 import { AiChatToolsService } from './ai-chat-tools.service';
 import * as loader from './docmost-client.loader';
 import type { DocmostClientLike } from './docmost-client.loader';
+// The real zod-agnostic shared tool-spec registry. It has no runtime deps, so
+// importing the TS source directly keeps these mocks honest: the service builds
+// the shared tools from exactly the specs the package ships, not a hand-stub.
+import { SHARED_TOOL_SPECS } from '../../../../../../packages/mcp/src/tool-specs';
+
+// loadDocmostMcp now resolves to { DocmostClient, sharedToolSpecs }. Every mock
+// below must supply sharedToolSpecs or the service throws while building the
+// shared tools. Factor the resolved-value shape so the three mock sites stay in
+// sync.
+const mockLoaded = (DocmostClient: loader.DocmostClientCtor) => ({
+  DocmostClient,
+  sharedToolSpecs: SHARED_TOOL_SPECS as Record<string, loader.SharedToolSpec>,
+});
 
 /**
  * Guardrail test (§14 [H4]): the adapter's `deletePage` write tool must be a
@@ -37,11 +50,11 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
   beforeEach(() => {
     deletePageCalls.length = 0;
     // Intercept the ESM loader so `new DocmostClient(config)` returns our fake.
-    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue({
-      DocmostClient: function () {
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue(
+      mockLoaded(function () {
         return fakeClient as DocmostClientLike;
-      } as unknown as loader.DocmostClientCtor,
-    });
+      } as unknown as loader.DocmostClientCtor),
+    );
     // The new semanticSearch deps (aiService + repos) are not exercised by the
     // deletePage guardrail tests; pass stubs to satisfy the constructor arity.
     service = new AiChatToolsService(
@@ -144,11 +157,11 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
   let service: AiChatToolsService;
 
   beforeEach(() => {
-    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue({
-      DocmostClient: function () {
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue(
+      mockLoaded(function () {
         return fakeClient as DocmostClientLike;
-      } as unknown as loader.DocmostClientCtor,
-    });
+      } as unknown as loader.DocmostClientCtor),
+    );
     service = new AiChatToolsService(
       tokenServiceStub as never,
       {} as never,
@@ -252,11 +265,11 @@ describe('AiChatToolsService node-arg JSON-string coercion', () => {
     patchNodeCalls.length = 0;
     insertNodeCalls.length = 0;
     updatePageJsonCalls.length = 0;
-    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue({
-      DocmostClient: function () {
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue(
+      mockLoaded(function () {
         return fakeClient as DocmostClientLike;
-      } as unknown as loader.DocmostClientCtor,
-    });
+      } as unknown as loader.DocmostClientCtor),
+    );
     service = new AiChatToolsService(
       tokenServiceStub as never,
       {} as never,
