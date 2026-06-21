@@ -37,7 +37,6 @@ import {
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
-import RoleCards from "@/features/ai-chat/components/role-cards.tsx";
 import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
 import {
   shouldCollapseOnOutsidePointer,
@@ -147,18 +146,6 @@ export default function AiChatWindow() {
     [roles],
   );
 
-  // Role cards become the empty-state ONLY for a brand-new chat that has roles.
-  // Once the chat has messages, MessageList no longer renders the empty-state,
-  // so `selectedRoleId` staying null naturally falls back to Universal assistant
-  // (no "reset on send" logic needed).
-  const roleCardsNode =
-    activeChatId === null && enabledRoles.length > 0 ? (
-      <RoleCards
-        roles={enabledRoles}
-        selectedRoleId={selectedRoleId}
-        onSelect={setSelectedRoleId}
-      />
-    ) : undefined;
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
@@ -192,8 +179,11 @@ export default function AiChatWindow() {
       setActiveChatId(chatId);
       setHistoryOpen(false);
       setDraft("");
+      // Reset the card-picked role so a stale pick can't leak into the existing
+      // chat's header/assistant-name (which prefers the chat's persisted role).
+      setSelectedRoleId(null);
     },
-    [setActiveChatId, setDraft],
+    [setActiveChatId, setDraft, setSelectedRoleId],
   );
 
   // After a turn finishes, refresh the chat list. For a brand-new chat (no id
@@ -212,6 +202,18 @@ export default function AiChatWindow() {
     [chats, activeChatId],
   );
   const canExport = !!activeChatId && !!messageRows && messageRows.length > 0;
+
+  // The role to display in the header and as the assistant's name. Prefer the
+  // persisted role of an existing chat (chat-list JOIN); fall back to the role
+  // picked via a card click for a brand-new or just-adopted chat. selectChat
+  // resets selectedRoleId, so this fallback never leaks into an unrelated chat.
+  const currentRole = useMemo<{ name: string; emoji: string | null } | null>(() => {
+    if (activeChat?.roleName) {
+      return { name: activeChat.roleName, emoji: activeChat.roleEmoji ?? null };
+    }
+    const picked = enabledRoles.find((r) => r.id === selectedRoleId);
+    return picked ? { name: picked.name, emoji: picked.emoji } : null;
+  }, [activeChat, enabledRoles, selectedRoleId]);
 
   // Build a Markdown export from the already-loaded persisted rows (no network
   // call) and copy it to the clipboard. The "Copied" notification is the
@@ -444,12 +446,13 @@ export default function AiChatWindow() {
           {t("AI chat")}
         </span>
 
-        {/* Role badge for the active chat (emoji + name). Shown only when the
-            chat is bound to a role that still exists. */}
-        {activeChat?.roleName && (
+        {/* Role badge (emoji + name). Shows the persisted role of an existing
+            chat, or the role picked via a card for a brand-new chat. Hidden for
+            a universal (no-role) chat. */}
+        {currentRole && (
           <span className={classes.badge} title={t("Agent role")}>
-            {activeChat.roleEmoji ? `${activeChat.roleEmoji} ` : ""}
-            {activeChat.roleName}
+            {currentRole.emoji ? `${currentRole.emoji} ` : ""}
+            {currentRole.name}
           </span>
         )}
 
@@ -552,9 +555,9 @@ export default function AiChatWindow() {
         </div>
 
         {/* The role picker for a NEW chat is rendered as the chat's empty-state
-            (colored role cards centered in the empty window); see roleCardsNode
-            above. Once the chat exists, its role is fixed and shown as a header
-            badge instead. */}
+            (colored role cards centered in the empty window) by ChatThread
+            itself — clicking a card starts the chat with that role. Once the
+            chat exists, its role is fixed and shown as a header badge instead. */}
 
         {/* body: active chat thread */}
         <div className={classes.body}>
@@ -570,7 +573,11 @@ export default function AiChatWindow() {
               openPage={openPage}
               // Honoured only for a new chat; null = universal assistant.
               roleId={activeChatId === null ? selectedRoleId : null}
-              emptyState={roleCardsNode}
+              // Role cards are the new-chat empty-state; offered only when this
+              // is a brand-new chat. Clicking a card starts the chat with it.
+              roles={activeChatId === null ? enabledRoles : undefined}
+              onRolePicked={(role) => setSelectedRoleId(role.id)}
+              assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
             />
           )}
