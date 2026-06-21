@@ -13,7 +13,6 @@ import { QuickInsertsGroup } from "./groups/quick-inserts-group";
 import { MoreInsertsGroup } from "./groups/more-inserts-group";
 import { HistoryGroup } from "./groups/history-group";
 import { AskAiGroup } from "./groups/ask-ai-group";
-import { DictationGroup } from "./groups/dictation-group";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom";
 import classes from "./fixed-toolbar.module.css";
 
@@ -31,7 +30,6 @@ export const FixedToolbar: FC<FixedToolbarProps> = ({
   const state = useToolbarState(editor);
   const workspace = useAtomValue(workspaceAtom);
   const isGenerativeAiEnabled = workspace?.settings?.ai?.generative === true;
-  const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
 
   if (!editor || !state) return null;
 
@@ -67,12 +65,6 @@ export const FixedToolbar: FC<FixedToolbarProps> = ({
           <MoreInsertsGroup editor={editor} templateMode={templateMode} />
           <div className={classes.divider} />
           <HistoryGroup editor={editor} state={state} />
-          {isDictationEnabled && (
-            <>
-              <div className={classes.divider} />
-              <DictationGroup editor={editor} />
-            </>
-          )}
         </div>
       </div>
       <div className={classes.spacer} aria-hidden />
