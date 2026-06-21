@@ -183,7 +183,8 @@
 }
 
 :global(.react-renderer.node-transclusionSource.ProseMirror-selectednode),
-:global(.react-renderer.node-transclusionReference.ProseMirror-selectednode) {
+:global(.react-renderer.node-transclusionReference.ProseMirror-selectednode),
+:global(.react-renderer.node-pageEmbed.ProseMirror-selectednode) {
   outline: none;
 }
 

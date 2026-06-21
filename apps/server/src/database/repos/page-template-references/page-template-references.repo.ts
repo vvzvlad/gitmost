@@ -22,21 +22,6 @@ export class PageTemplateReferencesRepo {
       .execute();
   }
 
-  async findReferencePageIdsBySource(
-    sourcePageId: string,
-    workspaceId: string,
-    trx?: KyselyTransaction,
-  ): Promise<string[]> {
-    const rows = await dbOrTx(this.db, trx)
-      .selectFrom('pageTemplateReferences')
-      .select('referencePageId')
-      .distinct()
-      .where('workspaceId', '=', workspaceId)
-      .where('sourcePageId', '=', sourcePageId)
-      .execute();
-    return rows.map((r) => r.referencePageId);
-  }
-
   async insertMany(
     rows: InsertablePageTemplateReference[],
     trx?: KyselyTransaction,
@@ -53,12 +38,15 @@ export class PageTemplateReferencesRepo {
 
   async deleteByReferenceAndSources(
     referencePageId: string,
+    workspaceId: string,
     sourcePageIds: string[],
     trx?: KyselyTransaction,
   ): Promise<void> {
     if (sourcePageIds.length === 0) return;
     await dbOrTx(this.db, trx)
       .deleteFrom('pageTemplateReferences')
+      // Defense-in-depth: scope deletes to the caller's workspace.
+      .where('workspaceId', '=', workspaceId)
       .where('referencePageId', '=', referencePageId)
       .where('sourcePageId', 'in', sourcePageIds)
       .execute();
