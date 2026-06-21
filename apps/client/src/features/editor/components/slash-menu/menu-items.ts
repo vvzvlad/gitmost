@@ -801,7 +801,7 @@ const CommandGroups: SlashMenuGroupedItemsType = {
  * the persisted state directly. UI gate only; an anonymous public-share read is
  * served already-stripped content by the server when the toggle is OFF.
  */
-function isHtmlEmbedFeatureEnabled(): boolean {
+export function isHtmlEmbedFeatureEnabled(): boolean {
   try {
     const raw = localStorage.getItem("currentUser");
     if (!raw) return false;
