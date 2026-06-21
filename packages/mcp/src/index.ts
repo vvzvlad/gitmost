@@ -38,7 +38,7 @@ const VERSION = packageJson.version;
 // Editing guide surfaced to MCP clients in the initialize result so they can
 // pick the right tool by intent and avoid resending whole documents.
 const SERVER_INSTRUCTIONS =
-  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (add an image from a web URL) / replace_image (swap an existing image for one from a web URL). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (an inline comment anchors to its selection text), list_comments, update_comment, delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
+  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (add an image from a web URL) / replace_image (swap an existing image for one from a web URL). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (always inline; requires an EXACT selection — the contiguous text to anchor/highlight on; fails rather than leaving an unanchored comment), list_comments, update_comment, delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
   "Complex/scripted rewrite (multiple coordinated edits, footnotes, renumbering) -> docmost_transform: write a JS `(doc, ctx) => doc` transform, preview the diff with dryRun (default), then apply with dryRun:false; ctx.helpers includes commentsToFootnotes for turning inline comments into numbered footnotes. " +
   "Review what changed -> diff_page_versions (compare a historyId to current, or two history versions). See a page's saved versions -> list_page_history. Undo a bad edit -> restore_page_version (writes a past version back as current; itself revertible). " +
   "Lossless markdown round-trip (download, edit, re-upload, incl. comment anchors) -> export_page_markdown / import_page_markdown.";
@@ -713,24 +713,26 @@ server.registerTool(
   "create_comment",
   {
     description:
-      "Create a new comment on a page. Content is provided as Markdown and " +
-      "automatically converted to the required format.",
+      "Create a new comment on a page. The comment is ALWAYS inline and is " +
+      "anchored to (highlights) its `selection` text — there are no page-level " +
+      "comments. Content is provided as Markdown and automatically converted. " +
+      "A top-level comment REQUIRES an exact `selection`; if the selection " +
+      "cannot be found in the page the call fails (no orphan comment is left). " +
+      "Replies (parentCommentId set) inherit the parent's anchor and take no " +
+      "selection.",
     inputSchema: {
       pageId: z.string().describe("ID of the page to comment on"),
       content: z.string().min(1).describe("Comment content in Markdown format"),
-      type: z
-        .enum(["page", "inline"])
-        .optional()
-        .describe(
-          "Comment type: 'page' for general page comment (default), 'inline' for text selection comment",
-        ),
       selection: z
         .string()
+        .min(1)
         // Enforce the documented 250-char cap to match the description above.
         .max(250)
         .optional()
         .describe(
-          "For an inline comment, the EXACT text in the page to anchor/highlight the comment on (the first occurrence of this text is wrapped in a comment mark). Max 250 chars. Required when type is 'inline'.",
+          "EXACT contiguous text from a single paragraph/block to anchor the " +
+            "comment on (<=250 chars). Required for a top-level comment; omit " +
+            "only when replying via parentCommentId.",
         ),
       parentCommentId: z
         .string()
@@ -738,11 +740,16 @@ server.registerTool(
         .describe("Parent comment ID to create a reply (max 2 nesting levels)"),
     },
   },
-  async ({ pageId, content, type, selection, parentCommentId }) => {
+  async ({ pageId, content, selection, parentCommentId }) => {
+    if (!parentCommentId && (!selection || !selection.trim())) {
+      throw new Error(
+        "create_comment: a 'selection' (exact text to anchor on) is required for a top-level comment; omit it only when replying via parentCommentId.",
+      );
+    }
     const result = await docmostClient.createComment(
       pageId,
       content,
-      type || "page",
+      "inline",
       selection,
       parentCommentId,
     );
