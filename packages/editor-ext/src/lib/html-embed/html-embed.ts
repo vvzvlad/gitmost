@@ -39,7 +39,15 @@ export function encodeHtmlEmbedSource(source: string): string {
     // Node fallback (server-side schema parsing has no global btoa).
     return Buffer.from(encodeURIComponent(source), "utf-8").toString("base64");
   } catch {
-    // Never swallow silently in a way that loses data: fall back to raw.
+    // On an encoding error we drop to "" rather than returning the raw source.
+    // Returning raw markup here is NOT a safe fallback: the value is stored in
+    // the `data-source` attribute and read back through decodeHtmlEmbedSource,
+    // which base64-decodes it — raw (un-encoded) HTML would make atob/
+    // decodeURIComponent throw and decode to "" anyway, and an un-encoded value
+    // sitting in the attribute defeats the inert-storage guarantee (it could
+    // become an injection vector). So "" is the correct, decode-symmetric
+    // failure mode. In practice this is essentially unreachable: btoa runs on
+    // the output of encodeURIComponent, which is always Latin1-safe ASCII.
     return "";
   }
 }

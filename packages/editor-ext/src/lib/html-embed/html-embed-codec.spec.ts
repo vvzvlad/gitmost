@@ -103,6 +103,21 @@ describe("html-embed codec — Node Buffer fallback branch", () => {
   });
 });
 
+describe("html-embed codec — encode failure fallback", () => {
+  it("returns '' (not raw source) when encoding throws", () => {
+    // Force the catch branch: a btoa that throws (e.g. simulating the
+    // Latin1-boundary error). The codec must NOT return the raw source —
+    // raw markup in data-source would fail to decode and undermine inert
+    // storage — it drops to "" symmetrically with the decode side.
+    const src = "<script>alert(1)</script>";
+    // @ts-expect-error — stub btoa with a throwing impl for this test.
+    globalThis.btoa = () => {
+      throw new Error("boom");
+    };
+    expect(encodeHtmlEmbedSource(src)).toBe("");
+  });
+});
+
 describe("html-embed codec — decode of malformed input (browser branch)", () => {
   it("returns '' for input atob rejects (catch branch)", () => {
     // atob throws on characters outside the base64 alphabet; the codec catches
