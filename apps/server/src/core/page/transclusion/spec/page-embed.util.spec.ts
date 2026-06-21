@@ -131,15 +131,18 @@ describe('collectPageEmbedsFromPmJson', () => {
     expect(collectPageEmbedsFromPmJson(doc)).toEqual([{ sourcePageId: 'deep' }]);
   });
 
-  it('terminates (does not silently hang) on a self-referencing/cyclic object', () => {
-    // FINDING: there is NO explicit cycle guard. A hand-built cyclic JS object
-    // (which cannot arise from JSON parsing — the real input path) makes the
-    // recursive walk overflow the stack and throw a RangeError. It TERMINATES
-    // with a controlled error rather than recursing unboundedly forever, and a
-    // non-cyclic (JSON-shaped) document is never affected.
+  it('returns gracefully (does not throw) on a self-referencing/cyclic object', () => {
+    // A depth guard (see MAX_PM_WALK_DEPTH) defends against a hand-built cyclic
+    // JS object — which cannot arise from JSON parsing, the real input path —
+    // so the recursive walk stops at the cap instead of overflowing the stack.
+    // A non-cyclic (JSON-shaped) document is never affected.
     const node: any = { type: 'doc', content: [] };
     node.content.push(node); // content array references its own parent node
-    expect(() => collectPageEmbedsFromPmJson(node)).toThrow(RangeError);
+    let got: ReturnType<typeof collectPageEmbedsFromPmJson>;
+    expect(() => {
+      got = collectPageEmbedsFromPmJson(node);
+    }).not.toThrow();
+    expect(got!).toEqual([]);
   });
 });
 

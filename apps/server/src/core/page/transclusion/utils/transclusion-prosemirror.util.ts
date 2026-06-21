@@ -4,6 +4,13 @@ const TRANSCLUSION_TYPE = 'transclusionSource';
 const REFERENCE_TYPE = 'transclusionReference';
 const PAGE_EMBED_TYPE = 'pageEmbed';
 
+// Hard cap on recursion depth while walking a ProseMirror doc. Real documents
+// nest only a handful of levels deep, so this ceiling is unreachable on any
+// genuine input. It exists purely to defend against a pathological or cyclic
+// non-JSON input (JSON.parse can't produce cycles, but other callers might
+// hand us a hand-built/cyclic object) so the recursion can't overflow the stack.
+const MAX_PM_WALK_DEPTH = 1000;
+
 export type TransclusionReferenceSnapshot = {
   sourcePageId: string;
   transclusionId: string;
@@ -27,8 +34,11 @@ export function collectTransclusionsFromPmJson(
 
   const byId = new Map<string, TransclusionNodeSnapshot>();
 
-  const visit = (node: any): void => {
+  const visit = (node: any, depth: number): void => {
     if (!node || typeof node !== 'object') return;
+    // Depth guard against a pathological/cyclic non-JSON input (see
+    // MAX_PM_WALK_DEPTH); unreachable on real docs.
+    if (depth > MAX_PM_WALK_DEPTH) return;
 
     if (node.type === TRANSCLUSION_TYPE) {
       const id = node.attrs?.id;
@@ -42,11 +52,11 @@ export function collectTransclusionsFromPmJson(
     }
 
     if (Array.isArray(node.content)) {
-      for (const child of node.content) visit(child);
+      for (const child of node.content) visit(child, depth + 1);
     }
   };
 
-  visit(doc);
+  visit(doc, 0);
   return Array.from(byId.values());
 }
 
@@ -65,8 +75,11 @@ export function collectReferencesFromPmJson(
   const seen = new Set<string>();
   const out: TransclusionReferenceSnapshot[] = [];
 
-  const visit = (node: any): void => {
+  const visit = (node: any, depth: number): void => {
     if (!node || typeof node !== 'object') return;
+    // Depth guard against a pathological/cyclic non-JSON input (see
+    // MAX_PM_WALK_DEPTH); unreachable on real docs.
+    if (depth > MAX_PM_WALK_DEPTH) return;
 
     if (node.type === REFERENCE_TYPE) {
       const sourcePageId = node.attrs?.sourcePageId;
@@ -91,11 +104,11 @@ export function collectReferencesFromPmJson(
     if (node.type === TRANSCLUSION_TYPE) return;
 
     if (Array.isArray(node.content)) {
-      for (const child of node.content) visit(child);
+      for (const child of node.content) visit(child, depth + 1);
     }
   };
 
-  visit(doc);
+  visit(doc, 0);
   return out;
 }
 
@@ -133,8 +146,11 @@ export function remapPageEmbedSourceIds<T>(
   doc: T,
   idMap: Map<string, string>,
 ): T {
-  const visit = (node: any): void => {
+  const visit = (node: any, depth: number): void => {
     if (!node || typeof node !== 'object') return;
+    // Depth guard against a pathological/cyclic non-JSON input (see
+    // MAX_PM_WALK_DEPTH); unreachable on real docs.
+    if (depth > MAX_PM_WALK_DEPTH) return;
 
     if (node.type === PAGE_EMBED_TYPE) {
       if (node.attrs) {
@@ -149,11 +165,11 @@ export function remapPageEmbedSourceIds<T>(
     if (node.type === TRANSCLUSION_TYPE) return;
 
     if (Array.isArray(node.content)) {
-      for (const child of node.content) visit(child);
+      for (const child of node.content) visit(child, depth + 1);
     }
   };
 
-  visit(doc);
+  visit(doc, 0);
   return doc;
 }
 
@@ -171,8 +187,11 @@ export function collectPageEmbedsFromPmJson(
   const seen = new Set<string>();
   const out: PageEmbedSnapshot[] = [];
 
-  const visit = (node: any): void => {
+  const visit = (node: any, depth: number): void => {
     if (!node || typeof node !== 'object') return;
+    // Stop before the stack can overflow on a pathological/cyclic non-JSON
+    // input; far above any real doc nesting so genuine docs are unaffected.
+    if (depth > MAX_PM_WALK_DEPTH) return;
 
     if (node.type === PAGE_EMBED_TYPE) {
       const sourcePageId = node.attrs?.sourcePageId;
@@ -188,10 +207,10 @@ export function collectPageEmbedsFromPmJson(
     if (node.type === TRANSCLUSION_TYPE) return;
 
     if (Array.isArray(node.content)) {
-      for (const child of node.content) visit(child);
+      for (const child of node.content) visit(child, depth + 1);
     }
   };
 
-  visit(doc);
+  visit(doc, 0);
   return out;
 }
