@@ -31,6 +31,52 @@ export function getFileTaskFolderPath(
 }
 
 /**
+ * Pure path-safety decision for a single ZIP entry (zip-slip / path-traversal guard).
+ *
+ * Reproduces exactly the inline check previously embedded in `extractZipInternal`:
+ *  1. Strip any leading slashes from the entry name.
+ *  2. Reject names that fail `yauzl.validateFileName` (e.g. backslashes,
+ *     relative `..` segments, drive letters).
+ *  3. Reject `__MACOSX/` metadata entries.
+ *  4. Resolve the entry against the target directory and require it to stay
+ *     strictly inside `targetDir` using a `targetResolved + path.sep` prefix check
+ *     (the trailing separator prevents sibling-directory prefix confusion, e.g.
+ *     `/tmp/x` must not match `/tmp/x-evil`).
+ *
+ * @param entryName  The decoded (UTF-8) entry file name from the archive.
+ * @param targetDir  Directory the archive is being extracted into.
+ * @returns `{ safe }` and, when safe, the resolved absolute path of the entry.
+ */
+export function isEntryPathSafe(
+  entryName: string,
+  targetDir: string,
+): { safe: boolean; resolved?: string } {
+  // Strip leading slashes so absolute-looking entries cannot escape the target.
+  const safe = entryName.replace(/^\/+/, '');
+
+  const validationError = yauzl.validateFileName(safe);
+  if (validationError) {
+    return { safe: false };
+  }
+
+  // Skip macOS resource-fork metadata entries.
+  if (safe.startsWith('__MACOSX/')) {
+    return { safe: false };
+  }
+
+  const fullPath = path.join(targetDir, safe);
+  const resolved = path.resolve(fullPath);
+  const targetResolved = path.resolve(targetDir);
+
+  // Containment check: resolved path must live strictly inside the target dir.
+  if (!resolved.startsWith(targetResolved + path.sep)) {
+    return { safe: false };
+  }
+
+  return { safe: true, resolved };
+}
+
+/**
  * Extracts a ZIP archive.
  */
 export async function extractZip(
@@ -103,28 +149,14 @@ function extractZipInternal(
           const name = entry.fileName.toString('utf8');
           const safe = name.replace(/^\/+/, '');
 
-          const validationError = yauzl.validateFileName(safe);
-          if (validationError) {
-            console.warn(`Skipping invalid entry (${validationError})`);
-            zipfile.readEntry();
-            return;
-          }
-
-          if (safe.startsWith('__MACOSX/')) {
+          // Zip-slip / path-traversal guard (see isEntryPathSafe).
+          if (!isEntryPathSafe(name, target).safe) {
+            console.warn(`Skipping unsafe entry: ${safe}`);
             zipfile.readEntry();
             return;
           }
 
           const fullPath = path.join(target, safe);
-
-          const resolved = path.resolve(fullPath);
-          const targetResolved = path.resolve(target);
-
-          if (!resolved.startsWith(targetResolved + path.sep)) {
-            console.warn(`Skipping entry (path outside target): ${safe}`);
-            zipfile.readEntry();
-            return;
-          }
 
           // Handle directories
           if (/\/$/.test(name)) {
