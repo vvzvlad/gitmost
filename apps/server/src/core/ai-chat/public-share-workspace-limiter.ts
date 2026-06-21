@@ -42,7 +42,7 @@ import type { Redis } from 'ioredis';
  */
 
 /** Default cap: anonymous share-AI calls allowed per workspace per window. */
-export const SHARE_AI_WORKSPACE_MAX_PER_WINDOW = 300;
+export const SHARE_AI_WORKSPACE_MAX_PER_WINDOW = 100;
 /** Default window length: one rolling hour. */
 export const SHARE_AI_WORKSPACE_WINDOW_MS = 60 * 60 * 1000;
 

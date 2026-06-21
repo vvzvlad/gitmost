@@ -27,8 +27,7 @@ describe('WsTreeService', () => {
   let wsService: {
     emitTreeEvent: jest.Mock;
     emitToSpaceRoom: jest.Mock;
-    emitDeleteToUnauthorized: jest.Mock;
-    emitToAuthorizedUsers: jest.Mock;
+    emitMoveWithRestrictionSplit: jest.Mock;
   };
   let pagePermissionRepo: { hasRestrictedAncestor: jest.Mock };
 
@@ -36,8 +35,7 @@ describe('WsTreeService', () => {
     wsService = {
       emitTreeEvent: jest.fn().mockResolvedValue(undefined),
       emitToSpaceRoom: jest.fn(),
-      emitDeleteToUnauthorized: jest.fn().mockResolvedValue(undefined),
-      emitToAuthorizedUsers: jest.fn().mockResolvedValue(undefined),
+      emitMoveWithRestrictionSplit: jest.fn().mockResolvedValue(undefined),
     };
     pagePermissionRepo = {
       // Default: not restricted, so broadcastPageMoved skips the compensating
@@ -150,14 +148,13 @@ describe('WsTreeService', () => {
 
     await service.broadcastPageMoved(event);
 
-    // Normal path: move goes to the whole room via emitTreeEvent, and neither
-    // the authorized-only move path nor the compensating delete fire.
+    // Normal path: move goes to the whole room via emitTreeEvent, and the
+    // single-snapshot move/delete split does not fire.
     expect(wsService.emitTreeEvent).toHaveBeenCalledTimes(1);
-    expect(wsService.emitToAuthorizedUsers).not.toHaveBeenCalled();
-    expect(wsService.emitDeleteToUnauthorized).not.toHaveBeenCalled();
+    expect(wsService.emitMoveWithRestrictionSplit).not.toHaveBeenCalled();
   });
 
-  it('broadcastPageMoved into a RESTRICTED subtree routes the move to authorized users only AND emits a compensating delete to unauthorized — from one fresh decision', async () => {
+  it('broadcastPageMoved into a RESTRICTED subtree drives the move + compensating delete from ONE single-snapshot split call', async () => {
     // Destination is now under a restricted ancestor.
     pagePermissionRepo.hasRestrictedAncestor.mockResolvedValue(true);
 
@@ -180,11 +177,18 @@ describe('WsTreeService', () => {
     // which could leak the move to the whole room during the stale-cache window.
     expect(wsService.emitTreeEvent).not.toHaveBeenCalled();
 
-    // The move is delivered to authorized users only.
-    expect(wsService.emitToAuthorizedUsers).toHaveBeenCalledTimes(1);
-    expect(wsService.emitToAuthorizedUsers).toHaveBeenCalledWith(
-      'space-1',
-      'page-1',
+    // BOTH the move and the compensating delete are driven from ONE call, so a
+    // single socket/access snapshot partitions the room (no race window).
+    expect(wsService.emitMoveWithRestrictionSplit).toHaveBeenCalledTimes(1);
+
+    const [spaceId, pageId, movePayload, deletePayload] =
+      wsService.emitMoveWithRestrictionSplit.mock.calls[0];
+
+    expect(spaceId).toBe('space-1');
+    expect(pageId).toBe('page-1');
+
+    // The move payload is the moveTreeNode for the moved page.
+    expect(movePayload).toEqual(
       expect.objectContaining({
         operation: 'moveTreeNode',
         spaceId: 'space-1',
@@ -192,20 +196,23 @@ describe('WsTreeService', () => {
       }),
     );
 
-    // The users who lost access get a deleteTreeNode for the moved node, scoped
-    // to the same page id (same fresh authorized set → disjoint from the move).
-    expect(wsService.emitDeleteToUnauthorized).toHaveBeenCalledTimes(1);
-    expect(wsService.emitDeleteToUnauthorized).toHaveBeenCalledWith(
-      'space-1',
-      'page-1',
+    // The delete payload is the compensating deleteTreeNode, scoped to the same
+    // page id and carrying the OLD parent id (so it disappears from where it was
+    // last visible).
+    expect(deletePayload).toEqual(
       expect.objectContaining({
         operation: 'deleteTreeNode',
         spaceId: 'space-1',
         payload: {
-          node: expect.objectContaining({ id: 'page-1', slugId: 'slug-1' }),
+          node: expect.objectContaining({
+            id: 'page-1',
+            slugId: 'slug-1',
+            parentPageId: 'old-parent',
+          }),
         },
       }),
     );
+    expect(deletePayload.payload.node.parentPageId).toBe(event.oldParentId);
   });
 
   it('broadcastRefetchRoot emits refetchRootTreeNodeEvent to the space room', async () => {
@@ -339,7 +346,7 @@ describe('WsService.emitTreeEvent', () => {
     );
   });
 
-  it('emitDeleteToUnauthorized sends ONLY to sockets whose user lacks page access', async () => {
+  it('emitMoveWithRestrictionSplit partitions the room from one snapshot: authorized -> move, unauthorized + anonymous -> delete', async () => {
     pagePermissionRepo.getUserIdsWithPageAccess.mockResolvedValue(['user-ok']);
 
     const okEmit = jest.fn();
@@ -348,38 +355,49 @@ describe('WsService.emitTreeEvent', () => {
     const sockets = [
       { id: 's1', data: { userId: 'user-ok' }, emit: okEmit },
       { id: 's2', data: { userId: 'user-no' }, emit: noEmit },
-      // Unauthenticated socket (no userId) — must also receive the delete.
+      // Unauthenticated socket (no userId) — must receive the delete.
       { id: 's3', data: {}, emit: anonEmit },
     ];
     server.in.mockReturnValue({
       fetchSockets: jest.fn().mockResolvedValue(sockets),
     });
 
-    const data = { operation: 'deleteTreeNode' };
-    await service.emitDeleteToUnauthorized('space-1', 'page-1', data);
+    const movePayload = { operation: 'moveTreeNode' };
+    const deletePayload = { operation: 'deleteTreeNode' };
+    await service.emitMoveWithRestrictionSplit(
+      'space-1',
+      'page-1',
+      movePayload,
+      deletePayload,
+    );
 
-    // Authorized user does NOT get the delete (they got the move instead).
-    expect(okEmit).not.toHaveBeenCalled();
-    // Unauthorized + anonymous sockets DO get the delete.
-    expect(noEmit).toHaveBeenCalledWith('message', data);
-    expect(anonEmit).toHaveBeenCalledWith('message', data);
+    // Authorized socket gets ONLY the move.
+    expect(okEmit).toHaveBeenCalledWith('message', movePayload);
+    expect(okEmit).not.toHaveBeenCalledWith('message', deletePayload);
+    // Unauthorized + anonymous sockets get ONLY the delete.
+    expect(noEmit).toHaveBeenCalledWith('message', deletePayload);
+    expect(noEmit).not.toHaveBeenCalledWith('message', movePayload);
+    expect(anonEmit).toHaveBeenCalledWith('message', deletePayload);
+    expect(anonEmit).not.toHaveBeenCalledWith('message', movePayload);
   });
 });
 
 describe('move-into-restricted disjointness contract (WsTreeService + real WsService)', () => {
-  // CONTRACT: a move under a restricted ancestor PARTITIONS the room. The
-  // authorized set (gets the moveTreeNode via emitToAuthorizedUsers) and its
-  // complement (gets the deleteTreeNode via emitDeleteToUnauthorized) are
-  // disjoint and together cover every socket — and an anonymous (no-userId)
-  // socket lands in the delete set. We wire a REAL WsService (only its repo,
-  // cache and socket server mocked) so both broadcasts run against the SAME fixed
-  // socket set, the way they do in production.
+  // CONTRACT: a move under a restricted ancestor PARTITIONS the room from a
+  // SINGLE snapshot. emitMoveWithRestrictionSplit performs exactly one
+  // fetchSockets + one getUserIdsWithPageAccess; the authorized set (gets the
+  // moveTreeNode) and its complement (gets the deleteTreeNode) are disjoint and
+  // together cover every socket — and an anonymous (no-userId) socket lands in
+  // the delete set. We wire a REAL WsService (only its repo, cache and socket
+  // server mocked) so the partition runs against the SAME fixed socket set, the
+  // way it does in production.
   let treeService: WsTreeService;
   let pagePermissionRepo: {
     hasRestrictedPagesInSpace: jest.Mock;
     hasRestrictedAncestor: jest.Mock;
     getUserIdsWithPageAccess: jest.Mock;
   };
+  let fetchSockets: jest.Mock;
 
   // Fixed room: two authorized users (one with two sockets), one unauthorized
   // user, one anonymous socket.
@@ -429,11 +447,12 @@ describe('move-into-restricted disjointness contract (WsTreeService + real WsSer
     }).compile();
 
     const wsService = module.get<WsService>(WsService);
+    // Capture fetchSockets so the test can assert the SINGLE-snapshot contract:
+    // exactly one fetchSockets call drives the whole partition.
+    fetchSockets = jest.fn().mockResolvedValue(sockets);
     const server = {
       to: jest.fn().mockReturnValue({ emit: jest.fn() }),
-      in: jest.fn().mockReturnValue({
-        fetchSockets: jest.fn().mockResolvedValue(sockets),
-      }),
+      in: jest.fn().mockReturnValue({ fetchSockets }),
     };
     wsService.setServer(server as never);
 
@@ -469,5 +488,12 @@ describe('move-into-restricted disjointness contract (WsTreeService + real WsSer
     // The anonymous socket specifically lands in the DELETE set, never the move.
     expect(deleteSet.has('s-anon')).toBe(true);
     expect(moveSet.has('s-anon')).toBe(false);
+
+    // SINGLE SNAPSHOT: the whole partition (move + compensating delete) is driven
+    // from exactly ONE fetchSockets and exactly ONE getUserIdsWithPageAccess.
+    // This is what closes the race window — there is no second, independent
+    // snapshot that could disagree with the first.
+    expect(fetchSockets).toHaveBeenCalledTimes(1);
+    expect(pagePermissionRepo.getUserIdsWithPageAccess).toHaveBeenCalledTimes(1);
   });
 });
