@@ -16,6 +16,7 @@ import { withPageLock } from "./lib/page-lock.js";
 import { applyTextEdits, } from "./lib/json-edit.js";
 import { getCollabToken, performLogin } from "./lib/auth-utils.js";
 import { diffDocs, summarizeChange } from "./lib/diff.js";
+import { applyAnchorInDoc, canAnchorInDoc, } from "./lib/comment-anchor.js";
 import { blockText, walk, getList, insertMarkerAfter, setCalloutRange, noteItem, mdToInlineNodes, commentsToFootnotes, } from "./lib/transforms.js";
 import vm from "node:vm";
 // Supported image types, kept as two lookup tables so both a local file
@@ -1513,17 +1514,61 @@ export class DocmostClient {
             success: true,
         };
     }
-    /** Create a page-level or inline comment; content is markdown. */
+    /**
+     * Create an inline comment anchored to its `selection` text, or a reply.
+     *
+     * Top-level comments (no `parentCommentId`) are ALWAYS inline and MUST carry a
+     * `selection`: the `type` argument is kept for interface compatibility but the
+     * effective type is coerced to "inline". The selection has to anchor in the
+     * document; if it cannot, the comment is rolled back and an error is thrown so
+     * the caller is forced to supply a proper inline selection rather than leaving
+     * an orphan, unanchored comment behind. Replies (parentCommentId set) inherit
+     * their parent's anchor: they take NO selection and are not anchored.
+     */
     async createComment(pageId, content, type = "page", selection, parentCommentId) {
         await this.ensureAuthenticated();
+        const isReply = !!parentCommentId;
+        // Only top-level comments are inline-anchored, so they are stored as
+        // "inline". Replies carry no inline selection, so they keep the historical
+        // general ("page") type — both backward-compatible and semantically correct.
+        // The `type` argument is kept for interface compatibility; createComment
+        // normalizes the effective type internally, so callers may pass "inline".
+        const effectiveType = isReply ? "page" : "inline";
+        if (!isReply && (!selection || !selection.trim())) {
+            throw new Error("create_comment: an inline 'selection' (exact text to anchor on) is required for a top-level comment");
+        }
+        // For a top-level comment, fail BEFORE creating anything when the selection
+        // is not present in the persisted document — this avoids leaving an orphan
+        // comment + notification behind. A read failure (network) is non-fatal: the
+        // live anchor step below still enforces the anchoring invariant.
+        if (!isReply && selection) {
+            try {
+                const page = await this.getPageJson(pageId);
+                if (!canAnchorInDoc(page.content, selection)) {
+                    throw new Error("create_comment: could not find the selection text in the page to anchor the comment. " +
+                        "Provide the EXACT contiguous text from a single paragraph/block (<=250 chars).");
+                }
+            }
+            catch (e) {
+                // Rethrow our own "not found" error; swallow read/network errors so the
+                // live anchor step can still try (and enforce) the anchoring.
+                if (e instanceof Error &&
+                    e.message.startsWith("create_comment: could not find the selection")) {
+                    throw e;
+                }
+                if (process.env.DEBUG) {
+                    console.error("Pre-check getPageJson failed; deferring to live anchor step:", e);
+                }
+            }
+        }
         // Convert through the full Docmost schema (consistent with page paths)
         const jsonContent = await markdownToProseMirror(content);
         const payload = {
             pageId,
             content: JSON.stringify(jsonContent),
-            type,
+            type: effectiveType,
         };
-        if (selection)
+        if (!isReply && selection)
             payload.selection = selection;
         if (parentCommentId)
             payload.parentCommentId = parentCommentId;
@@ -1536,95 +1581,71 @@ export class DocmostClient {
             data: filterComment(comment, markdown),
             success: true,
         };
+        // Replies inherit the parent's anchor: no selection, no anchoring.
+        if (isReply) {
+            return result;
+        }
         // Anchor the comment in the document. The /comments/create API records the
         // comment + its `selection` text, but it does NOT insert the comment MARK
         // into the page content, so without this the inline comment has no
-        // highlight/anchor and is not clickable. Only top-level inline comments are
-        // anchored: replies (parentCommentId set) inherit their parent's anchor,
-        // and page-type comments have no text range.
-        if (type === "inline" && selection && !parentCommentId && comment?.id) {
-            const newCommentId = comment.id;
-            let anchored = false;
-            try {
-                const collabToken = await this.getCollabTokenWithReauth();
-                const mutation = await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
-                    const doc = liveDoc && liveDoc.type === "doc"
-                        ? liveDoc
-                        : { type: "doc", content: [] };
-                    // Find the FIRST text node containing the selection text, then
-                    // split it into before / marked / after, copying the node's
-                    // existing marks onto all three parts and adding the comment mark
-                    // only to the middle part. Returns true once a match is wrapped.
-                    const wrapInFirstMatch = (nodes, depth) => {
-                        const MAX_DEPTH = 200;
-                        if (depth > MAX_DEPTH || !Array.isArray(nodes))
-                            return false;
-                        for (let i = 0; i < nodes.length; i++) {
-                            const n = nodes[i];
-                            if (!n || typeof n !== "object")
-                                continue;
-                            if (n.type === "text" &&
-                                typeof n.text === "string" &&
-                                n.text.includes(selection)) {
-                                const idx = n.text.indexOf(selection);
-                                const before = n.text.slice(0, idx);
-                                const middleText = selection;
-                                const after = n.text.slice(idx + selection.length);
-                                const baseMarks = Array.isArray(n.marks) ? n.marks : [];
-                                // Drop any pre-existing comment mark from the marks applied to
-                                // the middle fragment so it ends up with exactly one comment
-                                // mark (the new one) rather than two. Other fragments and the
-                                // base marks list are left untouched.
-                                const middleBaseMarks = baseMarks.filter((m) => !(m && m.type === "comment"));
-                                const commentMark = {
-                                    type: "comment",
-                                    // The comment mark schema declares both commentId and
-                                    // resolved; include resolved:false for completeness.
-                                    attrs: { commentId: newCommentId, resolved: false },
-                                };
-                                const parts = [];
-                                if (before.length > 0) {
-                                    parts.push({ ...n, text: before, marks: [...baseMarks] });
-                                }
-                                parts.push({
-                                    ...n,
-                                    text: middleText,
-                                    marks: [...middleBaseMarks, commentMark],
-                                });
-                                if (after.length > 0) {
-                                    parts.push({ ...n, text: after, marks: [...baseMarks] });
-                                }
-                                nodes.splice(i, 1, ...parts);
-                                return true;
-                            }
-                            if (Array.isArray(n.content)) {
-                                if (wrapInFirstMatch(n.content, depth + 1))
-                                    return true;
-                            }
-                        }
-                        return false;
-                    };
-                    if (Array.isArray(doc.content) && wrapInFirstMatch(doc.content, 0)) {
-                        anchored = true;
-                        return doc;
-                    }
-                    // Selection text not found: do NOT fail (the comment already
-                    // exists). Abort the write so nothing changes.
-                    return null;
-                });
-                result.verify = mutation.verify;
-            }
-            catch (e) {
-                // The comment record already exists; an anchoring failure must not turn
-                // a successful create into an error. Report anchored:false instead.
-                if (process.env.DEBUG) {
-                    console.error("Failed to anchor inline comment mark:", e);
-                }
-                anchored = false;
-            }
-            result.anchored = anchored;
+        // highlight/anchor and is not clickable. If anchoring fails the comment is
+        // rolled back (deleted) and an error is thrown — never an orphan comment.
+        const newCommentId = comment.id;
+        // Guard: a create response without an id would mean writing a comment mark
+        // with commentId: undefined and a later delete of a falsy id. We have no id
+        // to roll back here (nothing was created with an id), so just fail loudly.
+        if (!newCommentId) {
+            throw new Error("create_comment: the server returned no comment id, so the comment could not be anchored");
         }
+        let anchored = false;
+        try {
+            const collabToken = await this.getCollabTokenWithReauth();
+            const mutation = await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
+                const doc = liveDoc && liveDoc.type === "doc"
+                    ? liveDoc
+                    : { type: "doc", content: [] };
+                if (applyAnchorInDoc(doc, selection, newCommentId)) {
+                    anchored = true;
+                    return doc;
+                }
+                // Selection text not found in the LIVE document: abort the write. The
+                // rollback + throw below turns this into a hard error.
+                return null;
+            });
+            result.verify = mutation.verify;
+        }
+        catch (e) {
+            // The comment record already exists; roll it back so we never leave an
+            // orphan, then rethrow the original anchoring error.
+            await this.safeDeleteComment(newCommentId);
+            throw e;
+        }
+        if (!anchored) {
+            // Mutation aborted because the selection was not found in the live
+            // document. Roll back the comment and surface a hard error.
+            await this.safeDeleteComment(newCommentId);
+            throw new Error("create_comment: failed to anchor the comment (selection not found in the live document); the comment was rolled back");
+        }
+        result.anchored = true;
         return result;
+    }
+    /**
+     * Best-effort rollback of a just-created comment. Swallows any delete failure
+     * (logging under DEBUG) so a failed cleanup never masks the original error.
+     */
+    async safeDeleteComment(commentId) {
+        // Defense in depth: never call the delete API with a falsy id — there is
+        // nothing to roll back, and deleteComment(undefined) would hit a bad route.
+        if (!commentId)
+            return;
+        try {
+            await this.deleteComment(commentId);
+        }
+        catch (delErr) {
+            if (process.env.DEBUG) {
+                console.error("Failed to roll back comment after anchoring error:", delErr);
+            }
+        }
     }
     async updateComment(commentId, content) {
         await this.ensureAuthenticated();
