@@ -13,6 +13,7 @@ import {
   type DocmostClientLike,
 } from './docmost-client.loader';
 import { resolveCurrentPageResult } from './current-page.util';
+import { parseNodeArg } from './parse-node-arg';
 
 /**
  * Per-user, per-request adapter that exposes Docmost READ operations to the
@@ -705,14 +706,7 @@ export class AiChatToolsService {
           // Parity with the standalone MCP server (index.ts patch_node): the
           // model sometimes serializes the node as a JSON string. Parse it
           // before the client's typeof-object guard rejects it.
-          let parsedNode = node;
-          if (typeof node === 'string') {
-            try {
-              parsedNode = JSON.parse(node);
-            } catch {
-              throw new Error('node was a string but not valid JSON');
-            }
-          }
+          const parsedNode = parseNodeArg(node);
           return await client.patchNode(pageId, nodeId, parsedNode);
         },
       }),
@@ -764,14 +758,7 @@ export class AiChatToolsService {
           // Parity with the standalone MCP server (index.ts insert_node): the
           // model sometimes serializes the node as a JSON string. Parse it
           // before the client's typeof-object guard rejects it.
-          let parsedNode = node;
-          if (typeof node === 'string') {
-            try {
-              parsedNode = JSON.parse(node);
-            } catch {
-              throw new Error('node was a string but not valid JSON');
-            }
-          }
+          const parsedNode = parseNodeArg(node);
           return await client.insertNode(pageId, parsedNode, {
             position,
             anchorNodeId,
@@ -820,14 +807,9 @@ export class AiChatToolsService {
           let doc;
           if (content === undefined || content === null) {
             doc = undefined;
-          } else if (typeof content === 'string') {
-            try {
-              doc = JSON.parse(content);
-            } catch {
-              throw new Error('content was a string but not valid JSON');
-            }
           } else {
-            doc = content;
+            // String -> JSON.parse (throwing on invalid); object passes through.
+            doc = parseNodeArg(content, 'content was a string but not valid JSON');
           }
           return await client.updatePageJson(pageId, doc, title);
         },
