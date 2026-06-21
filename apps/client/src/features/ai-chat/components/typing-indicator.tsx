@@ -1,5 +1,6 @@
 import { Box, Group, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
+import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface TypingIndicatorProps {
@@ -23,12 +24,12 @@ interface TypingIndicatorProps {
  */
 export default function TypingIndicator({ assistantName }: TypingIndicatorProps) {
   const { t } = useTranslation();
-  const name = assistantName?.trim();
+  const name = resolveAssistantName(assistantName);
 
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
-        {name || t("AI agent")}
+        {name ?? t("AI agent")}
       </Text>
       <Group gap={8} align="center">
         <span className={classes.typingDots} aria-hidden="true">
