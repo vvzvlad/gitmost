@@ -114,14 +114,18 @@ export default function MessageItem({
       {(() => {
         const errorText = (message.metadata as { error?: string } | undefined)?.error;
         if (!errorText) return null;
+        // Same classified-error banner as the live chat: a heading naming the
+        // cause plus a one-line detail.
+        const errorView = describeChatError(errorText, t);
         return (
           <Alert
             variant="light"
             color="red"
             icon={<IconAlertTriangle size={16} />}
             mt={4}
+            title={errorView.title}
           >
-            {describeChatError(errorText, t)}
+            {errorView.detail}
           </Alert>
         );
       })()}
