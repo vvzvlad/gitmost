@@ -24,8 +24,12 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-width: 140px;
-  max-width: 200px;
+  /* Grow to fill the row so cards use the available window width instead of
+     leaving large side gaps; the flex-basis sets how many fit per row before
+     wrapping (≈2 columns at the default window width, more as it widens). */
+  flex: 1 1 240px;
+  min-width: 200px;
+  max-width: 360px;
   min-height: 90px;
   padding: 12px 10px;
   border-radius: var(--mantine-radius-md);
