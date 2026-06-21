@@ -22,10 +22,58 @@ describe('describeProviderError', () => {
     expect(describeProviderError('boom')).toBe('boom');
   });
 
-  it('formats statusCode + message', () => {
+  it('formats statusCode + message (non-classified status)', () => {
+    // 500 is not in the well-known status map, so no label is prepended and the
+    // plain "<status>: <message>" path is exercised.
     expect(
-      describeProviderError({ statusCode: 401, message: 'Unauthorized' }),
-    ).toBe('401: Unauthorized');
+      describeProviderError({ statusCode: 500, message: 'Server error' }),
+    ).toBe('500: Server error');
+  });
+
+  it('prepends an auth label for 401 (the real cause behind "User not found.")', () => {
+    const out = describeProviderError({
+      statusCode: 401,
+      message: 'User not found.',
+    });
+    expect(out).toBe(
+      'AI provider authentication failed (invalid or missing API key) — 401: User not found.',
+    );
+    // The provider status is still present after the label.
+    expect(out).toContain('401:');
+    // With a response body, the snippet is appended AFTER the label/detail.
+    const withBody = describeProviderError({
+      statusCode: 401,
+      message: 'User not found.',
+      responseBody: '{"error":{"message":"User not found.","code":401}}',
+    });
+    expect(
+      withBody.startsWith(
+        'AI provider authentication failed (invalid or missing API key) — 401: User not found. | response body: ',
+      ),
+    ).toBe(true);
+    expect(withBody).toContain('| response body:');
+  });
+
+  it('prepends the same auth label for 403', () => {
+    expect(
+      describeProviderError({ statusCode: 403, message: 'Forbidden' }),
+    ).toBe(
+      'AI provider authentication failed (invalid or missing API key) — 403: Forbidden',
+    );
+  });
+
+  it('prepends a billing label for 402', () => {
+    expect(
+      describeProviderError({ statusCode: 402, message: 'Payment Required' }),
+    ).toBe(
+      'AI provider rejected the request: insufficient credits or quota — 402: Payment Required',
+    );
+  });
+
+  it('prepends a rate-limit label for 429', () => {
+    expect(
+      describeProviderError({ statusCode: 429, message: 'Too Many Requests' }),
+    ).toBe('AI provider rate limit exceeded — 429: Too Many Requests');
   });
 
   it('falls back to message when there is no statusCode', () => {
