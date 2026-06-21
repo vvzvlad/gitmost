@@ -287,6 +287,20 @@ The release tag (`vX.Y.Z`) is created on **`main`'s release merge commit**, and 
 
 Back-merging `main → develop` (step 7) pulls the tagged release commit into `develop`'s ancestry, after which develop builds correctly show `vX.Y.Z-NNN-g<hash>`. If `develop` already drifted (release tagged but never back-merged), just run step 7 now — no new tag is needed.
 
+##### The tag must also exist on the remote that CI builds from (multi-remote gotcha)
+
+`git describe` names a tag **ref**, not just a commit — so the back-merge is *necessary but not sufficient*. The develop image is built by GitHub Actions (`develop.yml`, `actions/checkout` with `fetch-depth: 0`, then `git describe --tags --always`), so the version it prints depends on which tags exist **on the `github` remote**, not on your local clone or on `gitea`.
+
+This repo has two writable remotes — `gitea` (canonical, where commits land) and `github` (where the `:develop` and release images are built) — plus `upstream` (docmost, never push). **`git push <branch>` does NOT push tags**; tags must be pushed explicitly and *to each remote separately*. A release tag that only lives on `gitea` is invisible to the GitHub Actions build: even with the tagged commit fully in `develop`'s history (step 7 done), `git describe` on the GitHub runner falls back to the previous tag it *does* have, so the develop image keeps showing e.g. `v0.91.0-NNN` while `git describe` locally already says `v0.93.0-NN`.
+
+Fix / checklist when develop still shows the old version after a back-merge:
+
+1. Confirm the tag is missing on github: `git ls-remote --tags github` (compare with `gitea`).
+2. Push it there: `git push github vX.Y.Z` (and `git push gitea vX.Y.Z` if it is missing on gitea too). Note: pushing a `v*` tag to `github` also triggers `release.yml` (multi-arch GHCR images + draft Release) — expected, but be aware.
+3. Re-run the develop build (`gh workflow run Develop`, or push any commit to `develop`) so `git describe` re-resolves with the tag now present.
+
+(The `git push origin ...` in steps 6–7 above is shorthand — there is no `origin` remote here; substitute `gitea` **and** `github` as appropriate, and always push release tags to both.)
+
 ## Planning docs
 
 `docs/*.md` hold design plans for in-progress / planned features (mobile app, offline sync, RAG improvements, voice dictation). Arbitrary HTML embed has **shipped** — it renders inside a sandboxed iframe and, when the `htmlEmbed` workspace toggle is on, is insertable by any member (no longer admin-only); turning the toggle off hides/stops serving existing embeds on public share pages. `docs/backlog/*.md` track known issues / follow-ups (e.g. AI-chat review follow-ups). Consult the relevant plan before working on one of those areas.
