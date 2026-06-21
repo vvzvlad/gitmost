@@ -23,13 +23,25 @@ import {
   IAiRoleUpdate,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 
-// Supported drivers for the optional model override (mirrors server AI_DRIVERS).
-// "" => use the workspace default driver/model.
-const DRIVER_OPTIONS = [
+// Source of truth: the server `AI_DRIVERS` list in
+// apps/server/src/integrations/ai/ai.types.ts. The client cannot import that
+// constant at build time (separate build target), so it is mirrored here and a
+// drift contract test (ai-agent-role-form.drivers.test.ts) fails if the two
+// lists diverge. Keep this in sync when adding/removing a server driver.
+export const AI_DRIVER_VALUES = ["openai", "gemini", "ollama"] as const;
+export type AiDriverValue = (typeof AI_DRIVER_VALUES)[number];
+
+const DRIVER_LABELS: Record<AiDriverValue, string> = {
+  openai: "OpenAI",
+  gemini: "Gemini",
+  ollama: "Ollama",
+};
+
+// Select options for the optional model override. "" => use the workspace
+// default driver/model.
+export const DRIVER_OPTIONS = [
   { value: "", label: "Workspace default" },
-  { value: "openai", label: "OpenAI" },
-  { value: "gemini", label: "Gemini" },
-  { value: "ollama", label: "Ollama" },
+  ...AI_DRIVER_VALUES.map((value) => ({ value, label: DRIVER_LABELS[value] })),
 ];
 
 const formSchema = z.object({
@@ -38,7 +50,7 @@ const formSchema = z.object({
   description: z.string(),
   instructions: z.string().min(1),
   // "" => no driver override (use the workspace driver).
-  driver: z.enum(["", "openai", "gemini", "ollama"]),
+  driver: z.enum(["", ...AI_DRIVER_VALUES]),
   chatModel: z.string(),
   enabled: z.boolean(),
 });
