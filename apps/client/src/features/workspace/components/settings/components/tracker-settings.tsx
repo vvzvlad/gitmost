@@ -78,6 +78,7 @@ export default function TrackerSettings() {
           autosize
           minRows={6}
           maxRows={20}
+          aria-label={t("Analytics / tracker")}
           value={value}
           onChange={(e) => setValue(e.currentTarget.value)}
           placeholder={t("<script>...</script>")}

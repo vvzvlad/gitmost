@@ -22,20 +22,42 @@ export function buildSandboxSrcdoc(source: string): string {
   const bootstrap = `
 <script>
   (function () {
-    function reportHeight() {
+    var lastSent = -1;
+    var scheduled = false;
+    function measure() {
       var doc = document.documentElement;
       var body = document.body;
-      var height = Math.max(
+      return Math.max(
         doc ? doc.scrollHeight : 0,
         body ? body.scrollHeight : 0
       );
+    }
+    function flush() {
+      scheduled = false;
+      var height = measure();
+      // Only report when the height actually changed by more than 1px. This
+      // damps the iframe self-measure feedback loop: content sized to the iframe
+      // viewport would otherwise oscillate as the parent resizes the frame in
+      // response to each report.
+      if (Math.abs(height - lastSent) <= 1) return;
+      lastSent = height;
       parent.postMessage(
         { type: ${JSON.stringify(HTML_EMBED_HEIGHT_MESSAGE)}, height: height },
         "*"
       );
     }
+    function reportHeight() {
+      if (scheduled) return;
+      scheduled = true;
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(flush);
+      } else {
+        flush();
+      }
+    }
     window.addEventListener("load", reportHeight);
-    // Report immediately too, in case load already fired.
+    // Report an initial height now (runs during parse, before load/images
+    // settle); the load handler and ResizeObserver refine it as content changes.
     reportHeight();
     if (typeof ResizeObserver !== "undefined") {
       try {

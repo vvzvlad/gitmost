@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the workspace HTML-embed toggle is on, can be inserted by any member
   (previously admin-only). Turning the toggle off hides existing embeds and
   stops serving them on public share pages.
+- Remove the server-side role-based stripping of HTML-embed blocks from the
+  write paths (collab/REST/MCP, page create/duplicate, import, transclusion
+  unsync); sandboxing makes per-write gating unnecessary. The only remaining
+  server-side strip is the public-share read path, which still honors the
+  workspace HTML-embed toggle.
 
 ## [0.91.0] - 2026-06-18
 

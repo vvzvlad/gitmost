@@ -62,21 +62,24 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   const [draft, setDraft] = useState<string>(source || "");
   const [draftHeight, setDraftHeight] = useState<number | "">(height ?? "");
 
-  // Auto-resize height tracked in state (used only when no fixed height is set).
-  const [autoHeight, setAutoHeight] = useState<number>(
-    typeof height === "number" && Number.isFinite(height)
-      ? height
-      : DEFAULT_IFRAME_HEIGHT,
-  );
+  // True when the author pinned an explicit height; otherwise we auto-resize to
+  // the iframe's reported content height.
+  const hasFixedHeight = typeof height === "number" && Number.isFinite(height);
+
+  // Auto-resize height tracked in state. Seeded to the default and updated from
+  // the iframe's postMessage reports (see effect below) regardless of mode, so
+  // switching a fixed-height embed back to auto immediately reflects the last
+  // reported content height instead of staying pinned to the old fixed value.
+  const [autoHeight, setAutoHeight] = useState<number>(DEFAULT_IFRAME_HEIGHT);
 
   const srcdoc = useMemo(() => buildSandboxSrcdoc(source || ""), [source]);
 
   // Auto-resize: accept height messages ONLY from this iframe's own content
   // window. The sandboxed srcdoc has an opaque ("null") origin, so we cannot
-  // match by event.origin — we match by event.source instead. No-op when a
-  // fixed height is configured.
+  // match by event.origin — we match by event.source instead. We track the
+  // reported height even while a fixed height is in effect, so toggling back to
+  // auto shows the current content height with no iframe reload.
   useEffect(() => {
-    if (typeof height === "number" && Number.isFinite(height)) return;
     function onMessage(event: MessageEvent) {
       if (event.source !== iframeRef.current?.contentWindow) return;
       const data = event.data as { type?: string; height?: number };
@@ -87,12 +90,9 @@ export default function HtmlEmbedView(props: NodeViewProps) {
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [height]);
+  }, []);
 
-  const effectiveHeight =
-    typeof height === "number" && Number.isFinite(height)
-      ? clampHeight(height)
-      : autoHeight;
+  const effectiveHeight = hasFixedHeight ? clampHeight(height) : autoHeight;
 
   const openEditor = useCallback(() => {
     setDraft(source || "");
@@ -157,7 +157,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
           srcDoc={srcdoc}
           title={t("HTML embed")}
           referrerPolicy="no-referrer"
-          style={{ width: "100%", border: "none", height: effectiveHeight }}
+          style={{ height: effectiveHeight }}
         />
       ) : canEdit ? (
         <div className={classes.htmlEmbedPlaceholder} onClick={openEditor}>
