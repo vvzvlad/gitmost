@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the HTML embed node view. Kept out of the React component so
- * the sandbox srcdoc builder and the execution/edit policy can be unit-tested
+ * the sandbox srcdoc builder and the render/edit policy can be unit-tested
  * against a bare environment with no Tiptap/Mantine providers.
  */
 
@@ -51,7 +51,7 @@ export function buildSandboxSrcdoc(source: string): string {
 }
 
 /**
- * Execution policy split by editor mode:
+ * Render policy split by editor mode:
  *  - READ-ONLY / public-share view: the SERVER already decided whether to
  *    include the embed (it strips htmlEmbed from shared content when the
  *    workspace master toggle is OFF). An anonymous viewer has no workspace and
@@ -60,7 +60,7 @@ export function buildSandboxSrcdoc(source: string): string {
  *  - EDITABLE editor: gate on the per-workspace master toggle so an author sees
  *    the inert placeholder when the feature is OFF.
  */
-export function shouldExecute(
+export function shouldRender(
   isEditable: boolean,
   featureEnabled: boolean,
 ): boolean {

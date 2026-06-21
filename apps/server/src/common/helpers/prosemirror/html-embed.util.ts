@@ -42,7 +42,9 @@ export function stripHtmlEmbedNodes<T = JSONContent>(pmJson: T): T {
 /**
  * Returns true if the document contains at least one `htmlEmbed` node anywhere
  * in its tree. Useful to decide whether a strip pass on the share read path
- * actually changed anything.
+ * actually changed anything. After the write-path role gate removal this is no
+ * longer called by production code; it is retained as a test-only assertion
+ * helper (and a detection primitive should a future read path need it).
  */
 export function hasHtmlEmbedNode(pmJson: unknown): boolean {
   if (!pmJson || typeof pmJson !== 'object') {

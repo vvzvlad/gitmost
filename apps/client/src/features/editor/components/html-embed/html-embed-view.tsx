@@ -25,14 +25,18 @@ import {
   buildSandboxSrcdoc,
   canEdit as computeCanEdit,
   HTML_EMBED_HEIGHT_MESSAGE,
-  shouldExecute as computeShouldExecute,
-} from "./render-raw-html.ts";
+  shouldRender as computeShouldRender,
+} from "./html-embed-sandbox.ts";
 
 // Sane bounds for the auto-resized iframe so a runaway embed cannot blow up the
 // page layout, and a sensible default before the first height message arrives.
 const MIN_IFRAME_HEIGHT = 40;
 const MAX_IFRAME_HEIGHT = 4000;
 const DEFAULT_IFRAME_HEIGHT = 150;
+
+// Clamp a reported/configured height into the sane iframe bounds.
+const clampHeight = (h: number) =>
+  Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, h));
 
 export default function HtmlEmbedView(props: NodeViewProps) {
   const { t } = useTranslation();
@@ -48,7 +52,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   const workspace = useAtomValue(workspaceAtom);
   const htmlEmbedEnabled = workspace?.settings?.htmlEmbed === true;
 
-  const shouldExecute = computeShouldExecute(
+  const shouldRender = computeShouldRender(
     editor.isEditable,
     htmlEmbedEnabled,
   );
@@ -60,7 +64,9 @@ export default function HtmlEmbedView(props: NodeViewProps) {
 
   // Auto-resize height tracked in state (used only when no fixed height is set).
   const [autoHeight, setAutoHeight] = useState<number>(
-    height ?? DEFAULT_IFRAME_HEIGHT,
+    typeof height === "number" && Number.isFinite(height)
+      ? height
+      : DEFAULT_IFRAME_HEIGHT,
   );
 
   const srcdoc = useMemo(() => buildSandboxSrcdoc(source || ""), [source]);
@@ -70,24 +76,22 @@ export default function HtmlEmbedView(props: NodeViewProps) {
   // match by event.origin — we match by event.source instead. No-op when a
   // fixed height is configured.
   useEffect(() => {
-    if (typeof height === "number") return;
+    if (typeof height === "number" && Number.isFinite(height)) return;
     function onMessage(event: MessageEvent) {
       if (event.source !== iframeRef.current?.contentWindow) return;
       const data = event.data as { type?: string; height?: number };
       if (data?.type !== HTML_EMBED_HEIGHT_MESSAGE) return;
       const next = Number(data.height);
       if (!Number.isFinite(next)) return;
-      setAutoHeight(
-        Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, next)),
-      );
+      setAutoHeight(clampHeight(next));
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [height]);
 
   const effectiveHeight =
-    typeof height === "number"
-      ? Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, height))
+    typeof height === "number" && Number.isFinite(height)
+      ? clampHeight(height)
       : autoHeight;
 
   const openEditor = useCallback(() => {
@@ -130,11 +134,11 @@ export default function HtmlEmbedView(props: NodeViewProps) {
         </div>
       )}
 
-      {!shouldExecute ? (
+      {!shouldRender ? (
         // Feature disabled for this workspace AND we're in the editable editor:
         // render a neutral placeholder so an existing embed is visibly inert for
         // the author. Read-only / share viewers never hit this branch
-        // (`shouldExecute` is always true there) — they render exactly the
+        // (`shouldRender` is always true there) — they render exactly the
         // source the server chose to serve.
         <div className={classes.htmlEmbedPlaceholder}>
           <IconCode size={18} />
@@ -151,7 +155,7 @@ export default function HtmlEmbedView(props: NodeViewProps) {
           className={classes.htmlEmbedFrame}
           sandbox="allow-scripts allow-popups allow-forms"
           srcDoc={srcdoc}
-          title="HTML embed"
+          title={t("HTML embed")}
           referrerPolicy="no-referrer"
           style={{ width: "100%", border: "none", height: effectiveHeight }}
         />

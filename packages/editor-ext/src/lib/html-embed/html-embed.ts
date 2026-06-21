@@ -97,7 +97,12 @@ export const HtmlEmbed = Node.create<HtmlEmbedOptions>({
         default: null,
         parseHTML: (el) => {
           const v = el.getAttribute("data-height");
-          return v ? parseInt(v, 10) : null;
+          if (!v) return null;
+          const n = parseInt(v, 10);
+          // A non-numeric data-height (e.g. crafted/corrupted import) must not
+          // become NaN: NaN is typeof "number" and would disable auto-resize and
+          // yield an unclamped iframe height downstream. Treat it as auto (null).
+          return Number.isFinite(n) ? n : null;
         },
         renderHTML: (attrs: HtmlEmbedAttributes) =>
           attrs.height ? { "data-height": String(attrs.height) } : {},

@@ -3,8 +3,8 @@ import {
   buildSandboxSrcdoc,
   canEdit,
   HTML_EMBED_HEIGHT_MESSAGE,
-  shouldExecute,
-} from "./render-raw-html";
+  shouldRender,
+} from "./html-embed-sandbox";
 
 describe("buildSandboxSrcdoc", () => {
   it("embeds the user source verbatim", () => {
@@ -32,19 +32,19 @@ describe("buildSandboxSrcdoc", () => {
   });
 });
 
-describe("shouldExecute (render policy)", () => {
+describe("shouldRender (render policy)", () => {
   it("read-only renders regardless of the workspace toggle", () => {
     // isEditable=false → the server already gated the content.
-    expect(shouldExecute(false, false)).toBe(true);
-    expect(shouldExecute(false, true)).toBe(true);
+    expect(shouldRender(false, false)).toBe(true);
+    expect(shouldRender(false, true)).toBe(true);
   });
 
   it("editable + toggle OFF does NOT render", () => {
-    expect(shouldExecute(true, false)).toBe(false);
+    expect(shouldRender(true, false)).toBe(false);
   });
 
   it("editable + toggle ON renders", () => {
-    expect(shouldExecute(true, true)).toBe(true);
+    expect(shouldRender(true, true)).toBe(true);
   });
 });
 

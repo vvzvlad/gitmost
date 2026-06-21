@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, Res } from '@nestjs/common';
+import { Controller, Get, Logger, Param, Req, Res } from '@nestjs/common';
 import { ShareService } from './share.service';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { join } from 'path';
@@ -11,6 +11,8 @@ import { htmlEscape } from '../../common/helpers/html-escaper';
 
 @Controller('share')
 export class ShareSeoController {
+  private readonly logger = new Logger(ShareSeoController.name);
+
   constructor(
     private readonly shareService: ShareService,
     private workspaceRepo: WorkspaceRepo,
@@ -96,10 +98,20 @@ export class ShareSeoController {
       // block itself is sandboxed and is the safe surface for everyone else.
       const trackerHead = (workspace?.settings as any)?.trackerHead;
       if (typeof trackerHead === 'string' && trackerHead.trim().length > 0) {
-        transformedHtml = transformedHtml.replace(
-          '</head>',
-          `${trackerHead}\n</head>`,
-        );
+        if (transformedHtml.includes('</head>')) {
+          // Function replacer: the snippet is admin-authored trusted content and
+          // must be injected verbatim. A string replacement would interpret `$&`,
+          // `$'`, `` $` `` and `$$` inside it as substitution patterns and mangle
+          // the tracker; a function return value is inserted literally.
+          transformedHtml = transformedHtml.replace(
+            '</head>',
+            () => `${trackerHead}\n</head>`,
+          );
+        } else {
+          this.logger.warn(
+            'trackerHead is configured but no </head> marker was found in the share index HTML; tracker snippet was not injected.',
+          );
+        }
       }
 
       res.type('text/html').send(transformedHtml);

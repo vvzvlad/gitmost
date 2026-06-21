@@ -46,9 +46,10 @@ export default function TrackerSettings() {
       });
       notifications.show({ message: t("Updated successfully") });
     } catch (err) {
-      console.log(err);
+      console.error("Failed to update tracker settings", err);
       notifications.show({
-        message: t("Failed to update data"),
+        message:
+          (err as any)?.response?.data?.message ?? t("Failed to update data"),
         color: "red",
       });
     } finally {

@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Admin-only "Analytics / tracker" workspace setting: a raw HTML/JS snippet
+  injected into the `<head>` of public share pages only (for analytics such as
+  Google Analytics or Yandex.Metrika).
+
+### Changed
+
+- HTML embed blocks now render inside a sandboxed iframe (separate origin) and,
+  when the workspace HTML-embed toggle is on, can be inserted by any member
+  (previously admin-only). Turning the toggle off hides existing embeds and
+  stops serving them on public share pages.
+
 ## [0.91.0] - 2026-06-18
 
 Gitmost is a community-focused fork of Docmost. This release drops the

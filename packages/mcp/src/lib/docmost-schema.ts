@@ -797,6 +797,60 @@ const Embed = Node.create({
   },
 });
 
+/**
+ * Docmost raw HTML embed. Block atom; the client renders `source` inside a
+ * sandboxed iframe. The MCP server never renders it — it only needs the
+ * schema to accept and carry the node so a fromYdoc -> transform -> toYdoc
+ * round-trip does not throw "Unknown node type: htmlEmbed". Mirrors the
+ * @docmost/editor-ext node name, attribute keys and flags; keep in sync when
+ * the editor-ext htmlEmbed schema changes.
+ *
+ * NOTE: unlike the canonical editor-ext node, `data-source` here is mapped as
+ * plain text rather than base64-encoded. That is intentional: the MCP write
+ * path carries the node through Yjs (fromYdoc -> toYdoc) on its JSON `source`
+ * attribute and never invokes parseHTML/renderHTML, and htmlEmbed is not
+ * produced from the markdown/HTML (generateJSON) path. If a future HTML path
+ * for htmlEmbed is added here, this mapping must adopt editor-ext's base64
+ * encode/decode to avoid double-encoding `source`.
+ */
+const HtmlEmbed = Node.create({
+  name: "htmlEmbed",
+  group: "block",
+  inline: false,
+  isolating: true,
+  atom: true,
+  defining: true,
+  draggable: true,
+  addAttributes() {
+    return {
+      source: {
+        default: "",
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-source") ?? "",
+        renderHTML: (attrs: Record<string, any>) => ({
+          "data-source": attrs.source ?? "",
+        }),
+      },
+      height: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-height");
+          if (!v) return null;
+          const n = parseInt(v, 10);
+          return Number.isFinite(n) ? n : null;
+        },
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.height != null ? { "data-height": String(attrs.height) } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-type="htmlEmbed"]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", { "data-type": "htmlEmbed", ...HTMLAttributes }, 0];
+  },
+});
+
 /** Shared attribute set for drawio/excalidraw diagram nodes. */
 const diagramAttributes = () => ({
   src: {
@@ -1158,6 +1212,7 @@ export const docmostExtensions = [
   Video,
   Youtube,
   Embed,
+  HtmlEmbed,
   Drawio,
   Excalidraw,
   Columns,
