@@ -209,6 +209,71 @@ describe('FailedLoginLimiter', () => {
     expect(lim.isBlocked(k, 1000)).toBe(false);
   });
 
+  describe('tryReserve (atomic check-and-increment, brute-force race fix)', () => {
+    it('allows exactly `threshold` reserves then blocks within the window', () => {
+      const lim = new FailedLoginLimiter(3, 1000);
+      const k = 'ip:1.2.3.4';
+      // threshold (3) successful reserves return true...
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      // ...the next one is blocked (count is now at threshold).
+      expect(lim.tryReserve(k, 0)).toBe(false);
+      // A blocked reserve does NOT increment, so isBlocked stays true at threshold.
+      expect(lim.isBlocked(k, 0)).toBe(true);
+    });
+
+    it('reserves again after the window rolls over', () => {
+      const lim = new FailedLoginLimiter(2, 1000);
+      const k = 'ip:1.2.3.4';
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      expect(lim.tryReserve(k, 0)).toBe(false); // blocked in this window
+      // Past windowMs (>= is inclusive): a fresh bucket, so reserve succeeds again.
+      expect(lim.tryReserve(k, 1000)).toBe(true);
+    });
+
+    it('reset releases the reservation (reserve succeeds again after reset)', () => {
+      const lim = new FailedLoginLimiter(1, 1000);
+      const k = 'ip:1.2.3.4';
+      expect(lim.tryReserve(k, 0)).toBe(true);
+      expect(lim.tryReserve(k, 0)).toBe(false); // at threshold 1 -> blocked
+      lim.reset(k);
+      expect(lim.tryReserve(k, 0)).toBe(true); // reset cleared the bucket
+    });
+
+    it('release undoes one reservation without clearing accumulated failures', () => {
+      const lim = new FailedLoginLimiter(2, 1000);
+      const k = 'email:victim@example.com';
+      expect(lim.tryReserve(k, 0)).toBe(true); // count 1
+      expect(lim.tryReserve(k, 0)).toBe(true); // count 2 == threshold
+      expect(lim.isBlocked(k, 0)).toBe(true);
+      lim.release(k, 0); // undo exactly one -> count 1
+      expect(lim.isBlocked(k, 0)).toBe(false);
+      expect(lim.tryReserve(k, 0)).toBe(true); // count 2 again
+      expect(lim.tryReserve(k, 0)).toBe(false); // blocked: prior failures survived
+    });
+
+    it('RACE: threshold+1 SYNCHRONOUS reserves (no await) yield only `threshold` trues', () => {
+      // Simulate N concurrent /mcp requests hitting the check-and-increment with
+      // zero interleaved awaits — the very scenario the old isBlocked()-then-
+      // recordFailure() flow lost to (all saw count=0, all ran bcrypt). Because
+      // tryReserve folds check+increment into one synchronous step, only the
+      // first `threshold` callers win; the (threshold+1)-th is rejected up front.
+      const threshold = 5;
+      const lim = new FailedLoginLimiter(threshold, 60_000);
+      const k = 'email:victim@example.com';
+      const results: boolean[] = [];
+      for (let i = 0; i < threshold + 1; i++) {
+        results.push(lim.tryReserve(k, 0));
+      }
+      expect(results.filter((r) => r === true)).toHaveLength(threshold);
+      expect(results.filter((r) => r === false)).toHaveLength(1);
+      // The rejected one is the LAST: the first `threshold` all reserved.
+      expect(results[threshold]).toBe(false);
+    });
+  });
+
   describe('sweep (expired-bucket eviction, injectable clock)', () => {
     // sweep() drops buckets whose windowStart is older than windowMs so
     // never-revisited keys cannot accumulate forever. It takes an injectable
@@ -404,6 +469,44 @@ describe('resolveMcpSessionConfig', () => {
     await expect(
       resolveMcpSessionConfig(basicHeader('user@example.com', 'wrong'), deps),
     ).rejects.toThrow(/Too many failed MCP login attempts/);
+  });
+
+  it('concurrent Basic requests cannot bypass the limiter (atomic reserve before bcrypt)', async () => {
+    // The race the fix closes: fire threshold+ concurrent /mcp Basic logins for
+    // one email. Each login() (bcrypt-bearing) resolves only after all requests
+    // have entered the flow, so under the OLD check-then-act code every request
+    // would pass the read-only isBlocked() pre-check (count=0) and run bcrypt.
+    // With the atomic reserve, only `threshold` requests get past the synchronous
+    // tryReserve; the rest are throttled BEFORE login() is invoked.
+    const threshold = 5;
+    const limiter = new FailedLoginLimiter(threshold, 60_000);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const login = jest.fn().mockImplementation(async () => {
+      await gate; // hold every in-flight login open until we release the gate
+      throw new UnauthorizedException('Email or password does not match');
+    });
+    const total = threshold + 4;
+    const calls = Array.from({ length: total }, () =>
+      resolveMcpSessionConfig(
+        basicHeader('victim@example.com', 'wrong'),
+        makeDeps({ login, limiter, clientIp: '10.0.0.1' }),
+      ).then(
+        () => 'resolved' as const,
+        (e) => (/Too many failed/.test(e.message) ? 'throttled' : 'badcreds'),
+      ),
+    );
+    release();
+    const outcomes = await Promise.all(calls);
+    // Only `threshold` requests ever reached bcrypt/login(); the extras were
+    // rejected up front by the atomic reserve, never invoking login().
+    expect(login).toHaveBeenCalledTimes(threshold);
+    expect(outcomes.filter((o) => o === 'badcreds')).toHaveLength(threshold);
+    expect(outcomes.filter((o) => o === 'throttled')).toHaveLength(
+      total - threshold,
+    );
   });
 
   it('Bearer -> verifies as ACCESS and returns a getToken config', async () => {
@@ -604,6 +707,62 @@ describe('resolveMcpSessionConfig', () => {
       ),
     ).rejects.toThrow(/use a Bearer access token/);
     expect(login).not.toHaveBeenCalled();
+  });
+
+  it('SSO/MFA gate rejection does NOT burn the limiter budget (no token, no count)', async () => {
+    // Follow-up to #83: the brute-force keys are reserved at the TOP of the
+    // Basic flow (before any await) to close the concurrency race. But an
+    // enforceBasicGate rejection is a BUSINESS error (SSO enforced / MFA
+    // required), NOT a password-guess signal, so it must release the reservation
+    // — otherwise an attacker could exhaust an SSO/MFA victim's per-email
+    // backstop by firing gate-rejected requests with any password (no bcrypt
+    // even runs). Drive threshold+1 such requests and confirm none are blocked:
+    // every one reaches the gate (proving the email bucket never filled).
+    const threshold = 3;
+    const limiter = new FailedLoginLimiter(threshold, 60_000);
+    const login = jest.fn().mockResolvedValue('issued-user-jwt');
+    const enforceBasicGate = jest
+      .fn()
+      .mockRejectedValue(
+        new UnauthorizedException('This workspace has enforced SSO login.'),
+      );
+    for (let i = 0; i < threshold + 1; i++) {
+      await expect(
+        resolveMcpSessionConfig(
+          basicHeader('victim@example.com', `pw-${i}`),
+          makeDeps({ login, enforceBasicGate, limiter }),
+        ),
+      ).rejects.toThrow(/enforced SSO/);
+    }
+    // The gate fired on every attempt (the limiter never throttled before it),
+    // and login() never ran: the victim's budget was preserved.
+    expect(enforceBasicGate).toHaveBeenCalledTimes(threshold + 1);
+    expect(login).not.toHaveBeenCalled();
+    // The global per-email backstop is still fully under budget afterwards.
+    expect(limiter.isBlocked('email:victim@example.com')).toBe(false);
+  });
+
+  it('missing-workspace config error does NOT burn the limiter budget', async () => {
+    // findWorkspace() returning undefined is a CONFIG error, not a brute-force
+    // signal, so (like the gate) it must release the up-front reservation. With
+    // threshold 1, a counted attempt would throttle the very next one; instead
+    // every attempt reaches findWorkspace() and surfaces the same config 401.
+    const limiter = new FailedLoginLimiter(1, 60_000);
+    const findWorkspace = jest.fn().mockResolvedValue(undefined);
+    const login = jest.fn().mockResolvedValue('issued-user-jwt');
+    const deps = () =>
+      makeDeps({ findWorkspace, login, limiter, clientIp: '10.0.0.42' });
+    await expect(
+      resolveMcpSessionConfig(basicHeader('user@example.com', 'pw'), deps()),
+    ).rejects.toThrow(/No workspace is configured/);
+    // If the first attempt had counted, threshold 1 would now throttle. Instead
+    // the second attempt must reach findWorkspace() again (same config error).
+    await expect(
+      resolveMcpSessionConfig(basicHeader('user@example.com', 'pw'), deps()),
+    ).rejects.toThrow(/No workspace is configured/);
+    expect(findWorkspace).toHaveBeenCalledTimes(2);
+    expect(login).not.toHaveBeenCalled();
+    expect(limiter.isBlocked('email:user@example.com')).toBe(false);
   });
 
   it('Bearer path is NOT subjected to the Basic SSO/MFA gate', async () => {
