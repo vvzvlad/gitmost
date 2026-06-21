@@ -198,6 +198,30 @@ export function htmlEmbedAllowed(
 }
 
 /**
+ * Strip htmlEmbed nodes unless the (feature-enabled AND role-allowed) gate
+ * passes. Returns the possibly-stripped doc. The caller resolves featureEnabled
+ * (from workspace settings) and role (actor) itself — those legitimately differ
+ * per call-site (e.g. share path uses role=null) — this helper owns only the
+ * has-check + AND + strip + optional onStrip callback.
+ *
+ * Centralizes the 4-step write-path ritual (resolve role -> resolve
+ * featureEnabled -> htmlEmbedAllowed AND -> stripHtmlEmbedNodes) so the plain
+ * strip-all call-sites share one tested decision. Sites with CUSTOM strip logic
+ * (e.g. the collab persist path's preserve-admin variant) keep their own code.
+ */
+export function stripHtmlEmbedIfNotAllowed<T>(
+  json: T,
+  opts: { featureEnabled: boolean; role: string | null | undefined; onStrip?: () => void },
+): T {
+  if (htmlEmbedAllowed(opts.featureEnabled, opts.role)) return json;
+  if (hasHtmlEmbedNode(json)) {
+    opts.onStrip?.();
+    return stripHtmlEmbedNodes(json);
+  }
+  return json;
+}
+
+/**
  * Read the workspace-level htmlEmbed feature toggle from a workspace's settings
  * jsonb. ABSENT/non-true => OFF (the default). Kept here so every server write
  * path resolves the toggle the same way.

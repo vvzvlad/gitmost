@@ -32,10 +32,8 @@ import {
   removeMarkTypeFromDoc,
 } from '../../../common/helpers/prosemirror/utils';
 import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import {
@@ -157,15 +155,14 @@ export class PageService {
       const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
         (await this.workspaceRepo.findById(workspaceId))?.settings,
       );
-      if (
-        !htmlEmbedAllowed(htmlEmbedEnabled, callerRole) &&
-        hasHtmlEmbedNode(prosemirrorJson)
-      ) {
-        this.logger.warn(
-          `Stripping htmlEmbed node(s) from page creation by user ${userId} (space ${createPageDto.spaceId})`,
-        );
-        prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-      }
+      prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
+        featureEnabled: htmlEmbedEnabled,
+        role: callerRole,
+        onStrip: () =>
+          this.logger.warn(
+            `Stripping htmlEmbed node(s) from page creation by user ${userId} (space ${createPageDto.spaceId})`,
+          ),
+      });
 
       content = prosemirrorJson;
       textContent = jsonToText(prosemirrorJson);
@@ -782,15 +779,14 @@ export class PageService {
         // that contains an embed into a new page authored by them. Strip every
         // htmlEmbed node from each duplicated page when the duplicating user is
         // not an admin, BEFORE computing textContent/ydoc/insert.
-        if (
-          !htmlEmbedAllowed(htmlEmbedEnabled, authUser.role) &&
-          hasHtmlEmbedNode(prosemirrorJson)
-        ) {
-          this.logger.warn(
-            `Stripping htmlEmbed node(s) from page duplication by user ${authUser.id} (source page ${page.id})`,
-          );
-          prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-        }
+        prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
+          featureEnabled: htmlEmbedEnabled,
+          role: authUser.role,
+          onStrip: () =>
+            this.logger.warn(
+              `Stripping htmlEmbed node(s) from page duplication by user ${authUser.id} (source page ${page.id})`,
+            ),
+        });
 
         // Add "Copy of " prefix to the root page title only for duplicates in same space
         let title = page.title;

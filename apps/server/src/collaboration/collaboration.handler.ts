@@ -9,10 +9,8 @@ import { setYjsMark, updateYjsMarkAttribute, YjsSelection } from './yjs.util';
 import * as Y from 'yjs';
 import { User } from '@docmost/db/types/entity.types';
 import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
 } from '../common/helpers/prosemirror/html-embed.util';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
@@ -106,14 +104,14 @@ export class CollaborationHandler {
         const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
           (await this.workspaceRepo.findById(user?.workspaceId))?.settings,
         );
-        if (!htmlEmbedAllowed(htmlEmbedEnabled, user?.role)) {
-          if (hasHtmlEmbedNode(prosemirrorJson)) {
+        prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
+          featureEnabled: htmlEmbedEnabled,
+          role: user?.role,
+          onStrip: () =>
             this.logger.warn(
               `Stripping htmlEmbed node(s) from update by user ${user?.id} on ${documentName}`,
-            );
-            prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-          }
-        }
+            ),
+        });
 
         await this.withYdocConnection(
           hocuspocus,

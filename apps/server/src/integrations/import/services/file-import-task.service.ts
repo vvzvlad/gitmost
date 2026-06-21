@@ -21,10 +21,8 @@ import { FileTask, InsertablePage } from '@docmost/db/types/entity.types';
 import { markdownToHtml } from '@docmost/editor-ext';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
 import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
@@ -176,10 +174,6 @@ export class FileImportTaskService {
     // an admin/owner. OFF (default) => stripped for everyone.
     const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
       (await this.workspaceRepo.findById(fileTask.workspaceId))?.settings,
-    );
-    const importerCanAuthorHtmlEmbed = htmlEmbedAllowed(
-      htmlEmbedEnabled,
-      importingUser?.role,
     );
 
     const pagesMap = new Map<string, ImportPageNode>();
@@ -534,15 +528,16 @@ export class FileImportTaskService {
 
             // SECURITY (Variant C admin gate): strip htmlEmbed nodes from pages
             // imported by a non-admin BEFORE computing textContent/ydoc/insert.
-            if (
-              !importerCanAuthorHtmlEmbed &&
-              hasHtmlEmbedNode(prosemirrorJson)
-            ) {
-              this.logger.warn(
-                `Stripping htmlEmbed node(s) from non-admin import by user ${fileTask.creatorId} (page ${page.id}, file ${filePath})`,
-              );
-              prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-            }
+            // Gate (featureEnabled AND admin) is resolved once above and recomputed
+            // by the helper from the same htmlEmbedEnabled + importer role.
+            prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
+              featureEnabled: htmlEmbedEnabled,
+              role: importingUser?.role,
+              onStrip: () =>
+                this.logger.warn(
+                  `Stripping htmlEmbed node(s) from non-admin import by user ${fileTask.creatorId} (page ${page.id}, file ${filePath})`,
+                ),
+            });
 
             const insertablePage: InsertablePage = {
               id: page.id,

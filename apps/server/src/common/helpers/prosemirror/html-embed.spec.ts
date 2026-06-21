@@ -5,6 +5,7 @@ import {
   htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
   stripDisallowedHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
   stripHtmlEmbedNodes,
 } from './html-embed.util';
 import { htmlToJson, jsonToHtml } from '../../../collaboration/collaboration.util';
@@ -410,6 +411,119 @@ describe('htmlEmbedAllowed (toggle AND admin)', () => {
     expect(htmlEmbedAllowed(true, null)).toBe(false);
     expect(htmlEmbedAllowed(true, undefined)).toBe(false);
     expect(htmlEmbedAllowed(true, 'viewer')).toBe(false);
+  });
+});
+
+// The shared write-path strip ritual extracted from the 5 plain call-sites
+// (collab handler, page create/duplicate, import, file-import-task,
+// transclusion-unsync). Tested here once instead of being re-verified in each
+// call-site's spec.
+describe('stripHtmlEmbedIfNotAllowed (shared write-path gate)', () => {
+  const docWithEmbed = () => ({
+    type: 'doc',
+    content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'keep' }] },
+      { type: 'htmlEmbed', attrs: { source: '<script>x()</script>' } },
+    ],
+  });
+  const docWithoutEmbed = () => ({
+    type: 'doc',
+    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'keep' }] }],
+  });
+
+  it('keeps the doc unchanged when feature is ON and role is admin (allowed)', () => {
+    const json = docWithEmbed();
+    const onStrip = jest.fn();
+    const result = stripHtmlEmbedIfNotAllowed(json, {
+      featureEnabled: true,
+      role: 'admin',
+      onStrip,
+    });
+    // Allowed => same reference returned, embed preserved, no side-effect.
+    expect(result).toBe(json);
+    expect(hasHtmlEmbedNode(result)).toBe(true);
+    expect(onStrip).not.toHaveBeenCalled();
+  });
+
+  it('keeps the doc unchanged for an owner when feature is ON (allowed)', () => {
+    const json = docWithEmbed();
+    const onStrip = jest.fn();
+    const result = stripHtmlEmbedIfNotAllowed(json, {
+      featureEnabled: true,
+      role: 'owner',
+      onStrip,
+    });
+    expect(result).toBe(json);
+    expect(hasHtmlEmbedNode(result)).toBe(true);
+    expect(onStrip).not.toHaveBeenCalled();
+  });
+
+  it('strips the embed when the feature is OFF (even for an admin)', () => {
+    const json = docWithEmbed();
+    const onStrip = jest.fn();
+    const result = stripHtmlEmbedIfNotAllowed(json, {
+      featureEnabled: false,
+      role: 'admin',
+      onStrip,
+    });
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+    expect(onStrip).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips the embed for a non-admin when the feature is ON', () => {
+    const json = docWithEmbed();
+    const onStrip = jest.fn();
+    const result = stripHtmlEmbedIfNotAllowed(json, {
+      featureEnabled: true,
+      role: 'member',
+      onStrip,
+    });
+    expect(hasHtmlEmbedNode(result)).toBe(false);
+    expect(onStrip).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips the embed for a null/undefined role when the feature is ON', () => {
+    for (const role of [null, undefined]) {
+      const onStrip = jest.fn();
+      const result = stripHtmlEmbedIfNotAllowed(docWithEmbed(), {
+        featureEnabled: true,
+        role,
+        onStrip,
+      });
+      expect(hasHtmlEmbedNode(result)).toBe(false);
+      expect(onStrip).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('returns input unchanged and does NOT call onStrip when no embed is present', () => {
+    const json = docWithoutEmbed();
+    const onStrip = jest.fn();
+    // Not allowed (feature OFF), but there is nothing to strip.
+    const result = stripHtmlEmbedIfNotAllowed(json, {
+      featureEnabled: false,
+      role: 'member',
+      onStrip,
+    });
+    expect(result).toBe(json);
+    expect(onStrip).not.toHaveBeenCalled();
+  });
+
+  it('calls onStrip exactly once per strip', () => {
+    const onStrip = jest.fn();
+    stripHtmlEmbedIfNotAllowed(docWithEmbed(), {
+      featureEnabled: false,
+      role: 'member',
+      onStrip,
+    });
+    expect(onStrip).toHaveBeenCalledTimes(1);
+  });
+
+  it('works without an onStrip callback (optional)', () => {
+    const result = stripHtmlEmbedIfNotAllowed(docWithEmbed(), {
+      featureEnabled: false,
+      role: 'member',
+    });
+    expect(hasHtmlEmbedNode(result)).toBe(false);
   });
 });
 

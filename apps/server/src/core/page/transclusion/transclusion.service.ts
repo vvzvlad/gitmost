@@ -34,10 +34,8 @@ import { jsonToNode } from '../../../collaboration/collaboration.util';
 import { Page, User } from '@docmost/db/types/entity.types';
 import { PageAccessService } from '../page-access/page-access.service';
 import {
-  hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 
@@ -774,12 +772,14 @@ export class TransclusionService {
     const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
       (await this.workspaceRepo.findById(user.workspaceId))?.settings,
     );
-    if (!htmlEmbedAllowed(htmlEmbedEnabled, user.role) && hasHtmlEmbedNode(content)) {
-      this.logger.warn(
-        `Stripping htmlEmbed node(s) from transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
-      );
-      content = stripHtmlEmbedNodes(content);
-    }
+    content = stripHtmlEmbedIfNotAllowed(content, {
+      featureEnabled: htmlEmbedEnabled,
+      role: user.role,
+      onStrip: () =>
+        this.logger.warn(
+          `Stripping htmlEmbed node(s) from transclusion unsync by user ${user.id} (reference page ${referencePageId}, source page ${sourcePageId})`,
+        ),
+    });
 
     return { content };
   }

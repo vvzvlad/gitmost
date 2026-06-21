@@ -3,9 +3,8 @@ import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import {
   hasHtmlEmbedNode,
-  htmlEmbedAllowed,
   isHtmlEmbedFeatureEnabled,
-  stripHtmlEmbedNodes,
+  stripHtmlEmbedIfNotAllowed,
 } from '../../../common/helpers/prosemirror/html-embed.util';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { MultipartFile } from '@fastify/multipart';
@@ -102,6 +101,8 @@ export class ImportService {
     // serialized form), which would execute raw JS in readers' browsers. Only
     // workspace admins/owners may author it, so strip htmlEmbed nodes from
     // imports performed by a non-admin user.
+    // Outer has-check first so the user/workspace lookups below run only when an
+    // embed is actually present (the common case carries none).
     if (prosemirrorJson && hasHtmlEmbedNode(prosemirrorJson)) {
       const importingUser = await this.userRepo.findById(userId, workspaceId);
       // Toggle-AND-admin gate: htmlEmbed survives only when the workspace
@@ -110,12 +111,14 @@ export class ImportService {
       const htmlEmbedEnabled = isHtmlEmbedFeatureEnabled(
         (await this.workspaceRepo.findById(workspaceId))?.settings,
       );
-      if (!htmlEmbedAllowed(htmlEmbedEnabled, importingUser?.role)) {
-        this.logger.warn(
-          `Stripping htmlEmbed node(s) from import by user ${userId}`,
-        );
-        prosemirrorJson = stripHtmlEmbedNodes(prosemirrorJson);
-      }
+      prosemirrorJson = stripHtmlEmbedIfNotAllowed(prosemirrorJson, {
+        featureEnabled: htmlEmbedEnabled,
+        role: importingUser?.role,
+        onStrip: () =>
+          this.logger.warn(
+            `Stripping htmlEmbed node(s) from import by user ${userId}`,
+          ),
+      });
     }
 
     const pageTitle = title || fileName;
