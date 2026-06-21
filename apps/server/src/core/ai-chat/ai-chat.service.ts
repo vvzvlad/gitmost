@@ -394,6 +394,14 @@ export class AiChatService {
         // Client disconnected / request aborted: persist the partial answer,
         // including any completed tool steps so the turn replays faithfully.
         const text = steps.map((s) => s.text ?? '').join('');
+        // Unlike onError/onFinish, this terminal path otherwise writes nothing,
+        // so an aborted turn (client disconnect / proxy drop / stop()) would be
+        // invisible in the logs. Log it (warn) so the abort is traceable, with
+        // the step count and how much partial text was produced before the cut.
+        this.logger.warn(
+          `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
+            `step(s), ${text.length} chars partial text; persisting partial turn.`,
+        );
         await persistAssistant({
           text,
           toolCalls: serializeSteps(steps),
