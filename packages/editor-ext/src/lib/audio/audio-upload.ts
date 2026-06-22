@@ -128,6 +128,11 @@ const handleAudioUpload =
           .run();
         disposePreviewFile();
       }
+
+      // Return the uploaded attachment so callers that await this (e.g. the
+      // gitmost native bridge) can report success and the attachment id.
+      // Existing fire-and-forget callers ignore the return value.
+      return attachment;
     } catch (error) {
       clearTimeout(insertPlaceholderTimeout);
 
