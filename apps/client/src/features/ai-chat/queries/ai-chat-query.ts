@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { notifications } from "@mantine/notifications";
 import {
@@ -74,6 +74,31 @@ export function useAiChatMessagesQuery(chatId: string | undefined) {
       lastPage.meta.hasNextPage ? (lastPage.meta.nextCursor ?? undefined) : undefined,
     enabled: !!chatId,
   });
+
+  // useInfiniteQuery only fetches the first page on its own. The hook's contract
+  // (and both the Markdown export and the model-history seed) require the
+  // COMPLETE thread, so keep pulling subsequent pages until the server reports
+  // none remain. The isFetchingNextPage guard issues one request at a time;
+  // when chatId is undefined the query is disabled and hasNextPage is false, so
+  // this is a no-op. The isFetchNextPageError guard is critical: the app sets a
+  // global `retry: false`, so a rejected fetchNextPage leaves hasNextPage true
+  // and isFetchingNextPage false — without this guard the effect would re-fire
+  // immediately and hammer the endpoint in a tight loop. isFetchNextPageError
+  // latches the last next-page failure and clears once a fetch succeeds.
+  useEffect(() => {
+    if (
+      query.hasNextPage &&
+      !query.isFetchingNextPage &&
+      !query.isFetchNextPageError
+    ) {
+      void query.fetchNextPage();
+    }
+  }, [
+    query.hasNextPage,
+    query.isFetchingNextPage,
+    query.isFetchNextPageError,
+    query.fetchNextPage,
+  ]);
 
   const data = useMemo<IAiChatMessageRow[] | undefined>(() => {
     if (!query.data) return undefined;

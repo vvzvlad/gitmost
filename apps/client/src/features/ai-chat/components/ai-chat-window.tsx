@@ -32,6 +32,7 @@ import { usePageQuery } from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
 import {
   AI_CHATS_RQ_KEY,
+  AI_CHAT_MESSAGES_RQ_KEY,
   useAiChatMessagesQuery,
   useAiChatsQuery,
   useAiRolesQuery,
@@ -135,6 +136,11 @@ export default function AiChatWindow() {
   // can adopt it once the chat list refreshes after the first turn finishes.
   const adoptNewChat = useRef(false);
 
+  // Latch: the chat id whose full persisted history has finished loading while
+  // its thread is mounted. Used so a later BACKGROUND refetch (the post-turn
+  // messages invalidation) never tears the live thread back down to the loader.
+  const historyLoadedKeyRef = useRef<string | null>(null);
+
   // Mount key for ChatThread + the chat the currently-mounted thread represents.
   // `threadKey` normally tracks the active chat, so selecting a different chat
   // (incl. from page history) remounts and re-seeds. The ONE exception is
@@ -214,6 +220,18 @@ export default function AiChatWindow() {
   const onTurnFinished = useCallback(() => {
     if (activeChatId === null) adoptNewChat.current = true;
     queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+    // Re-sync the persisted message rows for the active chat so the Markdown
+    // export and the token counters reflect the turn that just finished. The
+    // live thread renders from its own useChat store (stable threadKey / store
+    // id), so refetching these rows never re-seeds or tears down the open
+    // thread. For a brand-new chat activeChatId is still null here; that chat's
+    // first row load happens right after id adoption, and every later turn hits
+    // this invalidation with the adopted id.
+    if (activeChatId) {
+      queryClient.invalidateQueries({
+        queryKey: AI_CHAT_MESSAGES_RQ_KEY(activeChatId),
+      });
+    }
   }, [activeChatId, queryClient]);
 
   // The active chat object (for its title) and an export gate: only enable the
@@ -281,12 +299,31 @@ export default function AiChatWindow() {
     setLiveThreadChatId(activeChatId);
     setThreadKey(activeChatId ?? `new-${generateId()}`);
   }
+  // Latch the active chat once its full history has loaded and its thread is
+  // mounted, so a later background refetch (the post-turn messages
+  // invalidation, which can transiently flip hasNextPage for a chat whose
+  // message count is an exact multiple of the server page size) does not tear
+  // the live thread down to a loader and lose its in-progress useChat state.
+  if (
+    activeChatId !== null &&
+    threadKey === activeChatId &&
+    !messagesLoading &&
+    historyLoadedKeyRef.current !== activeChatId
+  ) {
+    historyLoadedKeyRef.current = activeChatId;
+  }
+
   // Show the history loader only when freshly OPENING an existing chat (the key
-  // equals the chat id). For a live in-place thread that adopted its id, the key
-  // is still the "new-…" session key, so we keep showing the live thread instead
-  // of unmounting it behind a loader.
+  // equals the chat id) whose history has not been fully loaded yet. For a live
+  // in-place thread that adopted its id, the key is still the "new-…" session
+  // key, so we keep showing the live thread instead of unmounting it behind a
+  // loader; and once a chat's history has loaded, a later background refetch no
+  // longer tears the thread back down (see the latch above).
   const waitingForHistory =
-    activeChatId !== null && messagesLoading && threadKey === activeChatId;
+    activeChatId !== null &&
+    messagesLoading &&
+    threadKey === activeChatId &&
+    historyLoadedKeyRef.current !== activeChatId;
 
   // Current context size for the active chat: how much the conversation now
   // occupies in the model's context window — NOT the cumulative tokens spent.
