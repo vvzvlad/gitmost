@@ -20,6 +20,10 @@ import {
   createPublicShareWorkspaceLimiter,
 } from './public-share-workspace-limiter';
 import { describeProviderError } from '../../integrations/ai/ai-error.util';
+import {
+  startSseHeartbeat,
+  stripStreamingHopByHopHeaders,
+} from './sse-resilience';
 
 /**
  * Loose shape of the anonymous public-share chat POST body. We do NOT bind a
@@ -243,6 +247,8 @@ export class PublicShareChatService {
       // Stream the UI-message protocol straight to the hijacked Node response.
       // Surface the real provider message (AI SDK error bodies never carry the
       // API key, so this is safe; we never dump the resolved config).
+      // Scrub the SDK's hop-by-hop Connection header before it writes the head (Safari/HTTP2).
+      stripStreamingHopByHopHeaders(res.raw);
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
@@ -257,6 +263,8 @@ export class PublicShareChatService {
       // Force the status line + headers onto the socket now (before the first
       // token), so the proxy sees the response start immediately.
       res.raw.flushHeaders?.();
+      // Heartbeat: keep the SSE stream progressing during silent tool/think gaps (Safari/proxy idle timeout).
+      startSseHeartbeat(res.raw);
     } catch (err) {
       // Synchronous failure before/while wiring the stream: re-throw for the
       // controller to surface on the socket.

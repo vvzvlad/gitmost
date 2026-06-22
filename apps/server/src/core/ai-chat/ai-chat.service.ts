@@ -26,6 +26,10 @@ import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
 import { roleModelOverride } from './roles/role-model-config';
+import {
+  startSseHeartbeat,
+  stripStreamingHopByHopHeaders,
+} from './sse-resilience';
 
 // Max agent steps per turn. One step = one model generation; a step that calls
 // tools is followed by another step carrying the tool results. Raised from 8 so
@@ -502,6 +506,8 @@ export class AiChatService {
       // `x-accel-buffering: no` header we send (and additionally set
       // `proxy_buffering off; proxy_cache off;` for /api/ai-chat/stream); traefik
       // does not buffer responses by default.
+      // Scrub the SDK's hop-by-hop Connection header before it writes the head (Safari/HTTP2).
+      stripStreamingHopByHopHeaders(res.raw);
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
@@ -517,6 +523,8 @@ export class AiChatService {
       // writeHead synchronously above; flushHeaders is a belt-and-braces no-op once
       // headers are sent, and is guarded for response-likes that lack it.
       res.raw.flushHeaders?.();
+      // Heartbeat: keep the SSE stream progressing during silent tool/think gaps (Safari/proxy idle timeout).
+      startSseHeartbeat(res.raw);
     } catch (err) {
       // Synchronous failure before/while wiring the stream: the terminal
       // callbacks will not run, so release the leased external clients here and
