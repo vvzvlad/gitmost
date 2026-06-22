@@ -35,6 +35,7 @@ import {
   useUpdateAiSettingsMutation,
 } from "@/features/workspace/queries/ai-settings-query.ts";
 import {
+  AiTestCapability,
   IAiSettingsUpdate,
   SttApiStyle,
 } from "@/features/workspace/services/ai-settings-service.ts";
@@ -252,6 +253,12 @@ export default function AiProviderSettings() {
   const embedTest = useTestAiConnectionMutation();
   const sttTest = useTestAiConnectionMutation();
 
+  // Which card's "Save and test" is currently mid-save. The save mutation is
+  // shared, so without this every save-and-test button would spin at once;
+  // this lets only the clicked card's button show the spinner during the save.
+  const [savingTestCapability, setSavingTestCapability] =
+    useState<AiTestCapability | null>(null);
+
   // Agent roles drive the public-share assistant identity picker. Admin-gated
   // (the component returns early for non-admins), same as the AI settings query.
   const { data: roles } = useAiRolesQuery(isAdmin);
@@ -406,6 +413,28 @@ export default function AiProviderSettings() {
     setSttKeyCleared(false);
     form.setFieldValue("sttApiKey", "");
     form.resetDirty();
+  }
+
+  // "Save and test" for a single card: the connection test probes the
+  // SERVER-STORED settings, so the whole form must be persisted before testing.
+  // Save first (handleSubmit rethrows on failure and the mutation already shows
+  // its own error notification); only run the probe on a successful save.
+  async function handleSaveAndTest(
+    capability: AiTestCapability,
+    test: ReturnType<typeof useTestAiConnectionMutation>,
+  ) {
+    setSavingTestCapability(capability);
+    // Clear any previous probe result so the stale "successful/failed" text does
+    // not linger next to the spinner while the (now preceding) save runs.
+    test.reset();
+    try {
+      await handleSubmit(form.values);
+    } catch {
+      return; // save failed — error already surfaced; do not test stale settings
+    } finally {
+      setSavingTestCapability(null);
+    }
+    test.mutate(capability);
   }
 
   function handleClearKey() {
@@ -780,10 +809,13 @@ export default function AiProviderSettings() {
           <Button
             variant="default"
             size="sm"
-            loading={chatTest.isPending}
-            onClick={() => chatTest.mutate("chat")}
+            loading={savingTestCapability === "chat" || chatTest.isPending}
+            disabled={
+              updateMutation.isPending || chatTest.isPending || !form.isValid()
+            }
+            onClick={() => void handleSaveAndTest("chat", chatTest)}
           >
-            {t("Test endpoint")}
+            {t("Save and test")}
           </Button>
           {chatTest.data &&
             (chatTest.data.ok ? (
@@ -905,10 +937,13 @@ export default function AiProviderSettings() {
           <Button
             variant="default"
             size="sm"
-            loading={embedTest.isPending}
-            onClick={() => embedTest.mutate("embeddings")}
+            loading={savingTestCapability === "embeddings" || embedTest.isPending}
+            disabled={
+              updateMutation.isPending || embedTest.isPending || !form.isValid()
+            }
+            onClick={() => void handleSaveAndTest("embeddings", embedTest)}
           >
-            {t("Test endpoint")}
+            {t("Save and test")}
           </Button>
           {embedTest.data &&
             (embedTest.data.ok ? (
@@ -1099,10 +1134,13 @@ export default function AiProviderSettings() {
           <Button
             variant="default"
             size="sm"
-            loading={sttTest.isPending}
-            onClick={() => sttTest.mutate("stt")}
+            loading={savingTestCapability === "stt" || sttTest.isPending}
+            disabled={
+              updateMutation.isPending || sttTest.isPending || !form.isValid()
+            }
+            onClick={() => void handleSaveAndTest("stt", sttTest)}
           >
-            {t("Test endpoint")}
+            {t("Save and test")}
           </Button>
           {sttTest.data &&
             (sttTest.data.ok ? (
