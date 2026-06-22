@@ -1,8 +1,8 @@
-import { Alert, Box, Text } from "@mantine/core";
-import { IconAlertTriangle } from "@tabler/icons-react";
+import { Box, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
+import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
@@ -118,15 +118,11 @@ export default function MessageItem({
         // cause plus a one-line detail.
         const errorView = describeChatError(errorText, t);
         return (
-          <Alert
-            variant="light"
-            color="red"
-            icon={<IconAlertTriangle size={16} />}
-            mt={4}
+          <ChatErrorAlert
             title={errorView.title}
-          >
-            {errorView.detail}
-          </Alert>
+            detail={errorView.detail}
+            mt={4}
+          />
         );
       })()}
     </Box>

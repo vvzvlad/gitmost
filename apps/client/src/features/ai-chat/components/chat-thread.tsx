@@ -1,13 +1,14 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { generateId } from "ai";
-import { ActionIcon, Alert, Box, Group, Stack, Text } from "@mantine/core";
-import { IconAlertTriangle, IconClockHour4, IconX } from "@tabler/icons-react";
+import { ActionIcon, Box, Group, Stack, Text } from "@mantine/core";
+import { IconClockHour4, IconX } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import MessageList from "@/features/ai-chat/components/message-list.tsx";
 import ChatInput from "@/features/ai-chat/components/chat-input.tsx";
 import RoleCards from "@/features/ai-chat/components/role-cards.tsx";
+import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
 import {
   IAiChatMessageRow,
   IAiRole,
@@ -277,15 +278,11 @@ export default function ChatThread({
       />
 
       {errorView && (
-        <Alert
-          variant="light"
-          color="red"
-          icon={<IconAlertTriangle size={16} />}
-          mb="xs"
+        <ChatErrorAlert
           title={errorView.title}
-        >
-          {errorView.detail}
-        </Alert>
+          detail={errorView.detail}
+          mb="xs"
+        />
       )}
 
       <Stack gap={0} className={classes.inputWrapper}>
