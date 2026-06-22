@@ -3,8 +3,8 @@
   "private": true,
   "version": "0.93.0",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "node scripts/copy-vad-assets.mjs && vite",
+    "build": "node scripts/copy-vad-assets.mjs && tsc && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "format": "prettier --write \"src/**/*.tsx\" \"src/**/*.ts\"",
