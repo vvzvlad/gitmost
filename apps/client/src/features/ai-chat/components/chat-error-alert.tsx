@@ -18,12 +18,23 @@ interface ChatErrorAlertProps extends Omit<AlertProps, "title" | "children"> {
 export default function ChatErrorAlert({
   title,
   detail,
+  style,
   ...alertProps
 }: ChatErrorAlertProps) {
   // Mantine's own "light" alert colour, adaptive across light/dark schemes.
   const accent = "var(--mantine-color-red-light-color)";
   return (
-    <Alert {...alertProps} variant="light" color="red" p="xs">
+    // flexShrink: 0 keeps the banner fully visible. Mantine's Alert root is
+    // `overflow: hidden`, so as a flex child of the chat panel it can otherwise
+    // be compressed below its content height and clip the detail text; the
+    // scrollable message list absorbs the height pressure instead.
+    <Alert
+      {...alertProps}
+      variant="light"
+      color="red"
+      p="xs"
+      style={[{ flexShrink: 0 }, style]}
+    >
       <Group gap={8} wrap="nowrap" align="center" mb={4}>
         <IconAlertTriangle size={18} style={{ flex: "none", color: accent }} />
         <Text fw={700} size="sm" lh={1.2} style={{ color: accent }}>
