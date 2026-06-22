@@ -47,6 +47,12 @@ import {
   pickNewlyCreatedChatId,
 } from "@/features/ai-chat/utils/adopt-chat-id.ts";
 import {
+  type ThreadIdentity,
+  newThread,
+  switchThread,
+  adoptThread,
+} from "@/features/ai-chat/utils/thread-identity.ts";
+import {
   shouldCollapseOnOutsidePointer,
   isHeaderClick,
 } from "@/features/ai-chat/utils/collapse-helpers.ts";
@@ -151,19 +157,21 @@ export default function AiChatWindow() {
   // `null` = not armed.
   const pendingNewChatRef = useRef<string[] | null>(null);
 
-  // Mount key for ChatThread + the chat the currently-mounted thread represents.
-  // `threadKey` normally tracks the active chat, so selecting a different chat
-  // (incl. from page history) remounts and re-seeds. The ONE exception is
-  // in-place adoption of a brand-new chat's server id: the adopt effect moves
-  // `liveThreadChatId` to the new id TOGETHER with `activeChatId`, so the switch
-  // check below does not fire and the SAME thread stays mounted (its useChat
-  // already holds the just-finished turn) instead of being re-seeded from
-  // not-yet-persisted history.
-  const [threadKey, setThreadKey] = useState<string>(
-    () => activeChatId ?? `new-${generateId()}`,
-  );
-  const [liveThreadChatId, setLiveThreadChatId] = useState<string | null>(
-    activeChatId,
+  // The mounted thread's identity: ONE atomic value tying ChatThread's mount
+  // key (`thread.key`) to the chat id that mounted thread holds (`thread.chatId`).
+  // Consolidating these makes the "key vs chat id diverged" state unrepresentable
+  // — every change goes through an explicit transition (see thread-identity.ts):
+  //   • switchThread — a genuine switch (key := chat id) → remount + reseed;
+  //   • adoptThread  — a brand-new chat learns its real id (key UNCHANGED, chat
+  //     id null→realId) → NO remount, so the live useChat store (holding the
+  //     just-finished turn) is preserved and the 2nd turn sends the real chatId.
+  // A non-null initial activeChatId yields {key: id, chatId: id}; the `""` newKey
+  // is unused on that (non-null) path. A null initial chat gets a fresh session
+  // key with no chat id yet.
+  const [thread, setThread] = useState<ThreadIdentity>(() =>
+    activeChatId === null
+      ? newThread(`new-${generateId()}`)
+      : switchThread(activeChatId),
   );
 
   const { data: chats } = useAiChatsQuery();
@@ -241,17 +249,15 @@ export default function AiChatWindow() {
     (serverChatId?: string) => {
       const adopted = resolveAdoptedChatId(activeChatId, serverChatId);
       if (adopted) {
-        // PRIMARY path. In-place adoption: move the active chat AND the
-        // live-thread marker to the real id together, so the render-phase switch
-        // check below sees no "switch" and keeps the SAME mounted thread (its
-        // useChat already holds the just-finished turn, and its chatIdRef now
-        // mirrors the real id so the SECOND turn sends the correct chatId)
+        // PRIMARY path. In-place adoption: set the public selection and the
+        // thread identity to the real id together. `adoptThread` keeps the SAME
+        // mount key (chat id null→realId), so the render-phase reconciler below
+        // sees `activeChatId === thread.chatId` and keeps the SAME mounted thread
+        // (its useChat already holds the just-finished turn, and its chatIdRef
+        // now mirrors the real id so the SECOND turn sends the correct chatId)
         // instead of remounting and re-seeding from not-yet-persisted history.
-        // React's automatic batching inside this callback lands both updates in
-        // one render, so the guard never observes the new activeChatId with a
-        // stale liveThreadChatId.
-        setLiveThreadChatId(adopted);
         setActiveChatId(adopted);
+        setThread((prev) => adoptThread(prev, adopted));
         // Primary adoption won — disarm any previously-armed fallback.
         pendingNewChatRef.current = null;
       } else if (activeChatId === null) {
@@ -265,7 +271,7 @@ export default function AiChatWindow() {
       queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
       // Re-sync the persisted message rows for the active chat so the Markdown
       // export and the token counters reflect the turn that just finished. The
-      // live thread renders from its own useChat store (stable threadKey / store
+      // live thread renders from its own useChat store (stable thread.key / store
       // id), so refetching these rows never re-seeds or tears down the open
       // thread. For a brand-new chat activeChatId is still null here; that chat's
       // first row load happens right after id adoption, and every later turn hits
@@ -283,8 +289,8 @@ export default function AiChatWindow() {
   // first turn errored before the `start` chunk (no authoritative id streamed).
   // Once the per-user list refetch lands with the just-created row, adopt the
   // SINGLE id that newly appeared relative to the pre-refetch snapshot. Adoption
-  // is IN PLACE (move liveThreadChatId + activeChatId together) exactly like the
-  // primary path, so the render-phase switch guard does not remount the thread.
+  // is IN PLACE (set activeChatId + adoptThread the identity together) exactly
+  // like the primary path, so the render-phase reconciler does not remount.
   useEffect(() => {
     const before = pendingNewChatRef.current;
     if (before === null || activeChatId !== null) return; // not armed / already adopted
@@ -299,8 +305,8 @@ export default function AiChatWindow() {
     const adopted = pickNewlyCreatedChatId(before, after); // single new id, or null if ambiguous
     pendingNewChatRef.current = null; // give up after one resolved refetch either way
     if (adopted) {
-      setLiveThreadChatId(adopted);
       setActiveChatId(adopted);
+      setThread((prev) => adoptThread(prev, adopted));
     }
   }, [chats, activeChatId, setActiveChatId]);
 
@@ -366,14 +372,22 @@ export default function AiChatWindow() {
   // snapshot taken when the failed turn finished — unambiguous, and it does not
   // race a sibling chat the way `items[0]` did (see the fallback effect above).
 
-  // Adjust the derived thread state during render when the active chat genuinely
-  // changes — the React-sanctioned alternative to an effect (it re-renders before
-  // paint, no extra commit, and converges since the next render finds them equal).
-  // In-place adoption of a new chat's id never reaches here because the adopt
-  // effect moves liveThreadChatId in lockstep with activeChatId.
-  if (activeChatId !== liveThreadChatId) {
-    setLiveThreadChatId(activeChatId);
-    setThreadKey(activeChatId ?? `new-${generateId()}`);
+  // Reconcile the thread identity against the active-chat atom during render when
+  // they diverge — the React-sanctioned alternative to an effect (it re-renders
+  // before paint, no extra commit, and converges since the next render finds them
+  // equal). This reconciliation MUST remain: `activeChatId` is the public
+  // selection and is ALSO set from OUTSIDE this component (e.g. page-history's
+  // history-item calls setActiveChatId to open a referenced chat). A divergence
+  // here is a genuine SWITCH (external atom change OR user switch via
+  // selectChat/startNewChat), so `switchThread` remounts + reseeds. In-place
+  // adoption never reaches this branch: it set activeChatId and the thread's
+  // chatId to the same value, so `activeChatId === thread.chatId` here.
+  if (activeChatId !== thread.chatId) {
+    setThread(
+      activeChatId === null
+        ? newThread(`new-${generateId()}`)
+        : switchThread(activeChatId),
+    );
   }
   // Latch the active chat once its full history has loaded and its thread is
   // mounted, so a later background refetch (the post-turn messages
@@ -382,7 +396,7 @@ export default function AiChatWindow() {
   // the live thread down to a loader and lose its in-progress useChat state.
   if (
     activeChatId !== null &&
-    threadKey === activeChatId &&
+    thread.key === activeChatId &&
     !messagesLoading &&
     historyLoadedKeyRef.current !== activeChatId
   ) {
@@ -398,7 +412,7 @@ export default function AiChatWindow() {
   const waitingForHistory =
     activeChatId !== null &&
     messagesLoading &&
-    threadKey === activeChatId &&
+    thread.key === activeChatId &&
     historyLoadedKeyRef.current !== activeChatId;
 
   // Current context size for the active chat: how much the conversation now
@@ -725,7 +739,7 @@ export default function AiChatWindow() {
             </Group>
           ) : (
             <ChatThread
-              key={threadKey}
+              key={thread.key}
               chatId={activeChatId}
               initialRows={activeChatId ? messageRows : []}
               openPage={openPage}
