@@ -45,3 +45,29 @@ export function switchThread(chatId: string): ThreadIdentity {
 export function adoptThread(prev: ThreadIdentity, chatId: string): ThreadIdentity {
   return prev.chatId === null ? { key: prev.key, chatId } : prev;
 }
+
+/**
+ * Thread-identity transitions as a reducer action. See `threadSessionReducer`.
+ */
+export type ThreadSessionAction =
+  | { type: "reconcile"; chatId: string | null; newKey: string }
+  | { type: "adopt"; chatId: string };
+
+/**
+ * Single source of truth for thread-identity transitions. `reconcile` handles a
+ * genuine switch (user OR external atom write) -> remount; `adopt` moves a brand-
+ * new chat to its real id in place (no remount).
+ */
+export function threadSessionReducer(
+  state: ThreadIdentity,
+  action: ThreadSessionAction,
+): ThreadIdentity {
+  switch (action.type) {
+    case "reconcile":
+      return action.chatId === null
+        ? newThread(action.newKey)
+        : switchThread(action.chatId);
+    case "adopt":
+      return adoptThread(state, action.chatId);
+  }
+}

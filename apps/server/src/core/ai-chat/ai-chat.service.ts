@@ -562,12 +562,9 @@ export class AiChatService {
 }
 
 /**
- * Compute the `messageMetadata` payload for the streamed assistant UI message.
- * The AI SDK invokes `messageMetadata` on each stream part (ai@6); we attach the
- * authoritative `chatId` ONLY on the `start` part so it reaches the client at the
- * very first chunk (as `message.metadata.chatId`). The client adopts THAT id for a
- * new chat instead of guessing the newest chat in its list — fixing the two-tab
- * adoption race (#137). Returning undefined for any non-start part adds no metadata.
+ * Attach the authoritative `chatId` to the streamed assistant message's `start`
+ * part (as `message.metadata.chatId`) so the client can adopt the real id for a
+ * new chat. See the client's adopt-chat-id.ts for the full #137 design.
  */
 export function chatStreamStartMetadata(
   part: { type: string },

@@ -22,6 +22,7 @@ import {
   IAiRole,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
+import { extractServerChatId } from "@/features/ai-chat/utils/adopt-chat-id.ts";
 import {
   dequeue,
   enqueueMessage,
@@ -57,12 +58,10 @@ interface ChatThreadProps {
   /** Display name for the assistant label / typing line (the role name);
    *  forwarded to MessageList. Absent => the generic "AI agent". */
   assistantName?: string;
-  /** Called when a turn finishes; the parent refreshes the chat list and, for
-   *  a new chat, adopts the freshly created chat id. `serverChatId` is the
-   *  authoritative id the server attached to the streamed assistant message
-   *  metadata (see the server's `messageMetadata`); the parent adopts THIS for a
-   *  new chat instead of guessing the newest chat in the list (fixes the two-tab
-   *  adoption race, #137). Undefined on a failed turn that produced no metadata. */
+  /** Called when a turn finishes; the parent refreshes the chat list and, for a
+   *  new chat, adopts the freshly created chat id. `serverChatId` is the
+   *  authoritative id the server streamed on the assistant message metadata, or
+   *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
   onTurnFinished: (serverChatId?: string) => void;
   /** Parent-owned ref that this thread keeps updated with its live useChat
    *  snapshot (full message list + streaming flag), so the header's
@@ -251,13 +250,10 @@ export default function ChatThread({
     // would be wrong, so on Stop/disconnect/error the queue is left intact for
     // the user to decide.
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
-      // The server attaches the authoritative chatId to the streamed assistant
-      // message metadata (see `messageMetadata` in ai-chat.service.ts). Forward it
-      // so the parent adopts the REAL created chat id for a new chat, rather than
-      // guessing the newest chat in the list (which races a second tab — #137).
-      const serverChatId = (message?.metadata as { chatId?: string } | undefined)
-        ?.chatId;
-      onTurnFinished(serverChatId);
+      // Forward the authoritative server chatId (streamed on the assistant
+      // message metadata) so the parent adopts the REAL created chat id for a new
+      // chat — see adopt-chat-id.ts for the full #137 design.
+      onTurnFinished(extractServerChatId(message));
       // Show a neutral "stopped" marker for an aborted turn; the red error banner
       // (via `error`) already covers isError, and a clean finish clears any marker.
       if (isError) setStopNotice(null);

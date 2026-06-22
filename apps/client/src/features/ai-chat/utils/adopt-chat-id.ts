@@ -1,15 +1,33 @@
 /**
  * Pure helpers for adopting a brand-new chat's authoritative server id.
  *
+ * ============================ CANONICAL #137 NOTE ============================
+ * This docblock is the single authoritative explanation of the new-chat id
+ * adoption design and the #137 two-tab race it fixes. Other call sites
+ * (use-chat-session.ts, the server's `chatStreamStartMetadata`) reference here
+ * rather than restating it.
+ *
+ * When a user sends the first turn of a BRAND-NEW chat, the client has no chat
+ * id yet (`activeChatId === null`). The server creates the row and the client
+ * must "adopt" that row's real id so the SECOND turn targets the same chat.
+ *
+ * The OLD heuristic adopted `items[0]` — the newest chat in the refetched list.
+ * That races a second tab: if another tab created a chat in the same moment,
+ * its row could be `items[0]`, so this tab would adopt the SIBLING chat and
+ * leak its later turns into it (#137). We adopt by IDENTITY instead, two ways:
+ *
  * PRIMARY path: the server streams the real chat id on the assistant message
- * metadata (see `chatStreamStartMetadata` server-side); `resolveAdoptedChatId`
- * turns that into the id to adopt for a new chat.
+ * metadata's `start` part (see `chatStreamStartMetadata` server-side);
+ * `extractServerChatId` reads it off the finished message and
+ * `resolveAdoptedChatId` turns it into the id to adopt for a new chat. This is
+ * authoritative and immune to the race.
  *
  * FALLBACK path (only when a new chat's first turn errors BEFORE the `start`
  * chunk, so no metadata id ever reached the client): adopt the single chat that
  * NEWLY appeared in the per-user list relative to a pre-refetch snapshot —
- * `pickNewlyCreatedChatId`. This is unambiguous and does not race a second tab
- * the way the old "newest chat in the list" guess did (#137).
+ * `newlyAddedChatIds` / `pickNewlyCreatedChatId`. This is unambiguous and does
+ * not race a second tab the way the old "newest chat in the list" guess did.
+ * ============================================================================
  */
 
 /**
@@ -25,6 +43,32 @@ export function resolveAdoptedChatId(
 }
 
 /**
+ * Read the authoritative server chat id off a finished assistant message. The
+ * server attaches it as `message.metadata.chatId` on the `start` part (see
+ * `chatStreamStartMetadata`). Returns it only when it is a string; undefined for
+ * a missing message, missing metadata, or a non-string `chatId`.
+ */
+export function extractServerChatId(
+  message: { metadata?: unknown } | undefined,
+): string | undefined {
+  const m = message?.metadata as { chatId?: string } | undefined;
+  return typeof m?.chatId === "string" ? m.chatId : undefined;
+}
+
+/**
+ * The deduped set of ids present in `afterIds` but not in `beforeIds`. A
+ * paginated/flatMapped list can repeat the same id, so dedupe: one genuinely-new
+ * chat must not read as multiple from a duplicate.
+ */
+export function newlyAddedChatIds(
+  beforeIds: readonly string[],
+  afterIds: readonly string[],
+): Set<string> {
+  const before = new Set(beforeIds);
+  return new Set(afterIds.filter((id) => !before.has(id)));
+}
+
+/**
  * Return the single id present in `afterIds` but not in `beforeIds`. Returns
  * null when zero or more-than-one such id exists (ambiguous — do not adopt).
  */
@@ -32,9 +76,6 @@ export function pickNewlyCreatedChatId(
   beforeIds: readonly string[],
   afterIds: readonly string[],
 ): string | null {
-  const before = new Set(beforeIds);
-  // Dedupe the new ids: a paginated/flatMapped list can repeat the same id, and
-  // one genuinely-new chat must not read as "ambiguous" (>1) from a duplicate.
-  const added = new Set(afterIds.filter((id) => !before.has(id)));
+  const added = newlyAddedChatIds(beforeIds, afterIds);
   return added.size === 1 ? [...added][0] : null;
 }

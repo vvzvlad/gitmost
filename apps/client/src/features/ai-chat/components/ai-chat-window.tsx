@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { generateId } from "ai";
 import { type UIMessage } from "@ai-sdk/react";
 import { Group, Loader, Tooltip } from "@mantine/core";
 import {
@@ -42,16 +41,7 @@ import {
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
 import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
-import {
-  resolveAdoptedChatId,
-  pickNewlyCreatedChatId,
-} from "@/features/ai-chat/utils/adopt-chat-id.ts";
-import {
-  type ThreadIdentity,
-  newThread,
-  switchThread,
-  adoptThread,
-} from "@/features/ai-chat/utils/thread-identity.ts";
+import { useChatSession } from "@/features/ai-chat/hooks/use-chat-session.ts";
 import {
   shouldCollapseOnOutsidePointer,
   isHeaderClick,
@@ -143,37 +133,6 @@ export default function AiChatWindow() {
   // left partly off-screen).
   const [geom, setGeom] = useAtom(aiChatWindowGeomAtom);
 
-  // Latch: the chat id whose full persisted history has finished loading while
-  // its thread is mounted. Used so a later BACKGROUND refetch (the post-turn
-  // messages invalidation) never tears the live thread back down to the loader.
-  const historyLoadedKeyRef = useRef<string | null>(null);
-
-  // Error-path fallback for new-chat id adoption. When a brand-new chat's first
-  // turn errors BEFORE the server's `start` chunk, no authoritative chatId ever
-  // reaches the client, so the primary metadata adoption cannot run. We then
-  // ARM this ref with a snapshot of the currently-known chat ids; once the list
-  // refetch lands with the just-created row, the fallback effect below adopts
-  // the SINGLE newly-appeared id (unambiguous — unlike the old items[0] guess).
-  // `null` = not armed.
-  const pendingNewChatRef = useRef<string[] | null>(null);
-
-  // The mounted thread's identity: ONE atomic value tying ChatThread's mount
-  // key (`thread.key`) to the chat id that mounted thread holds (`thread.chatId`).
-  // Consolidating these makes the "key vs chat id diverged" state unrepresentable
-  // — every change goes through an explicit transition (see thread-identity.ts):
-  //   • switchThread — a genuine switch (key := chat id) → remount + reseed;
-  //   • adoptThread  — a brand-new chat learns its real id (key UNCHANGED, chat
-  //     id null→realId) → NO remount, so the live useChat store (holding the
-  //     just-finished turn) is preserved and the 2nd turn sends the real chatId.
-  // A non-null initial activeChatId yields {key: id, chatId: id}; the `""` newKey
-  // is unused on that (non-null) path. A null initial chat gets a fresh session
-  // key with no chat id yet.
-  const [thread, setThread] = useState<ThreadIdentity>(() =>
-    activeChatId === null
-      ? newThread(`new-${generateId()}`)
-      : switchThread(activeChatId),
-  );
-
   const { data: chats } = useAiChatsQuery();
   // Roles for the new-chat picker (any member may list them). Only fetched while
   // the window is open.
@@ -214,14 +173,14 @@ export default function AiChatWindow() {
     ? { id: openPageData.id, title: openPageData.title }
     : null;
 
+  // startNewChat/selectChat only set the public atom; useChatSession's render-
+  // phase reconciler does the remount AND disarms any pending new-chat fallback.
   const startNewChat = useCallback((): void => {
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
     // Default the picker back to "Universal assistant" for the fresh chat.
     setSelectedRoleId(null);
-    // The user moved on — disarm any pending error-path adoption fallback.
-    pendingNewChatRef.current = null;
   }, [setActiveChatId, setDraft, setSelectedRoleId]);
 
   const selectChat = useCallback(
@@ -232,83 +191,33 @@ export default function AiChatWindow() {
       // Reset the card-picked role so a stale pick can't leak into the existing
       // chat's header/assistant-name (which prefers the chat's persisted role).
       setSelectedRoleId(null);
-      // The user moved on — disarm any pending error-path adoption fallback.
-      pendingNewChatRef.current = null;
     },
     [setActiveChatId, setDraft, setSelectedRoleId],
   );
 
-  // After a turn finishes, refresh the chat list. For a brand-new chat (no id
-  // yet), the server has just created the row and reported its AUTHORITATIVE id
-  // via the streamed assistant message metadata (`serverChatId`); we adopt THAT
-  // exact id so the thread switches from "new" to its OWN persisted chat — never
-  // guessing the newest chat in the list, which would adopt a SIBLING chat that
-  // a second tab created in the same moment and leak this tab's later turns into
-  // it (the two-tab adoption race, #137).
-  const onTurnFinished = useCallback(
-    (serverChatId?: string) => {
-      const adopted = resolveAdoptedChatId(activeChatId, serverChatId);
-      if (adopted) {
-        // PRIMARY path. In-place adoption: set the public selection and the
-        // thread identity to the real id together. `adoptThread` keeps the SAME
-        // mount key (chat id null→realId), so the render-phase reconciler below
-        // sees `activeChatId === thread.chatId` and keeps the SAME mounted thread
-        // (its useChat already holds the just-finished turn, and its chatIdRef
-        // now mirrors the real id so the SECOND turn sends the correct chatId)
-        // instead of remounting and re-seeding from not-yet-persisted history.
-        setActiveChatId(adopted);
-        setThread((prev) => adoptThread(prev, adopted));
-        // Primary adoption won — disarm any previously-armed fallback.
-        pendingNewChatRef.current = null;
-      } else if (activeChatId === null) {
-        // FALLBACK path: a brand-new chat finished with NO server id (the first
-        // turn errored before the `start` chunk). Arm the bounded list-refetch
-        // fallback by snapshotting the currently-known chat ids. `chats` is still
-        // the pre-refetch list here, so the just-created row is NOT yet in it; the
-        // effect below adopts the single id that newly appears after the refetch.
-        pendingNewChatRef.current = chats?.items?.map((c) => c.id) ?? [];
-      }
-      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
-      // Re-sync the persisted message rows for the active chat so the Markdown
-      // export and the token counters reflect the turn that just finished. The
-      // live thread renders from its own useChat store (stable thread.key / store
-      // id), so refetching these rows never re-seeds or tears down the open
-      // thread. For a brand-new chat activeChatId is still null here; that chat's
-      // first row load happens right after id adoption, and every later turn hits
-      // this invalidation with the adopted id.
-      if (activeChatId) {
-        queryClient.invalidateQueries({
-          queryKey: AI_CHAT_MESSAGES_RQ_KEY(activeChatId),
-        });
-      }
-    },
-    [activeChatId, chats, queryClient, setActiveChatId],
+  // The AI-chat thread-identity lifecycle (mount key, both new-chat id adoption
+  // paths, the history-loaded latch, the render-phase reconciler) lives in this
+  // hook. See adopt-chat-id.ts for the canonical #137 two-tab race explanation.
+  // Memoized so the hook's `onTurnFinished` useCallback keeps a stable identity
+  // across renders (it is read live by useChat's onFinish, so this is cosmetic,
+  // not load-bearing — but avoids needless re-creation).
+  const invalidateChatList = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY }),
+    [queryClient],
   );
-
-  // FALLBACK resolver. Armed only by onTurnFinished when a brand-new chat's
-  // first turn errored before the `start` chunk (no authoritative id streamed).
-  // Once the per-user list refetch lands with the just-created row, adopt the
-  // SINGLE id that newly appeared relative to the pre-refetch snapshot. Adoption
-  // is IN PLACE (set activeChatId + adoptThread the identity together) exactly
-  // like the primary path, so the render-phase reconciler does not remount.
-  useEffect(() => {
-    const before = pendingNewChatRef.current;
-    if (before === null || activeChatId !== null) return; // not armed / already adopted
-    const after = chats?.items?.map((c) => c.id) ?? [];
-    // Keep waiting until the list membership actually CHANGES (the refetch
-    // landed). A length compare would miss the change if another session
-    // concurrently deleted a chat in this same window (length stays equal while
-    // a new row was added); a set-membership compare is robust to that.
-    const beforeSet = new Set(before);
-    if (after.length === before.length && after.every((id) => beforeSet.has(id)))
-      return; // list not refetched yet — keep waiting
-    const adopted = pickNewlyCreatedChatId(before, after); // single new id, or null if ambiguous
-    pendingNewChatRef.current = null; // give up after one resolved refetch either way
-    if (adopted) {
-      setActiveChatId(adopted);
-      setThread((prev) => adoptThread(prev, adopted));
-    }
-  }, [chats, activeChatId, setActiveChatId]);
+  const invalidateChatMessages = useCallback(
+    (id: string) =>
+      queryClient.invalidateQueries({ queryKey: AI_CHAT_MESSAGES_RQ_KEY(id) }),
+    [queryClient],
+  );
+  const { threadKey, waitingForHistory, onTurnFinished } = useChatSession({
+    activeChatId,
+    setActiveChatId,
+    chats,
+    messagesLoading,
+    onInvalidateChatList: invalidateChatList,
+    onInvalidateChatMessages: invalidateChatMessages,
+  });
 
   // The active chat object (for its title) and an export gate: only enable the
   // export button when an existing chat with loaded persisted rows is active.
@@ -361,59 +270,6 @@ export default function AiChatWindow() {
     clipboard.copy(markdown);
     notifications.show({ message: t("Copied") });
   }, [activeChatId, messageRows, activeChat, clipboard, t]);
-
-  // NOTE: new-chat id adoption has two paths, neither of which is the old
-  // "newest chat in the list" heuristic that raced a second tab (#137).
-  // PRIMARY: the server reports the authoritative created chat id on the streamed
-  // assistant message metadata, and `onTurnFinished(serverChatId)` adopts THAT id
-  // in place — see above. FALLBACK (only when the first turn errors before the
-  // `start` chunk, so no metadata id is streamed): adopt the SINGLE chat that
-  // newly appeared in the refetched per-user list relative to a pre-refetch
-  // snapshot taken when the failed turn finished — unambiguous, and it does not
-  // race a sibling chat the way `items[0]` did (see the fallback effect above).
-
-  // Reconcile the thread identity against the active-chat atom during render when
-  // they diverge — the React-sanctioned alternative to an effect (it re-renders
-  // before paint, no extra commit, and converges since the next render finds them
-  // equal). This reconciliation MUST remain: `activeChatId` is the public
-  // selection and is ALSO set from OUTSIDE this component (e.g. page-history's
-  // history-item calls setActiveChatId to open a referenced chat). A divergence
-  // here is a genuine SWITCH (external atom change OR user switch via
-  // selectChat/startNewChat), so `switchThread` remounts + reseeds. In-place
-  // adoption never reaches this branch: it set activeChatId and the thread's
-  // chatId to the same value, so `activeChatId === thread.chatId` here.
-  if (activeChatId !== thread.chatId) {
-    setThread(
-      activeChatId === null
-        ? newThread(`new-${generateId()}`)
-        : switchThread(activeChatId),
-    );
-  }
-  // Latch the active chat once its full history has loaded and its thread is
-  // mounted, so a later background refetch (the post-turn messages
-  // invalidation, which can transiently flip hasNextPage for a chat whose
-  // message count is an exact multiple of the server page size) does not tear
-  // the live thread down to a loader and lose its in-progress useChat state.
-  if (
-    activeChatId !== null &&
-    thread.key === activeChatId &&
-    !messagesLoading &&
-    historyLoadedKeyRef.current !== activeChatId
-  ) {
-    historyLoadedKeyRef.current = activeChatId;
-  }
-
-  // Show the history loader only when freshly OPENING an existing chat (the key
-  // equals the chat id) whose history has not been fully loaded yet. For a live
-  // in-place thread that adopted its id, the key is still the "new-…" session
-  // key, so we keep showing the live thread instead of unmounting it behind a
-  // loader; and once a chat's history has loaded, a later background refetch no
-  // longer tears the thread back down (see the latch above).
-  const waitingForHistory =
-    activeChatId !== null &&
-    messagesLoading &&
-    thread.key === activeChatId &&
-    historyLoadedKeyRef.current !== activeChatId;
 
   // Current context size for the active chat: how much the conversation now
   // occupies in the model's context window — NOT the cumulative tokens spent.
@@ -739,7 +595,7 @@ export default function AiChatWindow() {
             </Group>
           ) : (
             <ChatThread
-              key={thread.key}
+              key={threadKey}
               chatId={activeChatId}
               initialRows={activeChatId ? messageRows : []}
               openPage={openPage}

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { newThread, switchThread, adoptThread } from "./thread-identity";
+import {
+  newThread,
+  switchThread,
+  adoptThread,
+  threadSessionReducer,
+} from "./thread-identity";
 
 describe("newThread", () => {
   it("uses the supplied key and has no chat id yet", () => {
@@ -17,6 +22,10 @@ describe("switchThread", () => {
 });
 
 describe("adoptThread", () => {
+  // Key UNCHANGED (no remount) + chatId moved null->realId. The unchanged key is
+  // what keeps the live useChat store alive; the matching chatId is what makes the
+  // window's render-phase reconciler (activeChatId !== thread.chatId) treat the
+  // adopted thread as already-in-sync rather than a switch.
   it("adopts in place for a new chat: keeps the key, sets the chat id", () => {
     const prev = newThread("new-abc");
     expect(adoptThread(prev, "chat-1")).toEqual({
@@ -32,22 +41,39 @@ describe("adoptThread", () => {
     };
     expect(adoptThread(prev, "chat-2")).toBe(prev);
   });
+});
 
-  it("INVARIANT: adoption never remounts (key unchanged) while chatId changes", () => {
-    const prev = newThread("new-abc");
-    const next = adoptThread(prev, "chat-1");
-    // The mount key is preserved (no remount) ...
-    expect(next.key).toBe(prev.key);
-    // ... while the chat id moved from null to the real id.
-    expect(prev.chatId).toBeNull();
-    expect(next.chatId).toBe("chat-1");
+describe("threadSessionReducer", () => {
+  it("reconcile to an existing id switches (key becomes the id)", () => {
+    const next = threadSessionReducer(newThread("new-abc"), {
+      type: "reconcile",
+      chatId: "chat-1",
+      newKey: "new-xyz",
+    });
+    expect(next).toEqual({ key: "chat-1", chatId: "chat-1" });
   });
 
-  it("INVARIANT: after adoption thread.chatId equals the adopted id, so the window's render-phase reconciler (activeChatId !== thread.chatId) does NOT fire and remount the live thread", () => {
-    const adoptedId = "chat-1";
-    const next = adoptThread(newThread("new-abc"), adoptedId);
-    // The window sets activeChatId to the same adoptedId; this asserts they match
-    // so the reconciler treats it as already-in-sync, not a switch.
-    expect(next.chatId).toBe(adoptedId);
+  it("reconcile to null starts a fresh new thread with the supplied key", () => {
+    const next = threadSessionReducer(switchThread("chat-1"), {
+      type: "reconcile",
+      chatId: null,
+      newKey: "new-xyz",
+    });
+    expect(next).toEqual({ key: "new-xyz", chatId: null });
+  });
+
+  it("adopt on a new thread keeps the key and sets the id", () => {
+    const next = threadSessionReducer(newThread("new-abc"), {
+      type: "adopt",
+      chatId: "chat-1",
+    });
+    expect(next).toEqual({ key: "new-abc", chatId: "chat-1" });
+  });
+
+  it("adopt on a persisted thread is a no-op", () => {
+    const prev = switchThread("chat-1");
+    expect(threadSessionReducer(prev, { type: "adopt", chatId: "chat-2" })).toBe(
+      prev,
+    );
   });
 });

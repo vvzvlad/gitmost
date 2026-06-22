@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { resolveAdoptedChatId, pickNewlyCreatedChatId } from "./adopt-chat-id";
+import {
+  resolveAdoptedChatId,
+  pickNewlyCreatedChatId,
+  newlyAddedChatIds,
+  extractServerChatId,
+} from "./adopt-chat-id";
 
 describe("resolveAdoptedChatId", () => {
   it("adopts the server id for a brand-new chat (activeChatId null + id)", () => {
@@ -39,5 +44,56 @@ describe("pickNewlyCreatedChatId", () => {
 
   it("returns null when membership is unchanged but reordered", () => {
     expect(pickNewlyCreatedChatId(["a", "b"], ["b", "a"])).toBeNull();
+  });
+});
+
+describe("newlyAddedChatIds", () => {
+  it("returns the single new id", () => {
+    expect([...newlyAddedChatIds(["a", "b"], ["a", "b", "c"])]).toEqual(["c"]);
+  });
+
+  it("returns an empty set when nothing was added", () => {
+    expect(newlyAddedChatIds(["a", "b"], ["b", "a"]).size).toBe(0);
+  });
+
+  it("returns both new ids when two were added", () => {
+    expect(newlyAddedChatIds(["a"], ["a", "b", "c"])).toEqual(
+      new Set(["b", "c"]),
+    );
+  });
+
+  it("keeps only the new id across an add+delete in the same window", () => {
+    // before [a,b] -> after [b,new]: a was deleted, new was added.
+    expect([...newlyAddedChatIds(["a", "b"], ["b", "new"])]).toEqual(["new"]);
+  });
+
+  it("dedupes a repeated new id to a single entry", () => {
+    expect(newlyAddedChatIds(["a"], ["a", "new", "new"])).toEqual(
+      new Set(["new"]),
+    );
+  });
+});
+
+describe("extractServerChatId", () => {
+  it("returns the chatId when present on metadata", () => {
+    expect(extractServerChatId({ metadata: { chatId: "chat-1" } })).toBe(
+      "chat-1",
+    );
+  });
+
+  it("returns undefined when the message has no metadata", () => {
+    expect(extractServerChatId({})).toBeUndefined();
+  });
+
+  it("returns undefined when metadata lacks chatId", () => {
+    expect(extractServerChatId({ metadata: { other: 1 } })).toBeUndefined();
+  });
+
+  it("returns undefined for a non-string chatId", () => {
+    expect(extractServerChatId({ metadata: { chatId: 42 } })).toBeUndefined();
+  });
+
+  it("returns undefined for an undefined message", () => {
+    expect(extractServerChatId(undefined)).toBeUndefined();
   });
 });
