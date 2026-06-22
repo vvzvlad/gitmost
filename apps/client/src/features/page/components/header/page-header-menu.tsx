@@ -102,7 +102,12 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
 
       {!readOnly && <PageEditModeToggle size="xs" />}
 
-      {!workspaceSharingDisabled && <ShareModal readOnly={readOnly ?? false} />}
+      {/* Hide the Share entry point for readers; the toggle inside is inert
+          without edit permission, so gate it like other edit-only actions
+          (issue #133) */}
+      {!readOnly && !workspaceSharingDisabled && (
+        <ShareModal readOnly={false} />
+      )}
 
       <Tooltip label={t("Comments")} openDelay={250} withArrow>
         <ActionIcon
@@ -286,7 +291,7 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
               leftSection={<IconArrowRight size={16} />}
               onClick={openMovePageModal}
             >
-              {t("Move")}
+              {t("Move to space")}
             </Menu.Item>
           )}
 

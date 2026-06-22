@@ -282,7 +282,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
     [],
   );
   const getDragLabel = useCallback(
-    (n: SpaceTreeNode) => n.name || t("untitled"),
+    (n: SpaceTreeNode) => n.name || t("Untitled"),
     [t],
   );
 

@@ -41,7 +41,7 @@ export default function GroupMembersList() {
         </Text>
       ),
       centered: true,
-      labels: { confirm: t("Delete"), cancel: t("Cancel") },
+      labels: { confirm: t("Remove"), cancel: t("Cancel") },
       confirmProps: { color: "red" },
       onConfirm: () => onRemove(userId),
     });

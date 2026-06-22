@@ -8,18 +8,28 @@ import { MultiUserSelect } from "@/features/group/components/multi-user-select.t
 import { useTranslation } from "react-i18next";
 import { zod4Resolver } from 'mantine-form-zod-resolver';
 
-const formSchema = z.object({
-  name: z.string().trim().min(2).max(100),
-  description: z.string().max(500),
-});
-
-type FormValues = z.infer<typeof formSchema>;
+type FormValues = {
+  name: string;
+  description: string;
+};
 
 export function CreateGroupForm() {
   const { t } = useTranslation();
   const createGroupMutation = useCreateGroupMutation();
   const [userIds, setUserIds] = useState<string[]>([]);
   const navigate = useNavigate();
+
+  // Build the schema with friendly, translated validation messages (issue #130)
+  const formSchema = z.object({
+    name: z
+      .string()
+      .trim()
+      .min(2, t("Group name must be at least 2 characters"))
+      .max(100, t("Group name must be 100 characters or fewer")),
+    description: z
+      .string()
+      .max(500, t("Description must be 500 characters or fewer")),
+  });
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),

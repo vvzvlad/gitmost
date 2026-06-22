@@ -92,6 +92,7 @@ export default function FavoritesPage() {
                           <Badge
                             color={getInitialsColor(fav.space.name)}
                             variant="light"
+                            tt="none"
                             component={Link}
                             to={getSpaceUrl(fav.space.slug)}
                             style={{ cursor: "pointer" }}
