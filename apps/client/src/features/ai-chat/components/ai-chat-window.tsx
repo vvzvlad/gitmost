@@ -101,7 +101,8 @@ function clampGeom(g: { left: number; top: number; width: number; height: number
 /**
  * Floating, draggable, resizable, minimizable AI chat window. Replaces the
  * former right-aside `AiChatPanel`: it owns ALL chat orchestration (active
- * chat, new chat, adopt-new-chat, open-page context, token sum) and wraps the
+ * chat, new chat, in-place id adoption from streamed metadata, open-page
+ * context, token sum) and wraps the
  * reused inner components (ConversationList + ChatThread) in window chrome
  * ported from the GitmostAgent.jsx design.
  */
@@ -131,10 +132,6 @@ export default function AiChatWindow() {
   // re-clamped to the viewport (so a placement saved on a larger screen is not
   // left partly off-screen).
   const [geom, setGeom] = useAtom(aiChatWindowGeomAtom);
-
-  // Track whether we are awaiting the id of a just-created (new) chat, so we
-  // can adopt it once the chat list refreshes after the first turn finishes.
-  const adoptNewChat = useRef(false);
 
   // Latch: the chat id whose full persisted history has finished loading while
   // its thread is mounted. Used so a later BACKGROUND refetch (the post-turn
@@ -197,9 +194,6 @@ export default function AiChatWindow() {
     : null;
 
   const startNewChat = useCallback((): void => {
-    // Cancel any pending adoption so a just-finished new chat can't yank the user
-    // back here after they explicitly started a fresh one.
-    adoptNewChat.current = false;
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
@@ -209,8 +203,6 @@ export default function AiChatWindow() {
 
   const selectChat = useCallback(
     (chatId: string): void => {
-      // Cancel any pending adoption so it can't override an explicit selection.
-      adoptNewChat.current = false;
       setActiveChatId(chatId);
       setHistoryOpen(false);
       setDraft("");
@@ -222,25 +214,42 @@ export default function AiChatWindow() {
   );
 
   // After a turn finishes, refresh the chat list. For a brand-new chat (no id
-  // yet), the server has just created the row; adopt the newest chat id so the
-  // thread switches from "new" to the persisted chat (and loads its history on
-  // later opens).
-  const onTurnFinished = useCallback(() => {
-    if (activeChatId === null) adoptNewChat.current = true;
-    queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
-    // Re-sync the persisted message rows for the active chat so the Markdown
-    // export and the token counters reflect the turn that just finished. The
-    // live thread renders from its own useChat store (stable threadKey / store
-    // id), so refetching these rows never re-seeds or tears down the open
-    // thread. For a brand-new chat activeChatId is still null here; that chat's
-    // first row load happens right after id adoption, and every later turn hits
-    // this invalidation with the adopted id.
-    if (activeChatId) {
-      queryClient.invalidateQueries({
-        queryKey: AI_CHAT_MESSAGES_RQ_KEY(activeChatId),
-      });
-    }
-  }, [activeChatId, queryClient]);
+  // yet), the server has just created the row and reported its AUTHORITATIVE id
+  // via the streamed assistant message metadata (`serverChatId`); we adopt THAT
+  // exact id so the thread switches from "new" to its OWN persisted chat — never
+  // guessing the newest chat in the list, which would adopt a SIBLING chat that
+  // a second tab created in the same moment and leak this tab's later turns into
+  // it (the two-tab adoption race, #137).
+  const onTurnFinished = useCallback(
+    (serverChatId?: string) => {
+      if (activeChatId === null && serverChatId) {
+        // In-place adoption: move the active chat AND the live-thread marker to
+        // the real id together, so the render-phase switch check below sees no
+        // "switch" and keeps the SAME mounted thread (its useChat already holds
+        // the just-finished turn, and its chatIdRef now mirrors the real id so
+        // the SECOND turn sends the correct chatId) instead of remounting and
+        // re-seeding from not-yet-persisted history. React's automatic batching
+        // inside this callback lands both updates in one render, so the guard
+        // never observes the new activeChatId with a stale liveThreadChatId.
+        setLiveThreadChatId(serverChatId);
+        setActiveChatId(serverChatId);
+      }
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+      // Re-sync the persisted message rows for the active chat so the Markdown
+      // export and the token counters reflect the turn that just finished. The
+      // live thread renders from its own useChat store (stable threadKey / store
+      // id), so refetching these rows never re-seeds or tears down the open
+      // thread. For a brand-new chat activeChatId is still null here; that chat's
+      // first row load happens right after id adoption, and every later turn hits
+      // this invalidation with the adopted id.
+      if (activeChatId) {
+        queryClient.invalidateQueries({
+          queryKey: AI_CHAT_MESSAGES_RQ_KEY(activeChatId),
+        });
+      }
+    },
+    [activeChatId, queryClient, setActiveChatId],
+  );
 
   // The active chat object (for its title) and an export gate: only enable the
   // export button when an existing chat with loaded persisted rows is active.
@@ -294,26 +303,11 @@ export default function AiChatWindow() {
     notifications.show({ message: t("Copied") });
   }, [activeChatId, messageRows, activeChat, clipboard, t]);
 
-  // When awaiting a new chat's id, adopt the most-recent chat (the list is
-  // ordered newest-first) once it appears.
-  useEffect(() => {
-    if (!adoptNewChat.current) return;
-    const newest = chats?.items?.[0];
-    if (newest) {
-      adoptNewChat.current = false;
-      // In-place adoption: move the active chat AND the live-thread marker to the
-      // new id together, so the threadKey derivation below sees no "switch" and
-      // keeps the SAME mounted thread (its useChat already holds the finished
-      // turn) instead of remounting and re-seeding from not-yet-persisted history.
-      // ASSUMPTION: these two updates (jotai atom + useState) must land in ONE
-      // render so the render-phase guard never observes the new activeChatId with
-      // a stale liveThreadChatId (which would wrongly remount). React 18 automatic
-      // batching inside this effect callback guarantees that; if the store/atom
-      // mechanism ever changes, gate adoption on an explicit flag instead.
-      setLiveThreadChatId(newest.id);
-      setActiveChatId(newest.id);
-    }
-  }, [chats, setActiveChatId]);
+  // NOTE: new-chat id adoption is no longer a heuristic effect. The server now
+  // reports the authoritative created chat id on the streamed assistant message
+  // metadata, and `onTurnFinished(serverChatId)` adopts THAT id in place — see
+  // above. The old "newest chat in the list" guess was removed because it raced
+  // a second tab's simultaneous new chat (#137).
 
   // Adjust the derived thread state during render when the active chat genuinely
   // changes — the React-sanctioned alternative to an effect (it re-renders before
