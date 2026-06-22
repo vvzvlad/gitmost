@@ -1,4 +1,5 @@
 import { Agent, RetryAgent, type Dispatcher } from 'undici';
+import { Logger } from '@nestjs/common';
 
 /**
  * Dedicated, resilient outbound HTTP layer for ALL AI provider calls.
@@ -83,11 +84,53 @@ const dispatcher: Dispatcher = new RetryAgent(baseAgent, {
   ],
 });
 
+const logger = new Logger('AiHttp');
+let requestSeq = 0;
+
 /**
  * A `fetch`-compatible function that routes the request through the shared,
  * resilient AI dispatcher. Injected into AI SDK provider factories via their
  * `fetch` option. Follows the repo convention (see mcp-clients.service.ts
  * `guardedFetch`).
+ *
+ * Wrapped with timing logs so provider latency is visible: for streaming
+ * responses `fetch` resolves when RESPONSE HEADERS arrive (the body streams
+ * after), so "in <ms>ms (headers received)" is exactly the provider's
+ * time-to-first-byte, and a rejection time pinpoints a headers/body timeout.
+ * Chat/Responses calls log at info; bulk embedding calls log at debug so RAG
+ * indexing never floods the logs. No secrets are logged — only host + pathname.
  */
-export const aiFetch: typeof fetch = (input, init) =>
-  fetch(input, { ...init, dispatcher } as RequestInit);
+export const aiFetch: typeof fetch = async (input, init) => {
+  const id = ++requestSeq;
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const rawUrl =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : (input as Request).url;
+  let path = rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    path = u.host + u.pathname;
+  } catch {
+    // Non-absolute / unparseable URL: keep the raw string (still no secrets).
+  }
+  const isChat = /\/(chat\/completions|responses)\b/.test(path);
+  const log = (msg: string): void =>
+    isChat ? logger.log(msg) : logger.debug(msg);
+  const startedAt = performance.now();
+  log(`provider request #${id} -> ${method} ${path}`);
+  try {
+    const res = await fetch(input, { ...init, dispatcher } as RequestInit);
+    const ms = Math.round(performance.now() - startedAt);
+    log(`provider request #${id} <- ${res.status} in ${ms}ms (headers received)`);
+    return res;
+  } catch (err) {
+    const ms = Math.round(performance.now() - startedAt);
+    logger.warn(
+      `provider request #${id} x after ${ms}ms: ${(err as Error)?.message ?? String(err)}`,
+    );
+    throw err;
+  }
+};

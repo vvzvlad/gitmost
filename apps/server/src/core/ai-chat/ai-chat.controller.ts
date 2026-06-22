@@ -142,6 +142,9 @@ export class AiChatController {
 
     const body = (req.body ?? {}) as AiChatStreamBody;
 
+    // Diagnostic timing baseline for this turn (see START / terminal logs below).
+    const startedAt = Date.now();
+
     // Resolve the agent role for this turn BEFORE hijack: existing chats read it
     // from ai_chats.role_id (authoritative), a new chat from body.roleId. The
     // role drives both the persona and the optional model override below.
@@ -167,13 +170,17 @@ export class AiChatController {
       // so log it here before aborting the agent loop.
       if (!res.raw.writableEnded) {
         this.logger.warn(
-          'AI chat stream: client disconnected before completion; aborting turn',
+          `AI chat stream: client disconnected before completion after ${Date.now() - startedAt}ms; aborting turn`,
         );
         controller.abort();
       }
     };
     req.raw.once('close', onClose);
     res.raw.once('finish', () => req.raw.off('close', onClose));
+
+    this.logger.log(
+      `AI chat stream START chat=${body.chatId ?? 'new'} ua="${req.headers['user-agent'] ?? ''}"`,
+    );
 
     // Commit to streaming: hijack so Fastify stops managing the response and
     // the AI SDK can write the UI-message stream directly to the Node socket.

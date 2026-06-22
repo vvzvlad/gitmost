@@ -133,6 +133,19 @@ export class AiService {
       throw new AiNotConfiguredException();
     }
 
+    // Diagnostic toggle: when AI_BYPASS_RESILIENT_FETCH=true the chat model
+    // bypasses the resilient aiFetch (custom undici RetryAgent) and uses the
+    // default global fetch. Isolates whether the streaming chat hang comes from
+    // the custom transport vs the request shape. Reversible via env, no rebuild.
+    const bypassResilientFetch =
+      process.env.AI_BYPASS_RESILIENT_FETCH === 'true';
+    if (bypassResilientFetch) {
+      this.logger.warn(
+        'AI chat: resilient aiFetch BYPASSED for chat model ' +
+          '(AI_BYPASS_RESILIENT_FETCH=true; using default fetch)',
+      );
+    }
+
     switch (driver) {
       case 'openai':
         // baseURL (when set) covers openai-compatible endpoints. Use Chat
@@ -141,14 +154,22 @@ export class AiService {
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
-        return createOpenAI({ apiKey, baseURL: baseUrl, fetch: aiFetch }).chat(
-          chatModel,
-        );
+        return createOpenAI({
+          apiKey,
+          baseURL: baseUrl,
+          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
+        }).chat(chatModel);
       case 'gemini':
-        return createGoogleGenerativeAI({ apiKey, fetch: aiFetch })(chatModel);
+        return createGoogleGenerativeAI({
+          apiKey,
+          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
+        })(chatModel);
       case 'ollama':
         // Ollama needs no API key.
-        return createOllama({ baseURL: baseUrl, fetch: aiFetch })(chatModel);
+        return createOllama({
+          baseURL: baseUrl,
+          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
+        })(chatModel);
       default:
         throw new AiNotConfiguredException();
     }
