@@ -26,6 +26,10 @@ interface BuildChatMarkdownArgs {
   title: string | null;
   chatId: string;
   rows: IAiChatMessageRow[];
+  /** In-progress, not-yet-persisted live messages (the current streaming
+   *  turn) to append after the persisted rows. `generating: true` adds a
+   *  note that the message is still being produced. */
+  pending?: PendingMessage[];
   t: Translate;
 }
 
@@ -33,6 +37,13 @@ interface BuildChatMarkdownArgs {
 interface TextLikePart {
   type: string;
   text?: string;
+}
+
+/** A live, not-yet-persisted message (current streaming turn) to append. */
+interface PendingMessage {
+  role: "user" | "assistant" | string;
+  parts: TextLikePart[];
+  generating: boolean;
 }
 
 /**
@@ -72,12 +83,55 @@ function rowTokens(usage: {
   );
 }
 
+/** Render one message's UIMessage parts into an array of Markdown blocks
+ *  (text blocks + tool blocks). Mirrors MessageItem's part handling. */
+function renderMessageParts(parts: TextLikePart[], t: Translate): string[] {
+  const out: string[] = [];
+
+  for (const part of parts) {
+    if (part.type === "text") {
+      const text = (part.text ?? "").trim();
+      // Skip empty/whitespace-only text parts (matches MessageItem).
+      if (text.length > 0) out.push(text);
+      continue;
+    }
+
+    const isToolPart =
+      part.type.startsWith("tool-") || part.type === "dynamic-tool";
+    if (!isToolPart) continue;
+
+    const tp = part as unknown as ToolUiPart;
+    const name = getToolName(tp);
+    const { key, values } = toolLabelKey(name);
+    const label = t(key, values);
+    const state = toolRunState(tp.state);
+
+    const toolLines: string[] = [
+      `**Tool: ${label}** (\`${name}\`) — ${state}`,
+    ];
+    if (tp.input !== undefined) {
+      toolLines.push("Input:");
+      toolLines.push(fence(stringify(tp.input), "json"));
+    }
+    if (tp.output !== undefined) {
+      toolLines.push("Output:");
+      toolLines.push(fence(stringify(tp.output), "json"));
+    }
+    if (tp.errorText) {
+      toolLines.push(`**Error:** ${tp.errorText}`);
+    }
+    out.push(toolLines.join("\n\n"));
+  }
+
+  return out;
+}
+
 /**
  * Serialize a chat to a Markdown string. Pure (apart from `new Date()` for the
  * export timestamp), so it is straightforward to unit-test.
  */
 export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
-  const { title, chatId, rows, t } = args;
+  const { title, chatId, rows, pending, t } = args;
   const blocks: string[] = [];
 
   const heading = (title ?? "").trim() || t("Untitled chat");
@@ -91,7 +145,7 @@ export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
   const meta = [
     `- Chat ID: \`${chatId}\``,
     `- Exported: ${new Date().toISOString()}`,
-    `- Messages: ${rows.length}`,
+    `- Messages: ${rows.length + (pending?.length ?? 0)}`,
   ];
   if (totalTokens > 0) meta.push(`- Total tokens: ${totalTokens}`);
   blocks.push(meta.join("\n"));
@@ -112,40 +166,7 @@ export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
         ? (row.metadata.parts as TextLikePart[])
         : [{ type: "text", text: row.content ?? "" }];
 
-    for (const part of parts) {
-      if (part.type === "text") {
-        const text = (part.text ?? "").trim();
-        // Skip empty/whitespace-only text parts (matches MessageItem).
-        if (text.length > 0) blocks.push(text);
-        continue;
-      }
-
-      const isToolPart =
-        part.type.startsWith("tool-") || part.type === "dynamic-tool";
-      if (!isToolPart) continue;
-
-      const tp = part as unknown as ToolUiPart;
-      const name = getToolName(tp);
-      const { key, values } = toolLabelKey(name);
-      const label = t(key, values);
-      const state = toolRunState(tp.state);
-
-      const toolLines: string[] = [
-        `**Tool: ${label}** (\`${name}\`) — ${state}`,
-      ];
-      if (tp.input !== undefined) {
-        toolLines.push("Input:");
-        toolLines.push(fence(stringify(tp.input), "json"));
-      }
-      if (tp.output !== undefined) {
-        toolLines.push("Output:");
-        toolLines.push(fence(stringify(tp.output), "json"));
-      }
-      if (tp.errorText) {
-        toolLines.push(`**Error:** ${tp.errorText}`);
-      }
-      blocks.push(toolLines.join("\n\n"));
-    }
+    blocks.push(...renderMessageParts(parts, t));
 
     if (row.metadata?.error) {
       blocks.push(`**⚠️ Error:** ${row.metadata.error}`);
@@ -156,6 +177,28 @@ export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
       const total = usage.totalTokens ?? rowTokens(usage);
       blocks.push(
         `_Tokens — in: ${usage.inputTokens ?? "?"}, out: ${usage.outputTokens ?? "?"}, total: ${total}_`,
+      );
+    }
+  });
+
+  // Append the in-progress, not-yet-persisted live messages (the current
+  // streaming turn) after the persisted rows. Heading numbering CONTINUES from
+  // the persisted rows. A `generating` assistant gets a note that the captured
+  // response is partial; pending messages carry no usage/token footer yet.
+  (pending ?? []).forEach((message, p) => {
+    blocks.push("---");
+
+    const num = rows.length + p + 1;
+    const roleLabel = message.role === "assistant" ? t("AI agent") : t("You");
+    blocks.push(`## ${num}. ${roleLabel}`);
+
+    blocks.push(...renderMessageParts(message.parts, t));
+
+    // A generating assistant may have empty/no parts yet — still emit the
+    // heading (above) and this note so the export shows the in-progress turn.
+    if (message.generating === true) {
+      blocks.push(
+        "_⏳ This message is still being generated — the export captured a partial, in-progress response._",
       );
     }
   });

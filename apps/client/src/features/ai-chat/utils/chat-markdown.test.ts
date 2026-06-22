@@ -315,3 +315,126 @@ describe("buildChatMarkdown — token totals", () => {
     expect(md).toContain("- Total tokens: 99");
   });
 });
+
+describe("buildChatMarkdown — pending / in-progress messages", () => {
+  it("continues the heading numbering after the persisted rows", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "persisted" })],
+      pending: [
+        {
+          role: "user",
+          parts: [{ type: "text", text: "live question" }],
+          generating: false,
+        },
+        {
+          role: "assistant",
+          parts: [{ type: "text", text: "live answer" }],
+          generating: true,
+        },
+      ],
+      t,
+    });
+    expect(md).toContain("## 1. You");
+    expect(md).toContain("## 2. You");
+    expect(md).toContain("## 3. AI agent");
+    expect(md).toContain("live question");
+    expect(md).toContain("live answer");
+  });
+
+  it("flags a generating assistant pending message as still being generated", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "persisted" })],
+      pending: [
+        {
+          role: "assistant",
+          parts: [{ type: "text", text: "partial reply" }],
+          generating: true,
+        },
+      ],
+      t,
+    });
+    expect(md).toContain("partial reply");
+    expect(md).toContain("still being generated");
+  });
+
+  it("renders a non-generating user pending message without the note", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "persisted" })],
+      pending: [
+        {
+          role: "user",
+          parts: [{ type: "text", text: "my live message" }],
+          generating: false,
+        },
+      ],
+      t,
+    });
+    expect(md).toContain("my live message");
+    expect(md).not.toContain("still being generated");
+  });
+
+  it("includes the pending messages in the metadata message count", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({ role: "user", content: "a" }),
+        row({ role: "assistant", content: "b" }),
+      ],
+      pending: [
+        {
+          role: "user",
+          parts: [{ type: "text", text: "c" }],
+          generating: false,
+        },
+        {
+          role: "assistant",
+          parts: [{ type: "text", text: "d" }],
+          generating: true,
+        },
+      ],
+      t,
+    });
+    // 2 persisted rows + 2 pending = 4.
+    expect(md).toContain("- Messages: 4");
+  });
+
+  it("emits the heading and note for a generating assistant with empty parts", () => {
+    expect(() =>
+      buildChatMarkdown({
+        title: "t",
+        chatId: "c",
+        rows: [row({ role: "user", content: "persisted" })],
+        pending: [
+          {
+            role: "assistant",
+            parts: [],
+            generating: true,
+          },
+        ],
+        t,
+      }),
+    ).not.toThrow();
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "persisted" })],
+      pending: [
+        {
+          role: "assistant",
+          parts: [],
+          generating: true,
+        },
+      ],
+      t,
+    });
+    expect(md).toContain("## 2. AI agent");
+    expect(md).toContain("still being generated");
+  });
+});

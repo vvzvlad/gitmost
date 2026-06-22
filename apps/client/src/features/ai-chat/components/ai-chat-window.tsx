@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { generateId } from "ai";
+import { type UIMessage } from "@ai-sdk/react";
 import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
@@ -171,6 +172,14 @@ export default function AiChatWindow() {
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
+  // Live snapshot of the active thread's useChat state, kept up to date by
+  // ChatThread. Lets the export include the in-progress (not-yet-persisted)
+  // streaming turn. A ref avoids re-rendering this window on every token.
+  const liveThreadRef = useRef<{ messages: UIMessage[]; isStreaming: boolean }>({
+    messages: [],
+    isStreaming: false,
+  });
+
   // The page the user is currently viewing. AiChatWindow lives in a pathless
   // parent layout route, so useParams() can't see :pageSlug. Match the full
   // pathname against the authenticated page route instead so "the current page"
@@ -259,10 +268,27 @@ export default function AiChatWindow() {
   // feedback.
   const handleCopy = useCallback(() => {
     if (!activeChatId || !messageRows || messageRows.length === 0) return;
+    // While the active thread is streaming, the current user message and the
+    // in-progress assistant reply are NOT yet in messageRows (the persisted
+    // query is only refetched after the turn finishes). Pull the live tail —
+    // messages whose id is not among the persisted rows — and append them,
+    // flagging the streaming assistant message as still generating.
+    const live = liveThreadRef.current;
+    const rowIds = new Set(messageRows.map((r) => r.id));
+    const pending = live.isStreaming
+      ? live.messages
+          .filter((m) => !rowIds.has(m.id))
+          .map((m) => ({
+            role: m.role,
+            parts: (m.parts ?? []) as { type: string; text?: string }[],
+            generating: m.role === "assistant",
+          }))
+      : [];
     const markdown = buildChatMarkdown({
       title: activeChat?.title ?? null,
       chatId: activeChatId,
       rows: messageRows,
+      pending,
       t,
     });
     clipboard.copy(markdown);
@@ -657,6 +683,7 @@ export default function AiChatWindow() {
               onRolePicked={(role) => setSelectedRoleId(role.id)}
               assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
+              liveStateRef={liveThreadRef}
             />
           )}
         </div>

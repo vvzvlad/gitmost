@@ -1,4 +1,11 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { generateId } from "ai";
 import { ActionIcon, Box, Group, Stack, Text } from "@mantine/core";
 import { IconClockHour4, IconX } from "@tabler/icons-react";
@@ -52,6 +59,12 @@ interface ChatThreadProps {
   /** Called when a turn finishes; the parent refreshes the chat list and, for
    *  a new chat, adopts the freshly created chat id. */
   onTurnFinished: () => void;
+  /** Parent-owned ref that this thread keeps updated with its live useChat
+   *  snapshot (full message list + streaming flag), so the header's
+   *  "Copy chat" export can include the in-progress, not-yet-persisted
+   *  assistant message. A ref (not state) avoids re-rendering the parent on
+   *  every streamed delta. */
+  liveStateRef?: MutableRefObject<{ messages: UIMessage[]; isStreaming: boolean }>;
 }
 
 /**
@@ -90,6 +103,7 @@ export default function ChatThread({
   onRolePicked,
   assistantName,
   onTurnFinished,
+  liveStateRef,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -248,6 +262,19 @@ export default function ChatThread({
   sendMessageRef.current = sendMessage;
 
   const isStreaming = status === "submitted" || status === "streaming";
+
+  // Mirror the live useChat snapshot into the parent-owned ref so the export
+  // (handled in AiChatWindow) can include the in-progress streaming turn. The
+  // cleanup clears the ref on unmount so a thread torn down by `key` on chat
+  // switch can't leak its (possibly still-streaming) tail into the next chat's
+  // export before the new thread's effect repopulates the ref.
+  useEffect(() => {
+    if (!liveStateRef) return;
+    liveStateRef.current = { messages, isStreaming };
+    return () => {
+      liveStateRef.current = { messages: [], isStreaming: false };
+    };
+  }, [liveStateRef, messages, isStreaming]);
 
   // Classify the turn error into a heading + detail so the banner names the cause
   // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
