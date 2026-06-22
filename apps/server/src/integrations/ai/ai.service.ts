@@ -14,6 +14,7 @@ import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
+import { aiFetch } from './ai-http';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -140,12 +141,14 @@ export class AiService {
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
-        return createOpenAI({ apiKey, baseURL: baseUrl }).chat(chatModel);
+        return createOpenAI({ apiKey, baseURL: baseUrl, fetch: aiFetch }).chat(
+          chatModel,
+        );
       case 'gemini':
-        return createGoogleGenerativeAI({ apiKey })(chatModel);
+        return createGoogleGenerativeAI({ apiKey, fetch: aiFetch })(chatModel);
       case 'ollama':
         // Ollama needs no API key.
-        return createOllama({ baseURL: baseUrl })(chatModel);
+        return createOllama({ baseURL: baseUrl, fetch: aiFetch })(chatModel);
       default:
         throw new AiNotConfiguredException();
     }
@@ -180,16 +183,19 @@ export class AiService {
         return createOpenAI({
           apiKey: cfg.embeddingApiKey,
           baseURL: cfg.embeddingBaseUrl,
+          fetch: aiFetch,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'gemini':
         return createGoogleGenerativeAI({
           apiKey: cfg.embeddingApiKey,
+          fetch: aiFetch,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'ollama':
         // Ollama needs no API key (e.g. nomic-embed-text).
-        return createOllama({ baseURL: cfg.embeddingBaseUrl }).textEmbeddingModel(
-          cfg.embeddingModel,
-        );
+        return createOllama({
+          baseURL: cfg.embeddingBaseUrl,
+          fetch: aiFetch,
+        }).textEmbeddingModel(cfg.embeddingModel);
       default:
         throw new AiEmbeddingNotConfiguredException();
     }
@@ -235,6 +241,7 @@ export class AiService {
     const model = createOpenAI({
       apiKey: cfg.sttApiKey ?? 'unused',
       baseURL,
+      fetch: aiFetch,
     }).transcription(cfg.sttModel);
     const { text } = await transcribe({
       model,
@@ -268,7 +275,7 @@ export class AiService {
       );
     }
     const url = `${baseURL.replace(/\/$/, '')}/audio/transcriptions`;
-    const res = await fetch(url, {
+    const res = await aiFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
