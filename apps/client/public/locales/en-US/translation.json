@@ -1237,6 +1237,8 @@
   "No microphone found": "No microphone found",
   "Could not start recording": "Could not start recording",
   "Transcription failed": "Transcription failed",
+  "Transcribe": "Transcribe",
+  "No speech detected": "No speech detected",
   "Voice dictation is not configured": "Voice dictation is not configured",
   "Microphone is unavailable or already in use": "Microphone is unavailable or already in use",
   "Audio recording is not available in this browser/context": "Audio recording is not available in this browser/context",
