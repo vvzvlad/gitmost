@@ -1,7 +1,7 @@
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { generateId } from "ai";
-import { Alert, Box, Stack } from "@mantine/core";
-import { IconAlertTriangle } from "@tabler/icons-react";
+import { ActionIcon, Alert, Box, Group, Stack, Text } from "@mantine/core";
+import { IconAlertTriangle, IconClockHour4, IconX } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
@@ -13,6 +13,12 @@ import {
   IAiRole,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
+import {
+  dequeue,
+  enqueueMessage,
+  removeQueuedById,
+  type QueuedMessage,
+} from "@/features/ai-chat/utils/queue-helpers.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 /** The page the user is currently viewing, sent as chat context. */
@@ -137,6 +143,48 @@ export default function ChatThread({
   // prepareSendMessagesRequest), so this purely-client store key can stay fixed.
   const chatStoreId = stableIdRef.current;
 
+  // Pending messages the user composed WHILE a turn was streaming. They are sent
+  // automatically, FIFO, on successful turn completion (`onFinish`). The queue is
+  // LOCAL state so it is scoped to this conversation: it is cleared when the user
+  // deliberately switches chat / starts a new chat (the parent remounts this via
+  // `key`), but it SURVIVES in-place new-chat id adoption (no remount), so a
+  // message queued during a brand-new chat's first turn is not lost. On Stop or
+  // error the queue is intentionally preserved (onFinish does not fire then) so
+  // the user decides what to do with the pending messages.
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  // Mirror the queue in a ref so the `onFinish` flush always reads the latest
+  // queue without a stale closure; `setQueue` updates BOTH the ref and the state.
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  const setQueue = useCallback((next: QueuedMessage[]) => {
+    queuedRef.current = next;
+    setQueued(next);
+  }, []);
+
+  // Capture the latest `sendMessage` (returned by useChat below) so the flush
+  // helper can call the current instance from the stable `onFinish` callback.
+  const sendMessageRef = useRef<((m: { text: string }) => void) | null>(null);
+
+  // FIFO dequeue + send the next queued message (no-op when the queue is empty).
+  const flushNext = useCallback(() => {
+    const { head, rest } = dequeue(queuedRef.current);
+    if (!head) return;
+    setQueue(rest);
+    sendMessageRef.current?.({ text: head.text });
+  }, [setQueue]);
+
+  const enqueue = useCallback(
+    (text: string) => {
+      setQueue(enqueueMessage(queuedRef.current, { id: generateId(), text }));
+    },
+    [setQueue],
+  );
+  const removeQueued = useCallback(
+    (id: string) => {
+      setQueue(removeQueuedById(queuedRef.current, id));
+    },
+    [setQueue],
+  );
+
   const transport = useMemo(
     () =>
       new DefaultChatTransport<UIMessage>({
@@ -169,13 +217,24 @@ export default function ChatThread({
     id: chatStoreId,
     messages: initialMessages,
     transport,
-    onFinish: () => onTurnFinished(),
-    // In AI SDK v6 `onFinish` does NOT fire when the stream errors, so a brand
-    // new chat that fails on its first turn would never invalidate the chat list
-    // nor adopt the server-created chat id (the server still creates the row and
-    // saves the error message). Run the same post-turn path on error so the
-    // failed chat appears in history immediately instead of after a manual
-    // refresh. The error itself is still surfaced via `error` below.
+    // `onFinish` (ai@6 useChat) fires from a `finally` on EVERY terminal outcome
+    // — success, user Stop/abort (`isAbort`), network drop (`isDisconnect`), and
+    // stream error (`isError`). Keep calling `onTurnFinished()` on all of them
+    // (chat-list refresh + new-chat id adoption must happen even on a failed
+    // first turn), but flush the pending queue ONLY on a clean finish: auto-
+    // sending after the user hit Stop — or blindly retrying after a failure —
+    // would be wrong, so on Stop/disconnect/error the queue is left intact for
+    // the user to decide.
+    onFinish: ({ isAbort, isDisconnect, isError }) => {
+      onTurnFinished();
+      if (isAbort || isDisconnect || isError) return;
+      flushNext();
+    },
+    // `onError` runs in addition to `onFinish` (which ai@6 also calls on error).
+    // Log the raw failure here for devtools; the UI shows a friendly classified
+    // banner via `error` below. We still call `onTurnFinished()` (idempotent with
+    // the onFinish call) so a brand-new chat that fails its first turn is adopted
+    // and the chat list refreshes immediately rather than after a manual refresh.
     onError: (streamError) => {
       // Surface the raw failure in the browser console (devtools) for debugging;
       // the UI separately shows a friendly classified banner (see errorView).
@@ -183,6 +242,9 @@ export default function ChatThread({
       onTurnFinished();
     },
   });
+
+  // Keep the flush helper pointed at the latest sendMessage instance.
+  sendMessageRef.current = sendMessage;
 
   const isStreaming = status === "submitted" || status === "streaming";
 
@@ -227,8 +289,35 @@ export default function ChatThread({
       )}
 
       <Stack gap={0} className={classes.inputWrapper}>
+        {queued.length > 0 && (
+          <Stack gap={4} className={classes.queuedList}>
+            {queued.map((m) => (
+              <Group
+                key={m.id}
+                gap={6}
+                wrap="nowrap"
+                className={classes.queuedItem}
+              >
+                <IconClockHour4 size={14} className={classes.queuedIcon} />
+                <Text size="xs" lineClamp={2} className={classes.queuedText}>
+                  {m.text}
+                </Text>
+                <ActionIcon
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  onClick={() => removeQueued(m.id)}
+                  aria-label={t("Remove queued message")}
+                >
+                  <IconX size={12} />
+                </ActionIcon>
+              </Group>
+            ))}
+          </Stack>
+        )}
         <ChatInput
           onSend={(text) => sendMessage({ text })}
+          onQueue={enqueue}
           onStop={stop}
           isStreaming={isStreaming}
         />

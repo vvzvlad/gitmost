@@ -128,3 +128,29 @@
 .conversationItemActive {
     background: var(--mantine-color-gray-light);
 }
+
+/* Pending messages queued by the user while a turn is still streaming. They
+   are sent automatically, FIFO, once the current turn finishes. */
+.queuedList {
+    padding-bottom: var(--mantine-spacing-xs);
+}
+
+.queuedItem {
+    background: var(--mantine-color-gray-light);
+    border-radius: var(--mantine-radius-sm);
+    padding: 4px 8px;
+}
+
+.queuedIcon {
+    flex: none;
+    color: var(--mantine-color-dimmed);
+}
+
+.queuedText {
+    flex: 1;
+    min-width: 0;
+    color: var(--mantine-color-dimmed);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
