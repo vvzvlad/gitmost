@@ -44,9 +44,10 @@ export default function AvatarUploader({
 
     // Validate file type. The `accept` attribute only filters the dialog;
     // a user can still select a non-image file, which previously failed
-    // silently. Surface a visible error instead (issue #133).
-    const acceptedTypes = ["image/png", "image/jpeg", "image/jpg"];
-    if (!acceptedTypes.includes(file.type)) {
+    // silently. Surface a visible error instead (issue #133). Accept any
+    // image/* MIME (png, jpeg, webp, gif, svg, ...) so we don't narrow below
+    // what the server accepts; only genuinely non-image files are rejected.
+    if (!file.type.startsWith("image/")) {
       notifications.show({
         message: t("Unsupported image type"),
         color: "red",
@@ -135,7 +136,7 @@ export default function AvatarUploader({
         type="file"
         ref={fileInputRef}
         onChange={handleFileInputChange}
-        accept="image/png,image/jpeg,image/jpg"
+        accept="image/*"
         aria-label={ariaLabel}
         tabIndex={-1}
         style={{ display: "none" }}

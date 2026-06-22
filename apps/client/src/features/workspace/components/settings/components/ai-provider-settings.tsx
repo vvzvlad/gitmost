@@ -228,11 +228,10 @@ export default function AiProviderSettings() {
   // unmount because the deadline state goes away with the component.
   useEffect(() => {
     if (reindexDeadline === null) return;
-    if (
-      settings &&
-      settings.totalPages > 0 &&
-      settings.indexedPages >= settings.totalPages
-    ) {
+    // "Done" matches the refetchInterval stop condition (indexed >= total),
+    // including an empty workspace (0 >= 0), so the deadline clears promptly
+    // instead of waiting out the cap.
+    if (settings && settings.indexedPages >= settings.totalPages) {
       setReindexDeadline(null);
       return;
     }

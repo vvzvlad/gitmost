@@ -1149,7 +1149,6 @@
   "Thinking…": "Thinking…",
   "The assistant is unavailable right now. Please try again.": "The assistant is unavailable right now. Please try again.",
   "Public share assistant": "Public share assistant",
-  "Enabled": "Enabled",
   "Let anonymous visitors of public shares ask an AI assistant scoped to that share's pages. You pay for the tokens.": "Let anonymous visitors of public shares ask an AI assistant scoped to that share's pages. You pay for the tokens.",
   "Public assistant model": "Public assistant model",
   "Defaults to the chat model": "Defaults to the chat model",
@@ -1278,5 +1277,7 @@
   "Embeds run inside a sandboxed iframe with a separate origin, so they cannot read or modify the page they are embedded in.": "Embeds run inside a sandboxed iframe with a separate origin, so they cannot read or modify the page they are embedded in.",
   "Turning this off hides existing embeds (they render as a disabled placeholder) and stops serving them on public share pages.": "Turning this off hides existing embeds (they render as a disabled placeholder) and stops serving them on public share pages.",
   "Analytics / tracker": "Analytics / tracker",
-  "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.": "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only."
+  "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.": "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.",
+  "Go to login page": "Go to login page",
+  "Move to space": "Move to space"
 }
