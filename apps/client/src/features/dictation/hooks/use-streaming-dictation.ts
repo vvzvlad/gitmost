@@ -280,9 +280,14 @@ export function useStreamingDictation(
         // positive threshold, per Silero guidance).
         negativeSpeechThreshold: 0.35,
         // Silence to wait through before ending a segment (the "don't cut
-        // immediately" delay) — ~0.6s. NOTE: vad-web 0.0.30 takes this in ms, not
-        // frames (one Silero frame is ~32ms at 16k).
-        redemptionMs: 640,
+        // immediately" delay). Each ended segment is ONE transcription request, so
+        // cutting on short gaps over-fragments normal speech into a flood of tiny
+        // requests (and trips the server's per-user rate limit). Wait ~1.5s — a
+        // real sentence/thought boundary — so request count tracks actual pauses,
+        // not every inter-word gap. Higher = fewer requests but more latency
+        // before text appears. NOTE: vad-web 0.0.30 takes this in ms, not frames
+        // (one Silero frame is ~32ms at 16k).
+        redemptionMs: 1500,
         // Audio kept before speech start (left padding so the first word isn't
         // clipped) — ~0.3s.
         preSpeechPadMs: 320,
