@@ -16,11 +16,12 @@ import { getHTMLFromFragment } from './getHTMLFromFragment';
  * ```
  */
 export function generateHTML(doc: JSONContent, extensions: Extensions): string {
-  if (typeof window !== 'undefined') {
-    throw new Error(
-      'generateHTML can only be used in a Node environment\nIf you want to use this in a browser environment, use the `@tiptap/html` import instead.',
-    );
-  }
+  // No global-`window` guard here: this helper is server-only and self-contained
+  // (it serializes via `getHTMLFromFragment`, which creates its own happy-dom
+  // `Window` and never reads the global `window`). A guard on `typeof window`
+  // would be a false positive whenever a global `window` is injected into the
+  // Node process (e.g. by the in-process MCP module, which sets `global.window`
+  // via jsdom).
 
   const schema = getSchema(extensions);
   const contentNode = Node.fromJSON(schema, doc);

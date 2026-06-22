@@ -21,11 +21,11 @@ export function generateJSON(
   extensions: Extensions,
   options?: ParseOptions,
 ): Record<string, any> {
-  if (typeof window !== 'undefined') {
-    throw new Error(
-      'generateJSON can only be used in a Node environment\nIf you want to use this in a browser environment, use the `@tiptap/html` import instead.',
-    );
-  }
+  // No global-`window` guard here: this helper is server-only and self-contained
+  // (it creates its own happy-dom `Window` below and never reads the global
+  // `window`). A guard on `typeof window` would be a false positive whenever a
+  // global `window` is injected into the Node process (e.g. by the in-process
+  // MCP module, which sets `global.window` via jsdom).
 
   const localWindow = new Window();
   const localDOMParser = new localWindow.DOMParser();

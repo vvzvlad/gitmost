@@ -732,7 +732,9 @@ export class DocmostClient {
     // Always fetch subpages to provide context to the agent
     let subpages: any[] = [];
     try {
-      subpages = await this.listSidebarPages(resultData.spaceId, pageId);
+      // `pageId` may be a slugId, but the sidebar-pages endpoint requires the
+      // UUID; `resultData.id` holds the resolved UUID returned by getPageRaw.
+      subpages = await this.listSidebarPages(resultData.spaceId, resultData.id);
     } catch (e: any) {
       console.warn("Failed to fetch subpages:", e);
     }
