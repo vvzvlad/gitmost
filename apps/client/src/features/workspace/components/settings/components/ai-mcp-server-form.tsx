@@ -168,6 +168,11 @@ export default function AiMcpServerForm({
 
       <PasswordInput
         label={t("Authorization header")}
+        // Clarify that the value is sent verbatim as the Authorization header,
+        // so the user supplies the full scheme (no implicit Bearer prefix).
+        description={t(
+          "Sent verbatim as the value of the Authorization header (e.g. \"Bearer <token>\" or \"Basic <base64>\").",
+        )}
         // Placeholder hints whether headers are stored; the value is never shown.
         placeholder={hasHeaders ? t("•••• set") : ""}
         autoComplete="off"
