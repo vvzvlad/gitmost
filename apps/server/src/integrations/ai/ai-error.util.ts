@@ -47,6 +47,20 @@ export function describeProviderError(
   return label ? `${label} — ${detail}` : detail;
 }
 
+/**
+ * Whether a provider error is FATAL for an ENTIRE batch operation rather than
+ * specific to one item. Authentication (401/403 — invalid or missing API key)
+ * and billing (402 — insufficient credits/quota) failures recur identically on
+ * every subsequent request, so a bulk reindex should abort immediately instead
+ * of issuing hundreds of doomed calls. A 429 rate limit is intentionally NOT
+ * fatal: it is transient and better handled by per-item isolation / backoff.
+ */
+export function isFatalProviderError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const status = (err as { statusCode?: number }).statusCode;
+  return status === 401 || status === 403 || status === 402;
+}
+
 // Map a small set of well-known provider HTTP statuses to a clear,
 // human-readable cause. Returns null for anything else so the existing
 // "<status>: <message> | response body: …" output is preserved unchanged.

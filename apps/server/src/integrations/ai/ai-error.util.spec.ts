@@ -1,4 +1,4 @@
-import { describeProviderError } from './ai-error.util';
+import { describeProviderError, isFatalProviderError } from './ai-error.util';
 
 /**
  * Unit tests for describeProviderError: the shared formatter used both for the
@@ -127,5 +127,60 @@ describe('describeProviderError', () => {
     expect(describeProviderError({}, 'AI stream error')).toBe('AI stream error');
     // An object carrying only unrelated keys is still treated as message-less.
     expect(describeProviderError({ foo: 'bar' } as never)).toBe('Unknown error');
+  });
+});
+
+/**
+ * Unit tests for isFatalProviderError: the predicate that decides whether a
+ * provider error should abort an ENTIRE batch (bulk reindex) rather than be
+ * isolated per item. Authentication (401/403) and billing (402) recur
+ * identically on every request and are fatal; a 429 rate limit is transient and
+ * intentionally NOT fatal (handled by per-item isolation / backoff). Anything
+ * without a recognised numeric statusCode is non-fatal.
+ */
+describe('isFatalProviderError', () => {
+  it('returns true for authentication errors (401/403)', () => {
+    expect(isFatalProviderError({ statusCode: 401, message: 'User not found' })).toBe(
+      true,
+    );
+    expect(isFatalProviderError({ statusCode: 403, message: 'Forbidden' })).toBe(
+      true,
+    );
+  });
+
+  it('returns true for a billing error (402)', () => {
+    expect(
+      isFatalProviderError({ statusCode: 402, message: 'Payment Required' }),
+    ).toBe(true);
+  });
+
+  it('returns false for a 429 rate limit (transient, intentionally non-fatal)', () => {
+    expect(
+      isFatalProviderError({ statusCode: 429, message: 'Too Many Requests' }),
+    ).toBe(false);
+  });
+
+  it('returns false for a 500 server error', () => {
+    expect(isFatalProviderError({ statusCode: 500, message: 'Server error' })).toBe(
+      false,
+    );
+  });
+
+  it('returns false for an embedding timeout (plain Error, no statusCode)', () => {
+    expect(
+      isFatalProviderError(new Error('Embedding request timed out after 60000ms')),
+    ).toBe(false);
+  });
+
+  it('returns false for non-object errors (null/undefined/string/number)', () => {
+    expect(isFatalProviderError(null)).toBe(false);
+    expect(isFatalProviderError(undefined)).toBe(false);
+    expect(isFatalProviderError('boom')).toBe(false);
+    // A bare numeric 401 is NOT an object carrying a statusCode field.
+    expect(isFatalProviderError(401)).toBe(false);
+  });
+
+  it('returns false for an object without a statusCode', () => {
+    expect(isFatalProviderError({})).toBe(false);
   });
 });

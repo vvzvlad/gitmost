@@ -10,7 +10,10 @@ import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
 import { AiService } from '../../../integrations/ai/ai.service';
 import { AiEmbeddingNotConfiguredException } from '../../../integrations/ai/ai-embedding-not-configured.exception';
-import { describeProviderError } from '../../../integrations/ai/ai-error.util';
+import {
+  describeProviderError,
+  isFatalProviderError,
+} from '../../../integrations/ai/ai-error.util';
 import { jsonToText } from '../../../collaboration/collaboration.util';
 
 // NOTE: the `page_embeddings.embedding` column is now dimension-agnostic
@@ -229,8 +232,19 @@ export class EmbeddingIndexerService {
           );
         }
       } catch (err) {
-        // Per-page isolation: one failure (incl. an embedding timeout) must not
-        // abort the whole batch.
+        // A fatal provider error (invalid/missing key, no credits) recurs
+        // identically on EVERY remaining page. Abort the whole batch instead of
+        // issuing hundreds of doomed requests against the provider.
+        if (isFatalProviderError(err)) {
+          this.logger.error(
+            `reindexWorkspace: aborting at [${position}/${total}] for workspace ` +
+              `${workspaceId} — fatal provider error, remaining pages would fail ` +
+              `identically: ${describeProviderError(err)}`,
+          );
+          throw err;
+        }
+        // Per-page isolation: one non-fatal failure (incl. an embedding timeout)
+        // must not abort the whole batch.
         failed++;
         this.logger.error(
           `reindexWorkspace: [${position}/${total}] failed to reindex page ${pageId} ` +
