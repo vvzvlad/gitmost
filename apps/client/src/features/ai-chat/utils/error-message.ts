@@ -82,15 +82,27 @@ function classifyProviderError(msg: string): ErrorCategory | null {
   // status code is read from the start of the full string above.
   const head = msg.split(/\|\s*response body:/i)[0];
 
+  // The browser's OWN fetch-failure messages — WebKit/Safari "Load failed",
+  // Chrome "Failed to fetch", Firefox "NetworkError when attempting to fetch
+  // resource". These mean the streaming connection between the browser and THIS
+  // server (/api/ai-chat/stream) dropped mid-answer: the browser<->server link,
+  // NOT the server<->AI-provider link, so do NOT blame the provider. A failed
+  // fetch carries no status/body, so the browser has no further detail — the real
+  // cause is in the server logs (the stream controller logs the disconnect) and
+  // the reverse proxy (often buffering or timing out the long-lived SSE).
+  if (/failed to fetch|load failed|networkerror/i.test(head)) {
+    return {
+      title: "Lost connection to the server",
+      detail:
+        "The streaming connection to the server dropped before the answer finished. The browser reports no further detail — the cause is in the server logs and the reverse proxy (often buffering or timing out the stream). Reload and try again.",
+    };
+  }
   // Connection dropped / provider unreachable. ECONNRESET is the production case:
-  // the LLM socket was reset mid-stream. "terminated" is scoped to a connection/
-  // stream context so it does not match benign "... was terminated" messages.
-  // The browser's own fetch-failure messages also land here because they mean the
-  // SSE stream to /api/ai-chat/stream dropped mid-answer (e.g. a reverse proxy cut
-  // it): WebKit/Safari says "Load failed", Chrome "Failed to fetch", Firefox
-  // "NetworkError when attempting to fetch resource".
+  // the LLM socket was reset mid-stream (surfaced by the server's error
+  // formatter). "terminated" is scoped to a connection/stream context so it does
+  // not match benign "... was terminated" messages.
   if (
-    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|cannot connect|fetch failed|failed to fetch|load failed|networkerror|network error|connection (?:error|closed|reset|terminated)|stream terminated/i.test(
+    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|cannot connect|fetch failed|network error|connection (?:error|closed|reset|terminated)|stream terminated/i.test(
       head,
     )
   ) {
