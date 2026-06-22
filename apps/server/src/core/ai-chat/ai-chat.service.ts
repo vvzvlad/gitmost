@@ -512,8 +512,7 @@ export class AiChatService {
         // very first chunk — before any second tab can race a newer chat into the
         // list. This fixes the two-tab "adoption race" (#137) where a new chat in
         // tab A could adopt tab B's id and leak its turns into the wrong row.
-        messageMetadata: ({ part }) =>
-          part.type === 'start' ? { chatId } : undefined,
+        messageMetadata: ({ part }) => chatStreamStartMetadata(part, chatId),
         onError: (error: unknown) => {
           // Reuse the shared formatter so provider error formatting stays
           // unified between the log line and the streamed error message.
@@ -560,6 +559,21 @@ export class AiChatService {
       await this.aiChatRepo.update(chatId, { title }, workspaceId);
     }
   }
+}
+
+/**
+ * Compute the `messageMetadata` payload for the streamed assistant UI message.
+ * The AI SDK invokes `messageMetadata` on each stream part (ai@6); we attach the
+ * authoritative `chatId` ONLY on the `start` part so it reaches the client at the
+ * very first chunk (as `message.metadata.chatId`). The client adopts THAT id for a
+ * new chat instead of guessing the newest chat in its list — fixing the two-tab
+ * adoption race (#137). Returning undefined for any non-start part adds no metadata.
+ */
+export function chatStreamStartMetadata(
+  part: { type: string },
+  chatId: string,
+): { chatId: string } | undefined {
+  return part.type === 'start' ? { chatId } : undefined;
 }
 
 /** The last message with role 'user' from a useChat payload, if any. */

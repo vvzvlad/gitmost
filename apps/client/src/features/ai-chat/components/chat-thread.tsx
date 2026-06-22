@@ -269,9 +269,11 @@ export default function ChatThread({
     },
     // `onError` runs in addition to `onFinish` (which ai@6 also calls on error).
     // Log the raw failure here for devtools; the UI shows a friendly classified
-    // banner via `error` below. We still call `onTurnFinished()` (idempotent with
-    // the onFinish call) so a brand-new chat that fails its first turn is adopted
-    // and the chat list refreshes immediately rather than after a manual refresh.
+    // banner via `error` below. We still call `onTurnFinished()` with NO server id
+    // (idempotent with the onFinish call): for a brand-new chat that ARMS the
+    // bounded list-refetch fallback (adopt the single newly-appeared chat once the
+    // refetch lands); for an existing chat it just refreshes the chat list
+    // immediately rather than after a manual refresh.
     onError: (streamError) => {
       // Surface the raw failure in the browser console (devtools) for debugging;
       // the UI separately shows a friendly classified banner (see errorView).

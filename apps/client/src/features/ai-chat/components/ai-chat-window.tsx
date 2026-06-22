@@ -43,6 +43,10 @@ import ConversationList from "@/features/ai-chat/components/conversation-list.ts
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
 import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
 import {
+  resolveAdoptedChatId,
+  pickNewlyCreatedChatId,
+} from "@/features/ai-chat/utils/adopt-chat-id.ts";
+import {
   shouldCollapseOnOutsidePointer,
   isHeaderClick,
 } from "@/features/ai-chat/utils/collapse-helpers.ts";
@@ -138,6 +142,15 @@ export default function AiChatWindow() {
   // messages invalidation) never tears the live thread back down to the loader.
   const historyLoadedKeyRef = useRef<string | null>(null);
 
+  // Error-path fallback for new-chat id adoption. When a brand-new chat's first
+  // turn errors BEFORE the server's `start` chunk, no authoritative chatId ever
+  // reaches the client, so the primary metadata adoption cannot run. We then
+  // ARM this ref with a snapshot of the currently-known chat ids; once the list
+  // refetch lands with the just-created row, the fallback effect below adopts
+  // the SINGLE newly-appeared id (unambiguous — unlike the old items[0] guess).
+  // `null` = not armed.
+  const pendingNewChatRef = useRef<string[] | null>(null);
+
   // Mount key for ChatThread + the chat the currently-mounted thread represents.
   // `threadKey` normally tracks the active chat, so selecting a different chat
   // (incl. from page history) remounts and re-seeds. The ONE exception is
@@ -199,6 +212,8 @@ export default function AiChatWindow() {
     setDraft("");
     // Default the picker back to "Universal assistant" for the fresh chat.
     setSelectedRoleId(null);
+    // The user moved on — disarm any pending error-path adoption fallback.
+    pendingNewChatRef.current = null;
   }, [setActiveChatId, setDraft, setSelectedRoleId]);
 
   const selectChat = useCallback(
@@ -209,6 +224,8 @@ export default function AiChatWindow() {
       // Reset the card-picked role so a stale pick can't leak into the existing
       // chat's header/assistant-name (which prefers the chat's persisted role).
       setSelectedRoleId(null);
+      // The user moved on — disarm any pending error-path adoption fallback.
+      pendingNewChatRef.current = null;
     },
     [setActiveChatId, setDraft, setSelectedRoleId],
   );
@@ -222,17 +239,28 @@ export default function AiChatWindow() {
   // it (the two-tab adoption race, #137).
   const onTurnFinished = useCallback(
     (serverChatId?: string) => {
-      if (activeChatId === null && serverChatId) {
-        // In-place adoption: move the active chat AND the live-thread marker to
-        // the real id together, so the render-phase switch check below sees no
-        // "switch" and keeps the SAME mounted thread (its useChat already holds
-        // the just-finished turn, and its chatIdRef now mirrors the real id so
-        // the SECOND turn sends the correct chatId) instead of remounting and
-        // re-seeding from not-yet-persisted history. React's automatic batching
-        // inside this callback lands both updates in one render, so the guard
-        // never observes the new activeChatId with a stale liveThreadChatId.
-        setLiveThreadChatId(serverChatId);
-        setActiveChatId(serverChatId);
+      const adopted = resolveAdoptedChatId(activeChatId, serverChatId);
+      if (adopted) {
+        // PRIMARY path. In-place adoption: move the active chat AND the
+        // live-thread marker to the real id together, so the render-phase switch
+        // check below sees no "switch" and keeps the SAME mounted thread (its
+        // useChat already holds the just-finished turn, and its chatIdRef now
+        // mirrors the real id so the SECOND turn sends the correct chatId)
+        // instead of remounting and re-seeding from not-yet-persisted history.
+        // React's automatic batching inside this callback lands both updates in
+        // one render, so the guard never observes the new activeChatId with a
+        // stale liveThreadChatId.
+        setLiveThreadChatId(adopted);
+        setActiveChatId(adopted);
+        // Primary adoption won — disarm any previously-armed fallback.
+        pendingNewChatRef.current = null;
+      } else if (activeChatId === null) {
+        // FALLBACK path: a brand-new chat finished with NO server id (the first
+        // turn errored before the `start` chunk). Arm the bounded list-refetch
+        // fallback by snapshotting the currently-known chat ids. `chats` is still
+        // the pre-refetch list here, so the just-created row is NOT yet in it; the
+        // effect below adopts the single id that newly appears after the refetch.
+        pendingNewChatRef.current = chats?.items?.map((c) => c.id) ?? [];
       }
       queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
       // Re-sync the persisted message rows for the active chat so the Markdown
@@ -248,8 +276,33 @@ export default function AiChatWindow() {
         });
       }
     },
-    [activeChatId, queryClient, setActiveChatId],
+    [activeChatId, chats, queryClient, setActiveChatId],
   );
+
+  // FALLBACK resolver. Armed only by onTurnFinished when a brand-new chat's
+  // first turn errored before the `start` chunk (no authoritative id streamed).
+  // Once the per-user list refetch lands with the just-created row, adopt the
+  // SINGLE id that newly appeared relative to the pre-refetch snapshot. Adoption
+  // is IN PLACE (move liveThreadChatId + activeChatId together) exactly like the
+  // primary path, so the render-phase switch guard does not remount the thread.
+  useEffect(() => {
+    const before = pendingNewChatRef.current;
+    if (before === null || activeChatId !== null) return; // not armed / already adopted
+    const after = chats?.items?.map((c) => c.id) ?? [];
+    // Keep waiting until the list membership actually CHANGES (the refetch
+    // landed). A length compare would miss the change if another session
+    // concurrently deleted a chat in this same window (length stays equal while
+    // a new row was added); a set-membership compare is robust to that.
+    const beforeSet = new Set(before);
+    if (after.length === before.length && after.every((id) => beforeSet.has(id)))
+      return; // list not refetched yet — keep waiting
+    const adopted = pickNewlyCreatedChatId(before, after); // single new id, or null if ambiguous
+    pendingNewChatRef.current = null; // give up after one resolved refetch either way
+    if (adopted) {
+      setLiveThreadChatId(adopted);
+      setActiveChatId(adopted);
+    }
+  }, [chats, activeChatId, setActiveChatId]);
 
   // The active chat object (for its title) and an export gate: only enable the
   // export button when an existing chat with loaded persisted rows is active.
@@ -303,11 +356,15 @@ export default function AiChatWindow() {
     notifications.show({ message: t("Copied") });
   }, [activeChatId, messageRows, activeChat, clipboard, t]);
 
-  // NOTE: new-chat id adoption is no longer a heuristic effect. The server now
-  // reports the authoritative created chat id on the streamed assistant message
-  // metadata, and `onTurnFinished(serverChatId)` adopts THAT id in place — see
-  // above. The old "newest chat in the list" guess was removed because it raced
-  // a second tab's simultaneous new chat (#137).
+  // NOTE: new-chat id adoption has two paths, neither of which is the old
+  // "newest chat in the list" heuristic that raced a second tab (#137).
+  // PRIMARY: the server reports the authoritative created chat id on the streamed
+  // assistant message metadata, and `onTurnFinished(serverChatId)` adopts THAT id
+  // in place — see above. FALLBACK (only when the first turn errors before the
+  // `start` chunk, so no metadata id is streamed): adopt the SINGLE chat that
+  // newly appeared in the refetched per-user list relative to a pre-refetch
+  // snapshot taken when the failed turn finished — unambiguous, and it does not
+  // race a sibling chat the way `items[0]` did (see the fallback effect above).
 
   // Adjust the derived thread state during render when the active chat genuinely
   // changes — the React-sanctioned alternative to an effect (it re-renders before
