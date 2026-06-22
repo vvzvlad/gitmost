@@ -19,7 +19,6 @@ import {
 import ExportModal from "@/components/common/export-modal";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
 import CopyPageModal from "@/features/page/components/copy-page-modal.tsx";
-import { useDeletePageModal } from "@/features/page/hooks/use-delete-page-modal.tsx";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { duplicatePage } from "@/features/page/services/page-service.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
@@ -47,7 +46,6 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const { t } = useTranslation();
   const clipboard = useClipboard({ timeout: 500 });
   const { spaceSlug } = useParams();
-  const { openDeleteModal } = useDeletePageModal();
   const { handleDelete } = useTreeMutation(node.spaceId);
   const [data, setData] = useAtom(treeDataAtom);
   const emit = useQueryEmit();
@@ -257,9 +255,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  openDeleteModal({
-                    onConfirm: () => handleDelete(node.id),
-                  });
+                  handleDelete(node.id);
                 }}
               >
                 {t("Move to trash")}

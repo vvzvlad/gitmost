@@ -35,11 +35,12 @@ import { buildTree } from "@/features/page/tree/utils";
 import { useEffect } from "react";
 import { validate as isValidUuid } from "uuid";
 import { useTranslation } from "react-i18next";
-import { useAtom } from "jotai";
+import { useSetAtom, useStore } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { SpaceTreeNode } from "@/features/page/tree/types";
 import { useQueryEmit } from "@/features/websocket/use-query-emit";
+import { moveToTrashNotificationMessage } from "@/features/page/components/move-to-trash-notification";
 
 export function usePageQuery(
   pageInput: Partial<IPageInput>,
@@ -118,10 +119,29 @@ export function useUpdatePageMutation() {
 
 export function useRemovePageMutation() {
   const { t } = useTranslation();
+  // Reuse the existing restore flow for the toast's Undo action. Its side
+  // effects (tree re-insert, cache updates, websocket emit, success toast) live
+  // in its useMutation-level onSuccess, so they still run after the originating
+  // tree node / page header has unmounted by the time Undo is clicked.
+  const restorePageMutation = useRestorePageMutation();
   return useMutation({
     mutationFn: (pageId: string) => deletePage(pageId, false),
     onSuccess: (_, pageId) => {
-      notifications.show({ message: t("Page moved to trash") });
+      // Replace the former pre-delete confirmation dialog with an Undo action
+      // surfaced directly in the "moved to trash" toast.
+      const notificationId = `page-moved-to-trash-${pageId}`;
+      notifications.show({
+        id: notificationId,
+        autoClose: 8000,
+        message: moveToTrashNotificationMessage({
+          message: t("Page moved to trash"),
+          undoLabel: t("Undo"),
+          onUndo: () => {
+            notifications.hide(notificationId);
+            restorePageMutation.mutate(pageId);
+          },
+        }),
+      });
 
       // Stamp deletedAt so a re-visit shows the trash banner, not stale state.
       const cached = queryClient.getQueryData<IPage>(["pages", pageId]);
@@ -173,7 +193,8 @@ export function useMovePageMutation() {
 
 export function useRestorePageMutation() {
   const { t } = useTranslation();
-  const [treeData, setTreeData] = useAtom(treeDataAtom);
+  const setTreeData = useSetAtom(treeDataAtom);
+  const store = useStore();
   const emit = useQueryEmit();
 
   return useMutation({
@@ -181,8 +202,13 @@ export function useRestorePageMutation() {
     onSuccess: async (restoredPage) => {
       notifications.show({ message: t("Page restored successfully") });
 
+      // Undo can fire from the trash toast after the originating tree node /
+      // page header has unmounted, so a render-time `treeData` closure would be
+      // stale. Read the live tree imperatively from the store at execution time.
+      const currentTree = store.get(treeDataAtom);
+
       // Check if the page already exists in the tree (it shouldn't)
-      if (!treeModel.find(treeData, restoredPage.id)) {
+      if (!treeModel.find(currentTree, restoredPage.id)) {
         // Create the tree node data with hasChildren from backend
         const nodeData: SpaceTreeNode = {
           id: restoredPage.id,
@@ -201,17 +227,22 @@ export function useRestorePageMutation() {
         let index = 0;
 
         if (parentId) {
-          const parentNode = treeModel.find(treeData, parentId);
+          const parentNode = treeModel.find(currentTree, parentId);
           if (parentNode) {
             index = parentNode.children?.length || 0;
           }
         } else {
           // Root level page
-          index = treeData.length;
+          index = currentTree.length;
         }
 
-        // Add the node to the tree
-        setTreeData(treeModel.insert(treeData, parentId, nodeData, index));
+        // Add the node to the tree via a functional updater, re-checking
+        // existence against the freshest state for idempotency.
+        setTreeData((prev) =>
+          treeModel.find(prev, restoredPage.id)
+            ? prev
+            : treeModel.insert(prev, parentId, nodeData, index),
+        );
 
         // Emit websocket event to sync with other users
         setTimeout(() => {
