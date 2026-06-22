@@ -708,7 +708,6 @@
   "Authorization header": "Authorization header",
   "Tool allowlist": "Tool allowlist",
   "Optional. Leave empty to allow all tools the server exposes.": "Optional. Leave empty to allow all tools the server exposes.",
-  "Use Tavily preset": "Use Tavily preset",
   "Test": "Test",
   "Available tools": "Available tools",
   "No tools available": "No tools available",

@@ -26,7 +26,6 @@ import {
   IAiMcpServer,
   IAiMcpServerCreate,
   IAiMcpServerUpdate,
-  McpTransport,
 } from "@/features/workspace/services/ai-mcp-server-service.ts";
 
 const formSchema = z.object({
@@ -61,13 +60,6 @@ function buildInitialValues(server?: IAiMcpServer): FormValues {
     enabled: server?.enabled ?? true,
   };
 }
-
-// Tavily preset (§8.10): the API key goes in the Authorization HEADER, not the URL.
-const TAVILY_PRESET = {
-  name: "Tavily",
-  transport: "http" as McpTransport,
-  url: "https://mcp.tavily.com/mcp/",
-};
 
 export default function AiMcpServerForm({
   server,
@@ -155,28 +147,11 @@ export default function AiMcpServerForm({
     form.setFieldValue("authHeader", "");
   }
 
-  function applyTavilyPreset() {
-    form.setFieldValue("name", TAVILY_PRESET.name);
-    form.setFieldValue("transport", TAVILY_PRESET.transport);
-    form.setFieldValue("url", TAVILY_PRESET.url);
-    // Prefill the Bearer prefix; the admin pastes their Tavily key after it.
-    form.setFieldValue("authHeader", "Bearer ");
-    setHeadersCleared(false);
-  }
-
   const testResult = testMutation.data;
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
   return (
     <Stack>
-      {!isEdit && (
-        <Group justify="flex-start">
-          <Button variant="default" size="compact-sm" onClick={applyTavilyPreset}>
-            {t("Use Tavily preset")}
-          </Button>
-        </Group>
-      )}
-
       <TextInput
         label={t("Server name")}
         {...form.getInputProps("name")}
