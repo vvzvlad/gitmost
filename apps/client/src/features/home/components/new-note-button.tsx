@@ -55,6 +55,8 @@ export default function NewNoteButton() {
       <Button
         fullWidth
         size="md"
+        variant="light"
+        color="gray"
         leftSection={<IconPlus size={18} />}
         loading={isPending}
         onClick={() => createNote(writableSpaces[0])}
@@ -71,6 +73,8 @@ export default function NewNoteButton() {
         <Button
           fullWidth
           size="md"
+          variant="light"
+          color="gray"
           leftSection={<IconPlus size={18} />}
           loading={isPending}
         >
