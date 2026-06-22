@@ -75,15 +75,23 @@ export const MicButton: FC<MicButtonProps> = ({
     );
   }
 
-  if (status === "transcribing" || status === "error") {
+  if (
+    status === "loading" ||
+    status === "transcribing" ||
+    status === "error"
+  ) {
+    // "loading" (streaming hook fetching the VAD model on first use) shows the
+    // same spinner+disabled state so the first click is visibly acknowledged and
+    // a confusing second click can't fire while the model loads.
+    const label = status === "loading" ? t("Preparing…") : t("Transcribing…");
     return (
-      <Tooltip label={t("Transcribing…")} withArrow>
+      <Tooltip label={label} withArrow>
         <ActionIcon
           size={size}
           variant="subtle"
           color={color}
           disabled
-          aria-label={t("Transcribing…")}
+          aria-label={label}
         >
           <Loader size="xs" />
         </ActionIcon>

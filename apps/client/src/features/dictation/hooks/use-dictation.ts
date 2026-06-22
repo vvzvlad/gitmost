@@ -3,7 +3,15 @@ import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
 import { transcribeAudio } from "@/features/dictation/services/dictation-service";
 
-export type DictationStatus = "idle" | "recording" | "transcribing" | "error";
+// "loading" is set only by the streaming hook while it lazily loads the VAD
+// model on first use; the batch hook never sets it. It exists so the streaming
+// hook and the mic button can show immediate feedback during that load.
+export type DictationStatus =
+  | "idle"
+  | "recording"
+  | "transcribing"
+  | "error"
+  | "loading";
 
 interface UseDictationOptions {
   onText: (text: string) => void;

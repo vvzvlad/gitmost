@@ -67,6 +67,9 @@ export function useStreamingDictation(
   optionsRef.current = options;
 
   const vadRef = useRef<MicVADInstance | null>(null);
+  // AudioContext we create+resume inside the click gesture and inject into
+  // MicVAD (see start()). We own it; MicVAD does not close an injected context.
+  const audioContextRef = useRef<AudioContext | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canceledRef = useRef(false);
   const startingRef = useRef(false);
@@ -250,6 +253,26 @@ export function useStreamingDictation(
     inFlightRef.current = 0;
     resetLevel();
 
+    // Create and resume the AudioContext NOW, inside the click gesture, before
+    // the (first-time-slow) model load below. A context first touched outside a
+    // user gesture stays "suspended" and the VAD audio worklet never runs — that
+    // is exactly why the first click did nothing and only the second (model
+    // already cached, so MicVAD.new was fast enough to create the context inside
+    // the gesture) started recording. We own this context and inject it into
+    // MicVAD (which then will NOT close it); it is reused across start/stop and
+    // closed only on unmount.
+    const AudioCtor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (AudioCtor && !audioContextRef.current) {
+      audioContextRef.current = new AudioCtor();
+    }
+    // Resume within the gesture; swallow rejection (e.g. already running/closed).
+    void audioContextRef.current?.resume().catch(() => {});
+    // Show immediate feedback while the model loads (see Part B).
+    setStatus("loading");
+
     let vad: MicVADInstance;
     try {
       // Lazy import so the heavy onnx model/worklet are only fetched on first use
@@ -265,6 +288,12 @@ export function useStreamingDictation(
         // mic is opened only by the explicit vad.start() below, where the real
         // getUserMedia errors are caught and mapped.
         startOnLoad: false,
+        // Inject the AudioContext we created+resumed inside the click gesture so
+        // the VAD worklet runs on a "running" context. When provided, the library
+        // uses it and does NOT take ownership/close it.
+        ...(audioContextRef.current
+          ? { audioContext: audioContextRef.current }
+          : {}),
         // Only pass asset paths when defined; otherwise the library uses its
         // bundled CDN defaults.
         ...(VAD_BASE_ASSET_PATH !== undefined
@@ -430,6 +459,14 @@ export function useStreamingDictation(
       activeRef.current = false;
       canceledRef.current = true;
       destroyVad();
+      // Close the AudioContext we own (MicVAD never closes an injected one).
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        void audioContextRef.current.close().catch(() => {});
+      }
+      audioContextRef.current = null;
     };
   }, [clearTimer, destroyVad]);
 
