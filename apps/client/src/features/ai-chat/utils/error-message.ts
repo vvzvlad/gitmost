@@ -85,8 +85,12 @@ function classifyProviderError(msg: string): ErrorCategory | null {
   // Connection dropped / provider unreachable. ECONNRESET is the production case:
   // the LLM socket was reset mid-stream. "terminated" is scoped to a connection/
   // stream context so it does not match benign "... was terminated" messages.
+  // The browser's own fetch-failure messages also land here because they mean the
+  // SSE stream to /api/ai-chat/stream dropped mid-answer (e.g. a reverse proxy cut
+  // it): WebKit/Safari says "Load failed", Chrome "Failed to fetch", Firefox
+  // "NetworkError when attempting to fetch resource".
   if (
-    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|cannot connect|fetch failed|network error|connection (?:error|closed|reset|terminated)|stream terminated/i.test(
+    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|cannot connect|fetch failed|failed to fetch|load failed|networkerror|network error|connection (?:error|closed|reset|terminated)|stream terminated/i.test(
       head,
     )
   ) {

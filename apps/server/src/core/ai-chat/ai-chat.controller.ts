@@ -161,7 +161,16 @@ export class AiChatController {
     // cannot simply remove it once `stream()` returns).
     const controller = new AbortController();
     const onClose = (): void => {
-      if (!res.raw.writableEnded) controller.abort();
+      // A genuine disconnect leaves the response unfinished (unlike a normal
+      // completion, which also fires `close`). Such a drop — e.g. a reverse
+      // proxy cutting the SSE mid-answer — is otherwise invisible server-side,
+      // so log it here before aborting the agent loop.
+      if (!res.raw.writableEnded) {
+        this.logger.warn(
+          'AI chat stream: client disconnected before completion; aborting turn',
+        );
+        controller.abort();
+      }
     };
     req.raw.once('close', onClose);
     res.raw.once('finish', () => req.raw.off('close', onClose));
