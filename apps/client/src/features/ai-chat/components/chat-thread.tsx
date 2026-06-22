@@ -16,6 +16,7 @@ import MessageList from "@/features/ai-chat/components/message-list.tsx";
 import ChatInput from "@/features/ai-chat/components/chat-input.tsx";
 import RoleCards from "@/features/ai-chat/components/role-cards.tsx";
 import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
+import ChatStoppedNotice from "@/features/ai-chat/components/chat-stopped-notice.tsx";
 import {
   IAiChatMessageRow,
   IAiRole,
@@ -79,13 +80,18 @@ function rowToUiMessage(row: IAiChatMessageRow): UIMessage {
       ? row.metadata.parts
       : ([{ type: "text", text: row.content ?? "" }] as UIMessage["parts"]);
   const error = row.metadata?.error;
+  const finishReason = row.metadata?.finishReason;
+  const metadata: Record<string, unknown> = {};
+  if (error) metadata.error = error;
+  if (finishReason) metadata.finishReason = finishReason;
   return {
     id: row.id,
     role,
     parts,
-    // Carry a persisted turn error so MessageItem can render it after a remount
-    // (e.g. when a new chat adopts its id) and in reopened chat history.
-    ...(error ? { metadata: { error } } : {}),
+    // Carry persisted turn outcome (error text and/or finishReason) so MessageItem
+    // can render the error banner / "stopped" marker after a remount and in
+    // reopened history.
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   } as UIMessage;
 }
 
@@ -242,6 +248,12 @@ export default function ChatThread({
     // the user to decide.
     onFinish: ({ isAbort, isDisconnect, isError }) => {
       onTurnFinished();
+      // Show a neutral "stopped" marker for an aborted turn; the red error banner
+      // (via `error`) already covers isError, and a clean finish clears any marker.
+      if (isError) setStopNotice(null);
+      else if (isAbort) setStopNotice("manual");
+      else if (isDisconnect) setStopNotice("disconnect");
+      else setStopNotice(null);
       if (isAbort || isDisconnect || isError) return;
       flushNext();
     },
@@ -261,7 +273,21 @@ export default function ChatThread({
   // Keep the flush helper pointed at the latest sendMessage instance.
   sendMessageRef.current = sendMessage;
 
+  // Live "turn was interrupted" marker for the CURRENT session. The red error
+  // banner (driven by `error`) covers the error case; this covers an aborted
+  // turn, distinguishing a manual Stop (`isAbort`) from a dropped connection
+  // (`isDisconnect`) — a distinction only available live (the server persists
+  // both as finishReason 'aborted'). Cleared when the next turn starts.
+  const [stopNotice, setStopNotice] = useState<null | "manual" | "disconnect">(
+    null,
+  );
+
   const isStreaming = status === "submitted" || status === "streaming";
+
+  // Clear the stopped marker as soon as a new turn begins streaming.
+  useEffect(() => {
+    if (isStreaming) setStopNotice(null);
+  }, [isStreaming]);
 
   // Mirror the live useChat snapshot into the parent-owned ref so the export
   // (handled in AiChatWindow) can include the in-progress streaming turn. The
@@ -304,13 +330,22 @@ export default function ChatThread({
         assistantName={assistantName}
       />
 
-      {errorView && (
+      {errorView ? (
         <ChatErrorAlert
           title={errorView.title}
           detail={errorView.detail}
           mb="xs"
         />
-      )}
+      ) : stopNotice ? (
+        <ChatStoppedNotice
+          text={
+            stopNotice === "manual"
+              ? t("Response stopped.")
+              : t("Connection lost — the answer was interrupted.")
+          }
+          mb="xs"
+        />
+      ) : null}
 
       <Stack gap={0} className={classes.inputWrapper}>
         {queued.length > 0 && (

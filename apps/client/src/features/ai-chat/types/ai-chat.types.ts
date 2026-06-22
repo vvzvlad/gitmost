@@ -107,6 +107,11 @@ export interface IAiChatMessageRow {
     // Set on an assistant row whose turn ended in a provider/stream error; the
     // raw provider error text (e.g. "402: ...") for inline display in the thread.
     error?: string;
+    // Terminal outcome of the assistant turn: 'error' (provider/stream error,
+    // paired with `error`), 'aborted' (client disconnect — a manual Stop or a
+    // dropped connection), or the SDK's finish reason on a clean turn. The UI
+    // renders a "stopped" marker on interrupted turns.
+    finishReason?: string;
   } | null;
   createdAt: string;
 }

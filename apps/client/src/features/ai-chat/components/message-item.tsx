@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
 import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
+import ChatStoppedNotice from "@/features/ai-chat/components/chat-stopped-notice.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
@@ -121,6 +122,22 @@ export default function MessageItem({
           <ChatErrorAlert
             title={errorView.title}
             detail={errorView.detail}
+            mt={4}
+          />
+        );
+      })()}
+      {/* A persisted turn that was aborted (manual Stop or a dropped connection)
+          with no error banner. The server cannot tell a manual Stop from a
+          connection drop (both persist as finishReason 'aborted'), so reopened
+          history uses a combined wording. */}
+      {(() => {
+        const meta = message.metadata as
+          | { error?: string; finishReason?: string }
+          | undefined;
+        if (meta?.error || meta?.finishReason !== "aborted") return null;
+        return (
+          <ChatStoppedNotice
+            text={t("Response stopped (manually or the connection dropped).")}
             mt={4}
           />
         );
