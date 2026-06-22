@@ -8,7 +8,7 @@
 // the current page URL — NOT a CDN. In this SPA that "./" request hits the
 // client-side catch-all route and gets served index.html (text/html), so the
 // onnxruntime ESM/wasm backend fails to initialize ("'text/html' is not a valid
-// JavaScript MIME type"). We fix that by copying the four needed files into
+// JavaScript MIME type"). We fix that by copying the needed runtime files into
 // public/vad/ and pointing both path constants at the fixed absolute "/vad/".
 //
 // These copies are NOT committed (the ORT wasm is ~26 MB); this script runs
@@ -33,19 +33,30 @@ const vadDist = path.join(
 // onnxruntime-web's "exports" map does NOT expose ./package.json, so resolving
 // it would throw ERR_PACKAGE_PATH_NOT_EXPORTED. It DOES export the exact asset
 // subpaths we need, so resolve those files directly.
-const ortMjs = require.resolve(
+//
+// ORT ships several wasm backends and which one the app bundle references depends
+// on the resolver: Vite dev resolves the JSEP build (ort-wasm-simd-threaded.jsep.*)
+// while the production rolldown build resolves the plain build
+// (ort-wasm-simd-threaded.*). Ship BOTH variants so the runtime fetch hits a real
+// file under /vad/ regardless of which the bundle picked (each .mjs proxy fetches
+// its matching .wasm at init).
+const ortJsepMjs = require.resolve(
   "onnxruntime-web/ort-wasm-simd-threaded.jsep.mjs",
 );
-const ortWasm = require.resolve(
+const ortJsepWasm = require.resolve(
   "onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm",
 );
+const ortMjs = require.resolve("onnxruntime-web/ort-wasm-simd-threaded.mjs");
+const ortWasm = require.resolve("onnxruntime-web/ort-wasm-simd-threaded.wasm");
 
 // [absolute source path, output filename]
 const files = [
   [path.join(vadDist, "vad.worklet.bundle.min.js"), "vad.worklet.bundle.min.js"],
   [path.join(vadDist, "silero_vad_v5.onnx"), "silero_vad_v5.onnx"],
-  [ortMjs, "ort-wasm-simd-threaded.jsep.mjs"],
-  [ortWasm, "ort-wasm-simd-threaded.jsep.wasm"],
+  [ortJsepMjs, "ort-wasm-simd-threaded.jsep.mjs"],
+  [ortJsepWasm, "ort-wasm-simd-threaded.jsep.wasm"],
+  [ortMjs, "ort-wasm-simd-threaded.mjs"],
+  [ortWasm, "ort-wasm-simd-threaded.wasm"],
 ];
 
 fs.mkdirSync(outDir, { recursive: true });
