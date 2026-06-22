@@ -1201,6 +1201,8 @@
   "Semantic search": "Semantic search",
   "Voice / STT": "Voice / STT",
   "Voice dictation": "Voice dictation",
+  "Streaming dictation": "Streaming dictation",
+  "Transcribe as you speak, cutting on pauses": "Transcribe as you speak, cutting on pauses",
   "Voice dictation is not available yet.": "Voice dictation is not available yet.",
   "Test endpoint": "Test endpoint",
   "Save endpoints": "Save endpoints",
