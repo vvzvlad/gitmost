@@ -267,6 +267,8 @@ export default function AiProviderSettings() {
   const [dictationEnabled, setDictationEnabled] = useState<boolean>(
     workspace?.settings?.ai?.dictation ?? false,
   );
+  const [streamingDictationEnabled, setStreamingDictationEnabled] =
+    useState<boolean>(workspace?.settings?.ai?.dictationStreaming ?? false);
   const [publicShareAssistantEnabled, setPublicShareAssistantEnabled] =
     useState<boolean>(
       workspace?.settings?.ai?.publicShareAssistant ?? false,
@@ -274,6 +276,8 @@ export default function AiProviderSettings() {
   const [chatToggleLoading, setChatToggleLoading] = useState(false);
   const [searchToggleLoading, setSearchToggleLoading] = useState(false);
   const [dictationToggleLoading, setDictationToggleLoading] = useState(false);
+  const [streamingDictationToggleLoading, setStreamingDictationToggleLoading] =
+    useState(false);
   const [
     publicShareAssistantToggleLoading,
     setPublicShareAssistantToggleLoading,
@@ -509,6 +513,35 @@ export default function AiProviderSettings() {
       });
     } finally {
       setDictationToggleLoading(false);
+    }
+  }
+
+  // Optimistic toggle for the streaming (silence-cut) dictation sub-mode
+  // (settings.ai.dictationStreaming). Only meaningful when dictation is on.
+  async function handleToggleStreamingDictation(value: boolean) {
+    setStreamingDictationToggleLoading(true);
+    const previous = streamingDictationEnabled;
+    setStreamingDictationEnabled(value);
+    try {
+      const updated = await updateWorkspace({ aiDictationStreaming: value });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, dictationStreaming: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setStreamingDictationEnabled(previous);
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setStreamingDictationToggleLoading(false);
     }
   }
 
@@ -951,6 +984,33 @@ export default function AiProviderSettings() {
             "/v1/audio/transcriptions · works with local whisper (speaches / faster-whisper-server)",
           )}
         </Text>
+
+        {/* Streaming dictation is a sub-mode of voice dictation: it cuts on
+            pauses and transcribes each segment as you speak. Disabled unless
+            dictation itself is on. */}
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Stack gap={0}>
+            <Text fw={600} size="sm">
+              {t("Streaming dictation")}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {t("Transcribe as you speak, cutting on pauses")}
+            </Text>
+          </Stack>
+          <Switch
+            label={t("Streaming dictation")}
+            labelPosition="left"
+            checked={streamingDictationEnabled}
+            disabled={
+              !dictationEnabled ||
+              dictationToggleLoading ||
+              streamingDictationToggleLoading
+            }
+            onChange={(e) =>
+              handleToggleStreamingDictation(e.currentTarget.checked)
+            }
+          />
+        </Group>
 
         <Group grow align="flex-start">
           <TextInput

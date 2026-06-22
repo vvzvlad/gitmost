@@ -511,6 +511,20 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.aiDictationStreaming !== 'undefined') {
+        const prev = settingsBefore?.ai?.dictationStreaming ?? false;
+        if (prev !== updateWorkspaceDto.aiDictationStreaming) {
+          before.aiDictationStreaming = prev;
+          after.aiDictationStreaming = updateWorkspaceDto.aiDictationStreaming;
+        }
+        await this.workspaceRepo.updateAiSettings(
+          workspaceId,
+          'dictationStreaming',
+          updateWorkspaceDto.aiDictationStreaming,
+          trx,
+        );
+      }
+
       if (typeof updateWorkspaceDto.htmlEmbed !== 'undefined') {
         const prev = settingsBefore?.htmlEmbed ?? false;
         if (prev !== updateWorkspaceDto.htmlEmbed) {
@@ -564,6 +578,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
+      delete updateWorkspaceDto.aiDictationStreaming;
       delete updateWorkspaceDto.htmlEmbed;
       delete updateWorkspaceDto.trackerHead;
       delete updateWorkspaceDto.aiPublicShareAssistant;

@@ -1,5 +1,7 @@
 import { FC, useRef } from "react";
 import type { Editor } from "@tiptap/react";
+import { useAtomValue } from "jotai";
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { MicButton } from "@/features/dictation/components/mic-button";
 
 interface Props {
@@ -9,6 +11,11 @@ interface Props {
 }
 
 export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
+  // Streaming (silence-cut) dictation is opt-in per workspace; absent/false
+  // keeps the stable batch path.
+  const workspace = useAtomValue(workspaceAtom);
+  const streamingDictation =
+    workspace?.settings?.ai?.dictationStreaming === true;
   // Caret snapshot taken when dictation starts (where the first segment lands).
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
   // Running insertion point: after each inserted segment we remember the caret
@@ -70,7 +77,7 @@ export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
   return (
     <MicButton
       size="md"
-      streaming
+      streaming={streamingDictation}
       onStart={handleStart}
       onText={handleText}
       disabled={!editor.isEditable}

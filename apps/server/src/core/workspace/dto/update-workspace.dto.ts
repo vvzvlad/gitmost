@@ -55,6 +55,10 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsBoolean()
   aiDictation: boolean;
 
+  @IsOptional()
+  @IsBoolean()
+  aiDictationStreaming: boolean;
+
   // Workspace master toggle that enables/disables the HTML embed block type.
   // Persisted at settings.htmlEmbed. ABSENT/false => OFF (default). The block
   // itself renders in a sandboxed iframe, so this is a feature switch, not a

@@ -35,6 +35,10 @@ export default function ChatInput({
   const [value, setValue] = useAtom(aiChatDraftAtom);
   const workspace = useAtomValue(workspaceAtom);
   const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
+  // Streaming (silence-cut) dictation is opt-in per workspace; absent/false
+  // keeps the stable batch path.
+  const streamingDictation =
+    workspace?.settings?.ai?.dictationStreaming === true;
 
   const submit = (): void => {
     const text = value.trim();
@@ -71,7 +75,7 @@ export default function ChatInput({
       {isDictationEnabled && (
         <MicButton
           size="lg"
-          streaming
+          streaming={streamingDictation}
           disabled={isStreaming || disabled}
           onText={(text) => setValue((v) => (v ? `${v} ${text}` : text))}
         />
