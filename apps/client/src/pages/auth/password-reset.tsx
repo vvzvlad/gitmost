@@ -39,7 +39,7 @@ export default function PasswordReset() {
               variant="subtle"
               size="md"
             >
-              {t("Goto login page")}
+              {t("Go to login page")}
             </Button>
           </Group>
         </Container>

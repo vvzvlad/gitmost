@@ -14,6 +14,8 @@ import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import {
   AI_CHAT_THROTTLER,
   AUTH_THROTTLER,
+  PAGE_TEMPLATE_THROTTLER,
+  PUBLIC_SHARE_AI_THROTTLER,
 } from '../../integrations/throttle/throttler-names';
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './services/auth.service';
@@ -181,7 +183,18 @@ export class AuthController {
     return this.authService.verifyUserToken(verifyUserTokenDto, workspace.id);
   }
 
-  @SkipThrottle({ [AUTH_THROTTLER]: true })
+  // The global ThrottlerGuard applies ALL named throttlers to every route by
+  // default, so each non-AUTH bucket (AI chat, page template, public-share AI)
+  // is explicitly skipped here. collab-token is auth-guarded (JwtAuthGuard),
+  // per-user and client-cached, so those feature buckets are irrelevant to it;
+  // skipping them avoids spurious 429s when a user opens many pages in a short
+  // window. The AUTH bucket is skipped too for the same per-user, cached reason.
+  @SkipThrottle({
+    [AUTH_THROTTLER]: true,
+    [AI_CHAT_THROTTLER]: true,
+    [PAGE_TEMPLATE_THROTTLER]: true,
+    [PUBLIC_SHARE_AI_THROTTLER]: true,
+  })
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('collab-token')

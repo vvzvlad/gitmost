@@ -23,15 +23,10 @@ export function extractPageSlugId(slug: string): string {
 }
 
 export const computeSpaceSlug = (name: string) => {
-  const alphanumericName = name.replace(/[^a-zA-Z0-9\s]/g, "");
-  if (alphanumericName.includes(" ")) {
-    return alphanumericName
-      .split(" ")
-      .map((word) => word.charAt(0).toUpperCase())
-      .join("");
-  } else {
-    return alphanumericName.toLowerCase();
-  }
+  // Slug is validated as alphanumeric-only (@IsAlphanumeric / ^[a-zA-Z0-9]+$),
+  // so lowercase the name and strip every non-alphanumeric character (spaces,
+  // punctuation, unicode). No hyphens or uppercase initials.
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 };
 
 export const formatBytes = (bytes: number): string => {

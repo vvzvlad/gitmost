@@ -42,6 +42,23 @@ export default function AvatarUploader({
       return;
     }
 
+    // Validate file type. The `accept` attribute only filters the dialog;
+    // a user can still select a non-image file, which previously failed
+    // silently. Surface a visible error instead (issue #133). Accept any
+    // image/* MIME (png, jpeg, webp, gif, svg, ...) so we don't narrow below
+    // what the server accepts; only genuinely non-image files are rejected.
+    if (!file.type.startsWith("image/")) {
+      notifications.show({
+        message: t("Unsupported image type"),
+        color: "red",
+      });
+      // Reset the input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
     // Validate file size (max 10MB)
     const maxSizeInBytes = 10 * 1024 * 1024;
     if (file.size > maxSizeInBytes) {
@@ -58,6 +75,8 @@ export default function AvatarUploader({
 
     try {
       await onUpload(file);
+      // Notify on success so the upload gives visible feedback (issue #128)
+      notifications.show({ message: t("Image updated") });
     } catch (error) {
       console.error(error);
       notifications.show({
@@ -117,7 +136,7 @@ export default function AvatarUploader({
         type="file"
         ref={fileInputRef}
         onChange={handleFileInputChange}
-        accept="image/png,image/jpeg,image/jpg"
+        accept="image/*"
         aria-label={ariaLabel}
         tabIndex={-1}
         style={{ display: "none" }}

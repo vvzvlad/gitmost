@@ -113,6 +113,13 @@ export default function PageEditor({
   );
   const menuContainerRef = useRef(null);
   const { data: collabQuery, refetch: refetchCollabToken } = useCollabToken();
+  // Always holds the latest collab token. The provider effect below runs once
+  // per pageId, so a handler created inside it would otherwise close over a
+  // stale `collabQuery`. Reading the ref gives the current token instead.
+  const collabTokenRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    collabTokenRef.current = collabQuery?.token;
+  }, [collabQuery?.token]);
   const { isIdle, resetIdle } = useIdle(FIVE_MINUTES, { initialState: false });
   const documentState = useDocumentVisibility();
   const { pageSlug } = useParams();
@@ -167,20 +174,33 @@ export default function PageEditor({
         }
       };
       const onAuthenticationFailedHandler = () => {
-        const payload = jwtDecode(collabQuery?.token);
-        const now = Date.now().valueOf() / 1000;
-        const isTokenExpired = now >= payload.exp;
-        if (isTokenExpired) {
-          refetchCollabToken().then((result) => {
-            if (result.data?.token) {
-              socket.disconnect();
-              setTimeout(() => {
-                remote.configuration.token = result.data.token;
-                socket.connect();
-              }, 100);
-            }
-          });
+        // Read the latest token via the ref (the closure-captured `collabQuery`
+        // may be stale). Guard the decode: a missing or unparseable token must
+        // not throw "Invalid token specified" and should trigger a refresh so
+        // the editor reconnects even when the initial token fetch failed.
+        const token = collabTokenRef.current;
+        let needsRefresh = true; // no/unparseable token -> fetch a fresh one and reconnect
+        if (token) {
+          try {
+            // A token that decodes but lacks a numeric `exp` must be treated as
+            // expired (`Date.now()/1000 >= undefined` is `false`, which would
+            // otherwise skip the reconnect), so refresh on any missing/non-number exp.
+            const exp = jwtDecode<{ exp?: number }>(token).exp;
+            needsRefresh = typeof exp !== "number" || Date.now() / 1000 >= exp;
+          } catch {
+            needsRefresh = true;
+          }
         }
+        if (!needsRefresh) return;
+        refetchCollabToken().then((result) => {
+          if (result.data?.token) {
+            socket.disconnect();
+            setTimeout(() => {
+              remote.configuration.token = result.data.token;
+              socket.connect();
+            }, 100);
+          }
+        });
       };
       const remote = new HocuspocusProvider({
         websocketProvider: socket,

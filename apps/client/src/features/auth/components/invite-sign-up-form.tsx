@@ -10,9 +10,12 @@ import {
   PasswordInput,
   Box,
   Stack,
+  Group,
+  Text,
 } from "@mantine/core";
 import { zod4Resolver } from "mantine-form-zod-resolver";
-import { useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import APP_ROUTE from "@/lib/app-route";
 import useAuth from "@/features/auth/hooks/use-auth";
 import classes from "@/features/auth/components/auth.module.css";
 import { useGetInvitationQuery } from "@/features/workspace/queries/workspace-query.ts";
@@ -58,7 +61,27 @@ export function InviteSignUpForm() {
   }
 
   if (isError) {
-    return <div>{t("invalid invitation link")}</div>;
+    // Styled error with a CTA to login, mirroring the password-reset
+    // error page and the 404 page (issue #133)
+    return (
+      <AuthLayout>
+        <Container my={40}>
+          <Text size="lg" ta="center">
+            {t("Invalid invitation link")}
+          </Text>
+          <Group justify="center">
+            <Button
+              component={Link}
+              to={APP_ROUTE.AUTH.LOGIN}
+              variant="subtle"
+              size="md"
+            >
+              {t("Go to login page")}
+            </Button>
+          </Group>
+        </Container>
+      </AuthLayout>
+    );
   }
 
   if (!invitation) {

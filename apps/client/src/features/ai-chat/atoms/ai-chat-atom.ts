@@ -1,4 +1,22 @@
 import { atom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
+
+/**
+ * Persisted floating AI chat window geometry (position + size). Held in
+ * localStorage so a drag/resize survives a full page reload. `null` means
+ * "never placed yet" — the window then computes an initial top-right placement.
+ * On restore the value is clamped to the current viewport (see AiChatWindow).
+ */
+export type AiChatWindowGeom = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+export const aiChatWindowGeomAtom = atomWithStorage<AiChatWindowGeom | null>(
+  "ai-chat-window-geom",
+  null,
+);
 
 /**
  * The currently selected chat id. `null` means a fresh (not-yet-created) chat:

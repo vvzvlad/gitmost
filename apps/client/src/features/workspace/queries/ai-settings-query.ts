@@ -21,11 +21,20 @@ const aiSettingsKey = ["ai-settings"];
 
 export function useAiSettingsQuery(
   enabled: boolean = true,
+  // While reindexing runs as an async background job, the counter only climbs
+  // if the client keeps refetching. The component passes a refetchInterval
+  // function that polls until indexed === total or a bounded deadline, then
+  // returns false to stop. See AiProviderSettings.
+  refetchInterval?:
+    | number
+    | false
+    | ((query: { state: { data?: IAiSettings } }) => number | false),
 ): UseQueryResult<IAiSettings, Error> {
   return useQuery({
     queryKey: aiSettingsKey,
     queryFn: () => getAiSettings(),
     enabled,
+    refetchInterval: refetchInterval as any,
   });
 }
 

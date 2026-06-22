@@ -50,7 +50,7 @@ export function WorkspaceInviteForm({ onClose }: Props) {
             "Enter valid email addresses separated by comma or space max_50",
           )}
           label={t("Invite by email")}
-          placeholder={t("enter valid emails addresses")}
+          placeholder={t("enter valid email addresses")}
           variant="filled"
           splitChars={[",", " "]}
           maxDropdownHeight={200}

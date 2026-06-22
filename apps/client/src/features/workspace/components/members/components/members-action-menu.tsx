@@ -72,7 +72,7 @@ export default function MemberActionMenu({
         </Text>
       ),
       centered: true,
-      labels: { confirm: t("Delete"), cancel: t("Don't") },
+      labels: { confirm: t("Delete"), cancel: t("Cancel") },
       confirmProps: { color: "red" },
       onConfirm: onRevoke,
     });

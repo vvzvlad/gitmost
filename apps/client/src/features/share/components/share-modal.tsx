@@ -192,7 +192,7 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
                 {getPageIcon(share.sharedPage.icon)}
                 <div className={classes.shareLinkText}>
                   <Text fz="sm" fw={500} lineClamp={1}>
-                    {share.sharedPage.title || t("untitled")}
+                    {share.sharedPage.title || t("Untitled")}
                   </Text>
                 </div>
               </Group>
