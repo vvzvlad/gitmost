@@ -99,7 +99,7 @@ export default function GlobalAppShell({
           collapsed: { mobile: !isAsideOpen, desktop: !isAsideOpen },
         }
       }
-      padding="md"
+      padding={{ base: "xs", sm: "md" }}
     >
       <AppShell.Header px="md" className={classes.header}>
         <AppHeader />

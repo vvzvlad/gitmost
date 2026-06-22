@@ -1,0 +1,13 @@
+.container {
+  /* Default top padding for tablet/desktop (replaces the former pt="xl") */
+  padding-top: var(--mantine-spacing-xl);
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .container {
+    /* On phones drop the extra side padding (AppShell already provides the
+       outer gap) and shrink the top gap below the header. */
+    padding-inline: 0;
+    padding-top: var(--mantine-spacing-xs);
+  }
+}
