@@ -1,4 +1,4 @@
-import { ActionIcon, Group, Menu, Text, ThemeIcon, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Group, Menu, Text, ThemeIcon, Tooltip } from "@mantine/core";
 import {
   IconArrowRight,
   IconArrowsHorizontal,
@@ -10,7 +10,6 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
-  IconMessages,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -109,16 +108,14 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
         <ShareModal readOnly={false} />
       )}
 
-      <Tooltip label={t("Comments")} openDelay={250} withArrow>
-        <ActionIcon
-          variant="subtle"
-          color="dark"
-          aria-label={t("Comments")}
-          {...commentsTriggerProps}
-        >
-          <IconMessages size={20} stroke={2} />
-        </ActionIcon>
-      </Tooltip>
+      <Button
+        variant="subtle"
+        color="dark"
+        size="compact-sm"
+        {...commentsTriggerProps}
+      >
+        {t("Comments")}
+      </Button>
 
       <Tooltip label={t("Table of contents")} openDelay={250} withArrow>
         <ActionIcon
