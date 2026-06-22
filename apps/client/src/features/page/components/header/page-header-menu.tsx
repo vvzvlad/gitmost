@@ -10,7 +10,7 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
-  IconMessage,
+  IconMessages,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -111,7 +111,7 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
           aria-label={t("Comments")}
           {...commentsTriggerProps}
         >
-          <IconMessage size={20} stroke={2} />
+          <IconMessages size={20} stroke={2} />
         </ActionIcon>
       </Tooltip>
 

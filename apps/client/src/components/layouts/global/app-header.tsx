@@ -5,7 +5,7 @@ import {
   Text,
   Tooltip,
 } from "@mantine/core";
-import { IconSparkles } from "@tabler/icons-react";
+import { IconMessageCircleStar } from "@tabler/icons-react";
 import classes from "./app-header.module.css";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
@@ -107,7 +107,7 @@ export function AppHeader() {
                 aria-label={t("AI chat")}
                 onClick={() => setAiChatWindowOpen((v) => !v)}
               >
-                <IconSparkles size={20} />
+                <IconMessageCircleStar size={20} />
               </ActionIcon>
             </Tooltip>
           )}
