@@ -32,14 +32,17 @@ interface UseStreamingDictationResult {
 // Sample rate of the audio MicVAD hands to onSpeechEnd (Silero VAD runs at 16k).
 const VAD_SAMPLE_RATE = 16000;
 
-// Asset paths for the VAD worklet and the onnxruntime WASM binaries. For this
-// prototype they are left undefined so the library loads its bundled assets from
-// its default CDN — this avoids fragile rolldown asset-copy config. For a
-// self-hosted / offline / privacy build, copy the vad-web `dist` worklet + the
-// `*.onnx` model and the onnxruntime-web `*.wasm` files into
-// `apps/client/public/vad/` and set these to that local path (e.g. "/vad/").
-const VAD_BASE_ASSET_PATH: string | undefined = undefined;
-const VAD_ONNX_WASM_BASE_PATH: string | undefined = undefined;
+// Asset paths for the VAD worklet/Silero model and the onnxruntime-web WASM
+// binaries. vad-web 0.0.30's default asset path is "./" (relative to the current
+// page URL), NOT a CDN — in this SPA that request hits the client-side catch-all
+// route and returns index.html (text/html), so the onnxruntime ESM/wasm backend
+// fails to initialize. We instead self-host the four needed files (the vad-web
+// worklet + `silero_vad_v5.onnx` model and the onnxruntime-web `*.jsep.mjs`/
+// `*.jsep.wasm`) under `apps/client/public/vad/` — populated by
+// `scripts/copy-vad-assets.mjs`, which runs before `dev`/`build` — and point both
+// paths at the fixed absolute "/vad/".
+const VAD_BASE_ASSET_PATH: string | undefined = "/vad/";
+const VAD_ONNX_WASM_BASE_PATH: string | undefined = "/vad/";
 
 /**
  * Streaming variant of useDictation. Detects speech with a real (Silero) VAD and,

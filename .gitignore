@@ -45,3 +45,6 @@ lerna-debug.log*
 
 # TypeScript incremental build artifacts
 *.tsbuildinfo
+
+# Self-hosted VAD / onnxruntime-web assets (copied from node_modules at dev/build time)
+apps/client/public/vad/
