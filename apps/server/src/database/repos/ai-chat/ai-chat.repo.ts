@@ -43,10 +43,21 @@ export class AiChatRepo {
           .on('aiAgentRoles.deletedAt', 'is', null)
           .on('aiAgentRoles.enabled', '=', true),
       )
+      // Left-join the origin page for its title (provenance shown in the list).
+      // Scoped to the chat's workspace as defense-in-depth so a page id can only
+      // ever surface a same-workspace title. No deletedAt filter: a soft-deleted
+      // page keeps showing its historical title; a hard-deleted page already
+      // nulls aiChats.pageId via the FK.
+      .leftJoin('pages', (join) =>
+        join
+          .onRef('pages.id', '=', 'aiChats.pageId')
+          .onRef('pages.workspaceId', '=', 'aiChats.workspaceId'),
+      )
       .selectAll('aiChats')
       .select([
         'aiAgentRoles.name as roleName',
         'aiAgentRoles.emoji as roleEmoji',
+        'pages.title as pageTitle',
       ])
       .where('aiChats.creatorId', '=', creatorId)
       .where('aiChats.workspaceId', '=', workspaceId)

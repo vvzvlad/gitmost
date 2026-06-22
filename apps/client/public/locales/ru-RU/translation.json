@@ -954,6 +954,7 @@
   "Try a different search term.": "Попробуйте другой поисковый запрос.",
   "Try again": "Попробовать снова",
   "Untitled chat": "Чат без названия",
+  "No document": "Без документа",
   "What can I help you with?": "Чем я могу вам помочь?",
   "Are you sure you want to revoke this {{credential}}": "Вы уверены, что хотите отозвать этот {{credential}}",
   "Automatically provision users and groups from your identity provider via SCIM.": "Автоматически предоставляйте доступ пользователям и группам из вашего провайдера удостоверений через SCIM.",

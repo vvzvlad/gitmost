@@ -575,6 +575,9 @@ export interface AiChats {
   // chat to universal instead of breaking it. Resolved from this column on every
   // turn — NOT from the request body.
   roleId: string | null;
+  // The document the chat was created in (open page at first message). NULL =>
+  // started outside any document. ON DELETE SET NULL on the page FK.
+  pageId: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;

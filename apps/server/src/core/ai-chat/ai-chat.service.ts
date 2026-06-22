@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import {
   streamText,
@@ -14,6 +14,8 @@ import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import { PageRepo } from '@docmost/db/repos/page/page.repo';
+import { PageAccessService } from '../page/page-access/page-access.service';
 import {
   User,
   Workspace,
@@ -126,6 +128,8 @@ export class AiChatService {
     private readonly tools: AiChatToolsService,
     private readonly mcpClients: McpClientsService,
     private readonly aiAgentRoleRepo: AiAgentRoleRepo,
+    private readonly pageRepo: PageRepo,
+    private readonly pageAccess: PageAccessService,
   ) {}
 
   /**
@@ -195,12 +199,44 @@ export class AiChatService {
       }
     }
     if (!chatId) {
+      // Resolve the origin document for the history list. body.openPage.id is
+      // attacker-controllable, so validate it before persisting: it must be a
+      // real page in THIS workspace that the user is allowed to read. Anything
+      // else (foreign workspace, inaccessible/restricted, or non-existent) is
+      // dropped to null — persisting it would leak the page's title via the
+      // chat-list join, or violate the page_id FK on insert (this runs after
+      // res.hijack(), so a DB error would break the stream).
+      let originPageId: string | null = null;
+      const candidatePageId = body.openPage?.id;
+      if (candidatePageId) {
+        const page = await this.pageRepo.findById(candidatePageId);
+        if (page && page.workspaceId === workspace.id) {
+          try {
+            await this.pageAccess.validateCanView(page, user);
+            originPageId = page.id;
+          } catch (e) {
+            // Fail-closed: no provenance on any failure. A ForbiddenException is
+            // the expected "user cannot read this page" case; log anything else
+            // (e.g. a DB error) so a real fault is not masked as "no access".
+            if (!(e instanceof ForbiddenException)) {
+              this.logger.warn(
+                `origin page access check failed: ${
+                  e instanceof Error ? e.message : 'unknown error'
+                }`,
+              );
+            }
+            originPageId = null;
+          }
+        }
+      }
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
         // Bind the chat to the resolved role (if any) at creation time. The role
         // is immutable afterwards (later turns read it from this column).
         roleId: role?.id ?? null,
+        // Validated above: a real, readable page in this workspace, else null.
+        pageId: originPageId,
       });
       chatId = chat.id;
       isNewChat = true;

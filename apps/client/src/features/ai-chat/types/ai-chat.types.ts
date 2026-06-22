@@ -19,6 +19,12 @@ export interface IAiChat {
   // Null when the chat has no role or the role was soft-deleted.
   roleName?: string | null;
   roleEmoji?: string | null;
+  // The document the chat was created in (ai_chats.page_id). Null when started
+  // outside any document.
+  pageId?: string | null;
+  // Denormalized via a JOIN in the chat list response: the origin page's title.
+  // Null when there is no origin page (or it was hard-deleted).
+  pageTitle?: string | null;
 }
 
 /** Supported model drivers (mirrors the server `AI_DRIVERS`). */
