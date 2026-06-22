@@ -3,6 +3,7 @@ import { ActionIcon, Loader, Tooltip } from "@mantine/core";
 import { IconMicrophone, IconPlayerStopFilled } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useDictation } from "@/features/dictation/hooks/use-dictation";
+import { useStreamingDictation } from "@/features/dictation/hooks/use-streaming-dictation";
 import classes from "./mic-button.module.css";
 
 interface MicButtonProps {
@@ -17,6 +18,9 @@ interface MicButtonProps {
   color?: string;
   // Optional explicit glyph size override; defaults to the size-token value.
   iconSize?: number;
+  // When true, use the streaming (Silero-VAD) dictation controller, which emits
+  // text progressively as the user pauses; otherwise use the batch controller.
+  streaming?: boolean;
 }
 
 /**
@@ -32,9 +36,17 @@ export const MicButton: FC<MicButtonProps> = ({
   size = "lg",
   color,
   iconSize,
+  streaming = false,
 }) => {
   const { t } = useTranslation();
-  const { status, start, stop, audioLevel } = useDictation({ onText, onStart });
+  // Call BOTH hooks unconditionally to respect the rules of hooks: which one is
+  // active is a render-time choice, but both must be invoked every render. This
+  // is safe because both controllers are inert until start() is called — neither
+  // opens the mic on mount — so the unused one costs nothing.
+  const batchCtl = useDictation({ onText, onStart });
+  const streamingCtl = useStreamingDictation({ onText, onStart });
+  const ctl = streaming ? streamingCtl : batchCtl;
+  const { status, start, stop, audioLevel } = ctl;
   const resolvedIconSize = iconSize ?? (size === "lg" ? 18 : 16);
 
   if (status === "recording") {

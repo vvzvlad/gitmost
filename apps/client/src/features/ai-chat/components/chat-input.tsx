@@ -64,6 +64,7 @@ export default function ChatInput({
       {isDictationEnabled && (
         <MicButton
           size="lg"
+          streaming
           disabled={isStreaming || disabled}
           onText={(text) => setValue((v) => (v ? `${v} ${text}` : text))}
         />
