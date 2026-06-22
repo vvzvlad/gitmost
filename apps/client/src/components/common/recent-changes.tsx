@@ -67,6 +67,7 @@ export default function RecentChanges({ spaceId }: Props) {
                     <Badge
                       color={getInitialsColor(page?.space.name)}
                       variant="light"
+                      tt="none"
                       component={Link}
                       to={getSpaceUrl(page?.space.slug)}
                       style={{ cursor: "pointer" }}

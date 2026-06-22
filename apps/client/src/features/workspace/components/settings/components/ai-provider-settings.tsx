@@ -203,8 +203,48 @@ export default function AiProviderSettings() {
   const { t } = useTranslation();
   const { isAdmin } = useUserRole();
 
+  // Reindexing runs as an async background job: the endpoint returns the
+  // PRE-job counts immediately, so the only way the "Indexed X of Y" counter
+  // visibly climbs is to keep polling the settings query while the job runs.
+  // `reindexDeadline` is the timestamp until which we poll (set on reindex
+  // success); polling stops early once indexed === total. Bounded so a stuck
+  // job can never poll forever.
+  const REINDEX_POLL_INTERVAL = 3000; // ms between refetches while indexing
+  const REINDEX_POLL_CAP_MS = 120000; // ~2 min hard cap
+  const [reindexDeadline, setReindexDeadline] = useState<number | null>(null);
+
   // Only admins may read the (masked) AI settings; the server enforces this too.
-  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin);
+  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) => {
+    if (reindexDeadline === null) return false;
+    // Past the cap → stop polling (cleared via the effect below too).
+    if (Date.now() > reindexDeadline) return false;
+    const data = query.state.data;
+    // Stop once everything is indexed; otherwise keep polling.
+    if (data && data.indexedPages >= data.totalPages) return false;
+    return REINDEX_POLL_INTERVAL;
+  });
+
+  // Stop polling once the work is done or the cap is reached. Also clears on
+  // unmount because the deadline state goes away with the component.
+  useEffect(() => {
+    if (reindexDeadline === null) return;
+    if (
+      settings &&
+      settings.totalPages > 0 &&
+      settings.indexedPages >= settings.totalPages
+    ) {
+      setReindexDeadline(null);
+      return;
+    }
+    const msLeft = reindexDeadline - Date.now();
+    if (msLeft <= 0) {
+      setReindexDeadline(null);
+      return;
+    }
+    const timer = setTimeout(() => setReindexDeadline(null), msLeft);
+    return () => clearTimeout(timer);
+  }, [reindexDeadline, settings]);
+
   const updateMutation = useUpdateAiSettingsMutation();
   const reindexMutation = useReindexAiEmbeddingsMutation();
 
@@ -877,7 +917,14 @@ export default function AiProviderSettings() {
               variant="subtle"
               size="compact-sm"
               loading={reindexMutation.isPending}
-              onClick={() => reindexMutation.mutate()}
+              onClick={() =>
+                reindexMutation.mutate(undefined, {
+                  // Begin bounded polling so the counter climbs as the async
+                  // background job indexes (it does not update on its own).
+                  onSuccess: () =>
+                    setReindexDeadline(Date.now() + REINDEX_POLL_CAP_MS),
+                })
+              }
             >
               {t("Reindex now")}
             </Button>

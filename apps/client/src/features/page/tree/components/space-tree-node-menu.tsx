@@ -148,7 +148,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
             variant="subtle"
             color="gray"
             className={classes.actionIcon}
-            aria-label={t("Page menu for {{name}}", { name: node.name || t("untitled") })}
+            aria-label={t("Page menu for {{name}}", { name: node.name || t("Untitled") })}
             tabIndex={-1}
             onClick={(e) => {
               e.preventDefault();
@@ -199,7 +199,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
               openExportModal();
             }}
           >
-            {t("Export page")}
+            {t("Export")}
           </Menu.Item>
 
           {canEdit && (
@@ -223,7 +223,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                   openMovePageModal();
                 }}
               >
-                {t("Move")}
+                {t("Move to space")}
               </Menu.Item>
 
               <Menu.Item

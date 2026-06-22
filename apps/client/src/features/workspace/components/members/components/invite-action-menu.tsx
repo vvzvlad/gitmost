@@ -57,7 +57,7 @@ export default function InviteActionMenu({ invitationId }: Props) {
         </Text>
       ),
       centered: true,
-      labels: { confirm: t("Revoke"), cancel: t("Don't") },
+      labels: { confirm: t("Revoke"), cancel: t("Cancel") },
       confirmProps: { color: "red" },
       onConfirm: onRevoke,
     });

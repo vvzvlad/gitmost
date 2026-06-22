@@ -170,7 +170,7 @@ export function SpaceTreeRow({
         />
       </div>
 
-      <span className={classes.text}>{node.name || t("untitled")}</span>
+      <span className={classes.text}>{node.name || t("Untitled")}</span>
 
       {node.isTemplate === true && (
         <Tooltip label={t("Template")} withArrow>
@@ -297,7 +297,7 @@ function CreateNode({
       variant="subtle"
       color="gray"
       className={classes.actionIcon}
-      aria-label={t("Create subpage of {{name}}", { name: node.name || t("untitled") })}
+      aria-label={t("Create subpage of {{name}}", { name: node.name || t("Untitled") })}
       tabIndex={-1}
       onClick={(e) => {
         e.preventDefault();

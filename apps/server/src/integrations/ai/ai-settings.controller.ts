@@ -86,7 +86,9 @@ export class AiSettingsController {
   ) {
     this.assertAdmin(user, workspace);
     await this.aiSettingsService.reindex(workspace.id);
-    // Return refreshed masked settings so the client can update the counter.
+    // Indexing runs as an async background job, so these masked settings carry
+    // the PRE-job counts (the indexed total has not climbed yet). The client
+    // polls this endpoint's GET counterpart to watch the counter advance.
     return this.aiSettingsService.getMasked(workspace.id);
   }
 }

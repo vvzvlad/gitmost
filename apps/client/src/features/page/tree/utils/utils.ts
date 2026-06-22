@@ -51,7 +51,7 @@ export function findBreadcrumbPath(
 ): SpaceTreeNode[] | null {
   for (const node of tree) {
     if (!node.name || node.name.trim() === "") {
-      node.name = "untitled";
+      node.name = "Untitled";
     }
 
     if (node.id === pageId) {

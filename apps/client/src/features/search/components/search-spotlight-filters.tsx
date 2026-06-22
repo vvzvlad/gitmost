@@ -107,48 +107,55 @@ export function SearchSpotlightFilters({
         </Button>
       </SpaceFilterMenu>
 
-      <Menu
-        shadow="md"
-        width={220}
-        position="bottom-start"
-        zIndex={getDefaultZIndex("max")}
-      >
-        <Menu.Target>
-          <Button
-            variant="subtle"
-            color="gray"
-            size="sm"
-            rightSection={<IconChevronDown size={14} />}
-            leftSection={<IconFileDescription size={16} />}
-            className={classes.filterButton}
-            fw={500}
-          >
-            {contentType
-              ? `${t("Type")}: ${contentTypeOptions.find((opt) => opt.value === contentType)?.label || t(contentType === "page" ? "Pages" : "Attachments")}`
-              : t("Type")}
-          </Button>
-        </Menu.Target>
-        <Menu.Dropdown>
-          {contentTypeOptions.map((option) => (
-            <Menu.Item
-              key={option.value}
-              component={RadioMenuItem}
-              aria-checked={contentType === option.value}
-              onClick={() =>
-                contentType !== option.value &&
-                handleFilterChange("contentType", option.value)
-              }
+      {/* Only render the content-type dropdown when there is more than one
+          option to choose from. With a single option ("Pages") it is a no-op
+          control, so we hide it instead of showing a dead filter. */}
+      {contentTypeOptions.length > 1 && (
+        <Menu
+          shadow="md"
+          width={220}
+          position="bottom-start"
+          zIndex={getDefaultZIndex("max")}
+        >
+          <Menu.Target>
+            <Button
+              variant="subtle"
+              color="gray"
+              size="sm"
+              rightSection={<IconChevronDown size={14} />}
+              leftSection={<IconFileDescription size={16} />}
+              className={classes.filterButton}
+              fw={500}
             >
-              <Group flex="1" gap="xs">
-                <div>
-                  <Text size="sm">{option.label}</Text>
-                </div>
-                {contentType === option.value && <IconCheck size={20} aria-hidden />}
-              </Group>
-            </Menu.Item>
-          ))}
-        </Menu.Dropdown>
-      </Menu>
+              {contentType
+                ? `${t("Type")}: ${contentTypeOptions.find((opt) => opt.value === contentType)?.label || t(contentType === "page" ? "Pages" : "Attachments")}`
+                : t("Type")}
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            {contentTypeOptions.map((option) => (
+              <Menu.Item
+                key={option.value}
+                component={RadioMenuItem}
+                aria-checked={contentType === option.value}
+                onClick={() =>
+                  contentType !== option.value &&
+                  handleFilterChange("contentType", option.value)
+                }
+              >
+                <Group flex="1" gap="xs">
+                  <div>
+                    <Text size="sm">{option.label}</Text>
+                  </div>
+                  {contentType === option.value && (
+                    <IconCheck size={20} aria-hidden />
+                  )}
+                </Group>
+              </Menu.Item>
+            ))}
+          </Menu.Dropdown>
+        </Menu>
+      )}
     </div>
   );
 }

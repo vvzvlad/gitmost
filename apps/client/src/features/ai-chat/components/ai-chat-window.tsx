@@ -25,6 +25,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   activeAiChatIdAtom,
   aiChatWindowOpenAtom,
+  aiChatWindowGeomAtom,
   aiChatDraftAtom,
   selectedAiRoleIdAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
@@ -122,15 +123,13 @@ export default function AiChatWindow() {
   minimizedRef.current = minimized;
 
   const winRef = useRef<HTMLDivElement>(null);
-  // Live window geometry (position + size); initialized lazily on first open so
-  // it is anchored to the current viewport (top-right corner). Kept in state so
-  // a user resize survives close/reopen and can be re-clamped to the viewport.
-  const [geom, setGeom] = useState<{
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  } | null>(null);
+  // Live window geometry (position + size); persisted to localStorage so a
+  // drag/resize survives a full page reload (and close/reopen). `null` means
+  // "never placed yet" — the layout effect below then computes an initial
+  // top-right placement anchored to the current viewport, and on restore it is
+  // re-clamped to the viewport (so a placement saved on a larger screen is not
+  // left partly off-screen).
+  const [geom, setGeom] = useAtom(aiChatWindowGeomAtom);
 
   // Track whether we are awaiting the id of a just-created (new) chat, so we
   // can adopt it once the chat list refreshes after the first turn finishes.
@@ -390,6 +389,10 @@ export default function AiChatWindow() {
   useEffect(() => {
     if (!windowOpen || minimized) return;
     const el = winRef.current;
+    // `geom` is in the deps so this re-runs once geometry is settled and the
+    // window is actually rendered (on the first open `geom` is still null on the
+    // render that flips windowOpen, so winRef.current is null then — without the
+    // geom dep the observer would never attach and resizes would not persist).
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const width = el.offsetWidth;
@@ -401,7 +404,7 @@ export default function AiChatWindow() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [windowOpen, minimized]);
+  }, [windowOpen, minimized, geom !== null]);
 
   const startDrag = useCallback((e: React.MouseEvent): void => {
     // Ignore drags that originate on a button (minimize/close/new chat).

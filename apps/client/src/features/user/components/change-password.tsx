@@ -41,14 +41,10 @@ export default function ChangePassword() {
   );
 }
 
-const formSchema = z.object({
-  oldPassword: z
-    .string({ error: "your current password is required" })
-    .min(8),
-  newPassword: z.string({ error: "New password is required" }).min(8),
-});
-
-type FormValues = z.infer<typeof formSchema>;
+type FormValues = {
+  oldPassword: string;
+  newPassword: string;
+};
 
 interface ChangePasswordFormProps {
   onClose?: () => void;
@@ -56,6 +52,16 @@ interface ChangePasswordFormProps {
 function ChangePasswordForm({ onClose }: ChangePasswordFormProps) {
   const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
+
+  // Build the schema with friendly, translated validation messages (issue #130)
+  const formSchema = z.object({
+    oldPassword: z
+      .string()
+      .min(8, t("Password must be at least 8 characters")),
+    newPassword: z
+      .string()
+      .min(8, t("Password must be at least 8 characters")),
+  });
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),

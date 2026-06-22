@@ -94,7 +94,7 @@ function PageContent({ pageSlug }: { pageSlug: string | undefined }) {
     page && (
       <div>
         <Helmet>
-          <title>{`${page?.icon || ""}  ${page?.title || t("untitled")}`}</title>
+          <title>{`${page?.icon || ""}  ${page?.title || t("Untitled")}`}</title>
         </Helmet>
 
         <MemoizedPageHeader readOnly={!canEdit} />
