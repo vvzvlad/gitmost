@@ -4,7 +4,7 @@ import {
   serializeSteps,
   rowToUiMessage,
   prepareAgentStep,
-  buildErrorAssistantRecord,
+  buildPartialAssistantRecord,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -232,16 +232,19 @@ describe('prepareAgentStep', () => {
 });
 
 /**
- * Unit test for buildErrorAssistantRecord: the pure helper that shapes the
- * assistant-message record persisted on a first-turn (or any) stream failure.
- * The streamText onError callback builds the formatted error text via
- * describeProviderError (tested separately) and hands it to this helper; pinning
- * the record shape here covers the persist-assistant-on-error logic without
- * having to seam streamText itself.
+ * Unit test for buildPartialAssistantRecord: the pure helper that shapes the
+ * assistant-message record persisted on a partial/failed turn (the streamText
+ * onError / onAbort paths). It captures the PARTIAL answer the user already saw
+ * (finished steps' text + tool parts, plus the in-progress step's text) so a
+ * provider error / disconnect no longer throws the streamed answer away. Pinning
+ * the record shape here covers the persist-partial logic without seaming
+ * streamText itself.
  */
-describe('buildErrorAssistantRecord', () => {
-  it('records an empty turn with the error text in metadata (finishReason=error)', () => {
-    const rec = buildErrorAssistantRecord('401: Unauthorized');
+describe('buildPartialAssistantRecord', () => {
+  type AnyPart = Record<string, unknown>;
+
+  it('records an empty turn with the error text (preserves old behavior)', () => {
+    const rec = buildPartialAssistantRecord([], '', 'error', '401: Unauthorized');
     expect(rec).toEqual({
       text: '',
       toolCalls: null,
@@ -249,13 +252,46 @@ describe('buildErrorAssistantRecord', () => {
     });
   });
 
-  it('always produces empty text + empty parts so a failed turn is still recorded', () => {
-    const rec = buildErrorAssistantRecord('boom');
-    // No partial text and no UI parts: the turn exists in history but renders as
-    // an error, with the cause preserved in metadata.error.
-    expect(rec.text).toBe('');
-    expect(rec.metadata.parts).toEqual([]);
-    expect(rec.toolCalls).toBeNull();
+  it('persists in-progress text (no finished steps) as the partial answer', () => {
+    const rec = buildPartialAssistantRecord([], 'partial answer', 'error', 'boom');
+    expect(rec.text).toBe('partial answer');
+    expect(rec.metadata.parts).toEqual([
+      { type: 'text', text: 'partial answer' },
+    ]);
     expect(rec.metadata.error).toBe('boom');
+  });
+
+  it('combines a finished tool step with trailing in-progress text', () => {
+    const steps = [
+      {
+        text: 'looked it up',
+        toolCalls: [
+          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
+        ],
+        toolResults: [
+          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+        ],
+      },
+    ];
+    const rec = buildPartialAssistantRecord(steps, ' and then', 'error', 'boom');
+    const parts = rec.metadata.parts as AnyPart[];
+    // The finished step's text part is present.
+    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
+    // The paired tool call+result becomes an output-available part.
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart).toBeDefined();
+    expect(toolPart!.state).toBe('output-available');
+    // The in-progress text is appended LAST so the parts match the stream order.
+    expect(parts[parts.length - 1]).toEqual({ type: 'text', text: ' and then' });
+    expect(rec.text).toBe('looked it up and then');
+    expect(rec.toolCalls).not.toBeNull();
+    expect(rec.metadata.error).toBe('boom');
+  });
+
+  it('omits the error key on the abort path (no errorText)', () => {
+    const rec = buildPartialAssistantRecord([], 'half', 'aborted');
+    expect(rec.metadata.finishReason).toBe('aborted');
+    expect('error' in rec.metadata).toBe(false);
+    expect(rec.text).toBe('half');
   });
 });
