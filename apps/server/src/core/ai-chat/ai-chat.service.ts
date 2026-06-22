@@ -449,6 +449,22 @@ export class AiChatService {
         });
         // Lifecycle: release the external MCP clients leased for this turn.
         await closeExternalClients();
+
+        // Generate the chat title for a freshly created chat AFTER the stream's
+        // provider call has completed — NOT concurrently with it. The z.ai coding
+        // endpoint stalls one of two concurrent requests to the same plan, which
+        // black-holed the chat stream (~300s headers timeout) when title
+        // generation raced it. Running it here (solo, fire-and-forget) avoids the
+        // race; never block the turn on it, swallow any error.
+        if (isNewChat && incomingText) {
+          void this.generateTitle(chatId, workspace.id, incomingText).catch(
+            (err) => {
+              this.logger.warn(
+                `Title generation failed: ${(err as Error)?.message ?? err}`,
+              );
+            },
+          );
+        }
       },
       onError: async ({ error }) => {
         // NestJS Logger.error(message, stack?, context?): pass the real message
@@ -492,18 +508,6 @@ export class AiChatService {
         await closeExternalClients();
       },
       });
-
-      // Fire-and-forget async title generation for a freshly created chat. Never
-      // block the stream on it; swallow any error.
-      if (isNewChat && incomingText) {
-        void this.generateTitle(chatId, workspace.id, incomingText).catch(
-          (err) => {
-            this.logger.warn(
-              `Title generation failed: ${(err as Error)?.message ?? err}`,
-            );
-          },
-        );
-      }
 
       // Stream the UI-message protocol straight to the hijacked Node response.
       // Without onError the AI SDK masks the cause ('An error occurred.') and the
