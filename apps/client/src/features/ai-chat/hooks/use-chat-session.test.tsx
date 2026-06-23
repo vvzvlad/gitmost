@@ -1,25 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useChatSession } from "./use-chat-session";
+import type { UseChatSessionOptions } from "./use-chat-session";
+
+// The props the test drives: the parent-owned subset of UseChatSessionOptions
+// (the spies are injected by setup, not per-render). messagesLoading is optional
+// here (defaulted to false in setup) for terser test call sites.
+type DriverProps = Pick<UseChatSessionOptions, "activeChatId" | "chats"> & {
+  messagesLoading?: boolean;
+};
 
 // Drive the hook the way the window does: the parent owns `activeChatId` and
 // passes it back in. `setActiveChatId` is a spy so we can assert the EXACT id the
 // hook adopts (the #137 regression: it must be the authoritative streamed id, not
 // the newest chat in the list).
-function setup(initial: {
-  activeChatId: string | null;
-  chats: { items?: { id: string }[] } | undefined;
-  messagesLoading?: boolean;
-}) {
+function setup(initial: DriverProps) {
   const setActiveChatId = vi.fn();
   const onInvalidateChatList = vi.fn();
   const onInvalidateChatMessages = vi.fn();
   const { result, rerender } = renderHook(
-    (props: {
-      activeChatId: string | null;
-      chats: { items?: { id: string }[] } | undefined;
-      messagesLoading?: boolean;
-    }) =>
+    (props: DriverProps) =>
       useChatSession({
         activeChatId: props.activeChatId,
         setActiveChatId,
@@ -143,6 +143,32 @@ describe("useChatSession", () => {
     expect(setActiveChatId).not.toHaveBeenCalled(); // existing chat is never re-adopted
     expect(onInvalidateChatList).toHaveBeenCalled();
     expect(onInvalidateChatMessages).toHaveBeenCalledWith("chat-1");
+  });
+
+  it("double onTurnFinished on a failed-after-start turn: primary adopt, 2nd no-id call does NOT re-arm the fallback", () => {
+    // ai@6 fires onFinish AND onError on a failed turn. If the failure happened
+    // AFTER the `start` chunk, onFinish carries the streamed id and onError does
+    // not — so onTurnFinished runs twice in one turn (id, then no-id) before any
+    // re-render. The 2nd call must NOT re-arm the fallback off the still-null
+    // closure; otherwise a late refetch (parent hasn't reflected the adoption yet)
+    // would wrongly adopt a sibling row.
+    const { result, rerender, setActiveChatId } = setup({
+      activeChatId: null,
+      chats: { items: [{ id: "x" }] },
+    });
+    result.current.onTurnFinished("A"); // onFinish: primary adoption
+    expect(setActiveChatId).toHaveBeenCalledWith("A");
+    result.current.onTurnFinished(undefined); // onError: same turn, no id
+    // Even in the worst case (the parent has NOT yet reflected activeChatId="A"
+    // and a late refetch lands a new row), the just-failed sibling must NOT be
+    // adopted. Two layers guarantee this: the ref guard keeps the 2nd call from
+    // re-arming at the source, and the render-phase reconciler disarms anything
+    // stale once thread.chatId ("A") diverges from the still-null activeChatId.
+    rerender({
+      activeChatId: null,
+      chats: { items: [{ id: "x" }, { id: "late" }] },
+    });
+    expect(setActiveChatId).not.toHaveBeenCalledWith("late");
   });
 
   it("in-place adopt keeps threadKey stable; an external switch remounts", () => {

@@ -10,9 +10,23 @@ import {
   threadSessionReducer,
 } from "@/features/ai-chat/utils/thread-identity.ts";
 
+/** Inputs to {@link useChatSession}. `activeChatId`/`setActiveChatId` are the
+ *  public selection atom (also written from outside the window, e.g. page
+ *  history); the rest is read-only context the hook needs. */
+export interface UseChatSessionOptions {
+  activeChatId: string | null;
+  setActiveChatId: (id: string | null) => void;
+  chats: { items?: { id: string }[] } | undefined;
+  messagesLoading: boolean;
+  /** Wraps queryClient.invalidateQueries(AI_CHATS_RQ_KEY). */
+  onInvalidateChatList: () => void;
+  /** Wraps the per-chat messages invalidation. */
+  onInvalidateChatMessages: (chatId: string) => void;
+}
+
 /** What the window needs from a chat session: the ChatThread mount key, the
  *  history-loader gate, and the turn-finished callback. */
-export interface ChatSession {
+export interface UseChatSessionResult {
   /** ChatThread mount key (was `thread.key`). */
   threadKey: string;
   /** Show the history loader instead of the live thread. */
@@ -26,6 +40,14 @@ export interface ChatSession {
   cancelPendingAdoption: () => void;
 }
 
+/** Project a chat list to its id array (the before/after snapshot for the
+ *  error-path fallback). */
+function chatIdSnapshot(
+  chats: { items?: { id: string }[] } | undefined,
+): string[] {
+  return chats?.items?.map((c) => c.id) ?? [];
+}
+
 /**
  * Owns the AI-chat thread-identity lifecycle: the single atomic thread identity,
  * both new-chat id adoption paths (primary streamed-metadata + bounded error-path
@@ -35,16 +57,9 @@ export interface ChatSession {
  * This is the twice-bugged area for the #137 two-tab adoption race; the canonical
  * explanation of the adoption design lives in adopt-chat-id.ts.
  */
-export function useChatSession(params: {
-  activeChatId: string | null;
-  setActiveChatId: (id: string | null) => void;
-  chats: { items?: { id: string }[] } | undefined;
-  messagesLoading: boolean;
-  /** Wraps queryClient.invalidateQueries(AI_CHATS_RQ_KEY). */
-  onInvalidateChatList: () => void;
-  /** Wraps the per-chat messages invalidation. */
-  onInvalidateChatMessages: (chatId: string) => void;
-}): ChatSession {
+export function useChatSession(
+  params: UseChatSessionOptions,
+): UseChatSessionResult {
   const {
     activeChatId,
     setActiveChatId,
@@ -53,6 +68,15 @@ export function useChatSession(params: {
     onInvalidateChatList,
     onInvalidateChatMessages,
   } = params;
+
+  // Live mirror of `activeChatId`, read by onTurnFinished. ai@6 fires both
+  // onFinish AND onError on a failed turn, so onTurnFinished can run twice in one
+  // turn (once with the streamed id, once without) BEFORE a re-render. Reading
+  // the ref — which the primary-adoption branch updates imperatively — makes that
+  // second call see the just-adopted id, so it cannot re-arm the fallback. (A
+  // plain closure over `activeChatId` would still read null on the second call.)
+  const activeChatIdRef = useRef(activeChatId);
+  activeChatIdRef.current = activeChatId;
 
   // The mounted thread's identity: ONE atomic value tying ChatThread's mount key
   // (`thread.key`) to the chat id that mounted thread holds (`thread.chatId`).
@@ -88,7 +112,11 @@ export function useChatSession(params: {
   // list, which races a second tab — #137; see adopt-chat-id.ts).
   const onTurnFinished = useCallback(
     (serverChatId?: string) => {
-      const adopted = resolveAdoptedChatId(activeChatId, serverChatId);
+      // Read the live id from the ref, not the closure: on a failed turn this can
+      // run twice in one turn (onFinish + onError) before any re-render, and the
+      // primary branch below updates the ref so the second call sees the adopted id.
+      const current = activeChatIdRef.current;
+      const adopted = resolveAdoptedChatId(current, serverChatId);
       if (adopted) {
         // PRIMARY path. In-place adoption: set the public selection and the
         // thread identity to the real id together. `adopt` keeps the SAME mount
@@ -96,35 +124,30 @@ export function useChatSession(params: {
         // and keeps the SAME mounted thread (its useChat already holds the
         // just-finished turn) instead of remounting + re-seeding from
         // not-yet-persisted history.
+        activeChatIdRef.current = adopted; // a same-turn 2nd call now sees the id
         setActiveChatId(adopted);
         dispatch({ type: "adopt", chatId: adopted });
         // Primary adoption won — disarm any previously-armed fallback.
         pendingNewChatRef.current = null;
-      } else if (activeChatId === null) {
+      } else if (current === null) {
         // FALLBACK path: a brand-new chat finished with NO server id (the first
         // turn errored before the `start` chunk). Arm the bounded list-refetch
         // fallback by snapshotting the currently-known chat ids. `chats` is still
         // the pre-refetch list here, so the just-created row is NOT yet in it; the
         // effect below adopts the single id that newly appears after the refetch.
-        pendingNewChatRef.current = chats?.items?.map((c) => c.id) ?? [];
+        pendingNewChatRef.current = chatIdSnapshot(chats);
       }
       onInvalidateChatList();
       // Re-sync the persisted message rows for the active chat so the Markdown
       // export and token counters reflect the just-finished turn. The live thread
       // renders from its own useChat store (stable thread.key), so this never
-      // re-seeds or tears down the open thread. For a brand-new chat activeChatId
-      // is still null here; later turns hit this with the adopted id.
-      if (activeChatId) {
-        onInvalidateChatMessages(activeChatId);
+      // re-seeds or tears down the open thread. For a brand-new chat `current` is
+      // still null here; later turns hit this with the adopted id.
+      if (current) {
+        onInvalidateChatMessages(current);
       }
     },
-    [
-      activeChatId,
-      chats,
-      setActiveChatId,
-      onInvalidateChatList,
-      onInvalidateChatMessages,
-    ],
+    [chats, setActiveChatId, onInvalidateChatList, onInvalidateChatMessages],
   );
 
   // FALLBACK resolver. Armed only by onTurnFinished when a brand-new chat's first
@@ -136,7 +159,7 @@ export function useChatSession(params: {
   useEffect(() => {
     const before = pendingNewChatRef.current;
     if (before === null || activeChatId !== null) return; // not armed / already adopted
-    const after = chats?.items?.map((c) => c.id) ?? [];
+    const after = chatIdSnapshot(chats);
     const added = newlyAddedChatIds(before, after);
     // Keep waiting until a genuinely-new id appears. Set-based, so it is robust
     // to an add+delete in the same window (a length compare would miss it), and
