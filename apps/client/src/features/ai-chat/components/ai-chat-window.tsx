@@ -173,18 +173,42 @@ export default function AiChatWindow() {
     ? { id: openPageData.id, title: openPageData.title }
     : null;
 
-  // startNewChat/selectChat only set the public atom; useChatSession's render-
-  // phase reconciler does the remount AND disarms any pending new-chat fallback.
+  // The AI-chat thread-identity lifecycle (mount key, both new-chat id adoption
+  // paths, the history-loaded latch, the render-phase reconciler) lives in this
+  // hook. See adopt-chat-id.ts for the canonical #137 two-tab race explanation.
+  // The invalidate closures are passed inline: `onTurnFinished` is read live by
+  // useChat's onFinish (never in an effect dep array), so their identity does not
+  // matter — no memoization ceremony needed.
+  const { threadKey, waitingForHistory, onTurnFinished, cancelPendingAdoption } =
+    useChatSession({
+      activeChatId,
+      setActiveChatId,
+      chats,
+      messagesLoading,
+      onInvalidateChatList: () =>
+        queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY }),
+      onInvalidateChatMessages: (id) =>
+        queryClient.invalidateQueries({ queryKey: AI_CHAT_MESSAGES_RQ_KEY(id) }),
+    });
+
+  // startNewChat/selectChat set the public atom; the hook's render-phase
+  // reconciler handles the remount when activeChatId actually CHANGES. But
+  // pressing "New chat" while already in a new chat leaves activeChatId === null
+  // (a no-op for the atom), so the reconciler never fires — explicitly disarm any
+  // armed error-path fallback here so a late refetch can't yank the user into a
+  // just-failed chat after they chose a fresh one.
   const startNewChat = useCallback((): void => {
+    cancelPendingAdoption();
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
     // Default the picker back to "Universal assistant" for the fresh chat.
     setSelectedRoleId(null);
-  }, [setActiveChatId, setDraft, setSelectedRoleId]);
+  }, [cancelPendingAdoption, setActiveChatId, setDraft, setSelectedRoleId]);
 
   const selectChat = useCallback(
     (chatId: string): void => {
+      cancelPendingAdoption();
       setActiveChatId(chatId);
       setHistoryOpen(false);
       setDraft("");
@@ -192,32 +216,8 @@ export default function AiChatWindow() {
       // chat's header/assistant-name (which prefers the chat's persisted role).
       setSelectedRoleId(null);
     },
-    [setActiveChatId, setDraft, setSelectedRoleId],
+    [cancelPendingAdoption, setActiveChatId, setDraft, setSelectedRoleId],
   );
-
-  // The AI-chat thread-identity lifecycle (mount key, both new-chat id adoption
-  // paths, the history-loaded latch, the render-phase reconciler) lives in this
-  // hook. See adopt-chat-id.ts for the canonical #137 two-tab race explanation.
-  // Memoized so the hook's `onTurnFinished` useCallback keeps a stable identity
-  // across renders (it is read live by useChat's onFinish, so this is cosmetic,
-  // not load-bearing — but avoids needless re-creation).
-  const invalidateChatList = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY }),
-    [queryClient],
-  );
-  const invalidateChatMessages = useCallback(
-    (id: string) =>
-      queryClient.invalidateQueries({ queryKey: AI_CHAT_MESSAGES_RQ_KEY(id) }),
-    [queryClient],
-  );
-  const { threadKey, waitingForHistory, onTurnFinished } = useChatSession({
-    activeChatId,
-    setActiveChatId,
-    chats,
-    messagesLoading,
-    onInvalidateChatList: invalidateChatList,
-    onInvalidateChatMessages: invalidateChatMessages,
-  });
 
   // The active chat object (for its title) and an export gate: only enable the
   // export button when an existing chat with loaded persisted rows is active.

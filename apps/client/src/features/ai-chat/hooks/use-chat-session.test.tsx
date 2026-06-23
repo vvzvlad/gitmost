@@ -114,6 +114,37 @@ describe("useChatSession", () => {
     expect(setActiveChatId).not.toHaveBeenCalledWith("new");
   });
 
+  it("startNewChat while already in a new chat: cancelPendingAdoption stops a late refetch adopting the failed chat", () => {
+    // The Warning path the render-phase reconciler can't catch: pressing "New
+    // chat" while already in a new chat keeps activeChatId === null (a no-op for
+    // the atom), so only the explicit cancelPendingAdoption() disarms.
+    const { result, rerender, setActiveChatId } = setup({
+      activeChatId: null,
+      chats: { items: [{ id: "x" }] },
+    });
+    result.current.onTurnFinished(undefined); // first turn failed → arm (before=["x"])
+    result.current.cancelPendingAdoption(); // window calls this from startNewChat
+    // The just-failed row lands in a late refetch; it must NOT be adopted.
+    rerender({
+      activeChatId: null,
+      chats: { items: [{ id: "x" }, { id: "failed" }] },
+    });
+    expect(setActiveChatId).not.toHaveBeenCalledWith("failed");
+  });
+
+  it("onTurnFinished for an existing chat: no adoption, invalidates that chat's messages", () => {
+    const {
+      result,
+      setActiveChatId,
+      onInvalidateChatList,
+      onInvalidateChatMessages,
+    } = setup({ activeChatId: "chat-1", chats: { items: [{ id: "chat-1" }] } });
+    result.current.onTurnFinished("chat-1");
+    expect(setActiveChatId).not.toHaveBeenCalled(); // existing chat is never re-adopted
+    expect(onInvalidateChatList).toHaveBeenCalled();
+    expect(onInvalidateChatMessages).toHaveBeenCalledWith("chat-1");
+  });
+
   it("in-place adopt keeps threadKey stable; an external switch remounts", () => {
     const chats = { items: [{ id: "B" }] };
     const { result, rerender } = setup({ activeChatId: null, chats });

@@ -20,6 +20,10 @@ export interface ChatSession {
   /** Call when a turn finishes; `serverChatId` is the authoritative streamed id
    *  (undefined on a failed turn). Handles new-chat id adoption + invalidations. */
   onTurnFinished: (serverChatId?: string) => void;
+  /** Disarm any pending error-path new-chat fallback. The window calls this from
+   *  startNewChat/selectChat so a late refetch can't yank the user back into a
+   *  just-failed chat after they explicitly moved on. */
+  cancelPendingAdoption: () => void;
 }
 
 /**
@@ -192,5 +196,20 @@ export function useChatSession(params: {
     thread.key === activeChatId &&
     historyLoadedKeyRef.current !== activeChatId;
 
-  return { threadKey: thread.key, waitingForHistory, onTurnFinished };
+  // Explicit disarm for startNewChat/selectChat. The render-phase reconciler only
+  // disarms when activeChatId actually changes, but "New chat" pressed while the
+  // user is ALREADY in a new chat is a no-op for the atom (activeChatId stays
+  // null), so the reconciler never fires — without this an armed fallback could
+  // adopt the just-failed chat from a late refetch and yank the user out of their
+  // fresh chat. Stable identity (writes a ref).
+  const cancelPendingAdoption = useCallback(() => {
+    pendingNewChatRef.current = null;
+  }, []);
+
+  return {
+    threadKey: thread.key,
+    waitingForHistory,
+    onTurnFinished,
+    cancelPendingAdoption,
+  };
 }

@@ -25,8 +25,9 @@
  * FALLBACK path (only when a new chat's first turn errors BEFORE the `start`
  * chunk, so no metadata id ever reached the client): adopt the single chat that
  * NEWLY appeared in the per-user list relative to a pre-refetch snapshot —
- * `newlyAddedChatIds` / `pickNewlyCreatedChatId`. This is unambiguous and does
- * not race a second tab the way the old "newest chat in the list" guess did.
+ * `newlyAddedChatIds` (the fallback effect adopts only when exactly one id is
+ * new). This is unambiguous and does not race a second tab the way the old
+ * "newest chat in the list" guess did.
  * ============================================================================
  */
 
@@ -66,16 +67,4 @@ export function newlyAddedChatIds(
 ): Set<string> {
   const before = new Set(beforeIds);
   return new Set(afterIds.filter((id) => !before.has(id)));
-}
-
-/**
- * Return the single id present in `afterIds` but not in `beforeIds`. Returns
- * null when zero or more-than-one such id exists (ambiguous — do not adopt).
- */
-export function pickNewlyCreatedChatId(
-  beforeIds: readonly string[],
-  afterIds: readonly string[],
-): string | null {
-  const added = newlyAddedChatIds(beforeIds, afterIds);
-  return added.size === 1 ? [...added][0] : null;
 }
