@@ -57,7 +57,10 @@ import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
 import { remapPageEmbedSourceId } from '../transclusion/utils/transclusion-prosemirror.util';
-import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
+import {
+  AuthProvenanceData,
+  agentSourceFields,
+} from '../../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class PageService {
@@ -135,7 +138,6 @@ export class PageService {
       ydoc = createYdocFromJson(prosemirrorJson);
     }
 
-    const isAgent = provenance?.actor === 'agent';
 
     const page = await this.pageRepo.insertPage({
       slugId: generateSlugId(),
@@ -153,12 +155,7 @@ export class PageService {
       // Agent-edit provenance. The human stays the responsible author
       // (creatorId/lastUpdatedById); these only annotate the source. A normal
       // user request leaves the column default ('user').
-      ...(isAgent
-        ? {
-            lastUpdatedSource: 'agent',
-            lastUpdatedAiChatId: provenance.aiChatId,
-          }
-        : {}),
+      ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
       content,
       textContent,
       ydoc,
@@ -231,7 +228,6 @@ export class PageService {
     contributors.add(user.id);
     const contributorIds = Array.from(contributors);
 
-    const isAgent = provenance?.actor === 'agent';
 
     // Detect a real title/icon change so the WS tree listener can broadcast an
     // `updateOne` to the space (rename / icon swap) WITHOUT re-broadcasting on a
@@ -251,12 +247,7 @@ export class PageService {
         lastUpdatedById: user.id,
         // Agent-edit provenance: annotate the source without changing the
         // responsible author. A normal user request leaves the column default.
-        ...(isAgent
-          ? {
-              lastUpdatedSource: 'agent',
-              lastUpdatedAiChatId: provenance.aiChatId,
-            }
-          : {}),
+        ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
         updatedAt: new Date(),
         contributorIds: contributorIds,
       },
@@ -443,7 +434,6 @@ export class PageService {
     provenance?: AuthProvenanceData,
   ) {
     let childPageIds: string[] = [];
-    const isAgent = provenance?.actor === 'agent';
 
     const allPages = await this.pageRepo.getPageAndDescendants(rootPage.id, {
       includeContent: false,
@@ -490,12 +480,7 @@ export class PageService {
           // Agent-edit provenance on the moved root page. Child pages are bulk
           // re-parented to the new space (no content change), so the marker is
           // stamped on the root the agent acted on. Normal user: no change.
-          ...(isAgent
-            ? {
-                lastUpdatedSource: 'agent',
-                lastUpdatedAiChatId: provenance.aiChatId,
-              }
-            : {}),
+          ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
         },
         rootPage.id,
         trx,
@@ -949,7 +934,6 @@ export class PageService {
       }
     }
 
-    const isAgent = provenance?.actor === 'agent';
 
     const updateResult = await this.pageRepo.updatePage(
       {
@@ -957,12 +941,7 @@ export class PageService {
         parentPageId: parentPageId,
         // Agent-edit provenance: annotate the source on an agent move. A normal
         // user request leaves the column default ('user').
-        ...(isAgent
-          ? {
-              lastUpdatedSource: 'agent',
-              lastUpdatedAiChatId: provenance.aiChatId,
-            }
-          : {}),
+        ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
       },
       dto.pageId,
     );
