@@ -36,6 +36,9 @@ export class UserRepo {
     'updatedAt',
     'deletedAt',
     'hasGeneratedPassword',
+    // AI agent identity flag — needed by the JWT strategy to derive a
+    // non-spoofable 'agent' provenance from the signed server-side identity.
+    'isAgent',
   ];
 
   async findById(

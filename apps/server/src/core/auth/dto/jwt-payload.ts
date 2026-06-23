@@ -20,7 +20,9 @@ export type JwtPayload = {
   // comment create/resolve) record a non-spoofable 'agent' marker (§6.5 / §15
   // C3 / §14 N2).
   actor?: 'user' | 'agent';
-  aiChatId?: string;
+  // Nullable: an external MCP agent has no internal ai_chats row, so it carries
+  // an 'agent' actor with a null aiChatId.
+  aiChatId?: string | null;
 };
 
 export type JwtCollabPayload = {
@@ -31,7 +33,9 @@ export type JwtCollabPayload = {
   // the human collab path (treated as 'user'); set only when the internal agent
   // mints a provenance collab token (§6.6 / §15 C2).
   actor?: 'user' | 'agent';
-  aiChatId?: string;
+  // Nullable: an external MCP agent has no internal ai_chats row, so it carries
+  // an 'agent' actor with a null aiChatId.
+  aiChatId?: string | null;
 };
 
 export type JwtExchangePayload = {

@@ -147,6 +147,24 @@ describe('CommentService — behavior', () => {
       expect(insertArg.creatorId).toBe('user-1');
     });
 
+    it('stamps createdSource:"agent" with a null aiChatId (external MCP agent) without breaking insert', async () => {
+      const { service, commentRepo } = makeService();
+
+      // An external MCP agent is flagged is_agent server-side but has no
+      // internal ai_chats row, so provenance carries actor='agent' + a null
+      // aiChatId. The insert must still record the agent marker.
+      await service.create(
+        { page: page(), workspaceId: 'ws-1', user: user() },
+        { content: JSON.stringify(docMentioning()) } as any,
+        { actor: 'agent', aiChatId: null },
+      );
+
+      const insertArg = commentRepo.insertComment.mock.calls[0][0];
+      expect(insertArg.createdSource).toBe('agent');
+      expect(insertArg.aiChatId).toBeNull();
+      expect(insertArg.creatorId).toBe('user-1');
+    });
+
     it('leaves source default (no agent stamp) for a normal user', async () => {
       const { service, commentRepo } = makeService();
 

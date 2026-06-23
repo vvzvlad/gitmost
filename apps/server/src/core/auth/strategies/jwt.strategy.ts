@@ -71,13 +71,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       this.sessionActivityService.trackActivity(sessionId, payload.sub, payload.workspaceId);
     }
 
-    // Propagate the signed agent-edit provenance claim onto the request so REST
-    // services/controllers can set the 'agent' marker off it. A normal user
-    // token carries no actor claim and resolves to 'user' (unchanged behaviour);
-    // only the internal agent's minted token sets actor='agent' + aiChatId. This
-    // is read server-side from the SIGNED token, never from a client body field,
-    // so a normal user cannot fake an 'agent' badge.
-    req.raw.actor = (payload as JwtPayload).actor ?? 'user';
+    // Propagate the agent-edit provenance onto the request so REST
+    // services/controllers can set the 'agent' marker off it. Provenance is
+    // derived from the SIGNED server-side identity, never from a client body
+    // field, so a normal user cannot fake an 'agent' badge:
+    //  - An account flagged is_agent (an MCP service account) stamps EVERY write
+    //    as 'agent'. It has no internal ai_chats row, so aiChatId stays null.
+    //  - Otherwise fall back to the actor claim minted into the internal AI
+    //    agent's token (actor='agent' + aiChatId); a normal user token carries
+    //    no claim and resolves to 'user' (unchanged behaviour).
+    req.raw.actor = user.isAgent
+      ? 'agent'
+      : ((payload as JwtPayload).actor ?? 'user');
     req.raw.aiChatId = (payload as JwtPayload).aiChatId ?? null;
 
     return { user, workspace };

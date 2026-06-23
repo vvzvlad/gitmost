@@ -368,6 +368,7 @@ export interface Users {
   emailVerifiedAt: Timestamp | null;
   id: Generated<string>;
   invitedById: string | null;
+  isAgent: Generated<boolean>;
   lastActiveAt: Timestamp | null;
   lastLoginAt: Timestamp | null;
   locale: string | null;

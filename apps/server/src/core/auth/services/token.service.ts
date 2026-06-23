@@ -34,7 +34,9 @@ export class TokenService {
     // token carries no actor/aiChatId and is treated as 'user' downstream. The
     // internal agent passes { actor:'agent', aiChatId } so REST writes record a
     // non-spoofable 'agent' marker off the signed claim (§6.5 / §15 C3 / §14 N2).
-    provenance?: { actor: 'agent'; aiChatId: string },
+    // aiChatId is nullable: an external MCP agent has no internal ai_chats row,
+    // so it stamps 'agent' with a null aiChatId.
+    provenance?: { actor: 'agent'; aiChatId: string | null },
   ): Promise<string> {
     if (isUserDisabled(user)) {
       throw new ForbiddenException();
@@ -58,7 +60,8 @@ export class TokenService {
     workspaceId: string,
     // Optional agent-edit provenance. When omitted (the human collab path), the
     // token carries no actor/aiChatId and is treated as 'user' downstream.
-    provenance?: { actor: 'agent'; aiChatId: string },
+    // aiChatId is nullable for an external agent with no internal ai_chats row.
+    provenance?: { actor: 'agent'; aiChatId: string | null },
   ): Promise<string> {
     if (isUserDisabled(user)) {
       throw new ForbiddenException();
