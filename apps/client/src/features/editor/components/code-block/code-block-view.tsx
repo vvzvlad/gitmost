@@ -50,8 +50,10 @@ export default function CodeBlockView(props: NodeViewProps) {
       {/* #146: the editable <pre><code> (contentDOM) MUST come first in the DOM.
           With the non-editable menu rendered before it, the browser's click
           hit-testing snapped the caret up one line. Render content first; the
-          menu follows and is positioned as a top-right overlay via CSS (the
-          transclusion pattern), so it no longer sits in-flow above the code. */}
+          menu is rendered after it and lifted back above visually via flex
+          `order: -1` (the `.codeBlock` wrapper is a flex column — see
+          code-block.module.css). It stays fully in flow as a full-width row
+          above the code: no overlay/absolute positioning. */}
       <pre
         spellCheck="false"
         hidden={
