@@ -7,7 +7,9 @@ import { Logger } from '@nestjs/common';
  * WHY THIS EXISTS
  * ---------------
  * Production logs showed the AI chat stream (and title generation) failing with
- * `read ECONNRESET` after the AI SDK's own retries were exhausted. The provider
+ * `read ECONNRESET` after the AI SDK's own retries were exhausted, and
+ * (z.ai GLM coding endpoint, #140) intermittently stalling without ever sending
+ * response headers until undici's 300s default cut the request with no retry. The provider
  * clients were built with NO custom `fetch`, so all outbound LLM traffic used
  * Node's default global undici agent: default keep-alive pooling and NO
  * transport-level reconnect on connection resets. `read ECONNRESET` is a TCP RST
@@ -41,6 +43,21 @@ import { Logger } from '@nestjs/common';
  * error message for that rarer mid-stream case changes.
  */
 
+// `headersTimeout` bounds time-to-FIRST-response-headers (before any body). It
+// is NOT the streaming budget: once headers arrive the SSE body streams freely,
+// unaffected by this value — so it is safe to keep SHORT. Some providers (seen
+// with the z.ai GLM coding endpoint, #140) intermittently accept the request but
+// never send response headers; undici's 300s default then hangs the user for
+// FIVE MINUTES before failing, with no retry. Cap it so a stalled request fails
+// FAST and is retried on a fresh connection (the retry usually lands on a healthy
+// path and responds in seconds). Env-overridable for ops tuning.
+const HEADERS_TIMEOUT_MS =
+  Number(process.env.AI_HTTP_HEADERS_TIMEOUT_MS) || 60_000;
+// `bodyTimeout` bounds the gap BETWEEN streamed body chunks (not total stream
+// length). Kept generous so a legitimately slow/thinking model with sparse SSE
+// chunks is never killed mid-stream. Env-overridable.
+const BODY_TIMEOUT_MS = Number(process.env.AI_HTTP_BODY_TIMEOUT_MS) || 300_000;
+
 const baseAgent = new Agent({
   // Cap TCP/TLS connect so a stuck connect fails fast and gets retried instead
   // of hanging indefinitely.
@@ -49,8 +66,11 @@ const baseAgent = new Agent({
   // a stale/half-closed socket can be reused, which is exactly the condition
   // that produces `read ECONNRESET`. Do NOT raise this.
   keepAliveTimeout: 4_000,
-  // Do NOT override headersTimeout/bodyTimeout — keep undici defaults so
-  // long-lived SSE streaming responses are not killed mid-stream.
+  // Short time-to-headers (see HEADERS_TIMEOUT_MS) so a header stall fails fast
+  // and gets retried; generous per-chunk body timeout so real streams survive
+  // (see BODY_TIMEOUT_MS). Lowering headersTimeout does NOT truncate streams.
+  headersTimeout: HEADERS_TIMEOUT_MS,
+  bodyTimeout: BODY_TIMEOUT_MS,
 });
 
 const dispatcher: Dispatcher = new RetryAgent(baseAgent, {
@@ -80,6 +100,12 @@ const dispatcher: Dispatcher = new RetryAgent(baseAgent, {
     'EHOSTDOWN',
     'EHOSTUNREACH',
     'UND_ERR_SOCKET',
+    // Added (NOT in undici's default set): a header timeout fires BEFORE any
+    // response body, so retrying is clean (no partially-consumed stream / Range
+    // problem) — and it is exactly the z.ai stall mode (#140), where a fresh
+    // retry usually succeeds. We deliberately do NOT retry UND_ERR_BODY_TIMEOUT
+    // (mid-body; partial SSE already delivered, not safe to resume).
+    'UND_ERR_HEADERS_TIMEOUT',
     'EPIPE',
   ],
 });
