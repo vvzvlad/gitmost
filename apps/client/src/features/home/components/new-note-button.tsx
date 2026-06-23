@@ -6,18 +6,9 @@ import { useGetSpacesQuery } from "@/features/space/queries/space-query.ts";
 import { useCreatePageMutation } from "@/features/page/queries/page-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { ISpace } from "@/features/space/types/space.types.ts";
-import { SpaceRole } from "@/lib/types.ts";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
-
-// The /spaces list endpoint returns membership.role but NOT membership.permissions
-// (only /spaces/info includes CASL rules). Mirror the server space-ability mapping:
-// ADMIN and WRITER can manage pages, READER is read-only. So a space is writable
-// for the current user when their role is ADMIN or WRITER.
-function canCreatePage(space: ISpace): boolean {
-  const role = space.membership?.role;
-  return role === SpaceRole.ADMIN || role === SpaceRole.WRITER;
-}
+import { canCreatePage } from "./can-create-page.ts";
 
 // Prominent home-screen action to create a new note (page). Because the home
 // screen has no active space, the target space is resolved from the user's
