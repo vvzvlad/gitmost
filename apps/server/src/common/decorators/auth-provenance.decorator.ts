@@ -1,4 +1,5 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import { ProvenanceSource } from '../../core/auth/dto/jwt-payload';
 
 /**
  * The agent-edit provenance carried by the request, read from the SIGNED access
@@ -8,7 +9,7 @@ import { createParamDecorator, ExecutionContext } from '@nestjs/common';
  * cannot fake an 'agent' marker.
  */
 export interface AuthProvenanceData {
-  actor: 'user' | 'agent';
+  actor: ProvenanceSource;
   aiChatId: string | null;
 }
 

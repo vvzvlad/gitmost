@@ -1,26 +1,10 @@
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
 import RoleCards from "./role-cards";
 import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
 
-// MantineProvider reads window.matchMedia (color scheme) on mount, which jsdom
-// does not implement. Provide a minimal stub so the provider can render.
-beforeAll(() => {
-  Object.defineProperty(window, "matchMedia", {
-    writable: true,
-    value: (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }),
-  });
-});
+// matchMedia (read by MantineProvider) is stubbed globally in vitest.setup.ts.
 
 const roles: IAiRole[] = [
   {

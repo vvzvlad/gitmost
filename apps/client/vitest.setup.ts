@@ -49,3 +49,17 @@ function createStorage(): Storage {
 // `window.localStorage` resolve to the same working stub.
 vi.stubGlobal("localStorage", createStorage());
 vi.stubGlobal("sessionStorage", createStorage());
+
+// MantineProvider (and other components) read `window.matchMedia` on mount, which
+// jsdom does not implement. Provide a minimal stub here so any test rendering
+// Mantine works without re-stubbing matchMedia in every file.
+vi.stubGlobal("matchMedia", (query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addListener: vi.fn(),
+  removeListener: vi.fn(),
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn(),
+  dispatchEvent: vi.fn(),
+}));

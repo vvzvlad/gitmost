@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **AI-agent attribution for MCP writes.** Comments (and pages) created through
+  the MCP endpoint by a dedicated agent account are now badged as "AI", with
+  unspoofable provenance derived from a per-user `is_agent` flag (not from the
+  request body). **Operator setup:** use a *dedicated* service account for the
+  MCP fallback and set the flag with SQL —
+  `UPDATE users SET is_agent = true WHERE email = '<mcp-account>'`. Never flag a
+  human or shared account, or its normal edits get mis-attributed as AI. See the
+  AI-agent block in `.env.example`. (#143)
+
 ### Changed
 
 - **Public share AI: default per-workspace hourly assistant cap lowered

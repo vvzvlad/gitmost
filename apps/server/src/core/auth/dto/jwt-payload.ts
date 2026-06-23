@@ -1,3 +1,11 @@
+/**
+ * Provenance actor for a write: who the action is attributed to. Derived only
+ * from the SIGNED token claim (never a request body), so 'agent' is unspoofable.
+ * Single source of truth so a typo like 'agnet' can't slip through as a bare
+ * string (#143 review). Distinct from `ActorType` (auth principal kind).
+ */
+export type ProvenanceSource = 'user' | 'agent';
+
 export enum JwtType {
   ACCESS = 'access',
   COLLAB = 'collab',
@@ -19,7 +27,7 @@ export type JwtPayload = {
   // mints a provenance access token so REST writes (create/rename/move page,
   // comment create/resolve) record a non-spoofable 'agent' marker (§6.5 / §15
   // C3 / §14 N2).
-  actor?: 'user' | 'agent';
+  actor?: ProvenanceSource;
   // Nullable: an external MCP agent has no internal ai_chats row, so it carries
   // an 'agent' actor with a null aiChatId.
   aiChatId?: string | null;
@@ -32,7 +40,7 @@ export type JwtCollabPayload = {
   // Optional agent-edit provenance, signed into the collab token. Absent for
   // the human collab path (treated as 'user'); set only when the internal agent
   // mints a provenance collab token (§6.6 / §15 C2).
-  actor?: 'user' | 'agent';
+  actor?: ProvenanceSource;
   // Nullable: an external MCP agent has no internal ai_chats row, so it carries
   // an 'agent' actor with a null aiChatId.
   aiChatId?: string | null;

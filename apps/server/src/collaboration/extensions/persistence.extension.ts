@@ -21,6 +21,7 @@ import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { executeTx } from '@docmost/db/utils';
 import { InjectQueue } from '@nestjs/bullmq';
 import { QueueJob, QueueName } from '../../integrations/queue/constants';
+import { ProvenanceSource } from '../../core/auth/dto/jwt-payload';
 import { Queue } from 'bullmq';
 import {
   extractMentions,
@@ -50,7 +51,7 @@ import { TransclusionService } from '../../core/page/transclusion/transclusion.s
 export function resolveSource(
   stickyTouched: boolean,
   contextActor?: string,
-): 'agent' | 'user' {
+): ProvenanceSource {
   return stickyTouched || contextActor === 'agent' ? 'agent' : 'user';
 }
 
