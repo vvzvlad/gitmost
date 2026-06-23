@@ -14,6 +14,30 @@ export interface AuthProvenanceData {
 }
 
 /**
+ * Single source of truth for deriving a write's provenance from the SIGNED
+ * server-side identity (#143 review, Arch A). Used by BOTH transport seams — the
+ * REST access-token strategy and the collab websocket auth — so they can't drift:
+ *
+ *   - A `user.isAgent` service account (e.g. the MCP bot) stamps 'agent' on every
+ *     write. It has no internal ai_chats row, so aiChatId comes from the claim
+ *     (usually null).
+ *   - Otherwise honor the actor claim minted into the internal AI agent's token
+ *     (actor='agent' + aiChatId); a normal user token carries no claim → 'user'.
+ *
+ * Provenance is NEVER read from a client body field, so a normal user cannot fake
+ * an 'agent' marker.
+ */
+export function resolveProvenance(
+  user: { isAgent?: boolean | null } | null | undefined,
+  claim: { actor?: ProvenanceSource; aiChatId?: string | null } | null | undefined,
+): AuthProvenanceData {
+  const actor: ProvenanceSource = user?.isAgent
+    ? 'agent'
+    : (claim?.actor ?? 'user');
+  return { actor, aiChatId: claim?.aiChatId ?? null };
+}
+
+/**
  * Agent-edit write-stamp fields for a repository insert/update (#143 review).
  * Spread into the row being written: for an agent it stamps the `*Source`
  * column 'agent' and the AI-chat id; for a normal user it returns `{}` so the

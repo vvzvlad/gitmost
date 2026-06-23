@@ -53,10 +53,7 @@ describe("CommentListItem — AI badge", () => {
     expect(screen.getByText("Service Bot")).toBeDefined();
   });
 
-  it("renders a non-clickable badge when aiChatId is null (external MCP agent)", () => {
-    renderItem(baseComment({ createdSource: "agent", aiChatId: null }));
-    expect(screen.getByText("AI-agent")).toBeDefined();
-    // No deep-link target → no interactive button role.
-    expect(screen.queryByRole("button")).toBeNull();
-  });
+  // The non-clickable (null aiChatId) branch is a property of AiAgentBadge itself
+  // and is covered in ai-agent-badge.test.tsx; this integration suite only needs
+  // the insertion gate (agent → badge, user → no badge) above (#143 review).
 });

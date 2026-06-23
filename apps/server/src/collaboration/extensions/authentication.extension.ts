@@ -15,6 +15,7 @@ import { SpaceRole } from '../../common/helpers/types/permission';
 import { isUserDisabled } from '../../common/helpers';
 import { getPageId } from '../collaboration.util';
 import { JwtCollabPayload, JwtType } from '../../core/auth/dto/jwt-payload';
+import { resolveProvenance } from '../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class AuthenticationExtension implements Extension {
@@ -103,13 +104,17 @@ export class AuthenticationExtension implements Extension {
 
     this.logger.debug(`Authenticated user ${user.id} on page ${pageId}`);
 
-    // Carry the signed agent-edit provenance claim into the hocuspocus
-    // connection context (§6.6 / §15 C2). The human collab path omits these
-    // claims, so it resolves to actor='user' / aiChatId=null.
+    // Carry the agent-edit provenance into the hocuspocus connection context
+    // (§6.6 / §15 C2), derived via the SAME resolver as the REST seam so the two
+    // can't drift. An is_agent service account (e.g. the MCP bot) is attributed
+    // 'agent' here too, so its page-content edits over collab persist as
+    // lastUpdatedSource='agent' (#143 review Arch A) — not just its REST writes.
+    // The human collab path carries no claim and is not flagged → actor='user'.
+    const provenance = resolveProvenance(user, jwtPayload);
     return {
       user,
-      actor: jwtPayload.actor ?? 'user',
-      aiChatId: jwtPayload.aiChatId ?? null,
+      actor: provenance.actor,
+      aiChatId: provenance.aiChatId,
     };
   }
 }

@@ -6,6 +6,8 @@ import classes from "./css/history.module.css";
 import clsx from "clsx";
 import { IPageHistory } from "@/features/page-history/types/page.types";
 import { memo, useCallback } from "react";
+import { useSetAtom } from "jotai";
+import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 
 const MAX_VISIBLE_AVATARS = 5;
 
@@ -26,6 +28,8 @@ const HistoryItem = memo(function HistoryItem({
   onHoverEnd,
   isActive,
 }: HistoryItemProps) {
+  const setHistoryModalOpen = useSetAtom(historyAtoms);
+
   const handleClick = useCallback(() => {
     onSelect(historyItem.id, index);
   }, [onSelect, historyItem.id, index]);
@@ -99,6 +103,9 @@ const HistoryItem = memo(function HistoryItem({
           <AiAgentBadge
             authorName={historyItem.lastUpdatedBy?.name}
             aiChatId={historyItem.lastUpdatedAiChatId}
+            // The history row owns the modal: close it when the badge deep-links
+            // into the chat (the badge no longer reaches into page-history).
+            onActivate={() => setHistoryModalOpen(false)}
           />
         )}
       </Group>

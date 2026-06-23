@@ -8,11 +8,14 @@ import {
   aiChatWindowOpenAtom,
   aiChatDraftAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
-import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 
 interface AiAgentBadgeProps {
   authorName?: string;
   aiChatId?: string | null;
+  // Fired after the badge deep-links into its chat. The caller handles its own
+  // context (e.g. the page-history row closes the history modal) so this generic
+  // ui/ primitive stays free of cross-feature coupling (#143 review Arch B).
+  onActivate?: () => void;
 }
 
 /**
@@ -21,18 +24,22 @@ interface AiAgentBadgeProps {
  * page-history list and the comments sidebar.
  *
  * When the item carries an `aiChatId` (an internal AI-chat edit), clicking the
- * badge deep-links into that chat: it sets the active-chat atom, opens the
- * floating AI-chat window, and closes the history modal. When `aiChatId` is
- * null/absent (an external MCP write with no internal ai_chats row), the badge
- * is a plain non-clickable label. The click is contained (stopPropagation) so it
- * does not also trigger an enclosing row's click handler.
+ * badge deep-links into that chat: it sets the active-chat atom and opens the
+ * floating AI-chat window, then invokes `onActivate` so the caller can react
+ * (e.g. the history modal closes itself). When `aiChatId` is null/absent (an
+ * external MCP write with no internal ai_chats row), the badge is a plain
+ * non-clickable label. The click is contained (stopPropagation) so it does not
+ * also trigger an enclosing row's click handler.
  */
-export function AiAgentBadge({ authorName, aiChatId }: AiAgentBadgeProps) {
+export function AiAgentBadge({
+  authorName,
+  aiChatId,
+  onActivate,
+}: AiAgentBadgeProps) {
   const { t } = useTranslation();
   const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
   const setActiveChatId = useSetAtom(activeAiChatIdAtom);
   const setDraft = useSetAtom(aiChatDraftAtom);
-  const setHistoryModalOpen = useSetAtom(historyAtoms);
 
   const tooltip = t("Edited by AI agent on behalf of {{name}}", {
     name: authorName ?? "",
@@ -47,9 +54,9 @@ export function AiAgentBadge({ authorName, aiChatId }: AiAgentBadgeProps) {
       // unsent draft so it does not leak from the previously open chat.
       setDraft("");
       setAiChatWindowOpen(true);
-      setHistoryModalOpen(false);
+      onActivate?.();
     },
-    [aiChatId, setActiveChatId, setDraft, setAiChatWindowOpen, setHistoryModalOpen],
+    [aiChatId, setActiveChatId, setDraft, setAiChatWindowOpen, onActivate],
   );
 
   const badge = (

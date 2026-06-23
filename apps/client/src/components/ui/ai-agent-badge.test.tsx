@@ -8,7 +8,6 @@ import {
   aiChatWindowOpenAtom,
   aiChatDraftAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
-import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 
 // matchMedia (read by MantineProvider) is stubbed globally in vitest.setup.ts.
 
@@ -18,6 +17,33 @@ function renderBadge(props: { authorName?: string; aiChatId?: string | null }) {
       <AiAgentBadge {...props} />
     </MantineProvider>,
   );
+}
+
+// Render a clickable badge inside an explicit jotai store, with a leftover draft
+// and an onActivate + parent-click spy, so the deep-link side effects are
+// assertable. Returns the store and spies.
+function setupClickable() {
+  const store = createStore();
+  store.set(aiChatDraftAtom, "leftover draft from another chat");
+  const onActivate = vi.fn();
+  const onParentClick = vi.fn();
+  render(
+    <Provider store={store}>
+      <MantineProvider>
+        <div onClick={onParentClick}>
+          <AiAgentBadge authorName="Bot" aiChatId="chat-1" onActivate={onActivate} />
+        </div>
+      </MantineProvider>
+    </Provider>,
+  );
+  return { store, onActivate, onParentClick, badge: screen.getByRole("button") };
+}
+
+function expectDeepLinked(store: ReturnType<typeof createStore>, onActivate: ReturnType<typeof vi.fn>) {
+  expect(store.get(activeAiChatIdAtom)).toBe("chat-1");
+  expect(store.get(aiChatWindowOpenAtom)).toBe(true);
+  expect(store.get(aiChatDraftAtom)).toBe(""); // draft cleared
+  expect(onActivate).toHaveBeenCalledTimes(1); // caller closes its own modal etc.
 }
 
 describe("AiAgentBadge", () => {
@@ -33,31 +59,29 @@ describe("AiAgentBadge", () => {
     expect(badge.textContent).toContain("AI-agent");
   });
 
-  it("deep-links on click: sets the active chat, clears the draft, opens the AI-chat window, closes the history modal — and stops propagation", () => {
-    const store = createStore();
-    // Pre-set the state the click must change, so the assertions are meaningful.
-    store.set(historyAtoms, true); // history modal open
-    store.set(aiChatDraftAtom, "leftover draft from another chat");
-    const onParentClick = vi.fn();
-
-    render(
-      <Provider store={store}>
-        <MantineProvider>
-          {/* Parent click handler must NOT fire — the badge stops propagation. */}
-          <div onClick={onParentClick}>
-            <AiAgentBadge authorName="Bot" aiChatId="chat-1" />
-          </div>
-        </MantineProvider>
-      </Provider>,
-    );
-
-    fireEvent.click(screen.getByRole("button"));
-
-    expect(store.get(activeAiChatIdAtom)).toBe("chat-1");
-    expect(store.get(aiChatWindowOpenAtom)).toBe(true);
-    expect(store.get(aiChatDraftAtom)).toBe(""); // draft cleared
-    expect(store.get(historyAtoms)).toBe(false); // history modal closed
+  it("click deep-links: sets active chat, clears draft, opens window, fires onActivate, stops propagation", () => {
+    const { store, onActivate, onParentClick, badge } = setupClickable();
+    fireEvent.click(badge);
+    expectDeepLinked(store, onActivate);
     expect(onParentClick).not.toHaveBeenCalled(); // stopPropagation contained the click
+  });
+
+  it.each(["Enter", " "])(
+    "keyboard %j activates the deep-link (same side effects as click)",
+    (key) => {
+      const { store, onActivate, badge } = setupClickable();
+      fireEvent.keyDown(badge, { key });
+      expectDeepLinked(store, onActivate);
+    },
+  );
+
+  it("an unrelated key does NOT activate the badge", () => {
+    const { store, onActivate, badge } = setupClickable();
+    fireEvent.keyDown(badge, { key: "Tab" });
+    expect(store.get(activeAiChatIdAtom)).toBeNull();
+    expect(store.get(aiChatWindowOpenAtom)).toBe(false);
+    expect(store.get(aiChatDraftAtom)).toBe("leftover draft from another chat");
+    expect(onActivate).not.toHaveBeenCalled();
   });
 
   it.each([{ aiChatId: null }, {}])(

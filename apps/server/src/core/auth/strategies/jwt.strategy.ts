@@ -10,6 +10,7 @@ import { SessionActivityService } from '../../session/session-activity.service';
 import { FastifyRequest } from 'fastify';
 import { extractBearerTokenFromHeader, isUserDisabled } from '../../../common/helpers';
 import { ModuleRef } from '@nestjs/core';
+import { resolveProvenance } from '../../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -72,18 +73,14 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     // Propagate the agent-edit provenance onto the request so REST
-    // services/controllers can set the 'agent' marker off it. Provenance is
-    // derived from the SIGNED server-side identity, never from a client body
-    // field, so a normal user cannot fake an 'agent' badge:
-    //  - An account flagged is_agent (an MCP service account) stamps EVERY write
-    //    as 'agent'. It has no internal ai_chats row, so aiChatId stays null.
-    //  - Otherwise fall back to the actor claim minted into the internal AI
-    //    agent's token (actor='agent' + aiChatId); a normal user token carries
-    //    no claim and resolves to 'user' (unchanged behaviour).
-    req.raw.actor = user.isAgent
-      ? 'agent'
-      : ((payload as JwtPayload).actor ?? 'user');
-    req.raw.aiChatId = (payload as JwtPayload).aiChatId ?? null;
+    // services/controllers can set the 'agent' marker off it. Derived from the
+    // SIGNED server-side identity via the shared resolver (also used by the
+    // collab seam, so the two never drift), never from a client body field — so
+    // an is_agent service account stamps every REST write made with an access
+    // token, and a normal user cannot fake an 'agent' badge.
+    const provenance = resolveProvenance(user, payload as JwtPayload);
+    req.raw.actor = provenance.actor;
+    req.raw.aiChatId = provenance.aiChatId;
 
     return { user, workspace };
   }

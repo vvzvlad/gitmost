@@ -77,31 +77,20 @@ describe('JwtStrategy — provenance derivation', () => {
     expect(req.raw.aiChatId).toBeNull();
   });
 
-  it("does NOT let an 'actor' claim escalate a non-agent user beyond the existing claim semantics", async () => {
-    // A non-agent user. The only way the token carries actor='agent' is the
-    // internal AI-chat's server-minted token (the claim cannot be set by a
-    // client on a plain login). We assert the derivation falls back to the
-    // claim ONLY when is_agent is false — i.e. an is_agent=false user is never
-    // forced to 'agent' by anything other than that signed claim, and a plain
-    // user (no claim) stays 'user'.
+  it("honors a SIGNED actor='agent' claim on a non-agent user's token (the internal AI-chat path)", async () => {
+    // A non-agent user (the plain no-claim → 'user' case is covered above). A
+    // token that DOES carry actor='agent' resolves to 'agent' — BY DESIGN: that
+    // claim can only exist on a SERVER-MINTED provenance token (the internal AI
+    // chat), never on a plain login token, because the token is signed with the
+    // app secret. The guarantee is that a client cannot FORGE this signed claim,
+    // not that the strategy ignores it. (A plain user still cannot obtain
+    // 'agent' — they have no way to get such a token.)
     const { strategy } = makeStrategy({
       id: 'user-1',
       isAgent: false,
       deactivatedAt: null,
       deletedAt: null,
     });
-    const req = makeReq();
-
-    // No actor claim (the plain-user login case): stays 'user'.
-    await strategy.validate(req, accessPayload() as any);
-    expect(req.raw.actor).toBe('user');
-
-    // A token that DOES carry actor='agent' resolves to 'agent' — BY DESIGN:
-    // that claim can only exist on a SERVER-MINTED provenance token (the internal
-    // AI chat), never on a plain login token, because the token is signed with
-    // the app secret. The security guarantee is that a client cannot forge this
-    // signed claim, NOT that the strategy ignores it. (A plain user therefore
-    // still cannot obtain 'agent' — they have no way to get such a token.)
     const req2 = makeReq();
     await strategy.validate(req2, accessPayload({ actor: 'agent', aiChatId: 'chat-1' }) as any);
     expect(req2.raw.actor).toBe('agent');
