@@ -14,6 +14,7 @@ import { SpaceSidebar } from "@/features/space/components/sidebar/space-sidebar.
 import { AppHeader } from "@/components/layouts/global/app-header.tsx";
 import Aside from "@/components/layouts/global/aside.tsx";
 import AiChatWindow from "@/features/ai-chat/components/ai-chat-window.tsx";
+import GitmostGlobalBridge from "@/features/editor/gitmost/gitmost-global-bridge.tsx";
 import classes from "./app-shell.module.css";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 import GlobalSidebar from "@/components/layouts/global/global-sidebar.tsx";
@@ -157,6 +158,10 @@ export default function GlobalAppShell({
     {/* Floating AI chat window. Mounted once globally; it is position: fixed
         and self-hides when closed, so its place in the tree is not critical. */}
     <AiChatWindow />
+      {/* Global gitmost native bridge: registers listSpaces / listPages /
+          createPageWithRecording on window.gitmost so the native host can
+          create a page with a recording even when no page editor is open. */}
+      <GitmostGlobalBridge />
     </>
   );
 }
