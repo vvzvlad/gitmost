@@ -1,0 +1,14 @@
+{
+  // VSCode tasks for this repo.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "git push (github + gitea)",
+      "type": "shell",
+      "command": "git push github develop && git push gitea develop",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "never", "focus": false, "panel": "shared", "showReuseMessage": false, "close": true },
+      "problemMatcher": []
+    }
+  ]
+}
