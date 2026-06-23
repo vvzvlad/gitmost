@@ -22,6 +22,7 @@ import {
   IAiRole,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
+import { extractServerChatId } from "@/features/ai-chat/utils/adopt-chat-id.ts";
 import {
   dequeue,
   enqueueMessage,
@@ -57,9 +58,11 @@ interface ChatThreadProps {
   /** Display name for the assistant label / typing line (the role name);
    *  forwarded to MessageList. Absent => the generic "AI agent". */
   assistantName?: string;
-  /** Called when a turn finishes; the parent refreshes the chat list and, for
-   *  a new chat, adopts the freshly created chat id. */
-  onTurnFinished: () => void;
+  /** Called when a turn finishes; the parent refreshes the chat list and, for a
+   *  new chat, adopts the freshly created chat id. `serverChatId` is the
+   *  authoritative id the server streamed on the assistant message metadata, or
+   *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
+  onTurnFinished: (serverChatId?: string) => void;
   /** Parent-owned ref that this thread keeps updated with its live useChat
    *  snapshot (full message list + streaming flag), so the header's
    *  "Copy chat" export can include the in-progress, not-yet-persisted
@@ -246,8 +249,11 @@ export default function ChatThread({
     // sending after the user hit Stop — or blindly retrying after a failure —
     // would be wrong, so on Stop/disconnect/error the queue is left intact for
     // the user to decide.
-    onFinish: ({ isAbort, isDisconnect, isError }) => {
-      onTurnFinished();
+    onFinish: ({ message, isAbort, isDisconnect, isError }) => {
+      // Forward the authoritative server chatId (streamed on the assistant
+      // message metadata) so the parent adopts the REAL created chat id for a new
+      // chat — see adopt-chat-id.ts for the full #137 design.
+      onTurnFinished(extractServerChatId(message));
       // Show a neutral "stopped" marker for an aborted turn; the red error banner
       // (via `error`) already covers isError, and a clean finish clears any marker.
       if (isError) setStopNotice(null);
@@ -259,9 +265,11 @@ export default function ChatThread({
     },
     // `onError` runs in addition to `onFinish` (which ai@6 also calls on error).
     // Log the raw failure here for devtools; the UI shows a friendly classified
-    // banner via `error` below. We still call `onTurnFinished()` (idempotent with
-    // the onFinish call) so a brand-new chat that fails its first turn is adopted
-    // and the chat list refreshes immediately rather than after a manual refresh.
+    // banner via `error` below. We still call `onTurnFinished()` with NO server id
+    // (idempotent with the onFinish call): for a brand-new chat that ARMS the
+    // bounded list-refetch fallback (adopt the single newly-appeared chat once the
+    // refetch lands); for an existing chat it just refreshes the chat list
+    // immediately rather than after a manual refresh.
     onError: (streamError) => {
       // Surface the raw failure in the browser console (devtools) for debugging;
       // the UI separately shows a friendly classified banner (see errorView).

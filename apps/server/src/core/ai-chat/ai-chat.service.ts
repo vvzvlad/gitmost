@@ -532,6 +532,15 @@ export class AiChatService {
       stripStreamingHopByHopHeaders(res.raw);
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
+        // Surface the authoritative chatId on the streamed assistant UI message so
+        // the client adopts the REAL id of the row we created, instead of guessing
+        // the newest chat in its list. `messageMetadata` is invoked by the AI SDK
+        // on the `start` and `finish` stream parts (ai@6); we attach `chatId` on the
+        // `start` part so it reaches the client (as message.metadata.chatId) at the
+        // very first chunk — before any second tab can race a newer chat into the
+        // list. This fixes the two-tab "adoption race" (#137) where a new chat in
+        // tab A could adopt tab B's id and leak its turns into the wrong row.
+        messageMetadata: ({ part }) => chatStreamStartMetadata(part, chatId),
         onError: (error: unknown) => {
           // Reuse the shared formatter so provider error formatting stays
           // unified between the log line and the streamed error message.
@@ -580,6 +589,18 @@ export class AiChatService {
       await this.aiChatRepo.update(chatId, { title }, workspaceId);
     }
   }
+}
+
+/**
+ * Attach the authoritative `chatId` to the streamed assistant message's `start`
+ * part (as `message.metadata.chatId`) so the client can adopt the real id for a
+ * new chat. See the client's adopt-chat-id.ts for the full #137 design.
+ */
+export function chatStreamStartMetadata(
+  part: { type: string },
+  chatId: string,
+): { chatId: string } | undefined {
+  return part.type === 'start' ? { chatId } : undefined;
 }
 
 /** The last message with role 'user' from a useChat payload, if any. */

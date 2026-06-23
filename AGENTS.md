@@ -210,7 +210,7 @@ pnpm --filter @docmost/mcp test                  # node --test (unit + mock)
 pnpm --filter @docmost/mcp test:e2e              # MCP end-to-end against a live instance
 ```
 
-**Database migrations** (Kysely, run from `apps/server`; they auto-run on server startup too):
+**Database migrations** (Kysely, run from `apps/server`). **Where they auto-apply:** in **production** (the built image / `start:prod`) pending migrations run automatically on server boot. In **local dev** (the `pnpm dev` stand / `nest start --watch`) they do **NOT** auto-run — after you pull or switch branches you must apply them yourself with `pnpm --filter server migration:latest`, or any endpoint touching a new column/table 500s (e.g. a freshly-added `ai_chats.page_id` blanket-500s all of AI chat until migrated).
 ```bash
 pnpm --filter server migration:create --name=my_change   # new empty migration
 pnpm --filter server migration:latest                    # apply all pending

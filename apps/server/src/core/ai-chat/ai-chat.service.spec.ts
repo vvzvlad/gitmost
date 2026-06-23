@@ -5,6 +5,7 @@ import {
   rowToUiMessage,
   prepareAgentStep,
   buildPartialAssistantRecord,
+  chatStreamStartMetadata,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -293,5 +294,22 @@ describe('buildPartialAssistantRecord', () => {
     expect(rec.metadata.finishReason).toBe('aborted');
     expect('error' in rec.metadata).toBe(false);
     expect(rec.text).toBe('half');
+  });
+});
+
+/**
+ * chatStreamStartMetadata: attach the authoritative chatId to the streamed
+ * assistant UI message ONLY on the `start` part (so the client adopts the real
+ * created chat id at the first chunk — see #137). Any non-start part adds none.
+ */
+describe('chatStreamStartMetadata', () => {
+  it('returns { chatId } for the start part', () => {
+    expect(chatStreamStartMetadata({ type: 'start' }, 'chat-1')).toEqual({
+      chatId: 'chat-1',
+    });
+  });
+
+  it('returns undefined for a finish part (any non-start part)', () => {
+    expect(chatStreamStartMetadata({ type: 'finish' }, 'chat-1')).toBeUndefined();
   });
 });
