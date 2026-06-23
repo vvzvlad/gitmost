@@ -29,10 +29,14 @@ export default function FootnoteDefinitionView(props: NodeViewProps) {
       className={classes.definition}
       style={{ ["--footnote-number" as any]: `"${number}"` }}
     >
+      {/* #146: contentDOM MUST be the first child — a non-editable marker before
+          it makes click hit-testing snap the caret above. Content first; the
+          marker + back-link follow in DOM and are placed left/right via CSS
+          flex `order`. */}
+      <NodeViewContent className={classes.definitionContent} />
       <span className={classes.definitionMarker} contentEditable={false}>
         {number}.
       </span>
-      <NodeViewContent className={classes.definitionContent} />
       <span
         className={classes.backLink}
         contentEditable={false}

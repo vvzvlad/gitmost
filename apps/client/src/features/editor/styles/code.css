@@ -1,5 +1,9 @@
 .ProseMirror {
   .codeBlock {
+    /* #146: flex column so the menu (rendered AFTER <pre> in the DOM, so the
+       editable contentDOM is first) is lifted back above the code via `order`. */
+    display: flex;
+    flex-direction: column;
     padding: 4px;
     border-radius: var(--mantine-radius-default);
     background-color: light-dark(var(--mantine-color-gray-0),  var(--mantine-color-dark-8));
