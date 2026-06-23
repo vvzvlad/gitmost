@@ -10,6 +10,12 @@ interface TypingIndicatorProps {
    * (agent role) name.
    */
   assistantName?: string;
+  /**
+   * Whether to render the dimmed assistant-name label. Defaults to true
+   * (standalone behavior preserved). Set false between agent steps where the
+   * assistant row above already shows the same name, to avoid a duplicate label.
+   */
+  showName?: boolean;
 }
 
 /**
@@ -24,15 +30,17 @@ interface TypingIndicatorProps {
  * typing line is always the generic "Thinking…" (it never includes the
  * role/identity name).
  */
-export default function TypingIndicator({ assistantName }: TypingIndicatorProps) {
+export default function TypingIndicator({ assistantName, showName = true }: TypingIndicatorProps) {
   const { t } = useTranslation();
   const name = resolveAssistantName(assistantName);
 
   return (
     <Box className={classes.messageRow}>
-      <Text size="xs" c="dimmed" mb={4}>
-        {name ?? t("AI agent")}
-      </Text>
+      {showName !== false && (
+        <Text size="xs" c="dimmed" mb={4}>
+          {name ?? t("AI agent")}
+        </Text>
+      )}
       <Group gap={8} align="center">
         <span className={classes.typingDots} aria-hidden="true">
           <span />

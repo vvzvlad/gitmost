@@ -78,6 +78,17 @@ export function showTypingIndicator(messages: UIMessage[], isStreaming: boolean)
 }
 
 /**
+ * Whether the standalone typing indicator should render its own assistant-name
+ * label. True only when it stands in for a not-yet-started assistant row (it IS
+ * the nascent bubble). False once an assistant row exists at the tail, because
+ * that row's MessageItem already shows the same name — avoids a duplicate label.
+ */
+export function typingIndicatorShowsName(messages: UIMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  return !(last && last.role === "assistant");
+}
+
+/**
  * Scrollable transcript. Auto-scrolls to the newest message as it streams in,
  * but only while the user is pinned to the bottom — if they scrolled up to read
  * earlier messages, streamed deltas no longer yank them back down.
@@ -173,7 +184,7 @@ export default function MessageList({
             assistantName={assistantName}
           />
         ))}
-        {typing && <TypingIndicator assistantName={assistantName} />}
+        {typing && <TypingIndicator assistantName={assistantName} showName={typingIndicatorShowsName(messages)} />}
       </Stack>
     </ScrollArea>
   );
