@@ -33,7 +33,9 @@ const NON_INDENTABLE_ANCESTORS = new Set([
   'codeBlock',
 ]);
 
-const clampIndent = (value: number, min: number, max: number): number => {
+// Exported for unit testing: clamps a (possibly junk) indent level into the
+// [min, max] range, treating any non-finite value as `min`.
+export const clampIndent = (value: number, min: number, max: number): number => {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.trunc(value)));
 };

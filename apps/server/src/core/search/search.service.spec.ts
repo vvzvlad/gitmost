@@ -1,4 +1,4 @@
-import { SearchService } from './search.service';
+import { SearchService, buildTsQuery } from './search.service';
 
 describe('SearchService', () => {
   it('should be defined', () => {
@@ -97,5 +97,61 @@ describe('SearchService.searchSuggestions — onlyTemplates filter', () => {
 
     // No is_template clause should be added for a normal page suggestion search.
     expect(isTemplateWhereCall(pageBuilder)).toBeUndefined();
+  });
+});
+
+// Unit tests for `buildTsQuery` (extracted from search.service.ts). It turns a raw
+// user query into a prefix tsquery string fed to `to_tsquery('english', ...)`.
+//
+// REAL BUG (Gitea #139, item 10): the previous inline `tsquery(query.trim() + '*')`
+// let to_tsquery operator characters through, so adversarial inputs could produce a
+// fragment that to_tsquery rejects -> 500. The extraction sanitizes the input
+// (strip everything but letters/numbers/whitespace) so these inputs degrade to a
+// safe, neutral query with NO throw, while normal queries keep working.
+describe('buildTsQuery', () => {
+  it('builds a prefix query for a normal single word', () => {
+    expect(buildTsQuery('hello')).toBe('hello:*');
+  });
+
+  it('joins multiple words with AND and a trailing prefix match', () => {
+    expect(buildTsQuery('foo bar')).toBe('foo&bar:*');
+  });
+
+  it('preserves accented and non-Latin words', () => {
+    expect(buildTsQuery('héllo café')).toBe('héllo&café:*');
+    expect(buildTsQuery('日本語')).toBe('日本語:*');
+  });
+
+  it('neutralizes to_tsquery operator inputs without throwing', () => {
+    // Each of these previously risked an invalid to_tsquery -> 500. They must now
+    // produce a safe (here empty) query and never throw.
+    for (const input of ['&', '!', '*', '<->', '\\']) {
+      expect(() => buildTsQuery(input)).not.toThrow();
+      expect(buildTsQuery(input)).toBe('');
+    }
+  });
+
+  it('handles stopword-only input safely', () => {
+    // pg-tsquery still tokenizes stopwords; to_tsquery reduces them to nothing.
+    // The important contract is: no throw, and a deterministic string.
+    expect(() => buildTsQuery('the a of')).not.toThrow();
+    expect(buildTsQuery('the a of')).toBe('the&a&of:*');
+  });
+
+  it('returns empty string for empty / whitespace-only / null-ish input', () => {
+    expect(buildTsQuery('')).toBe('');
+    expect(buildTsQuery('   ')).toBe('');
+    expect(buildTsQuery(undefined as unknown as string)).toBe('');
+  });
+
+  it('handles a very long input without throwing', () => {
+    const long = 'a'.repeat(10000);
+    expect(() => buildTsQuery(long)).not.toThrow();
+    expect(buildTsQuery(long)).toBe(`${long}:*`);
+  });
+
+  it('strips punctuation embedded in otherwise valid words', () => {
+    expect(buildTsQuery('c++ code')).toBe('c&code:*');
+    expect(buildTsQuery('a-b-c')).toBe('a&b&c:*');
   });
 });
