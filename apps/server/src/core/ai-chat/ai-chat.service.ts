@@ -192,7 +192,6 @@ export class AiChatService {
     model,
     role,
   }: AiChatStreamArgs): Promise<void> {
-    const turnStartedAt = Date.now();
     // Resolve / create the chat. A new chat is created when no valid chatId is
     // supplied or the supplied one does not belong to this workspace.
     let isNewChat = false;
@@ -381,10 +380,6 @@ export class AiChatService {
     const capturedSteps: StepLike[] = [];
     let inProgressText = '';
 
-    // Log only the FIRST streamed chunk so we can see the provider's observed
-    // time-to-first-token without flooding the log with every delta.
-    let firstChunkLogged = false;
-
     // NOTE: streamText is synchronous in v6 — do NOT await it. A synchronous
     // failure here (or in pipe below) would skip the terminal callbacks, so the
     // catch releases the leased external clients to avoid a connection leak.
@@ -409,12 +404,6 @@ export class AiChatService {
       prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
       abortSignal: signal,
       onChunk: ({ chunk }) => {
-        if (!firstChunkLogged) {
-          firstChunkLogged = true;
-          this.logger.log(
-            `AI chat stream first chunk (${chunk.type}) chat=${chatId} after ${Date.now() - turnStartedAt}ms`,
-          );
-        }
         // 'text-delta' is the assistant's prose; tool-call args are separate chunk
         // types — so this mirrors exactly what streams to the client.
         if (chunk.type === 'text-delta') inProgressText += chunk.text;
@@ -426,9 +415,6 @@ export class AiChatService {
         inProgressText = '';
       },
       onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
-        this.logger.log(
-          `AI chat stream FINISHED chat=${chatId} in ${Date.now() - turnStartedAt}ms, ${steps.length} step(s)`,
-        );
         await persistAssistant({
           text,
           toolCalls: serializeSteps(steps),
@@ -474,9 +460,6 @@ export class AiChatService {
         const e = error as { stack?: string };
         const errorText = describeProviderError(error, String(error));
         this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
-        this.logger.warn(
-          `AI chat stream ERROR terminal chat=${chatId} after ${Date.now() - turnStartedAt}ms`,
-        );
         // Persist the PARTIAL answer streamed before the failure (text + any
         // finished tool steps) WITH the error in metadata, so the turn shows what
         // the user already saw plus the cause — not just a bare error.
@@ -499,8 +482,7 @@ export class AiChatService {
         // invisible in the logs. Log it (warn) so the abort is traceable.
         this.logger.warn(
           `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
-            `step(s), ${partialChars} chars partial text; persisting partial turn` +
-            ` after ${Date.now() - turnStartedAt}ms`,
+            `step(s), ${partialChars} chars partial text; persisting partial turn.`,
         );
         await persistAssistant(
           buildPartialAssistantRecord(capturedSteps, inProgressText, 'aborted'),

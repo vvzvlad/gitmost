@@ -14,7 +14,6 @@ import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
-import { aiFetch } from './ai-http';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -133,19 +132,6 @@ export class AiService {
       throw new AiNotConfiguredException();
     }
 
-    // Diagnostic toggle: when AI_BYPASS_RESILIENT_FETCH=true the chat model
-    // bypasses the resilient aiFetch (custom undici RetryAgent) and uses the
-    // default global fetch. Isolates whether the streaming chat hang comes from
-    // the custom transport vs the request shape. Reversible via env, no rebuild.
-    const bypassResilientFetch =
-      process.env.AI_BYPASS_RESILIENT_FETCH === 'true';
-    if (bypassResilientFetch) {
-      this.logger.warn(
-        'AI chat: resilient aiFetch BYPASSED for chat model ' +
-          '(AI_BYPASS_RESILIENT_FETCH=true; using default fetch)',
-      );
-    }
-
     switch (driver) {
       case 'openai':
         // baseURL (when set) covers openai-compatible endpoints. Use Chat
@@ -154,22 +140,12 @@ export class AiService {
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
-        return createOpenAI({
-          apiKey,
-          baseURL: baseUrl,
-          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
-        }).chat(chatModel);
+        return createOpenAI({ apiKey, baseURL: baseUrl }).chat(chatModel);
       case 'gemini':
-        return createGoogleGenerativeAI({
-          apiKey,
-          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
-        })(chatModel);
+        return createGoogleGenerativeAI({ apiKey })(chatModel);
       case 'ollama':
         // Ollama needs no API key.
-        return createOllama({
-          baseURL: baseUrl,
-          ...(bypassResilientFetch ? {} : { fetch: aiFetch }),
-        })(chatModel);
+        return createOllama({ baseURL: baseUrl })(chatModel);
       default:
         throw new AiNotConfiguredException();
     }
@@ -204,18 +180,15 @@ export class AiService {
         return createOpenAI({
           apiKey: cfg.embeddingApiKey,
           baseURL: cfg.embeddingBaseUrl,
-          fetch: aiFetch,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'gemini':
         return createGoogleGenerativeAI({
           apiKey: cfg.embeddingApiKey,
-          fetch: aiFetch,
         }).textEmbeddingModel(cfg.embeddingModel);
       case 'ollama':
         // Ollama needs no API key (e.g. nomic-embed-text).
         return createOllama({
           baseURL: cfg.embeddingBaseUrl,
-          fetch: aiFetch,
         }).textEmbeddingModel(cfg.embeddingModel);
       default:
         throw new AiEmbeddingNotConfiguredException();
@@ -262,7 +235,6 @@ export class AiService {
     const model = createOpenAI({
       apiKey: cfg.sttApiKey ?? 'unused',
       baseURL,
-      fetch: aiFetch,
     }).transcription(cfg.sttModel);
     const { text } = await transcribe({
       model,
@@ -296,7 +268,7 @@ export class AiService {
       );
     }
     const url = `${baseURL.replace(/\/$/, '')}/audio/transcriptions`;
-    const res = await aiFetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
