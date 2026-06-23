@@ -207,5 +207,28 @@ describe('AuthenticationExtension.onAuthenticate', () => {
 
     expect(ctx.actor).toBe('user');
     expect(ctx.aiChatId).toBeNull();
+    // Wiring guard (#143): the collab seam MUST opt into the isAgent flag —
+    // it is not in baseFields, so without this option findById omits it and a
+    // flagged service account's collab edits would silently persist as 'user'.
+    expect(userRepo.findById).toHaveBeenCalledWith(
+      USER_ID,
+      WORKSPACE_ID,
+      expect.objectContaining({ includeIsAgent: true }),
+    );
+  });
+
+  it('is_agent user with NO claim → actor=agent (collab seam consults the signed identity)', async () => {
+    // Arch A regression guard: a flagged service account editing page CONTENT
+    // over the collab websocket carries a plain COLLAB token (no actor claim).
+    // Before the shared resolveProvenance() wiring this seam derived actor from
+    // the claim alone, so such edits persisted as lastUpdatedSource='user' —
+    // drifting from the REST seam. The seam must now stamp 'agent' from the
+    // is_agent flag, matching jwt.strategy.
+    userRepo.findById.mockResolvedValue(buildUser({ isAgent: true }));
+    const ctx = await ext.onAuthenticate(buildData() as any);
+
+    expect(ctx.actor).toBe('agent');
+    // No internal ai_chats row for an MCP/service-account collab edit → null.
+    expect(ctx.aiChatId).toBeNull();
   });
 });

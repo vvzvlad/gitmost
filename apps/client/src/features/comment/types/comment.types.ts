@@ -17,6 +17,13 @@ export interface IComment {
   deletedAt?: Date;
   creator: IUser;
   resolvedBy?: IUser;
+  // Agent-edit provenance (returned by the backend via selectAll('comments')).
+  // createdSource === "agent" marks a comment authored via an AI agent (MCP /
+  // internal AI chat); aiChatId deep-links to the internal chat when present
+  // (null for an external MCP agent); resolvedSource marks an AI-resolved thread.
+  createdSource?: string;
+  aiChatId?: string | null;
+  resolvedSource?: string | null;
   yjsSelection?: {
     anchor: any;
     head: any;

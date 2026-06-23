@@ -147,4 +147,246 @@ describe('PageService', () => {
       expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('agent provenance stamping (#143)', () => {
+    // Provenance handed to the four write sites. The agent case must surface the
+    // signed source marker + chat id on the persisted payload; the user case must
+    // leave both keys absent so the column keeps its INSERT default / existing
+    // UPDATE value (agentSourceFields returns {} for a non-agent).
+    const AGENT = { actor: 'agent', aiChatId: 'chat-7' } as any;
+    const USER = { actor: 'user', aiChatId: null } as any;
+
+    // A general-queue stub whose `.add(...)` returns a `{ catch }` thenable —
+    // the service does `generalQueue.add(...).catch(...)` and never awaits it.
+    const makeGeneralQueue = () =>
+      ({ add: jest.fn().mockReturnValue({ catch: jest.fn() }) }) as any;
+
+    // Build a PageService where only the deps a given site touches are real
+    // stubs; everything else stays a bare object. db is supplied per-test.
+    const makeSvc = (overrides: {
+      pageRepo?: any;
+      generalQueue?: any;
+      db?: any;
+    }) =>
+      new PageService(
+        (overrides.pageRepo ?? {}) as any, // pageRepo
+        {} as any, // pagePermissionRepo
+        {} as any, // attachmentRepo
+        (overrides.db ?? {}) as any, // db
+        {} as any, // storageService
+        {} as any, // attachmentQueue
+        {} as any, // aiQueue
+        (overrides.generalQueue ?? makeGeneralQueue()) as any, // generalQueue
+        {} as any, // eventEmitter
+        {} as any, // collaborationGateway
+        {} as any, // watcherService
+        {} as any, // transclusionService
+      );
+
+    describe('create() → insertPage', () => {
+      const run = async (provenance: any) => {
+        const pageRepo = {
+          insertPage: jest.fn().mockResolvedValue({ id: 'p1' }),
+        };
+        const svc = makeSvc({ pageRepo, generalQueue: makeGeneralQueue() });
+        // nextPagePosition runs a real db query; stub it out.
+        jest.spyOn(svc, 'nextPagePosition').mockResolvedValue('a0' as any);
+        // No content/format → the prosemirror parse branch is skipped. No
+        // parentPageId → no parent lookup.
+        await svc.create(
+          'u1',
+          'w1',
+          { title: 't', spaceId: 's1' } as any,
+          provenance,
+        );
+        return pageRepo.insertPage.mock.calls[0][0];
+      };
+
+      it('stamps lastUpdatedSource/lastUpdatedAiChatId for an agent', async () => {
+        const payload = await run(AGENT);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            lastUpdatedSource: 'agent',
+            lastUpdatedAiChatId: 'chat-7',
+          }),
+        );
+      });
+
+      it('omits the source columns for a normal user', async () => {
+        const payload = await run(USER);
+        expect(payload).not.toHaveProperty('lastUpdatedSource');
+        expect(payload).not.toHaveProperty('lastUpdatedAiChatId');
+      });
+    });
+
+    describe('update() → updatePage', () => {
+      const run = async (provenance: any) => {
+        const pageRepo = {
+          updatePage: jest.fn().mockResolvedValue(undefined),
+          findById: jest.fn().mockResolvedValue({ id: 'p1' }),
+        };
+        const svc = makeSvc({ pageRepo, generalQueue: makeGeneralQueue() });
+        const page = {
+          id: 'p1',
+          contributorIds: [],
+          spaceId: 's1',
+          workspaceId: 'w1',
+          slugId: 'sl1',
+          title: 't',
+          parentPageId: null,
+        } as any;
+        // dto carries no content/operation/format → updatePageContent skipped.
+        await svc.update(page, {} as any, { id: 'u1' } as any, provenance);
+        return pageRepo.updatePage.mock.calls[0][0];
+      };
+
+      it('stamps lastUpdatedSource/lastUpdatedAiChatId for an agent', async () => {
+        const payload = await run(AGENT);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            lastUpdatedSource: 'agent',
+            lastUpdatedAiChatId: 'chat-7',
+          }),
+        );
+      });
+
+      it('omits the source columns for a normal user', async () => {
+        const payload = await run(USER);
+        expect(payload).not.toHaveProperty('lastUpdatedSource');
+        expect(payload).not.toHaveProperty('lastUpdatedAiChatId');
+      });
+    });
+
+    describe('movePage() → updatePage', () => {
+      const VALID_POSITION = 'a0';
+      const run = async (provenance: any) => {
+        const pageRepo = {
+          findById: jest.fn().mockResolvedValue({
+            id: 'dest-parent',
+            deletedAt: null,
+            spaceId: 'space-1',
+          }),
+          updatePage: jest.fn().mockResolvedValue({ numUpdatedRows: 1n }),
+        };
+        const svc = makeSvc({
+          pageRepo,
+          db: {} as any,
+        });
+        // Legitimate move: destination ancestors do NOT include the moved page.
+        jest
+          .spyOn(svc, 'getPageBreadCrumbs')
+          .mockResolvedValue([{ id: 'dest-parent' }, { id: 'root' }] as any);
+        // eventEmitter is a bare {} stub; movePage emits PAGE_MOVED, so give it
+        // an emit. Re-wire via the private field to avoid threading it through.
+        (svc as any).eventEmitter = { emit: jest.fn() };
+        const movedPage = {
+          id: 'page-1',
+          parentPageId: 'old-parent',
+          spaceId: 'space-1',
+          workspaceId: 'ws-1',
+          slugId: 'slug-1',
+          title: 'Page 1',
+          icon: null,
+        } as any;
+        const dto = {
+          pageId: 'page-1',
+          position: VALID_POSITION,
+          parentPageId: 'dest-parent',
+        } as any;
+        await svc.movePage(dto, movedPage, provenance);
+        return pageRepo.updatePage.mock.calls[0][0];
+      };
+
+      it('stamps lastUpdatedSource/lastUpdatedAiChatId for an agent', async () => {
+        const payload = await run(AGENT);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            lastUpdatedSource: 'agent',
+            lastUpdatedAiChatId: 'chat-7',
+          }),
+        );
+      });
+
+      it('omits the source columns for a normal user', async () => {
+        const payload = await run(USER);
+        expect(payload).not.toHaveProperty('lastUpdatedSource');
+        expect(payload).not.toHaveProperty('lastUpdatedAiChatId');
+      });
+    });
+
+    describe('movePageToSpace() → root-page updatePage', () => {
+      // movePageToSpace runs its writes inside executeTx(this.db, cb), which
+      // calls this.db.transaction().execute(fn => fn(trx)). A permissive
+      // chainable Proxy stands in for the Kysely trx so arbitrary chains resolve.
+      const makeChain = () => {
+        const c: any = new Proxy(function () {}, {
+          get: (_t, p) =>
+            p === 'then'
+              ? undefined
+              : p === 'execute' || p === 'executeTakeFirst'
+                ? () => Promise.resolve([])
+                : () => c,
+        });
+        return c;
+      };
+
+      const run = async (provenance: any) => {
+        const trxStub = makeChain();
+        const db = {
+          transaction: () => ({ execute: (fn: any) => fn(trxStub) }),
+        } as any;
+        const rootPage = {
+          id: 'root',
+          spaceId: 'src-space',
+          parentPageId: null,
+          workspaceId: 'ws-1',
+        } as any;
+        const pageRepo = {
+          getPageAndDescendants: jest.fn().mockResolvedValue([rootPage]),
+          updatePage: jest.fn().mockResolvedValue(undefined),
+          updatePages: jest.fn().mockResolvedValue(undefined),
+        };
+        const svc = makeSvc({ pageRepo, db });
+        // The single-accessible-page path still runs the bulk side-effect writes
+        // (attachments/watchers/ai-queue) AFTER the root updatePage we assert on;
+        // stub them so the transaction completes without throwing.
+        (svc as any).attachmentRepo = {
+          updateAttachmentsByPageId: jest.fn().mockResolvedValue(undefined),
+        };
+        (svc as any).watcherService = {
+          movePageWatchersToSpace: jest.fn().mockResolvedValue(undefined),
+        };
+        (svc as any).aiQueue = { add: jest.fn().mockResolvedValue(undefined) };
+        // Single accessible page (the root) → pagesToOrphan is empty, so the
+        // root updatePage is the first/only provenance-carrying updatePage call.
+        // filterAccessibleTreePages is private; spy via an `any` cast.
+        jest
+          .spyOn(svc as any, 'filterAccessibleTreePages')
+          .mockResolvedValue([rootPage] as any);
+        jest.spyOn(svc, 'nextPagePosition').mockResolvedValue('a0' as any);
+        await svc.movePageToSpace(rootPage, 'dst-space', 'u1', provenance);
+        return pageRepo.updatePage.mock.calls[0][0];
+      };
+
+      it('stamps the moved root with the agent source + chat id', async () => {
+        const payload = await run(AGENT);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            spaceId: 'dst-space',
+            lastUpdatedSource: 'agent',
+            lastUpdatedAiChatId: 'chat-7',
+          }),
+        );
+      });
+
+      it('omits the source columns on the moved root for a normal user', async () => {
+        const payload = await run(USER);
+        expect(payload).toEqual(
+          expect.objectContaining({ spaceId: 'dst-space' }),
+        );
+        expect(payload).not.toHaveProperty('lastUpdatedSource');
+        expect(payload).not.toHaveProperty('lastUpdatedAiChatId');
+      });
+    });
+  });
 });
