@@ -138,7 +138,6 @@ export class PageService {
       ydoc = createYdocFromJson(prosemirrorJson);
     }
 
-
     const page = await this.pageRepo.insertPage({
       slugId: generateSlugId(),
       title: createPageDto.title,
@@ -228,7 +227,6 @@ export class PageService {
     contributors.add(user.id);
     const contributorIds = Array.from(contributors);
 
-
     // Detect a real title/icon change so the WS tree listener can broadcast an
     // `updateOne` to the space (rename / icon swap) WITHOUT re-broadcasting on a
     // content-only save. Only treat a field as changed when the DTO actually
@@ -246,7 +244,8 @@ export class PageService {
         icon: updatePageDto.icon,
         lastUpdatedById: user.id,
         // Agent-edit provenance: annotate the source without changing the
-        // responsible author. A normal user request leaves the column default.
+        // responsible author. A normal user request leaves the existing source
+        // value unchanged.
         ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
         updatedAt: new Date(),
         contributorIds: contributorIds,
@@ -934,13 +933,12 @@ export class PageService {
       }
     }
 
-
     const updateResult = await this.pageRepo.updatePage(
       {
         position: dto.position,
         parentPageId: parentPageId,
         // Agent-edit provenance: annotate the source on an agent move. A normal
-        // user request leaves the column default ('user').
+        // user request leaves the existing source value unchanged.
         ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
       },
       dto.pageId,

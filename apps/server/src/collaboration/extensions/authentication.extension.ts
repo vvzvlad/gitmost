@@ -44,7 +44,9 @@ export class AuthenticationExtension implements Extension {
     const userId = jwtPayload.sub;
     const workspaceId = jwtPayload.workspaceId;
 
-    const user = await this.userRepo.findById(userId, workspaceId);
+    const user = await this.userRepo.findById(userId, workspaceId, {
+      includeIsAgent: true,
+    });
 
     if (!user) {
       throw new UnauthorizedException();

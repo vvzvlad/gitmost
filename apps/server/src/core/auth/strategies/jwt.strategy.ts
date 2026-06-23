@@ -56,7 +56,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!workspace) {
       throw new UnauthorizedException();
     }
-    const user = await this.userRepo.findById(payload.sub, payload.workspaceId);
+    const user = await this.userRepo.findById(payload.sub, payload.workspaceId, {
+      includeIsAgent: true,
+    });
 
     if (!user || isUserDisabled(user)) {
       throw new UnauthorizedException();

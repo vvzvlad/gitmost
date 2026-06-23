@@ -40,11 +40,13 @@ export function resolveProvenance(
 /**
  * Agent-edit write-stamp fields for a repository insert/update (#143 review).
  * Spread into the row being written: for an agent it stamps the `*Source`
- * column 'agent' and the AI-chat id; for a normal user it returns `{}` so the
- * column keeps its default ('user'). The only per-table variation is the column
- * names, passed as `sourceKey`/`chatKey`, so the agent-stamp idiom lives in ONE
- * place instead of being hand-reimplemented at every write site (where a wrong
- * literal or a forgotten `aiChatId` could drift).
+ * column 'agent' and the AI-chat id; for a normal user it returns `{}` — on an
+ * INSERT the omitted column falls back to its DB default ('user'); on an UPDATE
+ * the column simply keeps its existing stored value (Kysely only writes the keys
+ * present). The only per-table variation is the column names, passed as
+ * `sourceKey`/`chatKey`, so the agent-stamp idiom lives in ONE place instead of
+ * being hand-reimplemented at every write site (where a wrong literal or a
+ * forgotten `aiChatId` could drift).
  *
  *   insertComment({ ..., ...agentSourceFields(p, 'createdSource', 'aiChatId') })
  *   updatePage({ ..., ...agentSourceFields(p, 'lastUpdatedSource', 'lastUpdatedAiChatId') })

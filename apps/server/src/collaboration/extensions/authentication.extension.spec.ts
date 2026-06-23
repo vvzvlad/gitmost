@@ -207,6 +207,14 @@ describe('AuthenticationExtension.onAuthenticate', () => {
 
     expect(ctx.actor).toBe('user');
     expect(ctx.aiChatId).toBeNull();
+    // Wiring guard (#143): the collab seam MUST opt into the isAgent flag —
+    // it is not in baseFields, so without this option findById omits it and a
+    // flagged service account's collab edits would silently persist as 'user'.
+    expect(userRepo.findById).toHaveBeenCalledWith(
+      USER_ID,
+      WORKSPACE_ID,
+      expect.objectContaining({ includeIsAgent: true }),
+    );
   });
 
   it('is_agent user with NO claim → actor=agent (collab seam consults the signed identity)', async () => {

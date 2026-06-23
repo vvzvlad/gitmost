@@ -47,7 +47,7 @@ describe('JwtStrategy — provenance derivation', () => {
   });
 
   it("stamps actor='agent' for an is_agent user (derived from the signed identity)", async () => {
-    const { strategy } = makeStrategy({
+    const { strategy, userRepo } = makeStrategy({
       id: 'user-1',
       isAgent: true,
       deactivatedAt: null,
@@ -60,6 +60,14 @@ describe('JwtStrategy — provenance derivation', () => {
     expect(req.raw.actor).toBe('agent');
     // External MCP agent: no internal ai_chats row → null.
     expect(req.raw.aiChatId).toBeNull();
+    // Wiring guard (#143): the seam MUST opt into the isAgent flag, otherwise
+    // findById omits it (it is not in baseFields) and provenance silently
+    // degrades to 'user'.
+    expect(userRepo.findById).toHaveBeenCalledWith(
+      'user-1',
+      'ws-1',
+      expect.objectContaining({ includeIsAgent: true }),
+    );
   });
 
   it("stamps actor='user' for an ordinary user", async () => {
