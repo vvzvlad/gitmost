@@ -128,8 +128,21 @@ export const aiFetch: typeof fetch = async (input, init) => {
     return res;
   } catch (err) {
     const ms = Math.round(performance.now() - startedAt);
+    // Node's fetch reports a generic "fetch failed"; the real reason (e.g. an
+    // undici SocketError with .code ECONNRESET / UND_ERR_SOCKET /
+    // UND_ERR_*TIMEOUT) lives in err.cause (sometimes nested one level deeper).
+    // Surface the code+message of the cause chain so the failure is actionable.
+    const parts: string[] = [];
+    let cur: unknown = err;
+    for (let depth = 0; cur && depth < 3; depth++) {
+      const e = cur as { code?: string; message?: string; cause?: unknown };
+      const code = e.code ? `[${e.code}] ` : '';
+      const msg = e.message ?? String(e);
+      parts.push(`${code}${msg}`);
+      cur = e.cause;
+    }
     logger.warn(
-      `provider request #${id} x after ${ms}ms: ${(err as Error)?.message ?? String(err)}`,
+      `provider request #${id} x after ${ms}ms: ${parts.join(' <- ')}`,
     );
     throw err;
   }
