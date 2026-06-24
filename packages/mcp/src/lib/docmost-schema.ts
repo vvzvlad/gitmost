@@ -14,7 +14,7 @@ import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
 import Subscript from "@tiptap/extension-subscript";
 import Superscript from "@tiptap/extension-superscript";
-import { Node, Extension, Mark } from "@tiptap/core";
+import { Node, Extension, Mark, getSchema } from "@tiptap/core";
 
 // Inlined from @tiptap/core's getStyleProperty (added after 3.20.x) so this
 // package can stay on the same @tiptap/core version as the editor and avoid a
@@ -1223,3 +1223,11 @@ export const docmostExtensions = [
   PageBreak,
   DocmostAttributes,
 ];
+
+/**
+ * The ProseMirror schema for the docmost editor, built ONCE from
+ * `docmostExtensions`. Pure and reused by every consumer (diff, collaboration
+ * write-back) so the schema can never drift between call sites — it lives next
+ * to the extension list it is derived from.
+ */
+export const docmostSchema = getSchema(docmostExtensions);

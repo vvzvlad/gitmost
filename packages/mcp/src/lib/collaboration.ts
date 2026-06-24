@@ -4,11 +4,28 @@ import * as Y from "yjs";
 import WebSocket from "ws";
 import { marked } from "marked";
 import { generateJSON } from "@tiptap/html";
+import { Node as PMNode } from "@tiptap/pm/model";
+import { updateYFragment } from "y-prosemirror";
 import { JSDOM } from "jsdom";
-import { docmostExtensions } from "./docmost-schema.js";
+import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
+
+/**
+ * Build the descriptive error for an opaque Yjs encode failure ("Unexpected
+ * content type"), shared by both encode paths (`buildYDoc` -> `toYdoc` and
+ * `applyDocToFragment` -> `updateYFragment`) so the message wording stays in one
+ * place. `label` names the stage that failed (diagnostic). `sanitizeForYjs`
+ * already stripped `undefined` attrs, so a remaining failure is pinpointed via
+ * `findUnstorableAttr`.
+ */
+function unstorableYjsError(safe: any, label: string, e: unknown): Error {
+  const bad = findUnstorableAttr(safe);
+  return new Error(
+    `Failed to encode document to Yjs (${label}): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
+  );
+}
 
 /**
  * The resolved value of every content-mutating collab write: the document that
@@ -499,20 +516,73 @@ export function buildYDoc(doc: any): Y.Doc {
   try {
     return TiptapTransformer.toYdoc(safe, "default", docmostExtensions);
   } catch (e) {
-    const bad = findUnstorableAttr(safe);
-    throw new Error(
-      `Failed to encode document to Yjs (toYdoc): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
-    );
+    throw unstorableYjsError(safe, "toYdoc", e);
   }
 }
 
 /**
- * Validate that a doc is Yjs-encodable by building (and discarding) a Y.Doc.
- * Throws the same descriptive error as the apply path when it is not. Used by
- * the dry-run preview so it fails identically to apply.
+ * Write a new ProseMirror doc into the live Yjs fragment by STRUCTURAL DIFF,
+ * preserving the Yjs identity of unchanged nodes (issue #152).
+ *
+ * The previous approach deleted the whole fragment and re-applied a fresh Y.Doc,
+ * which discarded every Yjs node id. y-prosemirror anchors the editor selection
+ * to those ids, so an open editor's cursor lost its anchor and snapped to the
+ * end of the document on every agent write (most visibly on comment anchoring,
+ * which changes no text at all). `updateYFragment` is exactly the routine the
+ * editor itself uses to sync ProseMirror edits into Yjs: it diffs the new node
+ * against the current fragment and touches only the changed children, so
+ * unchanged nodes keep their ids and the live cursor stays put.
+ *
+ * Must run inside a single `transact` so the diff applies atomically (no remote
+ * update interleaves). Keeps `buildYDoc`'s `findUnstorableAttr` diagnostic for
+ * the opaque "Unexpected content type" encode failure.
+ */
+export function applyDocToFragment(ydoc: Y.Doc, newDoc: any): void {
+  const safe = sanitizeForYjs(newDoc);
+  const fragment = ydoc.getXmlFragment("default");
+  // Hydrate the ProseMirror node in its OWN try so a failure here (e.g. an
+  // unknown node type) is labelled "fromJSON" — the stage that actually threw —
+  // instead of being misattributed to the Yjs write stage (#154 review).
+  let pmNode: PMNode;
+  try {
+    pmNode = PMNode.fromJSON(docmostSchema, safe);
+  } catch (e) {
+    throw unstorableYjsError(safe, "fromJSON", e);
+  }
+  try {
+    ydoc.transact(() => {
+      updateYFragment(ydoc, fragment, pmNode, {
+        mapping: new Map(),
+        isOMark: new Map(),
+      });
+    });
+  } catch (e) {
+    throw unstorableYjsError(safe, "updateYFragment", e);
+  }
+}
+
+/**
+ * Run an independent Yjs-encodability check (the same `sanitizeForYjs` + schema
+ * the apply path uses) and throw the same descriptive error when the doc cannot
+ * be stored. Used by the dry-run preview.
+ *
+ * Note: it does NOT run `updateYFragment` against the live fragment, so it is an
+ * encodability GATE, not a byte-for-byte rehearsal of apply — `buildYDoc`
+ * (`toYdoc`) and `applyDocToFragment` (`updateYFragment`) are two different
+ * encoders that nonetheless reject the same unstorable attributes. To narrow the
+ * preview/apply gap it ALSO rehearses the apply path's `PMNode.fromJSON`
+ * hydration, so a doc that would only fail there (e.g. an unknown node type) is
+ * rejected at preview time too (#154 review). Still cheap: no live fragment, no
+ * `updateYFragment`.
  */
 export function assertYjsEncodable(doc: any): void {
   buildYDoc(doc);
+  const safe = sanitizeForYjs(doc);
+  try {
+    PMNode.fromJSON(docmostSchema, safe);
+  } catch (e) {
+    throw unstorableYjsError(safe, "fromJSON", e);
+  }
 }
 
 /** Time we wait for the initial handshake/sync before giving up. */
@@ -727,16 +797,10 @@ export async function mutatePageContent(
               return;
             }
 
-            const tempDoc = buildYDoc(newDoc);
-            // Fetch the fragment immediately before the transact that mutates
-            // it, rather than reusing a handle grabbed across the transform.
-            const fragment = ydoc.getXmlFragment("default");
-            ydoc.transact(() => {
-              if (fragment.length > 0) {
-                fragment.delete(0, fragment.length);
-              }
-              Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(tempDoc));
-            });
+            // Structural diff into the live fragment (issue #152): preserves
+            // the Yjs ids of unchanged nodes, so an open editor's cursor is not
+            // yanked to the end of the document on every agent write.
+            applyDocToFragment(ydoc, newDoc);
           } catch (e) {
             // Includes errors thrown by transform (e.g. "afterText not found",
             // "text not found"): propagate them verbatim to the caller.

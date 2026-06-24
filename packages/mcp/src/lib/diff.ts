@@ -17,11 +17,10 @@
  * we fall back to a coarse block-level text diff so the tool never hard-fails.
  */
 
-import { getSchema } from "@tiptap/core";
 import { Node } from "@tiptap/pm/model";
 import { ChangeSet, simplifyChanges } from "@tiptap/pm/changeset";
 import { recreateTransform } from "@fellow/prosemirror-recreate-transform";
-import { docmostExtensions } from "./docmost-schema.js";
+import { docmostSchema } from "./docmost-schema.js";
 
 /** A single inserted/deleted change with its containing-block context. */
 export interface DiffChange {
@@ -49,8 +48,6 @@ export interface DiffResult {
   markdown: string;
 }
 
-/** Build the schema once; it is pure and reused across calls. */
-const schema = getSchema(docmostExtensions);
 
 /** Recursively concatenate the plain text of a JSON node. */
 function plainText(node: any): string {
@@ -288,8 +285,8 @@ export function diffDocs(
   const changedBlocks = new Set<string>();
 
   try {
-    const oldNode = Node.fromJSON(schema, oldDocJson);
-    const newNode = Node.fromJSON(schema, newDocJson);
+    const oldNode = Node.fromJSON(docmostSchema, oldDocJson);
+    const newNode = Node.fromJSON(docmostSchema, newDocJson);
     const tr = recreateTransform(oldNode, newNode, {
       complexSteps: false,
       wordDiffs: true,

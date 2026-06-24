@@ -2995,9 +2995,9 @@ export class DocmostClient {
       const raw = await this.getPageRaw(pageId);
       const current = raw.content || { type: "doc", content: [] };
       runTransform(current);
-      // Exercise the same Yjs encoder the apply path uses, so the preview
-      // fails with the SAME descriptive error when the doc is not encodable
-      // instead of returning a misleadingly-green diff.
+      // Run an independent Yjs-encodability check (same sanitize + schema as the
+      // apply path), so the preview fails with the same descriptive error when
+      // the doc is not encodable instead of returning a misleadingly-green diff.
       assertYjsEncodable(newDoc);
       return {
         pushed: false,
