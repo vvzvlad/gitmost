@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import {
   createStreamingFetch,
+  withPreResponseRetry,
   streamTimeoutMs,
   streamKeepAliveMs,
   streamingDispatcherOptions,
@@ -152,17 +153,25 @@ describe('createStreamingFetch — against a delayed server', () => {
   });
 });
 
-describe('createStreamingFetch — pre-response connection retry', () => {
+describe('withPreResponseRetry', () => {
+  // The retry is the OUTERMOST layer (over the dispatcher-bound streaming fetch),
+  // matching ai.service's withPreResponseRetry(instrument(createStreamingFetch())).
+  // PRE_RESPONSE_CONNECT_RETRIES is 2 -> at most 3 total attempts.
+  const MAX_ATTEMPTS = 3;
   let server: http.Server;
   let url: string;
   let requests = 0;
+  // 'first' resets only the first connection; 'all' resets every connection.
+  let resetMode: 'first' | 'all' = 'first';
+
+  const retryingFetch = () => withPreResponseRetry(createStreamingFetch());
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
       requests += 1;
-      if (requests === 1) {
-        // Reset the FIRST connection before any response byte (a poisoned/stale
-        // keep-alive socket). The retry must open a fresh connection.
+      const shouldReset = resetMode === 'all' || requests === 1;
+      if (shouldReset) {
+        // Reset before any response byte (a poisoned/stale keep-alive socket).
         const sock = req.socket as import('node:net').Socket & {
           resetAndDestroy?: () => void;
         };
@@ -184,22 +193,42 @@ describe('createStreamingFetch — pre-response connection retry', () => {
 
   beforeEach(() => {
     requests = 0;
+    resetMode = 'first';
   });
 
   it('retries a pre-response reset on a fresh connection and succeeds', async () => {
-    const streamingFetch = createStreamingFetch();
-    const res = await streamingFetch(url);
+    resetMode = 'first';
+    const res = await retryingFetch()(url);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('ok');
     // first request reset -> retry -> second request served.
-    expect(requests).toBeGreaterThanOrEqual(2);
+    expect(requests).toBe(2);
+  });
+
+  it('gives up after the retry bound and rethrows the original reset', async () => {
+    resetMode = 'all'; // every attempt resets -> retries exhaust
+    let caught: unknown;
+    try {
+      await retryingFetch()(url);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    // A retryable connection error reached the caller (not swallowed).
+    expect(isRetryableConnectError(caught)).toBe(true);
+    // Bounded: exactly PRE_RESPONSE_CONNECT_RETRIES + 1 attempts hit the server
+    // (pins both the limit and that the final error propagates — guards an
+    // off-by-one or an infinite loop).
+    expect(requests).toBe(MAX_ATTEMPTS);
   });
 
   it('does NOT retry an aborted request (no retry storm)', async () => {
+    resetMode = 'all';
     const ctrl = new AbortController();
     ctrl.abort();
-    const streamingFetch = createStreamingFetch();
-    await expect(streamingFetch(url, { signal: ctrl.signal })).rejects.toBeDefined();
+    await expect(
+      retryingFetch()(url, { signal: ctrl.signal }),
+    ).rejects.toBeDefined();
     // Pre-aborted: the request never reached the server, so nothing was retried.
     expect(requests).toBe(0);
   });

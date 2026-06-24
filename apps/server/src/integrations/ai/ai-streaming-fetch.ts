@@ -104,23 +104,41 @@ export function isRetryableConnectError(err: unknown): boolean {
  * recycling, #175). A single shared dispatcher is returned (callers hold it for
  * the service lifetime) so its connection pool is reused.
  *
- * On a PRE-RESPONSE connection reset (`fetch()` rejects before the Response
- * resolves — so nothing has streamed) it retries a few times on a fresh
- * connection. A poisoned keep-alive socket is destroyed by undici on the reset,
- * so the retry lands on a new connection. An abort (client disconnect) is never
- * retried.
+ * This is the BASE transport — no retry. The chat path wraps it as
+ * `withPreResponseRetry(createInstrumentedFetch(ctx, createStreamingFetch()))`
+ * so the retry is the OUTERMOST layer and the instrumentation observes EVERY
+ * attempt (a recovered reset is still logged — see withPreResponseRetry).
  */
 export function createStreamingFetch(): typeof fetch {
   const dispatcher = new Agent(streamingDispatcherOptions());
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    fetch(input, {
+      ...(init ?? {}),
+      // `dispatcher` is an undici-specific init field (not in the DOM
+      // RequestInit type); Node's global fetch reads it. Cast to satisfy it.
+      dispatcher,
+    } as RequestInit & { dispatcher: Agent })) as typeof fetch;
+}
+
+/**
+ * Wrap a fetch so a PRE-RESPONSE connection reset (`baseFetch` rejects before the
+ * Response resolves — so nothing has streamed) is retried a few times on a fresh
+ * connection (#175). A poisoned keep-alive socket is destroyed by undici on the
+ * reset, so the retry lands on a new connection. An abort (client disconnect) is
+ * never retried.
+ *
+ * This is the OUTERMOST transport layer by design: composing it as
+ * `withPreResponseRetry(instrumentedFetch)` means every attempt — including the
+ * resets that the retry recovers from — flows through the instrumentation, so the
+ * "PRE-RESPONSE FAILED ... ECONNRESET ... idleSincePrevCall" telemetry stays
+ * visible precisely when the fix is working (and AI_STREAM_KEEPALIVE_MS can be
+ * tuned from real data). A retry INSIDE the transport would hide it.
+ */
+export function withPreResponseRetry(baseFetch: typeof fetch): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await fetch(input, {
-          ...(init ?? {}),
-          // `dispatcher` is an undici-specific init field (not in the DOM
-          // RequestInit type); Node's global fetch reads it. Cast to satisfy it.
-          dispatcher,
-        } as RequestInit & { dispatcher: Agent });
+        return await baseFetch(input, init);
       } catch (err) {
         const aborted = init?.signal?.aborted === true;
         if (
