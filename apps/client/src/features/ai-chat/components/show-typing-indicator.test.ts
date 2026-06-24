@@ -82,4 +82,14 @@ describe("showTypingIndicator", () => {
       showTypingIndicator([msg("assistant", [doneTool, text])], true),
     ).toBe(false);
   });
+
+  it("shows while streaming after a text part is finalized (paused before the next step)", () => {
+    const doneText = { type: "text", text: "Now creating the page in", state: "done" } as unknown as UIMessage["parts"][number];
+    expect(showTypingIndicator([msg("assistant", [doneText])], true)).toBe(true);
+  });
+
+  it("hides while a text part is actively streaming (state: streaming)", () => {
+    const streamingText = { type: "text", text: "Now writ", state: "streaming" } as unknown as UIMessage["parts"][number];
+    expect(showTypingIndicator([msg("assistant", [streamingText])], true)).toBe(false);
+  });
 });
