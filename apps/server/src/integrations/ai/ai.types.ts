@@ -58,6 +58,34 @@ export interface AiProviderSettings {
 }
 
 /**
+ * The persisted, non-secret provider setting keys — the SINGLE source of truth
+ * for which fields a settings update may write through to `settings.ai.provider`.
+ * `satisfies readonly (keyof AiProviderSettings)[]` makes the compiler reject a
+ * typo or a key that is not a real provider setting.
+ *
+ * The settings service consumes this directly. The generic workspace repo cannot
+ * import AI types, so it keeps its own copy of the same keys, guarded by a parity
+ * test against this constant (so any future drift fails in CI, not silently in
+ * prod — a missing key there validates fine, passes the service, and is then
+ * dropped at the SQL boundary with no error).
+ */
+export const PROVIDER_SETTINGS_KEYS = [
+  'driver',
+  'chatModel',
+  'chatApiStyle',
+  'embeddingModel',
+  'baseUrl',
+  'embeddingBaseUrl',
+  'sttModel',
+  'sttBaseUrl',
+  'sttApiStyle',
+  'sttLanguage',
+  'systemPrompt',
+  'publicShareChatModel',
+  'publicShareAssistantRoleId',
+] as const satisfies readonly (keyof AiProviderSettings)[];
+
+/**
  * Fully resolved provider config, including the decrypted API key for the
  * stored driver. Returned by `AiSettingsService.resolve`. The keys are held in
  * memory only while building the provider and are never logged.

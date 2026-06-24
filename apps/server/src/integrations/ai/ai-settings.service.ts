@@ -15,6 +15,7 @@ import {
   ResolvedAiConfig,
   SttApiStyle,
   ChatApiStyle,
+  PROVIDER_SETTINGS_KEYS,
 } from './ai.types';
 
 /**
@@ -280,21 +281,8 @@ export class AiSettingsService {
 
     // Persist non-secret provider fields (only those present in the partial).
     const providerPatch: Partial<AiProviderSettings> = {};
-    for (const key of [
-      'driver',
-      'chatModel',
-      'chatApiStyle',
-      'embeddingModel',
-      'baseUrl',
-      'embeddingBaseUrl',
-      'sttModel',
-      'sttBaseUrl',
-      'sttApiStyle',
-      'sttLanguage',
-      'systemPrompt',
-      'publicShareChatModel',
-      'publicShareAssistantRoleId',
-    ] as const) {
+    // Single source of truth for the writable provider keys (see ai.types).
+    for (const key of PROVIDER_SETTINGS_KEYS) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];
       }
