@@ -14,6 +14,8 @@ import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
+// DIAGNOSTIC (provider ECONNRESET investigation) — temporary.
+import { createDiagnosticFetch } from './ai-http-diagnostics';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -42,6 +44,13 @@ export interface ChatModelOverride {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
+
+  // DIAGNOSTIC (provider ECONNRESET investigation) — temporary: passive
+  // instrumentation of the OpenAI-compatible provider HTTP calls (z.ai).
+  // Logs call timing/outcome only — no behavior change.
+  private readonly aiDiagnosticFetch = createDiagnosticFetch(
+    'AiService:provider-http',
+  );
 
   constructor(
     private readonly aiSettings: AiSettingsService,
@@ -140,7 +149,13 @@ export class AiService {
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
         // assistant messages) → 400.
-        return createOpenAI({ apiKey, baseURL: baseUrl }).chat(chatModel);
+        // DIAGNOSTIC (provider ECONNRESET investigation) — temporary: pass the
+        // passive instrumented fetch (logging only; no behavior change).
+        return createOpenAI({
+          apiKey,
+          baseURL: baseUrl,
+          fetch: this.aiDiagnosticFetch,
+        }).chat(chatModel);
       case 'gemini':
         return createGoogleGenerativeAI({ apiKey })(chatModel);
       case 'ollama':
