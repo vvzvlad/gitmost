@@ -4,7 +4,7 @@
  * ============================ CANONICAL #137 NOTE ============================
  * This docblock is the single authoritative explanation of the new-chat id
  * adoption design and the #137 two-tab race it fixes. Other call sites
- * (use-chat-session.ts, the server's `chatStreamStartMetadata`) reference here
+ * (use-chat-session.ts, the server's `chatStreamMetadata`) reference here
  * rather than restating it.
  *
  * When a user sends the first turn of a BRAND-NEW chat, the client has no chat
@@ -17,7 +17,7 @@
  * leak its later turns into it (#137). We adopt by IDENTITY instead, two ways:
  *
  * PRIMARY path: the server streams the real chat id on the assistant message
- * metadata's `start` part (see `chatStreamStartMetadata` server-side);
+ * metadata's `start` part (see `chatStreamMetadata` server-side);
  * `extractServerChatId` reads it off the finished message and
  * `resolveAdoptedChatId` turns it into the id to adopt for a new chat. This is
  * authoritative and immune to the race.
@@ -46,7 +46,7 @@ export function resolveAdoptedChatId(
 /**
  * Read the authoritative server chat id off a finished assistant message. The
  * server attaches it as `message.metadata.chatId` on the `start` part (see
- * `chatStreamStartMetadata`). Returns it only when it is a string; undefined for
+ * `chatStreamMetadata`). Returns it only when it is a string; undefined for
  * a missing message, missing metadata, or a non-string `chatId`.
  */
 export function extractServerChatId(

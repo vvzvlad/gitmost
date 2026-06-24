@@ -314,6 +314,57 @@ describe("buildChatMarkdown — token totals", () => {
     });
     expect(md).toContain("- Total tokens: 99");
   });
+
+  it("appends the reasoning figure to the row footer when reasoningTokens > 0", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({
+          role: "assistant",
+          content: "x",
+          metadata: {
+            usage: { inputTokens: 10, outputTokens: 8, reasoningTokens: 3 },
+          },
+        }),
+      ],
+      t,
+    });
+    expect(md).toContain("_Tokens — in: 10, out: 8, reasoning: 3, total: 18_");
+  });
+
+  it("omits the reasoning figure when reasoningTokens is 0 / absent", () => {
+    const zero = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({
+          role: "assistant",
+          content: "x",
+          metadata: {
+            usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0 },
+          },
+        }),
+      ],
+      t,
+    });
+    expect(zero).toContain("_Tokens — in: 10, out: 5, total: 15_");
+    expect(zero).not.toContain("reasoning:");
+
+    const absent = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({
+          role: "assistant",
+          content: "x",
+          metadata: { usage: { inputTokens: 10, outputTokens: 5 } },
+        }),
+      ],
+      t,
+    });
+    expect(absent).not.toContain("reasoning:");
+  });
 });
 
 describe("buildChatMarkdown — pending / in-progress messages", () => {

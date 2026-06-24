@@ -9,6 +9,7 @@ import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx"
 import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
+import { reasoningTokensForPart } from "@/features/ai-chat/utils/reasoning-tokens.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -78,25 +79,12 @@ export default function MessageItem({
   // return won't fire for them.
   if (!assistantMessageHasVisibleContent(message)) return null;
 
-  // Authoritative reasoning token count for the turn, if the server attached it
-  // (incl. providers that report a reasoning COUNT without streaming the text).
-  // It is the TURN TOTAL, so it may only be attributed to a block when there is a
-  // SINGLE reasoning part (the common one-step turn) — then that block shows the
-  // exact figure. With multiple reasoning parts (multi-step agent turn) every
-  // block falls back to its own per-part estimate; attributing the turn total to
-  // one of them would double-count against the others' estimates (#151 review).
-  // The authoritative turn total is still surfaced live in the header badge.
-  const reasoningTokens = (
-    message.metadata as { usage?: { reasoningTokens?: number } } | undefined
-  )?.usage?.reasoningTokens;
-  const reasoningPartCount = message.parts.reduce(
-    (acc, p) => (p.type === "reasoning" ? acc + 1 : acc),
-    0,
-  );
-  const lastReasoningIndex = message.parts.reduce(
-    (acc, p, i) => (p.type === "reasoning" ? i : acc),
-    -1,
-  );
+  // Authoritative reasoning token count to attribute to a reasoning block, or
+  // undefined when the block must estimate on its own. See reasoningTokensForPart
+  // for the #151 anti-double-count rule (only a single reasoning part may carry
+  // the turn total). The authoritative turn total is still surfaced live in the
+  // header badge regardless.
+  const reasoningTokens = reasoningTokensForPart(message);
 
   return (
     <Box className={classes.messageRow}>
@@ -109,12 +97,11 @@ export default function MessageItem({
           // count. Empty/whitespace reasoning with no authoritative count carries
           // nothing to show, so skip it (avoids an empty 0-token block).
           const text = (part as { text?: string }).text ?? "";
-          const tokens =
-            reasoningPartCount === 1 && index === lastReasoningIndex
-              ? reasoningTokens
-              : undefined;
-          if (!text.trim() && !(tokens && tokens > 0)) return null;
-          return <ReasoningBlock key={index} text={text} tokens={tokens} />;
+          if (!text.trim() && !(reasoningTokens && reasoningTokens > 0))
+            return null;
+          return (
+            <ReasoningBlock key={index} text={text} tokens={reasoningTokens} />
+          );
         }
 
         if (part.type === "text") {
