@@ -53,6 +53,8 @@ const formSchema = z.object({
   driver: z.enum(["", ...AI_DRIVER_VALUES]),
   chatModel: z.string(),
   enabled: z.boolean(),
+  autoStart: z.boolean(),
+  launchMessage: z.string(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -83,6 +85,8 @@ export default function AiAgentRoleForm({
       driver: (role?.modelConfig?.driver ?? "") as FormValues["driver"],
       chatModel: role?.modelConfig?.chatModel ?? "",
       enabled: role?.enabled ?? true,
+      autoStart: role?.autoStart ?? true,
+      launchMessage: role?.launchMessage ?? "",
     },
   });
 
@@ -96,6 +100,8 @@ export default function AiAgentRoleForm({
       driver: (role?.modelConfig?.driver ?? "") as FormValues["driver"],
       chatModel: role?.modelConfig?.chatModel ?? "",
       enabled: role?.enabled ?? true,
+      autoStart: role?.autoStart ?? true,
+      launchMessage: role?.launchMessage ?? "",
     });
     form.resetDirty();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,6 +128,8 @@ export default function AiAgentRoleForm({
         instructions: values.instructions,
         modelConfig,
         enabled: values.enabled,
+        autoStart: values.autoStart,
+        launchMessage: values.launchMessage,
       };
       await updateMutation.mutateAsync(payload);
     } else {
@@ -132,6 +140,10 @@ export default function AiAgentRoleForm({
         instructions: values.instructions,
         modelConfig,
         enabled: values.enabled,
+        autoStart: values.autoStart,
+        // Send the raw (trimmed) value like the update path; the server
+        // normalizes an empty string to null (emptyToNull). Symmetric.
+        launchMessage: values.launchMessage,
       };
       await createMutation.mutateAsync(payload);
     }
@@ -194,6 +206,28 @@ export default function AiAgentRoleForm({
           "If you choose a different provider, it must already be configured in AI settings.",
         )}
       </Text>
+
+      <Switch
+        label={t("Start automatically")}
+        description={t(
+          "When on, picking this role sends a launch message and starts the chat. When off, the role is selected and you type the first message yourself.",
+        )}
+        checked={form.values.autoStart}
+        onChange={(event) =>
+          form.setFieldValue("autoStart", event.currentTarget.checked)
+        }
+      />
+
+      <Textarea
+        label={t("Launch message")}
+        description={t(
+          "Sent automatically when this role is picked. Leave empty to use the default text. Ignored when “Start automatically” is off.",
+        )}
+        autosize
+        minRows={2}
+        maxRows={6}
+        {...form.getInputProps("launchMessage")}
+      />
 
       <Switch
         label={t("Enabled")}

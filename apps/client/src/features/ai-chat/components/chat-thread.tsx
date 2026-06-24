@@ -315,16 +315,44 @@ export default function ChatThread({
   // of a generic "Something went wrong".
   const errorView = error ? describeChatError(error.message ?? "", t) : null;
 
-  // Clicking a role card both binds the role to THIS new chat and immediately
-  // starts the conversation. roleIdRef is set synchronously here because the
-  // parent's selectedRoleId state update would only reach roleIdRef on the next
-  // render — after this synchronous sendMessage has already read it.
+  // A role was picked with autoStart=false: the role is bound but NOTHING was
+  // sent, so chatId stays null and the empty state would keep showing the cards.
+  // This flag hides the cards and reveals the composer (with the role indicated)
+  // so the user can type the first message themselves. roleIdRef is already set,
+  // so that first manual message carries the roleId.
+  const [rolePickedNoSend, setRolePickedNoSend] = useState(false);
+
+  // Clicking a role card always binds the role to THIS new chat. Whether it also
+  // auto-starts the conversation is per-role (autoStart). roleIdRef is set
+  // synchronously here because the parent's selectedRoleId state update would
+  // only reach roleIdRef on the next render — after this synchronous sendMessage
+  // has already read it.
   const handleRolePick = (role: IAiRole): void => {
     roleIdRef.current = role.id;
     onRolePicked?.(role);
-    sendMessage({ text: t("Take a look at the current document") });
+    if (role.autoStart) {
+      // Custom launch message when set; otherwise the built-in default text.
+      sendMessage({
+        text: role.launchMessage?.trim() || t("Take a look at the current document"),
+      });
+    } else {
+      // Bind only: hide the cards and show the composer, send nothing.
+      setRolePickedNoSend(true);
+    }
   };
-  const showRoleCards = chatId === null && (roles?.length ?? 0) > 0;
+  // Reset the "picked, not sent" flag when the thread returns to a truly empty,
+  // role-less state — e.g. the user hit "New chat" after picking an autoStart=false
+  // role. That path clears the parent's selectedRoleId (roleId -> null) but leaves
+  // chatId null, so the thread never remounts and the flag would stay set, hiding
+  // the cards forever. A picked-and-bound role keeps roleId non-null, so the cards
+  // correctly stay hidden then. Render-phase reset (React "adjust state on prop
+  // change"): one-shot — it re-renders with the flag false and the guard no longer
+  // matches, so it cannot loop. (Review of #149.)
+  if (chatId === null && roleId == null && rolePickedNoSend) {
+    setRolePickedNoSend(false);
+  }
+  const showRoleCards =
+    chatId === null && (roles?.length ?? 0) > 0 && !rolePickedNoSend;
   const roleCardsEmptyState = showRoleCards ? (
     <RoleCards roles={roles ?? []} onPick={handleRolePick} />
   ) : undefined;

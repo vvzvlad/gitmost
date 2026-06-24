@@ -601,6 +601,11 @@ export interface AiAgentRoles {
   // { chatModel } | { driver, chatModel } | null. null => workspace default.
   modelConfig: Json | null;
   enabled: Generated<boolean>;
+  // When true (default), picking the role auto-sends a launch message and starts
+  // the new chat; when false the client only binds the role and shows the composer.
+  autoStart: Generated<boolean>;
+  // Optional custom auto-start text. null/empty => client default launch message.
+  launchMessage: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;

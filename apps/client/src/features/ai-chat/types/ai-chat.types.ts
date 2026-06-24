@@ -53,6 +53,10 @@ export interface IAiRole {
   instructions?: string;
   modelConfig?: IAiRoleModelConfig | null;
   enabled: boolean;
+  // Whether picking the role auto-sends a launch message and starts the chat.
+  autoStart: boolean;
+  // Custom auto-start text; null/empty => the default launch message is sent.
+  launchMessage: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -65,6 +69,8 @@ export interface IAiRoleCreate {
   instructions: string;
   modelConfig?: IAiRoleModelConfig | null;
   enabled?: boolean;
+  autoStart?: boolean;
+  launchMessage?: string;
 }
 
 /** Admin update payload for a role (partial). */
@@ -76,6 +82,8 @@ export interface IAiRoleUpdate {
   instructions?: string;
   modelConfig?: IAiRoleModelConfig | null;
   enabled?: boolean;
+  autoStart?: boolean;
+  launchMessage?: string;
 }
 
 /**
