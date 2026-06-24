@@ -49,3 +49,81 @@ describe('AiAgentRoleRepo.findLiveEnabled', () => {
     expect(await repo.findLiveEnabled('r-1', 'ws-1')).toBeUndefined();
   });
 });
+
+/**
+ * Column-threading tests for the auto-start feature: insert defaults autoStart to
+ * true and stores an empty launchMessage as null; update only sets a column when
+ * the patch field is present, and clears launchMessage to null on empty string.
+ */
+describe('AiAgentRoleRepo insert/update auto-start columns', () => {
+  function makeInsertRepo() {
+    const values = jest.fn();
+    const builder = {
+      values: jest.fn((v: unknown) => {
+        values(v);
+        return builder;
+      }),
+      returningAll: jest.fn(() => builder),
+      executeTakeFirst: jest.fn().mockResolvedValue({}),
+    };
+    const db = {
+      insertInto: jest.fn(() => builder),
+    } as unknown as KyselyDB;
+    return { repo: new AiAgentRoleRepo(db), values };
+  }
+
+  function makeUpdateRepo() {
+    const set = jest.fn();
+    const builder = {
+      set: jest.fn((s: unknown) => {
+        set(s);
+        return builder;
+      }),
+      where: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+    const db = {
+      updateTable: jest.fn(() => builder),
+    } as unknown as KyselyDB;
+    return { repo: new AiAgentRoleRepo(db), set };
+  }
+
+  it('insert defaults autoStart to true and stores empty launchMessage as null', async () => {
+    const { repo, values } = makeInsertRepo();
+    await repo.insert({
+      workspaceId: 'ws-1',
+      name: 'R',
+      instructions: 'do',
+      launchMessage: '',
+    });
+    const v = values.mock.calls[0][0];
+    expect(v.autoStart).toBe(true);
+    expect(v.launchMessage).toBeNull();
+  });
+
+  it('insert threads autoStart:false and a launchMessage', async () => {
+    const { repo, values } = makeInsertRepo();
+    await repo.insert({
+      workspaceId: 'ws-1',
+      name: 'R',
+      instructions: 'do',
+      autoStart: false,
+      launchMessage: 'Go',
+    });
+    const v = values.mock.calls[0][0];
+    expect(v.autoStart).toBe(false);
+    expect(v.launchMessage).toBe('Go');
+  });
+
+  it('update omits unchanged columns; clears launchMessage to null on empty', async () => {
+    const { repo, set } = makeUpdateRepo();
+    await repo.update('r-1', 'ws-1', { autoStart: false });
+    expect(set.mock.calls[0][0].autoStart).toBe(false);
+    expect('launchMessage' in set.mock.calls[0][0]).toBe(false);
+
+    const { repo: repo2, set: set2 } = makeUpdateRepo();
+    await repo2.update('r-1', 'ws-1', { launchMessage: '' });
+    expect(set2.mock.calls[0][0].launchMessage).toBeNull();
+    expect('autoStart' in set2.mock.calls[0][0]).toBe(false);
+  });
+});

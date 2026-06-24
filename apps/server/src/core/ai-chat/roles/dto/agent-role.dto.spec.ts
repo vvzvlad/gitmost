@@ -78,4 +78,32 @@ describe('CreateAgentRoleDto with nested modelConfig', () => {
     });
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  it('accepts autoStart:false + a launchMessage', () => {
+    expect(
+      validateCreate({ ...base, autoStart: false, launchMessage: 'Go' }),
+    ).toHaveLength(0);
+  });
+
+  it('rejects a non-boolean autoStart', () => {
+    const errors = validateCreate({ ...base, autoStart: 'yes' });
+    expect(errors.some((e) => e.property === 'autoStart')).toBe(true);
+  });
+
+  it('rejects a launchMessage longer than 2000 chars', () => {
+    const errors = validateCreate({
+      ...base,
+      launchMessage: 'a'.repeat(2001),
+    });
+    expect(errors.some((e) => e.property === 'launchMessage')).toBe(true);
+  });
+
+  it('trims surrounding whitespace from launchMessage', () => {
+    const dto = plainToInstance(CreateAgentRoleDto, {
+      ...base,
+      launchMessage: '  Look here  ',
+    });
+    expect(validateSync(dto as object)).toHaveLength(0);
+    expect(dto.launchMessage).toBe('Look here');
+  });
 });

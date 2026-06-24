@@ -25,6 +25,8 @@ describe('AiAgentRolesService guards', () => {
       instructions: 'be a researcher',
       modelConfig: null,
       enabled: true,
+      autoStart: true,
+      launchMessage: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...over,
@@ -159,6 +161,8 @@ describe('AiAgentRolesService guards', () => {
         instructions: 'updated instructions',
         modelConfig: { driver: 'gemini', chatModel: 'gemini-2.0-flash' },
         enabled: false,
+        autoStart: true,
+        launchMessage: null,
         createdAt,
         updatedAt,
       });
@@ -185,6 +189,35 @@ describe('AiAgentRolesService guards', () => {
       const patch2 = repo.update.mock.calls[0][2];
       expect(patch2.emoji).toBeUndefined();
       expect(patch2.description).toBeUndefined();
+    });
+
+    it('autoStart/launchMessage thread through; launchMessage:"" clears to null', async () => {
+      const { service, repo } = makeService({ existing: makeRow() });
+      await service.update('ws-1', 'r1', {
+        autoStart: false,
+        launchMessage: '  custom  ',
+      } as UpdateAgentRoleDto);
+      const patch = repo.update.mock.calls[0][2];
+      expect(patch.autoStart).toBe(false);
+      expect(patch.launchMessage).toBe('custom');
+
+      repo.update.mockClear();
+
+      // Explicit empty => clear to null.
+      await service.update('ws-1', 'r1', {
+        launchMessage: '   ',
+      } as UpdateAgentRoleDto);
+      expect(repo.update.mock.calls[0][2].launchMessage).toBeNull();
+    });
+
+    it('autoStart/launchMessage omitted => undefined (unchanged) in the patch', async () => {
+      const { service, repo } = makeService({ existing: makeRow() });
+      await service.update('ws-1', 'r1', {
+        name: 'Renamed',
+      } as UpdateAgentRoleDto);
+      const patch = repo.update.mock.calls[0][2];
+      expect(patch.autoStart).toBeUndefined();
+      expect(patch.launchMessage).toBeUndefined();
     });
   });
 
@@ -319,6 +352,40 @@ describe('AiAgentRolesService guards', () => {
         } as CreateAgentRoleDto),
       ).rejects.toBe(other);
     });
+
+    it('autoStart omitted => defaults to true; launchMessage omitted => null', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+      } as CreateAgentRoleDto);
+      const values = repo.insert.mock.calls[0][0];
+      expect(values.autoStart).toBe(true);
+      expect(values.launchMessage).toBeNull();
+    });
+
+    it('autoStart:false + launchMessage round-trip (trimmed) to the repo', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        autoStart: false,
+        launchMessage: '  do the thing  ',
+      } as CreateAgentRoleDto);
+      const values = repo.insert.mock.calls[0][0];
+      expect(values.autoStart).toBe(false);
+      expect(values.launchMessage).toBe('do the thing');
+    });
+
+    it('empty/whitespace launchMessage normalizes to null', async () => {
+      const { service, repo } = makeService();
+      await service.create('ws-1', 'u1', {
+        name: 'R',
+        instructions: 'do',
+        launchMessage: '   ',
+      } as CreateAgentRoleDto);
+      expect(repo.insert.mock.calls[0][0].launchMessage).toBeNull();
+    });
   });
 
   describe('list view (security: non-admin must not see instructions/modelConfig)', () => {
@@ -349,19 +416,25 @@ describe('AiAgentRolesService guards', () => {
       const list = await service.list('ws-1', false);
       expect(list).toHaveLength(1);
       const item = list[0] as unknown as Record<string, unknown>;
-      // The picker fields ARE present...
+      // The picker fields ARE present — INCLUDING the auto-start fields, which
+      // the client needs to decide whether/what to auto-send on role pick.
       expect(item).toEqual({
         id: 'r1',
         name: 'Researcher',
         emoji: '🔬',
         description: 'finds things',
         enabled: true,
+        autoStart: true,
+        launchMessage: null,
       });
       // ...and the admin-only fields are absent (not just undefined).
       expect('instructions' in item).toBe(false);
       expect('modelConfig' in item).toBe(false);
       expect('createdAt' in item).toBe(false);
       expect('updatedAt' in item).toBe(false);
+      // autoStart/launchMessage are deliberately NOT admin-only — present here.
+      expect('autoStart' in item).toBe(true);
+      expect('launchMessage' in item).toBe(true);
     });
 
     it('admin (isAdmin=true) gets the full view WITH instructions/modelConfig', async () => {
