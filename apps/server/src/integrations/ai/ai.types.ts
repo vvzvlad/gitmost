@@ -16,6 +16,15 @@ export const AI_DRIVERS: AiDriver[] = ['openai', 'gemini', 'ollama'];
 export type SttApiStyle = 'multipart' | 'json';
 export const STT_API_STYLES: SttApiStyle[] = ['multipart', 'json'];
 
+// Chat provider implementation for the `openai` driver. Chosen explicitly by the
+// admin (NOT inferred from baseUrl — a custom URL can front real OpenAI too).
+// 'openai-compatible' = @ai-sdk/openai-compatible: maps streamed
+//   `reasoning_content` to reasoning parts (z.ai/GLM, DeepSeek, OpenRouter, ...).
+// 'openai' = official @ai-sdk/openai: real-OpenAI reasoning-model request shaping
+//   (max_completion_tokens, the 'developer' role), no third-party reasoning map.
+export type ChatApiStyle = 'openai-compatible' | 'openai';
+export const CHAT_API_STYLES: ChatApiStyle[] = ['openai-compatible', 'openai'];
+
 /**
  * Non-secret provider settings persisted under `settings.ai.provider`.
  * The API key is intentionally absent here.
@@ -23,6 +32,9 @@ export const STT_API_STYLES: SttApiStyle[] = ['multipart', 'json'];
 export interface AiProviderSettings {
   driver: AiDriver;
   chatModel: string;
+  // Chat provider implementation for the `openai` driver. Unset → defaults to
+  // 'openai-compatible' (so reasoning is surfaced by default). See ChatApiStyle.
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   // Embedding-specific base URL. Falls back to `baseUrl` when empty/unset.
@@ -76,6 +88,7 @@ export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
 export interface MaskedAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;

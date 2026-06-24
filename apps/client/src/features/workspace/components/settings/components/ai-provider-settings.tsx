@@ -38,6 +38,7 @@ import {
   AiTestCapability,
   IAiSettingsUpdate,
   SttApiStyle,
+  ChatApiStyle,
 } from "@/features/workspace/services/ai-settings-service.ts";
 import { useAiRolesQuery } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
@@ -82,6 +83,8 @@ const STT_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 // (empty means "leave unchanged" unless explicitly cleared).
 const formSchema = z.object({
   chatModel: z.string(),
+  // Chat provider implementation (reasoning surfacing). Default openai-compatible.
+  chatApiStyle: z.enum(["openai-compatible", "openai"]),
   // Cheap model id for the anonymous public-share assistant; empty = use chatModel.
   publicShareChatModel: z.string(),
   // Agent-role id whose persona the public-share assistant adopts; empty =
@@ -308,6 +311,7 @@ export default function AiProviderSettings() {
     validate: zod4Resolver(formSchema),
     initialValues: {
       chatModel: "",
+      chatApiStyle: "openai-compatible" as ChatApiStyle,
       publicShareChatModel: "",
       publicShareAssistantRoleId: "",
       embeddingModel: "",
@@ -330,6 +334,7 @@ export default function AiProviderSettings() {
     if (!settings) return;
     form.setValues({
       chatModel: settings.chatModel ?? "",
+      chatApiStyle: settings.chatApiStyle ?? "openai-compatible",
       publicShareChatModel: settings.publicShareChatModel ?? "",
       publicShareAssistantRoleId: settings.publicShareAssistantRoleId ?? "",
       embeddingModel: settings.embeddingModel ?? "",
@@ -359,6 +364,7 @@ export default function AiProviderSettings() {
       // Everything is OpenAI-compatible.
       driver: "openai",
       chatModel: values.chatModel,
+      chatApiStyle: values.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; empty falls
       // back to chatModel server-side.
       publicShareChatModel: values.publicShareChatModel,
@@ -760,6 +766,24 @@ export default function AiProviderSettings() {
         <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
           {t("Resolves to {{url}}", { url: chatResolved })}
         </Text>
+
+        <Select
+          mt="sm"
+          label={t("Protocol")}
+          description={t(
+            "How chat requests are sent and how reasoning is surfaced",
+          )}
+          data={[
+            {
+              value: "openai-compatible",
+              label: t("OpenAI-compatible (surfaces reasoning)"),
+            },
+            { value: "openai", label: t("OpenAI (official)") },
+          ]}
+          allowDeselect={false}
+          disabled={isLoading}
+          {...form.getInputProps("chatApiStyle")}
+        />
 
         {/* Anonymous public-share assistant: a single master toggle + an
             optional cheaper model id. Reuses this card's driver/URL/key. */}

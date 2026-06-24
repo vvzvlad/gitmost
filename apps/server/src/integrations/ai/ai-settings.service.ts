@@ -14,6 +14,7 @@ import {
   MaskedAiSettings,
   ResolvedAiConfig,
   SttApiStyle,
+  ChatApiStyle,
 } from './ai.types';
 
 /**
@@ -24,6 +25,7 @@ import {
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
@@ -157,6 +159,8 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
+      chatApiStyle: provider.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; reuses the chat
       // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
       publicShareChatModel: provider.publicShareChatModel,
@@ -238,6 +242,7 @@ export class AiSettingsService {
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      chatApiStyle: provider.chatApiStyle,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,
       embeddingBaseUrl: provider.embeddingBaseUrl,
@@ -278,6 +283,7 @@ export class AiSettingsService {
     for (const key of [
       'driver',
       'chatModel',
+      'chatApiStyle',
       'embeddingModel',
       'baseUrl',
       'embeddingBaseUrl',

@@ -1,5 +1,12 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
-import { AI_DRIVERS, AiDriver, STT_API_STYLES, SttApiStyle } from '../ai.types';
+import {
+  AI_DRIVERS,
+  AiDriver,
+  CHAT_API_STYLES,
+  ChatApiStyle,
+  STT_API_STYLES,
+  SttApiStyle,
+} from '../ai.types';
 
 /**
  * Admin update payload for the workspace AI provider settings.
@@ -17,6 +24,10 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   chatModel?: string;
+
+  @IsOptional()
+  @IsIn(CHAT_API_STYLES)
+  chatApiStyle?: ChatApiStyle;
 
   @IsOptional()
   @IsString()

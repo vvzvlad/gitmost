@@ -1307,5 +1307,9 @@
   "Page tree (child pages, recursive)": "Page tree (child pages, recursive)",
   "Render the full nested tree of all descendant pages": "Render the full nested tree of all descendant pages",
   "Showing {{count}} subpages_one": "Showing {{count}} subpage",
-  "Showing {{count}} subpages_other": "Showing {{count}} subpages"
+  "Showing {{count}} subpages_other": "Showing {{count}} subpages",
+  "Protocol": "Protocol",
+  "How chat requests are sent and how reasoning is surfaced": "How chat requests are sent and how reasoning is surfaced",
+  "OpenAI-compatible (surfaces reasoning)": "OpenAI-compatible (surfaces reasoning)",
+  "OpenAI (official)": "OpenAI (official)"
 }
