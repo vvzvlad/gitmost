@@ -2,6 +2,7 @@ import { Box, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
+import ReasoningBlock from "@/features/ai-chat/components/reasoning-block.tsx";
 import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
 import ChatStoppedNotice from "@/features/ai-chat/components/chat-stopped-notice.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
@@ -77,12 +78,45 @@ export default function MessageItem({
   // return won't fire for them.
   if (!assistantMessageHasVisibleContent(message)) return null;
 
+  // Authoritative reasoning token count for the turn, if the server attached it
+  // (incl. providers that report a reasoning COUNT without streaming the text).
+  // It is the TURN TOTAL, so it may only be attributed to a block when there is a
+  // SINGLE reasoning part (the common one-step turn) — then that block shows the
+  // exact figure. With multiple reasoning parts (multi-step agent turn) every
+  // block falls back to its own per-part estimate; attributing the turn total to
+  // one of them would double-count against the others' estimates (#151 review).
+  // The authoritative turn total is still surfaced live in the header badge.
+  const reasoningTokens = (
+    message.metadata as { usage?: { reasoningTokens?: number } } | undefined
+  )?.usage?.reasoningTokens;
+  const reasoningPartCount = message.parts.reduce(
+    (acc, p) => (p.type === "reasoning" ? acc + 1 : acc),
+    0,
+  );
+  const lastReasoningIndex = message.parts.reduce(
+    (acc, p, i) => (p.type === "reasoning" ? i : acc),
+    -1,
+  );
+
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
         {resolveAssistantName(assistantName) ?? t("AI agent")}
       </Text>
       {message.parts.map((part, index) => {
+        if (part.type === "reasoning") {
+          // Reasoning ("thinking") -> a collapsible block with its own token
+          // count. Empty/whitespace reasoning with no authoritative count carries
+          // nothing to show, so skip it (avoids an empty 0-token block).
+          const text = (part as { text?: string }).text ?? "";
+          const tokens =
+            reasoningPartCount === 1 && index === lastReasoningIndex
+              ? reasoningTokens
+              : undefined;
+          if (!text.trim() && !(tokens && tokens > 0)) return null;
+          return <ReasoningBlock key={index} text={text} tokens={tokens} />;
+        }
+
         if (part.type === "text") {
           // Skip empty/whitespace-only text parts (a streaming message often
           // starts with an empty text part before the first token arrives); the

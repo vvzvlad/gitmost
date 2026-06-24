@@ -77,6 +77,7 @@ function rowTokens(usage: {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  reasoningTokens?: number;
 }): number {
   return (
     usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
@@ -175,8 +176,14 @@ export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
     const usage = row.metadata?.usage;
     if (usage) {
       const total = usage.totalTokens ?? rowTokens(usage);
+      // Reasoning (thinking) tokens are shown only when the provider reported a
+      // positive count; old rows / non-reasoning providers omit it.
+      const reasoning =
+        usage.reasoningTokens && usage.reasoningTokens > 0
+          ? `, reasoning: ${usage.reasoningTokens}`
+          : "";
       blocks.push(
-        `_Tokens — in: ${usage.inputTokens ?? "?"}, out: ${usage.outputTokens ?? "?"}, total: ${total}_`,
+        `_Tokens — in: ${usage.inputTokens ?? "?"}, out: ${usage.outputTokens ?? "?"}${reasoning}, total: ${total}_`,
       );
     }
   });

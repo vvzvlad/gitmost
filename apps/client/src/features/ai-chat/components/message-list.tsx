@@ -6,6 +6,7 @@ import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
 import { isToolPart, toolRunState, ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
+import { liveTurnTokens } from "@/features/ai-chat/utils/count-stream-tokens.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
@@ -92,6 +93,19 @@ export function typingIndicatorShowsName(messages: UIMessage[]): boolean {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "assistant") return true;
   return !assistantMessageHasVisibleContent(last);
+}
+
+/**
+ * The live thinking-token count to show on the standalone typing indicator. It
+ * is the reasoning split of the tail assistant message (estimate while streaming,
+ * authoritative once the server attaches usage at a step/turn boundary). Returns
+ * 0 when the turn has produced no reasoning yet — the indicator then shows the
+ * plain "Thinking…" line.
+ */
+export function tailThinkingTokens(messages: UIMessage[]): number {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return 0;
+  return liveTurnTokens(last).reasoning;
 }
 
 /**
@@ -190,7 +204,13 @@ export default function MessageList({
             assistantName={assistantName}
           />
         ))}
-        {typing && <TypingIndicator assistantName={assistantName} showName={typingIndicatorShowsName(messages)} />}
+        {typing && (
+          <TypingIndicator
+            assistantName={assistantName}
+            showName={typingIndicatorShowsName(messages)}
+            thinkingTokens={tailThinkingTokens(messages)}
+          />
+        )}
       </Stack>
     </ScrollArea>
   );

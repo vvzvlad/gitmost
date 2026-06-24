@@ -420,7 +420,11 @@ export class AiChatService {
           toolCalls: serializeSteps(steps),
           metadata: {
             finishReason,
-            usage: totalUsage,
+            // Persist the turn's cumulative usage WITH reasoning tokens resolved
+            // from either the new `outputTokenDetails` or the deprecated top-level
+            // field, so reopened history / the Markdown export show the thinking
+            // token cost too.
+            usage: normalizeStreamUsage(totalUsage as StreamUsage) ?? totalUsage,
             // Final-step usage = the context actually fed to the model on the last LLM
             // call (full history + tool results) plus the answer it just generated.
             // input+output of the FINAL step ≈ the conversation's CURRENT context size,
@@ -512,17 +516,42 @@ export class AiChatService {
       // does not buffer responses by default.
       // Scrub the SDK's hop-by-hop Connection header before it writes the head (Safari/HTTP2).
       stripStreamingHopByHopHeaders(res.raw);
+      // Running sum of per-step usage (v6 `finish-step.usage` is per-step). Sent
+      // as the cumulative authoritative usage so the client never jumps DOWN.
+      let cumulativeStepUsage: ChatStreamUsage | undefined;
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         // Surface the authoritative chatId on the streamed assistant UI message so
         // the client adopts the REAL id of the row we created, instead of guessing
         // the newest chat in its list. `messageMetadata` is invoked by the AI SDK
-        // on the `start` and `finish` stream parts (ai@6); we attach `chatId` on the
-        // `start` part so it reaches the client (as message.metadata.chatId) at the
-        // very first chunk — before any second tab can race a newer chat into the
-        // list. This fixes the two-tab "adoption race" (#137) where a new chat in
-        // tab A could adopt tab B's id and leak its turns into the wrong row.
-        messageMetadata: ({ part }) => chatStreamStartMetadata(part, chatId),
+        // on the `start`, `finish-step` and `finish` stream parts (ai@6 — note the
+        // `finish-step` trigger relies on it being delivered as its own
+        // message-metadata chunk); we attach `chatId` on the `start` part so it
+        // reaches the client (as message.metadata.chatId) at the very first chunk —
+        // before any second tab can race a newer chat into the list. This fixes the
+        // two-tab "adoption race" (#137).
+        //
+        // `finish-step.usage` is PER-STEP (not cumulative) in v6, and the client
+        // merges each metadata.usage by replacement — so on a multi-step agent turn
+        // (up to MAX_AGENT_STEPS) the naive per-step value would make the live
+        // counter jump DOWN at each boundary. We keep a running sum here and send
+        // the CUMULATIVE usage, which converges to `finish.totalUsage` (#151).
+        messageMetadata: ({ part }) => {
+          const p = part as StreamMetadataPart;
+          if (p.type === 'finish-step') {
+            cumulativeStepUsage = accumulateStepUsage(
+              cumulativeStepUsage,
+              normalizeStreamUsage(p.usage),
+            );
+          }
+          return chatStreamMetadata(p, chatId, cumulativeStepUsage);
+        },
+        // Stream reasoning (thinking) parts to the client so the live counter can
+        // estimate reasoning tokens from streamed text. v6 default is already
+        // true; set explicitly so the intent survives any future SDK default
+        // change. Providers that don't emit reasoning text still surface the
+        // count via the authoritative `usage.reasoningTokens` on finish-step.
+        sendReasoning: true,
         onError: (error: unknown) => {
           // Reuse the shared formatter so provider error formatting stays
           // unified between the log line and the streamed error message.
@@ -573,16 +602,97 @@ export class AiChatService {
   }
 }
 
+/** Shape of the AI SDK v6 LanguageModelUsage we forward to the client. The SDK
+ *  exposes `reasoningTokens` both as a (deprecated) top-level field and under
+ *  `outputTokenDetails.reasoningTokens`; we normalize to a single field so the
+ *  client gets one stable usage shape regardless of provider/SDK version. */
+interface StreamUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+  outputTokenDetails?: { reasoningTokens?: number };
+}
+
+/** A streamed part the messageMetadata callback can receive (only the fields we read). */
+interface StreamMetadataPart {
+  type: string;
+  usage?: StreamUsage;
+  totalUsage?: StreamUsage;
+}
+
+/** Authoritative usage we attach to a streamed assistant message's metadata. */
+export interface ChatStreamUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+}
+
+/** Normalize an AI SDK usage object to our flat client-facing shape, resolving
+ *  reasoning tokens from either the new `outputTokenDetails` or the deprecated
+ *  top-level field. Returns undefined for a missing usage object. */
+function normalizeStreamUsage(
+  usage: StreamUsage | undefined,
+): ChatStreamUsage | undefined {
+  if (!usage) return undefined;
+  const reasoningTokens =
+    usage.outputTokenDetails?.reasoningTokens ?? usage.reasoningTokens;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    reasoningTokens,
+  };
+}
+
+/** Sum a (normalized) per-step usage into a running cumulative usage. v6's
+ *  `finish-step.usage` is PER-STEP, so the caller accumulates across steps; the
+ *  cumulative sum converges to the turn's `totalUsage` (no down-jump on the
+ *  client). Returns undefined only when both sides are absent. Pure. */
+export function accumulateStepUsage(
+  acc: ChatStreamUsage | undefined,
+  step: ChatStreamUsage | undefined,
+): ChatStreamUsage | undefined {
+  if (!acc) return step;
+  if (!step) return acc;
+  const add = (a?: number, b?: number): number | undefined =>
+    a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
+  return {
+    inputTokens: add(acc.inputTokens, step.inputTokens),
+    outputTokens: add(acc.outputTokens, step.outputTokens),
+    totalTokens: add(acc.totalTokens, step.totalTokens),
+    reasoningTokens: add(acc.reasoningTokens, step.reasoningTokens),
+  };
+}
+
 /**
- * Attach the authoritative `chatId` to the streamed assistant message's `start`
- * part (as `message.metadata.chatId`) so the client can adopt the real id for a
- * new chat. See the client's adopt-chat-id.ts for the full #137 design.
+ * Pure metadata builder for the streamed assistant UI message. The AI SDK calls
+ * `messageMetadata` on the `start`, `finish-step` and `finish` stream parts; we
+ * attach (as `message.metadata`):
+ *  - `start`        -> `{ chatId }` so the client adopts the real created chat id
+ *                      at the first chunk (see adopt-chat-id.ts / #137).
+ *  - `finish-step`  -> `{ usage }` the CUMULATIVE authoritative usage so far
+ *                      (incl. reasoning tokens) — the caller passes the running
+ *                      sum (`cumulativeStepUsage`), since v6 per-step usage is not
+ *                      cumulative; the client snaps to exact without jumping down.
+ *  - `finish`       -> `{ usage }` from the turn's `totalUsage` (final reconcile).
+ * Any other part type contributes no metadata. Pure + unit-testable.
  */
-export function chatStreamStartMetadata(
-  part: { type: string },
+export function chatStreamMetadata(
+  part: StreamMetadataPart,
   chatId: string,
-): { chatId: string } | undefined {
-  return part.type === 'start' ? { chatId } : undefined;
+  cumulativeStepUsage?: ChatStreamUsage,
+): { chatId: string } | { usage: ChatStreamUsage } | undefined {
+  if (part.type === 'start') return { chatId };
+  if (part.type === 'finish-step') {
+    return cumulativeStepUsage ? { usage: cumulativeStepUsage } : undefined;
+  }
+  if (part.type === 'finish') {
+    const usage = normalizeStreamUsage(part.totalUsage);
+    return usage ? { usage } : undefined;
+  }
+  return undefined;
 }
 
 /** The last message with role 'user' from a useChat payload, if any. */
