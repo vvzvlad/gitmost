@@ -36,7 +36,10 @@ export default function TypingIndicator({ assistantName, showName = true }: Typi
   return (
     <Box className={classes.messageRow}>
       {showName !== false && (
-        <Text size="xs" c="dimmed" mb={4}>
+        // Extra bottom gap (vs MessageItem's mb={4}) gives the small bouncing
+        // dots room below the name label; without it they crowd the label. Only
+        // applies when the name is shown — the nameless case spaces fine on its own.
+        <Text size="xs" c="dimmed" mb={8}>
           {name ?? t("AI agent")}
         </Text>
       )}
