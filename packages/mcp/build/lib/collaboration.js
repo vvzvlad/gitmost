@@ -483,8 +483,17 @@ export function buildYDoc(doc) {
 export function applyDocToFragment(ydoc, newDoc) {
     const safe = sanitizeForYjs(newDoc);
     const fragment = ydoc.getXmlFragment("default");
+    // Hydrate the ProseMirror node in its OWN try so a failure here (e.g. an
+    // unknown node type) is labelled "fromJSON" — the stage that actually threw —
+    // instead of being misattributed to the Yjs write stage (#154 review).
+    let pmNode;
     try {
-        const pmNode = PMNode.fromJSON(docmostSchema, safe);
+        pmNode = PMNode.fromJSON(docmostSchema, safe);
+    }
+    catch (e) {
+        throw unstorableYjsError(safe, "fromJSON", e);
+    }
+    try {
         ydoc.transact(() => {
             updateYFragment(ydoc, fragment, pmNode, {
                 mapping: new Map(),
@@ -504,10 +513,21 @@ export function applyDocToFragment(ydoc, newDoc) {
  * Note: it does NOT run `updateYFragment` against the live fragment, so it is an
  * encodability GATE, not a byte-for-byte rehearsal of apply — `buildYDoc`
  * (`toYdoc`) and `applyDocToFragment` (`updateYFragment`) are two different
- * encoders that nonetheless reject the same unstorable attributes.
+ * encoders that nonetheless reject the same unstorable attributes. To narrow the
+ * preview/apply gap it ALSO rehearses the apply path's `PMNode.fromJSON`
+ * hydration, so a doc that would only fail there (e.g. an unknown node type) is
+ * rejected at preview time too (#154 review). Still cheap: no live fragment, no
+ * `updateYFragment`.
  */
 export function assertYjsEncodable(doc) {
     buildYDoc(doc);
+    const safe = sanitizeForYjs(doc);
+    try {
+        PMNode.fromJSON(docmostSchema, safe);
+    }
+    catch (e) {
+        throw unstorableYjsError(safe, "fromJSON", e);
+    }
 }
 /** Time we wait for the initial handshake/sync before giving up. */
 const CONNECT_TIMEOUT_MS = 25000;
