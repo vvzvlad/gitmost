@@ -33,7 +33,7 @@ const SCROLLABLE_OVERFLOW = new Set(["auto", "scroll", "overlay"]);
  * must count as scrollable too. Called only AFTER the paste has committed, so
  * `scrollHeight > clientHeight` reflects the inserted content.
  */
-function collectScrollAncestors(node: HTMLElement): HTMLElement[] {
+export function collectScrollAncestors(node: HTMLElement): HTMLElement[] {
   const targets: HTMLElement[] = [];
   // Walk every ancestor (incl. body/html) — on some layouts the scroll lives on
   // body rather than the documentElement that scrollingElement points at.
@@ -63,18 +63,21 @@ function collectScrollAncestors(node: HTMLElement): HTMLElement[] {
  * container lookup AND the nudge run across two animation frames so they happen
  * AFTER the pasted content + NodeViews commit (only then is the real scroll
  * container measurable).
+ *
+ * This is the SECOND of two #146 mitigations; the FIRST is the content-first DOM
+ * order in the NodeViews (code-block-view.tsx, footnotes-list-view.tsx,
+ * footnote-definition-view.tsx). Editing one, check the other.
  */
-function reflowAfterPaste(editor: Editor) {
+export function reflowAfterPaste(editor: Editor) {
   const dom = editor.view.dom as HTMLElement;
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       for (const el of collectScrollAncestors(dom)) {
-        // Capture into locals first so this reads as a scroll nudge, not a
-        // no-op self-assignment (which lint would flag), while still poking the
-        // scroll position to refresh hit-testing.
-        const { scrollTop, scrollLeft } = el;
-        el.scrollTop = scrollTop;
-        el.scrollLeft = scrollLeft;
+        // Zero-delta nudge: re-set the scroll position to its current value to
+        // invalidate the browser's hit-test layer WITHOUT moving the viewport.
+        // `scrollTo(x, y)` is the repo idiom and avoids a lint-flagged
+        // self-assignment.
+        el.scrollTo(el.scrollLeft, el.scrollTop);
       }
     });
   });
@@ -86,9 +89,12 @@ export const handlePaste = (
   pageId: string,
   creatorId?: string,
 ) => {
-  // Schedule a post-paste reflow for every paste path: the pasted content (and
-  // its async NodeViews) settles after this handler returns, so we nudge on the
-  // next frames to keep click hit-testing aligned (#146).
+  // Schedule a post-paste reflow on EVERY paste path — intentionally. handlePaste
+  // returns BEFORE the markdown/code-insertion plugin runs, so it cannot know here
+  // whether async NodeViews will be inserted; the nudge is a cheap layout read on
+  // the next frames and a no-op for the viewport, so scheduling it unconditionally
+  // is simpler and harmless. Pairs with the content-first DOM order in the
+  // NodeViews — both address #146 from different angles.
   reflowAfterPaste(editor);
 
   const clipboardData = event.clipboardData.getData("text/plain");

@@ -32,9 +32,14 @@ export default function FootnoteDefinitionView(props: NodeViewProps) {
       {/* #146: contentDOM MUST be the first child — a non-editable marker before
           it makes click hit-testing snap the caret above. Content first; the
           marker + back-link follow in DOM and are placed left/right via CSS
-          flex `order`. */}
+          flex `order`. The second #146 mitigation lives in
+          editor-paste-handler.tsx (reflowAfterPaste). */}
       <NodeViewContent className={classes.definitionContent} />
-      <span className={classes.definitionMarker} contentEditable={false}>
+      <span
+        className={classes.definitionMarker}
+        contentEditable={false}
+        aria-hidden="true"
+      >
         {number}.
       </span>
       <span

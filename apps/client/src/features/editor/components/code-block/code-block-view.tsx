@@ -53,7 +53,8 @@ export default function CodeBlockView(props: NodeViewProps) {
           menu is rendered after it and lifted back above visually via flex
           `order: -1` (the `.codeBlock` wrapper is a flex column — see
           code-block.module.css). It stays fully in flow as a full-width row
-          above the code: no overlay/absolute positioning. */}
+          above the code: no overlay/absolute positioning. The second #146
+          mitigation lives in editor-paste-handler.tsx (reflowAfterPaste). */}
       <pre
         spellCheck="false"
         hidden={
