@@ -9,6 +9,7 @@ import WebSocket from "ws";
 import { convertProseMirrorToMarkdown } from "./lib/markdown-converter.js";
 import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, } from "./lib/collaboration.js";
 import { docmostExtensions } from "./lib/docmost-schema.js";
+import { analyzeFootnotes } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import { serializeDocmostMarkdown, parseDocmostMarkdown, } from "./lib/markdown-document.js";
 import { replaceNodeById, deleteNodeById, insertNodeRelative, buildOutline, getNodeByRef, readTable, insertTableRow, deleteTableRow, updateTableCell, } from "./lib/node-ops.js";
@@ -566,7 +567,9 @@ export class DocmostClient {
         // Always fetch subpages to provide context to the agent
         let subpages = [];
         try {
-            subpages = await this.listSidebarPages(resultData.spaceId, pageId);
+            // `pageId` may be a slugId, but the sidebar-pages endpoint requires the
+            // UUID; `resultData.id` holds the resolved UUID returned by getPageRaw.
+            subpages = await this.listSidebarPages(resultData.spaceId, resultData.id);
         }
         catch (e) {
             console.warn("Failed to fetch subpages:", e);
@@ -814,7 +817,11 @@ export class DocmostClient {
         if (title) {
             await this.client.post("/pages/update", { pageId: newPageId, title });
         }
-        return this.getPage(newPageId);
+        const page = await this.getPage(newPageId);
+        // Surface non-fatal footnote problems (dangling refs, empty/duplicate
+        // definitions, markers in tables) so the agent can fix its markup (#166).
+        const { warnings } = analyzeFootnotes(content);
+        return warnings.length > 0 ? { ...page, footnoteWarnings: warnings } : page;
     }
     /**
      * Update a page's content from markdown and optionally its title.
@@ -844,12 +851,15 @@ export class DocmostClient {
             }
             throw new Error(`Failed to update page content: ${error.message}`);
         }
+        const { warnings } = analyzeFootnotes(content);
         return {
             success: true,
             modified: true,
             message: "Page updated successfully.",
             pageId: pageId,
             verify: mutation.verify,
+            // Non-fatal footnote diagnostics (#166); omitted when there are none.
+            ...(warnings.length > 0 ? { footnoteWarnings: warnings } : {}),
         };
     }
     /**
@@ -1119,6 +1129,11 @@ export class DocmostClient {
         if (meta?.pageId && meta.pageId !== pageId) {
             result.warning = `File was exported from page ${meta.pageId} but is being imported into ${pageId}.`;
         }
+        // Non-fatal footnote diagnostics (#166), analyzed on the body (definitions
+        // and references live there, not in the front-matter/comments sections).
+        const { warnings } = analyzeFootnotes(body);
+        if (warnings.length > 0)
+            result.footnoteWarnings = warnings;
         return result;
     }
     /**
@@ -2422,9 +2437,9 @@ export class DocmostClient {
             const raw = await this.getPageRaw(pageId);
             const current = raw.content || { type: "doc", content: [] };
             runTransform(current);
-            // Exercise the same Yjs encoder the apply path uses, so the preview
-            // fails with the SAME descriptive error when the doc is not encodable
-            // instead of returning a misleadingly-green diff.
+            // Run an independent Yjs-encodability check (same sanitize + schema as the
+            // apply path), so the preview fails with the same descriptive error when
+            // the doc is not encodable instead of returning a misleadingly-green diff.
             assertYjsEncodable(newDoc);
             return {
                 pushed: false,

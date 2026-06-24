@@ -90,11 +90,10 @@ test("JSON -> MD -> JSON preserves footnote ids and text", async () => {
   assert.match(md2, /\[\^fn2\]: Second note\./);
 });
 
-test("duplicate-id markdown dedups DETERMINISTICALLY (same input -> same ids)", async () => {
-  // The MCP import must derive duplicate ids deterministically (NOT random) so
-  // the same markdown imported here and via the editor produces identical ids,
-  // and re-importing is stable. This is the test that would FAIL on the old
-  // Math.random()/Date.now() implementation.
+test("repeated references REUSE one footnote; duplicate definitions are first-wins (#166)", async () => {
+  // Reuse semantics: many `[^d]` references + several `[^d]:` definitions import
+  // as ONE footnote — the references all keep id "d" (reuse), and only the FIRST
+  // definition is kept (first-wins). Deterministic and stable across re-imports.
   const md = [
     "See[^d] one[^d] two[^d].",
     "",
@@ -106,21 +105,26 @@ test("duplicate-id markdown dedups DETERMINISTICALLY (same input -> same ids)", 
   const idsOf = async () => {
     const json = await markdownToProseMirror(md);
     const refs = findAll(json, "footnoteReference").map((r) => r.attrs.id);
-    const defs = findAll(json, "footnoteDefinition").map((d) => d.attrs.id);
-    return { refs, defs };
+    const defs = findAll(json, "footnoteDefinition");
+    return {
+      refs,
+      defIds: defs.map((d) => d.attrs.id),
+      defText: defs
+        .map((d) => JSON.stringify(d).match(/"text":"([^"]*)"/)?.[1])
+        .join("|"),
+    };
   };
 
   const a = await idsOf();
   const b = await idsOf();
 
-  // Identical across runs.
-  assert.deepEqual(a.refs, b.refs);
-  assert.deepEqual(a.defs, b.defs);
-  // Deterministic derived scheme: keeper "d", duplicates "d__2", "d__3".
-  assert.deepEqual([...a.defs].sort(), ["d", "d__2", "d__3"]);
-  // 1:1 reference <-> definition pairing, all distinct.
-  assert.equal(new Set(a.defs).size, 3);
-  assert.deepEqual([...a.refs].sort(), [...a.defs].sort());
+  // Stable across runs.
+  assert.deepEqual(a, b);
+  // Reuse: all three reference markers stay "d".
+  assert.deepEqual(a.refs, ["d", "d", "d"]);
+  // First-wins: a single definition "d" with the FIRST text.
+  assert.deepEqual(a.defIds, ["d"]);
+  assert.equal(a.defText, "first");
 });
 
 test("a [^id]: line inside a fenced code block is NOT treated as a definition", async () => {

@@ -62,10 +62,11 @@ export function generateFootnoteId(): string {
  * `taken` is consulted but NOT mutated here; the caller adds the returned id to
  * its own seen-set before requesting the next derived id.
  *
- * NOTE: this implementation is intentionally duplicated in
- *   packages/mcp/src/lib/collaboration.ts (deriveFootnoteId)
- * and MUST stay in sync with it so markdown imported through either path yields
- * identical ids.
+ * Used only inside editor-ext now (resolveCollisions for a re-id'd duplicate
+ * DEFINITION, and footnotePastePlugin). The MCP/marked import paths no longer
+ * derive ids — duplicate definitions there are first-wins-dropped (#166) — so
+ * there is no cross-package copy to keep in sync. The golden table in
+ * footnote-util.derive-id.test.ts pins the scheme.
  */
 export function deriveFootnoteId(
   originalId: string,
