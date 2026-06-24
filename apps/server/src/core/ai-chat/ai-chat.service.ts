@@ -380,6 +380,15 @@ export class AiChatService {
     const capturedSteps: StepLike[] = [];
     let inProgressText = '';
 
+    // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Measure
+    // first-chunk latency, the model-silent gap right before a disconnect, and
+    // how many SSE heartbeats were written, so a Safari drop can be classified
+    // (idle-gap vs hard wall-clock cap vs slow first chunk).
+    const streamStartedAt = Date.now();
+    let firstModelChunkAt: number | undefined;
+    let lastModelChunkAt = streamStartedAt;
+    let heartbeatsSent = 0;
+
     // NOTE: streamText is synchronous in v6 — do NOT await it. A synchronous
     // failure here (or in pipe below) would skip the terminal callbacks, so the
     // catch releases the leased external clients to avoid a connection leak.
@@ -404,6 +413,12 @@ export class AiChatService {
       prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
       abortSignal: signal,
       onChunk: ({ chunk }) => {
+        // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Any model
+        // output chunk means the stream is actively emitting bytes; track first
+        // + most-recent activity timestamps.
+        const now = Date.now();
+        firstModelChunkAt ??= now;
+        lastModelChunkAt = now;
         // 'text-delta' is the assistant's prose; tool-call args are separate chunk
         // types — so this mirrors exactly what streams to the client.
         if (chunk.type === 'text-delta') inProgressText += chunk.text;
@@ -415,6 +430,14 @@ export class AiChatService {
         inProgressText = '';
       },
       onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
+        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: success
+        // baseline for Safari comparison.
+        const diagNow = Date.now();
+        this.logger.log(
+          `AI chat stream DIAGNOSTIC (finish): elapsed=${diagNow - streamStartedAt}ms ` +
+            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+            `heartbeatsSent=${heartbeatsSent} steps=${steps.length}`,
+        );
         await persistAssistant({
           text,
           toolCalls: serializeSteps(steps),
@@ -464,6 +487,14 @@ export class AiChatService {
         const e = error as { stack?: string };
         const errorText = describeProviderError(error, String(error));
         this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
+        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: timing of
+        // an error-terminated stream.
+        const diagNow = Date.now();
+        this.logger.warn(
+          `AI chat stream DIAGNOSTIC (error): elapsed=${diagNow - streamStartedAt}ms ` +
+            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+            `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent}`,
+        );
         // Persist the PARTIAL answer streamed before the failure (text + any
         // finished tool steps) WITH the error in metadata, so the turn shows what
         // the user already saw plus the cause — not just a bare error.
@@ -487,6 +518,15 @@ export class AiChatService {
         this.logger.warn(
           `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
             `step(s), ${partialChars} chars partial text; persisting partial turn.`,
+        );
+        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: THE key
+        // line — classifies the Safari drop.
+        const diagNow = Date.now();
+        this.logger.warn(
+          `AI chat stream DIAGNOSTIC (abort/disconnect): elapsed=${diagNow - streamStartedAt}ms ` +
+            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+            `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent} ` +
+            `steps=${steps.length}`,
         );
         await persistAssistant(
           buildPartialAssistantRecord(capturedSteps, inProgressText, 'aborted'),
@@ -566,7 +606,11 @@ export class AiChatService {
       // headers are sent, and is guarded for response-likes that lack it.
       res.raw.flushHeaders?.();
       // Heartbeat: keep the SSE stream progressing during silent tool/think gaps (Safari/proxy idle timeout).
-      startSseHeartbeat(res.raw);
+      // DIAGNOSTIC (Safari stream-drop investigation) — temporary: count beats so a disconnect log can show
+      // how many pings were written before Safari dropped.
+      startSseHeartbeat(res.raw, 15_000, () => {
+        heartbeatsSent += 1;
+      });
     } catch (err) {
       // Synchronous failure before/while wiring the stream: the terminal
       // callbacks will not run, so release the leased external clients here and

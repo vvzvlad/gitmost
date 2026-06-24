@@ -159,6 +159,9 @@ export class AiChatController {
     // we also drop it on response `finish` so it never lingers after the stream
     // completes normally (the AI SDK pipes the response fire-and-forget, so we
     // cannot simply remove it once `stream()` returns).
+    // DIAGNOSTIC (Safari stream-drop investigation) — temporary: wall-clock at
+    // which a Safari disconnect is observed, measured from request receipt.
+    const reqStartedAt = Date.now();
     const controller = new AbortController();
     const onClose = (): void => {
       // A genuine disconnect leaves the response unfinished (unlike a normal
@@ -167,7 +170,8 @@ export class AiChatController {
       // so log it here before aborting the agent loop.
       if (!res.raw.writableEnded) {
         this.logger.warn(
-          'AI chat stream: client disconnected before completion; aborting turn',
+          `AI chat stream: client disconnected before completion; aborting turn ` +
+            `(elapsed=${Date.now() - reqStartedAt}ms since request received)`,
         );
         controller.abort();
       }
