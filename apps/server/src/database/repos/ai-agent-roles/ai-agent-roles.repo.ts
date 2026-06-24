@@ -76,6 +76,9 @@ export class AiAgentRoleRepo {
       instructions: string;
       modelConfig?: ModelConfigValue;
       enabled?: boolean;
+      autoStart?: boolean;
+      // null/'' => stored as null (client default launch message).
+      launchMessage?: string | null;
     },
     trx?: KyselyTransaction,
   ): Promise<AiAgentRole> {
@@ -91,6 +94,9 @@ export class AiAgentRoleRepo {
         instructions: values.instructions,
         modelConfig: jsonbObject(values.modelConfig),
         enabled: values.enabled ?? true,
+        autoStart: values.autoStart ?? true,
+        // Empty string is treated as "no custom text" => null.
+        launchMessage: values.launchMessage || null,
       })
       .returningAll()
       .executeTakeFirst();
@@ -108,6 +114,9 @@ export class AiAgentRoleRepo {
       // undefined => unchanged; null => clear; object => set.
       modelConfig?: ModelConfigValue;
       enabled?: boolean;
+      autoStart?: boolean;
+      // undefined => unchanged; null/'' => clear to null; string => set.
+      launchMessage?: string | null;
     },
     trx?: KyselyTransaction,
   ): Promise<void> {
@@ -121,6 +130,11 @@ export class AiAgentRoleRepo {
       set.modelConfig = jsonbObject(patch.modelConfig);
     }
     if (patch.enabled !== undefined) set.enabled = patch.enabled;
+    if (patch.autoStart !== undefined) set.autoStart = patch.autoStart;
+    if (patch.launchMessage !== undefined) {
+      // Empty string clears to null (client default launch message).
+      set.launchMessage = patch.launchMessage || null;
+    }
     await db
       .updateTable('aiAgentRoles')
       .set(set)

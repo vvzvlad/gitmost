@@ -65,6 +65,22 @@ export class CreateAgentRoleDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  // Whether picking this role auto-sends a launch message and starts the chat.
+  // Omitted => default true (preserves the previous always-auto-start behavior).
+  @IsOptional()
+  @IsBoolean()
+  autoStart?: boolean;
+
+  // Optional custom auto-start text. Trimmed at the boundary (like chatModel);
+  // empty/whitespace-only => the client falls back to its default launch message.
+  @IsOptional()
+  @Transform(({ value }: TransformFnParams) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MaxLength(2000)
+  launchMessage?: string;
 }
 
 /** Admin update payload for an agent role (all fields optional). */
@@ -98,4 +114,19 @@ export class UpdateAgentRoleDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  // Whether picking this role auto-sends a launch message and starts the chat.
+  @IsOptional()
+  @IsBoolean()
+  autoStart?: boolean;
+
+  // Optional custom auto-start text. Trimmed at the boundary (like chatModel);
+  // empty/whitespace-only => the client falls back to its default launch message.
+  @IsOptional()
+  @Transform(({ value }: TransformFnParams) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MaxLength(2000)
+  launchMessage?: string;
 }

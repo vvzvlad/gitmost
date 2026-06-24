@@ -13,6 +13,8 @@ const roles: IAiRole[] = [
     emoji: "🏴‍☠️",
     description: "Talks like a pirate",
     enabled: true,
+    autoStart: true,
+    launchMessage: null,
   },
   {
     id: "r2",
@@ -20,6 +22,8 @@ const roles: IAiRole[] = [
     emoji: null,
     description: null,
     enabled: true,
+    autoStart: true,
+    launchMessage: null,
   },
 ];
 

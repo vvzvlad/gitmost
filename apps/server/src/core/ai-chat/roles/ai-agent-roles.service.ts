@@ -22,6 +22,8 @@ export interface AgentRoleView {
   instructions: string;
   modelConfig: RoleModelConfig | null;
   enabled: boolean;
+  autoStart: boolean;
+  launchMessage: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +33,11 @@ export interface AgentRoleView {
  * role picker needs — deliberately WITHOUT `instructions`, `modelConfig`,
  * creator or timestamps, so non-admins never receive the admin-authored prompt
  * or the model override.
+ *
+ * `autoStart` / `launchMessage` ARE included (unlike instructions/modelConfig):
+ * the client needs them to decide whether and what to auto-send when a role card
+ * is picked. `launchMessage` is sent verbatim as a normal user message — it is
+ * not a secret, so exposing it to members is intentional.
  */
 export interface AgentRolePickerView {
   id: string;
@@ -38,6 +45,8 @@ export interface AgentRolePickerView {
   emoji: string | null;
   description: string | null;
   enabled: boolean;
+  autoStart: boolean;
+  launchMessage: string | null;
 }
 
 /**
@@ -87,6 +96,9 @@ export class AiAgentRolesService {
         instructions,
         modelConfig: modelConfig as Record<string, unknown> | null,
         enabled: dto.enabled ?? true,
+        autoStart: dto.autoStart ?? true,
+        // Empty/whitespace-only => null (client default launch message).
+        launchMessage: emptyToNull(dto.launchMessage),
       });
       return this.toView(row);
     } catch (err) {
@@ -128,6 +140,12 @@ export class AiAgentRolesService {
                 | Record<string, unknown>
                 | null),
         enabled: dto.enabled,
+        autoStart: dto.autoStart,
+        // undefined => unchanged; '' => clear to null.
+        launchMessage:
+          dto.launchMessage === undefined
+            ? undefined
+            : emptyToNull(dto.launchMessage),
       });
     } catch (err) {
       throw rethrowDuplicateName(err, dto.name?.trim() || existing.name);
@@ -156,12 +174,18 @@ export class AiAgentRolesService {
       instructions: row.instructions,
       modelConfig: (row.modelConfig ?? null) as RoleModelConfig | null,
       enabled: row.enabled,
+      autoStart: row.autoStart,
+      launchMessage: row.launchMessage ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
   }
 
-  /** Non-admin picker view: id/name/emoji/description/enabled only. */
+  /**
+   * Non-admin picker view: id/name/emoji/description/enabled plus the auto-start
+   * fields the client needs to decide whether/what to send on role pick. Still
+   * WITHOUT instructions/modelConfig (admin-only).
+   */
   private toPickerView(row: AiAgentRole): AgentRolePickerView {
     return {
       id: row.id,
@@ -169,6 +193,8 @@ export class AiAgentRolesService {
       emoji: row.emoji ?? null,
       description: row.description ?? null,
       enabled: row.enabled,
+      autoStart: row.autoStart,
+      launchMessage: row.launchMessage ?? null,
     };
   }
 }
