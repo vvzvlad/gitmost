@@ -4,11 +4,19 @@ import * as Y from "yjs";
 import WebSocket from "ws";
 import { marked } from "marked";
 import { generateJSON } from "@tiptap/html";
+import { getSchema } from "@tiptap/core";
+import { Node as PMNode } from "@tiptap/pm/model";
+import { updateYFragment } from "y-prosemirror";
 import { JSDOM } from "jsdom";
 import { docmostExtensions } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
+
+// The ProseMirror schema for the docmost editor, built once (mirrors diff.ts).
+// `updateYFragment` needs a real PM Node, so we re-hydrate the transformed JSON
+// against this schema before diffing it into the live Yjs fragment.
+const docmostSchema = getSchema(docmostExtensions);
 
 /**
  * The resolved value of every content-mutating collab write: the document that
@@ -507,6 +515,42 @@ export function buildYDoc(doc: any): Y.Doc {
 }
 
 /**
+ * Write a new ProseMirror doc into the live Yjs fragment by STRUCTURAL DIFF,
+ * preserving the Yjs identity of unchanged nodes (issue #152).
+ *
+ * The previous approach deleted the whole fragment and re-applied a fresh Y.Doc,
+ * which discarded every Yjs node id. y-prosemirror anchors the editor selection
+ * to those ids, so an open editor's cursor lost its anchor and snapped to the
+ * end of the document on every agent write (most visibly on comment anchoring,
+ * which changes no text at all). `updateYFragment` is exactly the routine the
+ * editor itself uses to sync ProseMirror edits into Yjs: it diffs the new node
+ * against the current fragment and touches only the changed children, so
+ * unchanged nodes keep their ids and the live cursor stays put.
+ *
+ * Must run inside a single `transact` so the diff applies atomically (no remote
+ * update interleaves). Keeps `buildYDoc`'s `findUnstorableAttr` diagnostic for
+ * the opaque "Unexpected content type" encode failure.
+ */
+export function applyDocToFragment(ydoc: Y.Doc, newDoc: any): void {
+  const safe = sanitizeForYjs(newDoc);
+  const fragment = ydoc.getXmlFragment("default");
+  try {
+    const pmNode = PMNode.fromJSON(docmostSchema, safe);
+    ydoc.transact(() => {
+      updateYFragment(ydoc, fragment, pmNode, {
+        mapping: new Map(),
+        isOMark: new Map(),
+      });
+    });
+  } catch (e) {
+    const bad = findUnstorableAttr(safe);
+    throw new Error(
+      `Failed to encode document to Yjs (updateYFragment): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
+    );
+  }
+}
+
+/**
  * Validate that a doc is Yjs-encodable by building (and discarding) a Y.Doc.
  * Throws the same descriptive error as the apply path when it is not. Used by
  * the dry-run preview so it fails identically to apply.
@@ -727,16 +771,10 @@ export async function mutatePageContent(
               return;
             }
 
-            const tempDoc = buildYDoc(newDoc);
-            // Fetch the fragment immediately before the transact that mutates
-            // it, rather than reusing a handle grabbed across the transform.
-            const fragment = ydoc.getXmlFragment("default");
-            ydoc.transact(() => {
-              if (fragment.length > 0) {
-                fragment.delete(0, fragment.length);
-              }
-              Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(tempDoc));
-            });
+            // Structural diff into the live fragment (issue #152): preserves
+            // the Yjs ids of unchanged nodes, so an open editor's cursor is not
+            // yanked to the end of the document on every agent write.
+            applyDocToFragment(ydoc, newDoc);
           } catch (e) {
             // Includes errors thrown by transform (e.g. "afterText not found",
             // "text not found"): propagate them verbatim to the caller.
