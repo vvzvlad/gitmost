@@ -16,24 +16,11 @@
  *    the line, trimmed, starts with `|`) — footnotes in table cells often do not
  *    render as expected.
  */
-/** Matches a footnote DEFINITION line: `[^id]: text` (id + text captured). */
-const DEF_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
-/** Matches every footnote REFERENCE `[^id]` in a line (global; id captured). */
-const REF_RE_G = /\[\^([^\]\s]+)\]/g;
-/** Opening/closing fence marker (``` or ~~~). */
-const FENCE_RE = /^(\s*)(`{3,}|~{3,})/;
-/** Scan a line for every `[^id]` reference, invoking `onRef(id)` for each. */
-function forEachReference(line, onRef) {
-    REF_RE_G.lastIndex = 0;
-    let m;
-    while ((m = REF_RE_G.exec(line)) !== null)
-        onRef(m[1]);
-}
+import { lexFootnoteLines, forEachFootnoteReference, } from "./footnote-lex.js";
 /**
  * Analyze the footnotes in a Markdown string. Pure; safe to call on any body.
  */
 export function analyzeFootnotes(markdown) {
-    const lines = markdown.split("\n");
     // Distinct reference ids in first-appearance order, plus the set of ids seen
     // inside a table row.
     const refIds = [];
@@ -49,24 +36,13 @@ export function analyzeFootnotes(markdown) {
     };
     // Definition texts per id, in first-appearance order of the id.
     const defTextsById = new Map();
-    let fence = null;
-    for (const line of lines) {
-        const fenceMatch = FENCE_RE.exec(line);
-        if (fenceMatch) {
-            const marker = fenceMatch[2][0];
-            if (fence === null)
-                fence = marker;
-            else if (marker === fence)
-                fence = null;
+    // Same lexer the importer uses, so the analysis matches exactly what import
+    // keeps/strips (#166): fenced lines are inert, definition lines are pulled.
+    for (const tok of lexFootnoteLines(markdown)) {
+        if (tok.inFence)
             continue;
-        }
-        // Footnote syntax shown inside a code fence is not real markup.
-        if (fence !== null)
-            continue;
-        const defM = DEF_RE.exec(line);
-        if (defM) {
-            const id = defM[1];
-            const text = defM[2];
+        if (tok.definition) {
+            const { id, text } = tok.definition;
             const arr = defTextsById.get(id);
             if (arr)
                 arr.push(text);
@@ -74,11 +50,11 @@ export function analyzeFootnotes(markdown) {
                 defTextsById.set(id, [text]);
             // A definition's TEXT can itself reference another footnote (`[^a]: see
             // [^b]`); count those so such a `[^b]` is not falsely reported dangling.
-            forEachReference(text, (rid) => addRef(rid, false));
+            forEachFootnoteReference(text, (rid) => addRef(rid, false));
             continue;
         }
-        const inTable = line.trimStart().startsWith("|");
-        forEachReference(line, (id) => addRef(id, inTable));
+        const inTable = tok.line.trimStart().startsWith("|");
+        forEachFootnoteReference(tok.line, (id) => addRef(id, inTable));
     }
     const danglingReferences = refIds.filter((id) => !defTextsById.has(id));
     const duplicateDefinitions = [];

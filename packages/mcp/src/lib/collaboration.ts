@@ -10,6 +10,7 @@ import { JSDOM } from "jsdom";
 import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
+import { lexFootnoteLines } from "./footnote-lex.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
 
 /**
@@ -316,7 +317,8 @@ function bridgeTaskLists(html: string): string {
 // Mirror of packages/editor-ext footnote markdown handling. A `[^id]` inline
 // marker becomes <sup data-footnote-ref data-id="id">, and `[^id]: text`
 // definition lines are collected into a single <section data-footnotes>.
-const FOOTNOTE_DEF_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
+// Definition detection + fence handling are shared with analyzeFootnotes via
+// lexFootnoteLines (footnote-lex.js). FOOTNOTE_REF_RE is the inline tokenizer's.
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/;
 
 function escapeFootnoteAttr(value: string): string {
@@ -353,24 +355,15 @@ function extractFootnotes(markdown: string): {
   body: string;
   section: string;
 } {
-  const lines = markdown.split("\n");
   const bodyLines: string[] = [];
   const defs: Array<{ id: string; text: string }> = [];
-  // Track fenced-code state so a `[^id]: ...` line shown inside a ``` / ~~~ code
-  // block is preserved verbatim and not treated as a footnote definition.
-  let fence: string | null = null;
-  for (const line of lines) {
-    const fenceMatch = /^(\s*)(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[2][0];
-      if (fence === null) fence = marker;
-      else if (marker === fence) fence = null;
-      bodyLines.push(line);
-      continue;
-    }
-    const m = fence === null ? FOOTNOTE_DEF_RE.exec(line) : null;
-    if (m) defs.push({ id: m[1], text: m[2] });
-    else bodyLines.push(line);
+  // Shared lexer (footnote-lex): a `[^id]: ...` line inside a ``` / ~~~ code
+  // block is inert and stays in the body verbatim; only real definition lines
+  // are pulled out. analyzeFootnotes() consumes the SAME lexer so its diagnostics
+  // match exactly what import keeps/strips (#166).
+  for (const tok of lexFootnoteLines(markdown)) {
+    if (!tok.inFence && tok.definition) defs.push(tok.definition);
+    else bodyLines.push(tok.line);
   }
   if (defs.length === 0) return { body: markdown, section: "" };
 

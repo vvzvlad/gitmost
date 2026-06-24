@@ -20,8 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UPDATE users SET is_agent = true WHERE email = '<mcp-account>'`. Never flag a
   human or shared account, or its normal edits get mis-attributed as AI. See the
   AI-agent block in `.env.example`. (#143)
+- **Footnote import diagnostics.** The MCP page-write tools (`create_page`,
+  `update_page`, `import_page_markdown`) now return a `footnoteWarnings` array
+  flagging dangling references, empty or duplicate definitions, and `[^id]`
+  markers inside table rows, so an agent can fix its own markup. The page is
+  still created; the field is omitted when there are no problems. (#166)
 
 ### Changed
+
+- **Footnotes now reuse (Pandoc semantics).** Multiple `[^a]` references to the
+  same id are ONE footnote — one number, one definition, several back-references
+  — instead of being renamed to `a__2`, `a__3`. Duplicate `[^a]:` definitions are
+  first-wins on import (the rest are dropped and reported via `footnoteWarnings`),
+  and a reference with no definition yields a single empty footnote rather than
+  one per occurrence. This supersedes the 0.93.0 "survive duplicate-id
+  definitions" behavior for the import path. (#166)
 
 - **Public share AI: default per-workspace hourly assistant cap lowered
   300 → 100.** The limiter falls back to this default whenever

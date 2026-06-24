@@ -133,6 +133,70 @@ describe("footnotePastePlugin — reuse-aware id remap", () => {
     editor.destroy();
   });
 
+  it("re-ids TWO colliding pasted definitions to DISTINCT ids (reservation works)", () => {
+    // Existing doc has footnotes "a" and "b". Paste a slice that defines BOTH —
+    // each must get its own fresh id; the reservation (existing.add(newId)) keeps
+    // the second from deriving onto the first's new id.
+    const editor = new Editor({
+      extensions,
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "a" } },
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: "b" } },
+            ],
+          },
+          {
+            type: FOOTNOTES_LIST_NAME,
+            content: [
+              {
+                type: FOOTNOTE_DEFINITION_NAME,
+                attrs: { id: "a" },
+                content: [{ type: "paragraph", content: [{ type: "text", text: "A" }] }],
+              },
+              {
+                type: FOOTNOTE_DEFINITION_NAME,
+                attrs: { id: "b" },
+                content: [{ type: "paragraph", content: [{ type: "text", text: "B" }] }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const { schema } = editor;
+    const slice = new Slice(
+      Fragment.fromArray([
+        schema.nodes.paragraph.create(null, [
+          schema.nodes[FOOTNOTE_REFERENCE_NAME].create({ id: "a" }),
+          schema.nodes[FOOTNOTE_REFERENCE_NAME].create({ id: "b" }),
+        ]),
+        schema.nodes[FOOTNOTES_LIST_NAME].create(null, [
+          schema.nodes[FOOTNOTE_DEFINITION_NAME].create({ id: "a" }, [
+            schema.nodes.paragraph.create(null, [schema.text("pasted A")]),
+          ]),
+          schema.nodes[FOOTNOTE_DEFINITION_NAME].create({ id: "b" }, [
+            schema.nodes.paragraph.create(null, [schema.text("pasted B")]),
+          ]),
+        ]),
+      ]),
+      0,
+      0,
+    );
+    const out = paste(editor, slice);
+    const ids = sliceFootnoteIds(out);
+    const distinct = new Set(ids.map((x) => x.id));
+    // Two ids, both remapped off the originals, and distinct from each other.
+    expect(distinct.size).toBe(2);
+    expect(distinct.has("a")).toBe(false);
+    expect(distinct.has("b")).toBe(false);
+    expect([...distinct].sort()).toEqual(["a__2", "b__2"]);
+    editor.destroy();
+  });
+
   it("leaves the slice untouched when no pasted definition collides", () => {
     const editor = makeEditorWithFootnoteA();
     const { schema } = editor;

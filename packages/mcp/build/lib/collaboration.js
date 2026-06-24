@@ -10,6 +10,7 @@ import { JSDOM } from "jsdom";
 import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
+import { lexFootnoteLines } from "./footnote-lex.js";
 import { summarizeChange } from "./diff.js";
 /**
  * Build the descriptive error for an opaque Yjs encode failure ("Unexpected
@@ -280,7 +281,8 @@ function bridgeTaskLists(html) {
 // Mirror of packages/editor-ext footnote markdown handling. A `[^id]` inline
 // marker becomes <sup data-footnote-ref data-id="id">, and `[^id]: text`
 // definition lines are collected into a single <section data-footnotes>.
-const FOOTNOTE_DEF_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;
+// Definition detection + fence handling are shared with analyzeFootnotes via
+// lexFootnoteLines (footnote-lex.js). FOOTNOTE_REF_RE is the inline tokenizer's.
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/;
 function escapeFootnoteAttr(value) {
     return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
@@ -308,28 +310,17 @@ marked.use({ extensions: [footnoteRefMarkedExtension] });
  * <section data-footnotes> for them (or "" when there are none).
  */
 function extractFootnotes(markdown) {
-    const lines = markdown.split("\n");
     const bodyLines = [];
     const defs = [];
-    // Track fenced-code state so a `[^id]: ...` line shown inside a ``` / ~~~ code
-    // block is preserved verbatim and not treated as a footnote definition.
-    let fence = null;
-    for (const line of lines) {
-        const fenceMatch = /^(\s*)(`{3,}|~{3,})/.exec(line);
-        if (fenceMatch) {
-            const marker = fenceMatch[2][0];
-            if (fence === null)
-                fence = marker;
-            else if (marker === fence)
-                fence = null;
-            bodyLines.push(line);
-            continue;
-        }
-        const m = fence === null ? FOOTNOTE_DEF_RE.exec(line) : null;
-        if (m)
-            defs.push({ id: m[1], text: m[2] });
+    // Shared lexer (footnote-lex): a `[^id]: ...` line inside a ``` / ~~~ code
+    // block is inert and stays in the body verbatim; only real definition lines
+    // are pulled out. analyzeFootnotes() consumes the SAME lexer so its diagnostics
+    // match exactly what import keeps/strips (#166).
+    for (const tok of lexFootnoteLines(markdown)) {
+        if (!tok.inFence && tok.definition)
+            defs.push(tok.definition);
         else
-            bodyLines.push(line);
+            bodyLines.push(tok.line);
     }
     if (defs.length === 0)
         return { body: markdown, section: "" };

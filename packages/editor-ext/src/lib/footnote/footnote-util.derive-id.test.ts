@@ -4,16 +4,12 @@ import { deriveFootnoteId } from "./footnote-util";
 /**
  * GOLDEN TABLE for `deriveFootnoteId` (and its private alphabetic `suffix`).
  *
- * deriveFootnoteId is DELIBERATELY duplicated in
- *   packages/mcp/src/lib/collaboration.ts
- * and the two copies MUST stay byte-for-byte equivalent in behavior so the same
- * markdown imported through the editor and through the MCP path yields identical
- * footnote ids. This table is the SHARED contract: the parity test
- *   packages/mcp/test/unit/derive-id-parity.test.mjs
- * pins the exact SAME (input -> expected) pairs against the COMPILED mcp build.
- * If either copy drifts, one of the two tests goes red.
- *
- * Keep this constant in sync with GOLDEN in the mcp parity test.
+ * `deriveFootnoteId` lives ONLY in editor-ext now — it is used by
+ * `resolveCollisions` (re-id of a duplicate definition) and `footnotePastePlugin`
+ * (re-id of a pasted colliding definition). The MCP/marked import paths no longer
+ * derive ids (duplicate definitions there are first-wins-dropped, #166), so there
+ * is no cross-package copy and no parity test to keep in sync. This table pins the
+ * deterministic scheme so a future change to it is a conscious one.
  */
 export const DERIVE_GOLDEN: Array<{
   originalId: string;

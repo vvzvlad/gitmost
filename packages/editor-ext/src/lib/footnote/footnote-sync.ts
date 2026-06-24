@@ -29,9 +29,9 @@ interface DefOccurrence {
 
 interface FootnoteScan {
   /**
-   * Every reference occurrence in document order (NOT de-duplicated). Needed so
-   * that duplicate ids — which would otherwise be silently collapsed — can be
-   * detected and (together with their definitions) re-id'd instead of dropped.
+   * Every reference occurrence in document order (NOT de-duplicated). Repeated
+   * ids are kept so the FIRST appearance fixes definition order; later repeats
+   * are reuse (same footnote) and are never re-id'd.
    */
   refOccurrences: RefOccurrence[];
   /**
@@ -67,15 +67,13 @@ function scan(doc: ProseMirrorNode): FootnoteScan {
 }
 
 /**
- * Result of resolving id collisions: a 1:1, de-duplicated pairing plan plus the
- * concrete reference re-id edits that must be applied to the body so the doc no
- * longer contains two footnotes sharing a single id.
+ * Result of resolving the footnote id topology: the distinct reference order and
+ * one definition node per id.
  *
- * The overriding invariant is that NO definition is ever dropped here: every
- * definition occurrence ends up with a unique id and therefore survives the
- * canonical rebuild. Repeated references that share an id are REUSE (one
- * footnote) and are left untouched; only duplicate DEFINITIONS are re-id'd, so a
- * pasted/merged second `[^d]:` survives as its own (then orphaned) footnote.
+ * References are NEVER re-id'd here — repeated ids are REUSE (one footnote). Only
+ * duplicate DEFINITIONS are re-id'd; lacking a matching reference, a re-id'd
+ * duplicate is then dropped by the orphan policy. No definition is ever dropped
+ * for COLLIDING — only for being an orphan.
  */
 interface CollisionPlan {
   /**
@@ -86,12 +84,6 @@ interface CollisionPlan {
   referenceIds: string[];
   /** id -> definition node, after duplicate definitions were re-id'd. One per id. */
   definitions: Map<string, ProseMirrorNode>;
-  /**
-   * Body reference re-id edits. ALWAYS EMPTY under reuse semantics (references
-   * are never re-id'd); retained so the downstream consumer stays a harmless
-   * no-op rather than needing removal.
-   */
-  refReids: Array<{ pos: number; node: ProseMirrorNode; newId: string }>;
   /** True when a duplicate definition required a re-id. */
   changed: boolean;
 }
@@ -123,13 +115,6 @@ interface CollisionPlan {
  */
 function resolveCollisions(scan: FootnoteScan): CollisionPlan {
   const definitions = new Map<string, ProseMirrorNode>();
-  // References are never re-id'd under reuse semantics, so this stays empty; it
-  // is retained so the CollisionPlan shape (and its no-op consumer) is unchanged.
-  const refReids: Array<{
-    pos: number;
-    node: ProseMirrorNode;
-    newId: string;
-  }> = [];
   const referenceIds: string[] = [];
   const seenRefIds = new Set<string>();
   let changed = false;
@@ -173,7 +158,7 @@ function resolveCollisions(scan: FootnoteScan): CollisionPlan {
     }
   }
 
-  return { referenceIds, definitions, refReids, changed };
+  return { referenceIds, definitions, changed };
 }
 
 /**
@@ -209,14 +194,13 @@ function resolveCollisions(scan: FootnoteScan): CollisionPlan {
  * ping-pong forever (list moved to end -> trailing paragraph appended -> list
  * no longer last -> moved again ...).
  *
- * Duplicate-id collisions (two references and/or two definitions sharing one
- * id — produced by importing `[^d]: a` / `[^d]: b`, or by pasting/duplicating a
- * reference+definition pair) are resolved up front by resolveCollisions(): the
- * duplicates are re-id'd to fresh unique ids so BOTH survive as distinct
- * footnotes. This guarantees the overriding invariant — no footnoteDefinition is
- * ever silently deleted by this automatic (addToHistory:false) transaction. A
+ * The id topology is resolved up front by resolveCollisions() (#166): repeated
+ * references sharing an id are REUSE — one footnote, never re-id'd — while a
+ * duplicate DEFINITION (from pasting/duplicating a definition, or a collab merge)
+ * is re-id'd to a fresh unique id. No footnoteDefinition is ever silently deleted
+ * by this automatic (addToHistory:false) transaction because of a COLLISION; a
  * definition is only ever removed when it has NO matching reference (orphan
- * policy), never because its id collided with another.
+ * policy) — which is also what then drops a re-id'd duplicate definition.
  */
 export function footnoteSyncPlugin(
   isRemoteTransaction?: (tr: Transaction) => boolean,
@@ -247,18 +231,16 @@ export function footnoteSyncPlugin(
 
       const info = scan(doc);
 
-      // 0) Resolve duplicate-id collisions (two references and/or two
-      //    definitions sharing one id) by re-id'ing duplicates to fresh unique
-      //    ids. This is the critical defense: the old last-wins Map silently
-      //    dropped all but the last definition for a shared id; here EVERY
-      //    definition survives with a unique id, and duplicate references are
-      //    paired with duplicate definitions so two same-id imports/pastes yield
-      //    two distinct footnotes instead of one.
+      // 0) Resolve the id topology (#166): repeated references that share an id
+      //    are REUSE — collapsed to one entry in `referenceIds`, never re-id'd —
+      //    while a duplicate DEFINITION is re-id'd to a fresh deterministic id
+      //    (and, lacking a matching reference, removed by the orphan policy
+      //    below). No definition is dropped for COLLIDING, only for being orphan.
       const plan = resolveCollisions(info);
       const referenceIds = plan.referenceIds;
 
-      // The set of ids that must have a definition, in reference order (after
-      // collision re-id). De-duplicated already by resolveCollisions.
+      // The set of ids that must have a definition, in reference order.
+      // De-duplicated already by resolveCollisions.
       const referenceIdSet = new Set(referenceIds);
 
       // 1) For each definition occurrence, compute the id it should END UP with
@@ -361,21 +343,15 @@ export function footnoteSyncPlugin(
 
       // 6) Apply the targeted, minimal mutations in ONE transaction. We never
       //    delete-and-recreate an unchanged definition subtree; we only:
-      //      (a) re-id specific colliding references and definitions (attr-only),
+      //      (a) re-id colliding definitions (attr-only),
       //      (b) delete genuine orphan definitions and extra/empty lists,
       //      (c) insert genuinely-missing empty definitions and migrate defs out
       //          of extra lists into the primary list,
       //      (d) create the primary list if references exist but none does yet.
+      //    References are never re-id'd (reuse), so there is no reference edit.
       const tr = newState.tr;
 
-      // 6a) Re-id colliding references (inline atoms: attr-only, size-stable).
-      for (const reid of plan.refReids) {
-        tr.setNodeMarkup(tr.mapping.map(reid.pos), undefined, {
-          ...reid.node.attrs,
-          id: reid.newId,
-        });
-      }
-      // 6b) Re-id colliding definitions IN PLACE (attr-only). This preserves the
+      // 6a) Re-id colliding definitions IN PLACE (attr-only). This preserves the
       //     definition's content subtree — never delete+recreate it.
       for (const reid of defReidsToApply) {
         tr.setNodeMarkup(tr.mapping.map(reid.pos), undefined, {
