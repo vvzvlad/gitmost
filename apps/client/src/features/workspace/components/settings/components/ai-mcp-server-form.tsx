@@ -56,7 +56,13 @@ function buildInitialValues(server?: IAiMcpServer): FormValues {
     transport: server?.transport ?? "http",
     url: server?.url ?? "",
     authHeader: "",
-    toolAllowlist: server?.toolAllowlist ?? [],
+    // Defensive: TagsInput calls `.map`, so a non-array here (e.g. an API that
+    // returns the jsonb column as a JSON string) would crash the whole page. The
+    // server normalizes this now, but guard anyway so a bad shape can never take
+    // the settings UI down.
+    toolAllowlist: Array.isArray(server?.toolAllowlist)
+      ? server.toolAllowlist
+      : [],
     enabled: server?.enabled ?? true,
   };
 }
