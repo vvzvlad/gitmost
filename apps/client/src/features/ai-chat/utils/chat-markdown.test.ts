@@ -367,125 +367,258 @@ describe("buildChatMarkdown — token totals", () => {
   });
 });
 
-describe("buildChatMarkdown — pending / in-progress messages", () => {
-  it("continues the heading numbering after the persisted rows", () => {
+// A minimal on-screen (live) message, matching the subset buildChatMarkdown reads.
+function live(partial: {
+  id?: string;
+  role?: string;
+  parts?: { type: string; text?: string }[];
+  metadata?: { usage?: Record<string, number>; error?: string };
+}) {
+  return {
+    id: partial.id ?? "live-id",
+    role: partial.role ?? "assistant",
+    parts: partial.parts ?? [],
+    metadata: partial.metadata,
+  };
+}
+
+describe("buildChatMarkdown — live (WYSIWYG) source", () => {
+  it("uses the live messages as the document (what's on screen), numbered from 1", () => {
     const md = buildChatMarkdown({
       title: "t",
       chatId: "c",
-      rows: [row({ role: "user", content: "persisted" })],
-      pending: [
-        {
-          role: "user",
-          parts: [{ type: "text", text: "live question" }],
-          generating: false,
-        },
-        {
-          role: "assistant",
-          parts: [{ type: "text", text: "live answer" }],
-          generating: true,
-        },
+      // Persisted rows hold only the user turn; the assistant reply is live-only.
+      rows: [row({ id: "u1", role: "user", content: "persisted user" })],
+      live: [
+        live({ id: "u1", role: "user", parts: [{ type: "text", text: "on-screen user" }] }),
+        live({ id: "a1", role: "assistant", parts: [{ type: "text", text: "on-screen reply" }] }),
       ],
+      isStreaming: false,
       t,
     });
     expect(md).toContain("## 1. You");
-    expect(md).toContain("## 2. You");
-    expect(md).toContain("## 3. AI agent");
-    expect(md).toContain("live question");
-    expect(md).toContain("live answer");
+    expect(md).toContain("## 2. AI agent");
+    expect(md).toContain("on-screen user");
+    expect(md).toContain("on-screen reply");
+    // Message count reflects the LIVE document, not rows + live.
+    expect(md).toContain("- Messages: 2");
   });
 
-  it("flags a generating assistant pending message as still being generated", () => {
+  it("captures a partial reply from an interrupted (non-streaming) turn — no 'generating' note", () => {
     const md = buildChatMarkdown({
       title: "t",
       chatId: "c",
-      rows: [row({ role: "user", content: "persisted" })],
-      pending: [
-        {
+      rows: [row({ id: "u1", role: "user", content: "q" })],
+      live: [
+        live({ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] }),
+        live({
+          id: "a-live",
           role: "assistant",
-          parts: [{ type: "text", text: "partial reply" }],
-          generating: true,
-        },
+          parts: [{ type: "text", text: "partial plan before the drop" }],
+        }),
       ],
+      isStreaming: false, // the stream dropped — not streaming anymore
+      banner: "Connection lost — the answer was interrupted.",
       t,
     });
-    expect(md).toContain("partial reply");
-    expect(md).toContain("still being generated");
+    // The partial assistant answer that was on screen IS in the export.
+    expect(md).toContain("partial plan before the drop");
+    // It is NOT flagged still-generating (the turn is over, just interrupted).
+    expect(md).not.toContain("still being generated");
+    // The on-screen banner is recorded at the end.
+    expect(md).toContain("Connection lost — the answer was interrupted.");
   });
 
-  it("renders a non-generating user pending message without the note", () => {
+  it("flags ONLY the tail assistant as still generating, and only while streaming", () => {
+    const streaming = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [],
+      live: [
+        live({ id: "a", role: "assistant", parts: [{ type: "text", text: "done earlier" }] }),
+        live({ id: "u", role: "user", parts: [{ type: "text", text: "next q" }] }),
+        live({ id: "b", role: "assistant", parts: [{ type: "text", text: "streaming now" }] }),
+      ],
+      isStreaming: true,
+      t,
+    });
+    // Exactly one "still being generated" note (the tail assistant).
+    expect(streaming.match(/still being generated/g)?.length).toBe(1);
+
+    const idle = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [],
+      live: [live({ id: "b", role: "assistant", parts: [{ type: "text", text: "final" }] })],
+      isStreaming: false,
+      t,
+    });
+    expect(idle).not.toContain("still being generated");
+  });
+
+  it("does NOT flag a completed assistant as generating when the streaming tail is a user message", () => {
+    // The `status === "submitted"` window: the user just sent, isStreaming is
+    // already true, but the new assistant turn has no message yet so the tail is
+    // the USER message. The previous assistant answer is complete on screen and
+    // must not be marked still-generating (WYSIWYG; regression for #160 review).
     const md = buildChatMarkdown({
       title: "t",
       chatId: "c",
-      rows: [row({ role: "user", content: "persisted" })],
-      pending: [
-        {
-          role: "user",
-          parts: [{ type: "text", text: "my live message" }],
-          generating: false,
-        },
+      rows: [],
+      live: [
+        live({ id: "a", role: "assistant", parts: [{ type: "text", text: "completed answer" }] }),
+        live({ id: "u", role: "user", parts: [{ type: "text", text: "the new question" }] }),
       ],
+      isStreaming: true,
       t,
     });
-    expect(md).toContain("my live message");
+    expect(md).toContain("completed answer");
     expect(md).not.toContain("still being generated");
   });
 
-  it("includes the pending messages in the metadata message count", () => {
+  it("emits the heading + note for a streaming tail assistant with empty parts", () => {
     const md = buildChatMarkdown({
       title: "t",
       chatId: "c",
-      rows: [
-        row({ role: "user", content: "a" }),
-        row({ role: "assistant", content: "b" }),
+      rows: [row({ id: "u1", role: "user", content: "q" })],
+      live: [
+        live({ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] }),
+        live({ id: "a-live", role: "assistant", parts: [] }),
       ],
-      pending: [
-        {
-          role: "user",
-          parts: [{ type: "text", text: "c" }],
-          generating: false,
-        },
-        {
-          role: "assistant",
-          parts: [{ type: "text", text: "d" }],
-          generating: true,
-        },
-      ],
-      t,
-    });
-    // 2 persisted rows + 2 pending = 4.
-    expect(md).toContain("- Messages: 4");
-  });
-
-  it("emits the heading and note for a generating assistant with empty parts", () => {
-    expect(() =>
-      buildChatMarkdown({
-        title: "t",
-        chatId: "c",
-        rows: [row({ role: "user", content: "persisted" })],
-        pending: [
-          {
-            role: "assistant",
-            parts: [],
-            generating: true,
-          },
-        ],
-        t,
-      }),
-    ).not.toThrow();
-    const md = buildChatMarkdown({
-      title: "t",
-      chatId: "c",
-      rows: [row({ role: "user", content: "persisted" })],
-      pending: [
-        {
-          role: "assistant",
-          parts: [],
-          generating: true,
-        },
-      ],
+      isStreaming: true,
       t,
     });
     expect(md).toContain("## 2. AI agent");
     expect(md).toContain("still being generated");
+  });
+});
+
+describe("buildChatMarkdown — live enrichment from persisted rows", () => {
+  it("pulls usage / error / timestamp from the persisted row matched by id", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({
+          id: "a1",
+          role: "assistant",
+          content: "x",
+          createdAt: "2026-06-22T10:00:00.000Z",
+          metadata: { usage: { inputTokens: 10, outputTokens: 5 }, error: "rate limited" },
+        }),
+      ],
+      live: [
+        // Same id as the persisted row, but no usage/error/timestamp on the live msg.
+        live({ id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }] }),
+      ],
+      isStreaming: false,
+      t,
+    });
+    expect(md).toContain("reply");
+    // Token footer + total come from the enriched row.
+    expect(md).toContain("_Tokens — in: 10, out: 5, total: 15_");
+    expect(md).toContain("- Total tokens: 15");
+    expect(md).toContain("**⚠️ Error:** rate limited");
+    // The persisted timestamp is carried into the export.
+    expect(md).toContain("<!-- 2026-06-22T10:00:00.000Z -->");
+  });
+
+  it("prefers authoritative usage already on the live message over the row's", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({
+          id: "a1",
+          role: "assistant",
+          content: "x",
+          metadata: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+        }),
+      ],
+      live: [
+        live({
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "reply" }],
+          metadata: { usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
+        }),
+      ],
+      isStreaming: false,
+      t,
+    });
+    // The live (authoritative, freshest) usage wins, not the stale row usage.
+    expect(md).toContain("- Total tokens: 150");
+    expect(md).not.toContain("- Total tokens: 2");
+  });
+
+  it("a current-turn live message with no matching row renders without a footer", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ id: "u1", role: "user", content: "q" })],
+      live: [
+        live({ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] }),
+        live({ id: "a-live", role: "assistant", parts: [{ type: "text", text: "fresh reply" }] }),
+      ],
+      isStreaming: false,
+      t,
+    });
+    expect(md).toContain("fresh reply");
+    // No persisted row for the live assistant -> no token footer, no timestamp.
+    expect(md).not.toContain("_Tokens —");
+    expect(md).not.toContain("<!-- undefined -->");
+  });
+});
+
+describe("buildChatMarkdown — fallback + banner", () => {
+  it("falls back to the persisted rows when there are no live messages", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [
+        row({ role: "user", content: "from rows" }),
+        row({
+          role: "assistant",
+          content: "answer",
+          metadata: { usage: { inputTokens: 4, outputTokens: 6 } },
+        }),
+      ],
+      live: [], // empty live mirror -> fallback path
+      isStreaming: false,
+      t,
+    });
+    expect(md).toContain("## 1. You");
+    expect(md).toContain("## 2. AI agent");
+    expect(md).toContain("from rows");
+    expect(md).toContain("- Messages: 2");
+    expect(md).toContain("- Total tokens: 10");
+  });
+
+  it("appends the on-screen banner once, after the messages", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "q" })],
+      live: [live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] })],
+      isStreaming: false,
+      banner: "Rate limit reached — try again shortly.",
+      t,
+    });
+    expect(md).toContain("_⚠️ Rate limit reached — try again shortly._");
+    // Banner comes after the (only) message block.
+    expect(md.indexOf("Rate limit reached")).toBeGreaterThan(md.indexOf("## 1."));
+  });
+
+  it("omits the banner block when there is no banner", () => {
+    const md = buildChatMarkdown({
+      title: "t",
+      chatId: "c",
+      rows: [row({ role: "user", content: "q" })],
+      live: [live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] })],
+      isStreaming: false,
+      banner: null,
+      t,
+    });
+    expect(md).not.toContain("_⚠️");
   });
 });

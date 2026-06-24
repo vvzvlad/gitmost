@@ -151,9 +151,14 @@ export default function AiChatWindow() {
   // Live snapshot of the active thread's useChat state, kept up to date by
   // ChatThread. Lets the export include the in-progress (not-yet-persisted)
   // streaming turn. A ref avoids re-rendering this window on every token.
-  const liveThreadRef = useRef<{ messages: UIMessage[]; isStreaming: boolean }>({
+  const liveThreadRef = useRef<{
+    messages: UIMessage[];
+    isStreaming: boolean;
+    banner: string | null;
+  }>({
     messages: [],
     isStreaming: false,
+    banner: null,
   });
 
   // Live turn-token total (reasoning + output) for the in-flight turn, pushed up
@@ -249,28 +254,42 @@ export default function AiChatWindow() {
   // call) and copy it to the clipboard. The "Copied" notification is the
   // feedback.
   const handleCopy = useCallback(() => {
+    // Export gate. Requiring at least one persisted row means a brand-new chat
+    // whose VERY FIRST turn dropped before the server persisted even the user
+    // message cannot be exported (the button is also hidden — see `canExport`).
+    // That narrow first-turn case is deliberately out of scope for #160; the user
+    // message is normally persisted before model contact, so an interrupted later
+    // turn still has rows and exports the on-screen partial reply WYSIWYG.
     if (!activeChatId || !messageRows || messageRows.length === 0) return;
-    // While the active thread is streaming, the current user message and the
-    // in-progress assistant reply are NOT yet in messageRows (the persisted
-    // query is only refetched after the turn finishes). Pull the live tail —
-    // messages whose id is not among the persisted rows — and append them,
-    // flagging the streaming assistant message as still generating.
+    // WYSIWYG export: the live on-screen messages ARE the document (so a partial
+    // reply from an interrupted turn — which never reached the persisted rows —
+    // is exported just as it appears). The persisted rows enrich each live
+    // message (token usage / error / timestamp) by id and serve as the fallback
+    // when the live mirror is empty. The on-screen banner is appended too. See
+    // issue #160.
     const live = liveThreadRef.current;
-    const rowIds = new Set(messageRows.map((r) => r.id));
-    const pending = live.isStreaming
-      ? live.messages
-          .filter((m) => !rowIds.has(m.id))
-          .map((m) => ({
-            role: m.role,
-            parts: (m.parts ?? []) as { type: string; text?: string }[],
-            generating: m.role === "assistant",
-          }))
-      : [];
     const markdown = buildChatMarkdown({
       title: activeChat?.title ?? null,
       chatId: activeChatId,
+      live: live.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        parts: (m.parts ?? []) as { type: string; text?: string }[],
+        metadata: m.metadata as
+          | {
+              usage?: {
+                inputTokens?: number;
+                outputTokens?: number;
+                totalTokens?: number;
+                reasoningTokens?: number;
+              };
+              error?: string;
+            }
+          | undefined,
+      })),
       rows: messageRows,
-      pending,
+      isStreaming: live.isStreaming,
+      banner: live.banner,
       t,
     });
     clipboard.copy(markdown);

@@ -25,11 +25,23 @@ type Translate = (key: string, values?: Record<string, unknown>) => string;
 interface BuildChatMarkdownArgs {
   title: string | null;
   chatId: string;
+  /** The live, on-screen messages — the WYSIWYG source of the export. When
+   *  present and non-empty these DRIVE the document (so it mirrors exactly what
+   *  the user sees, including a partial reply from an interrupted turn). Each is
+   *  matched to a persisted row by `id` to enrich it with token usage / error /
+   *  timestamp. When absent or empty the builder falls back to `rows`. */
+  live?: LiveMessage[];
+  /** Persisted message rows. Enrichment source (matched to `live` by id) AND the
+   *  fallback document source when `live` is empty. */
   rows: IAiChatMessageRow[];
-  /** In-progress, not-yet-persisted live messages (the current streaming
-   *  turn) to append after the persisted rows. `generating: true` adds a
-   *  note that the message is still being produced. */
-  pending?: PendingMessage[];
+  /** Whether the live thread is still streaming. Only then is the tail assistant
+   *  message flagged "still generating"; an interrupted (non-streaming) partial
+   *  reply is exported as-is and the `banner` explains the interruption. */
+  isStreaming?: boolean;
+  /** The on-screen banner text (error / dropped connection / manual stop),
+   *  appended at the end of the export so the artifact records the interruption
+   *  the user saw. */
+  banner?: string | null;
   t: Translate;
 }
 
@@ -39,10 +51,31 @@ interface TextLikePart {
   text?: string;
 }
 
-/** A live, not-yet-persisted message (current streaming turn) to append. */
-interface PendingMessage {
+/** Authoritative per-turn usage the server attaches to a message / row. */
+interface UsageLike {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+}
+
+/** A live, on-screen message (subset of the AI SDK UIMessage we consume). */
+interface LiveMessage {
+  id: string;
   role: "user" | "assistant" | string;
   parts: TextLikePart[];
+  metadata?: { usage?: UsageLike; error?: string };
+}
+
+/** One message normalized for rendering, regardless of live/persisted origin. */
+interface ExportItem {
+  role: string;
+  parts: TextLikePart[];
+  usage?: UsageLike;
+  error?: string;
+  /** ISO timestamp from the persisted row, when one is known. */
+  createdAt?: string;
+  /** True only for the tail assistant message while the thread is streaming. */
   generating: boolean;
 }
 
@@ -127,53 +160,128 @@ function renderMessageParts(parts: TextLikePart[], t: Translate): string[] {
   return out;
 }
 
+/** Resolve a persisted row's parts: prefer the rich persisted parts, else a
+ *  single text part built from the plain-text content (mirrors `rowToUiMessage`). */
+function rowParts(row: IAiChatMessageRow): TextLikePart[] {
+  return Array.isArray(row.metadata?.parts) && row.metadata.parts.length > 0
+    ? (row.metadata.parts as TextLikePart[])
+    : [{ type: "text", text: row.content ?? "" }];
+}
+
+/**
+ * Normalize the export to one ordered list of {@link ExportItem}, WYSIWYG-first:
+ *
+ * - When `live` messages are present, THEY are the document (what the user sees,
+ *   incl. an interrupted turn's partial reply). Each is matched to a persisted
+ *   row by `id` to pull token usage / error / timestamp — a live message of the
+ *   CURRENT turn has no matching row yet, so it simply renders without a footer.
+ *   Authoritative `usage`/`error` already on the live message metadata win over
+ *   the row (the server attaches usage to the streamed message at a step
+ *   boundary before the row is refetched). Only the tail assistant message is
+ *   flagged `generating`, and only while `isStreaming`.
+ * - When `live` is empty (e.g. the export runs before the live mirror is
+ *   populated), fall back to the persisted `rows` so the format never regresses.
+ */
+function resolveItems(
+  live: LiveMessage[] | undefined,
+  rows: IAiChatMessageRow[],
+  isStreaming: boolean,
+): ExportItem[] {
+  if (live && live.length > 0) {
+    const rowsById = new Map(rows.map((r) => [r.id, r]));
+    // The "still generating" note may apply ONLY to an assistant message that is
+    // the actual TAIL of the list — that is where the on-screen typing indicator
+    // sits. While `status === "submitted"` (isStreaming true) right after the
+    // user hit send, the tail is the USER message and the new assistant turn has
+    // no message yet; the previous assistant answer is shown complete on screen,
+    // so it must NOT be flagged (the indicator renders as a separate bottom
+    // block, not on that answer).
+    const lastIndex = live.length - 1;
+    const tailIsStreamingAssistant =
+      isStreaming && live[lastIndex]?.role === "assistant";
+    return live.map((m, i) => {
+      const row = rowsById.get(m.id);
+      return {
+        role: m.role,
+        parts: m.parts ?? [],
+        // Authoritative usage/error already on the live message (the server
+        // attaches usage to the streamed message at a step boundary) wins over
+        // the persisted row; a current-turn live message has no matching row yet
+        // and simply renders without a token footer (the accepted WYSIWYG
+        // tradeoff — an interrupted turn loses only its token footer, not text).
+        usage: m.metadata?.usage ?? row?.metadata?.usage,
+        error: m.metadata?.error ?? row?.metadata?.error ?? undefined,
+        createdAt: row?.createdAt,
+        generating: tailIsStreamingAssistant && i === lastIndex,
+      };
+    });
+  }
+
+  return rows.map((row) => ({
+    role: row.role,
+    parts: rowParts(row),
+    usage: row.metadata?.usage,
+    error: row.metadata?.error ?? undefined,
+    createdAt: row.createdAt,
+    generating: false,
+  }));
+}
+
 /**
  * Serialize a chat to a Markdown string. Pure (apart from `new Date()` for the
  * export timestamp), so it is straightforward to unit-test.
  */
 export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
-  const { title, chatId, rows, pending, t } = args;
+  const { title, chatId, live, rows, isStreaming, banner, t } = args;
   const blocks: string[] = [];
+
+  const items = resolveItems(live, rows, isStreaming === true);
 
   const heading = (title ?? "").trim() || t("Untitled chat");
   blocks.push(`# ${heading}`);
 
   // Metadata bullet list. Total tokens is only shown when there is a sum.
-  const totalTokens = rows.reduce((sum, row) => {
-    const usage = row.metadata?.usage;
-    return usage ? sum + rowTokens(usage) : sum;
-  }, 0);
+  const totalTokens = items.reduce(
+    (sum, item) => (item.usage ? sum + rowTokens(item.usage) : sum),
+    0,
+  );
   const meta = [
     `- Chat ID: \`${chatId}\``,
     `- Exported: ${new Date().toISOString()}`,
-    `- Messages: ${rows.length + (pending?.length ?? 0)}`,
+    `- Messages: ${items.length}`,
   ];
   if (totalTokens > 0) meta.push(`- Total tokens: ${totalTokens}`);
   blocks.push(meta.join("\n"));
 
-  rows.forEach((row, index) => {
+  items.forEach((item, index) => {
     blocks.push("---");
 
-    const roleLabel = row.role === "assistant" ? t("AI agent") : t("You");
+    const roleLabel = item.role === "assistant" ? t("AI agent") : t("You");
     blocks.push(`## ${index + 1}. ${roleLabel}`);
 
     // Created-at kept in source as an HTML comment (out of the rendered prose).
-    blocks.push(`<!-- ${row.createdAt} -->`);
+    // A live message of the current turn has no persisted row yet — omit it.
+    if (item.createdAt) blocks.push(`<!-- ${item.createdAt} -->`);
 
-    // Resolve parts: prefer the rich persisted parts, else a single text part
-    // built from the plain-text content (mirrors `rowToUiMessage`).
-    const parts: TextLikePart[] =
-      Array.isArray(row.metadata?.parts) && row.metadata.parts.length > 0
-        ? (row.metadata.parts as TextLikePart[])
-        : [{ type: "text", text: row.content ?? "" }];
+    blocks.push(...renderMessageParts(item.parts, t));
 
-    blocks.push(...renderMessageParts(parts, t));
-
-    if (row.metadata?.error) {
-      blocks.push(`**⚠️ Error:** ${row.metadata.error}`);
+    // A generating assistant may have empty/no parts yet — the heading (above)
+    // and this note still record the in-progress turn.
+    if (item.generating) {
+      blocks.push(
+        "_⏳ This message is still being generated — the export captured a partial, in-progress response._",
+      );
     }
 
-    const usage = row.metadata?.usage;
+    // A persisted per-message error (the raw provider text) may coexist with the
+    // trailing `banner` (the classified on-screen alert) when the failed turn's
+    // row has already been refetched by export time. They describe the same
+    // failure at different fidelity; showing both is an accepted, minor redundancy.
+    if (item.error) {
+      blocks.push(`**⚠️ Error:** ${item.error}`);
+    }
+
+    const usage = item.usage;
     if (usage) {
       const total = usage.totalTokens ?? rowTokens(usage);
       // Reasoning (thinking) tokens are shown only when the provider reported a
@@ -188,27 +296,12 @@ export function buildChatMarkdown(args: BuildChatMarkdownArgs): string {
     }
   });
 
-  // Append the in-progress, not-yet-persisted live messages (the current
-  // streaming turn) after the persisted rows. Heading numbering CONTINUES from
-  // the persisted rows. A `generating` assistant gets a note that the captured
-  // response is partial; pending messages carry no usage/token footer yet.
-  (pending ?? []).forEach((message, p) => {
+  // Record the on-screen banner (error / dropped connection / manual stop) so
+  // the export reflects exactly what the user saw, including an interruption.
+  if (banner && banner.trim().length > 0) {
     blocks.push("---");
-
-    const num = rows.length + p + 1;
-    const roleLabel = message.role === "assistant" ? t("AI agent") : t("You");
-    blocks.push(`## ${num}. ${roleLabel}`);
-
-    blocks.push(...renderMessageParts(message.parts, t));
-
-    // A generating assistant may have empty/no parts yet — still emit the
-    // heading (above) and this note so the export shows the in-progress turn.
-    if (message.generating === true) {
-      blocks.push(
-        "_⏳ This message is still being generated — the export captured a partial, in-progress response._",
-      );
-    }
-  });
+    blocks.push(`_⚠️ ${banner.trim()}_`);
+  }
 
   // Blank line between blocks so the Markdown renders cleanly.
   return blocks.join("\n\n");

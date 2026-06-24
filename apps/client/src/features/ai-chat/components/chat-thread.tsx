@@ -73,7 +73,11 @@ interface ChatThreadProps {
    *  "Copy chat" export can include the in-progress, not-yet-persisted
    *  assistant message. A ref (not state) avoids re-rendering the parent on
    *  every streamed delta. */
-  liveStateRef?: MutableRefObject<{ messages: UIMessage[]; isStreaming: boolean }>;
+  liveStateRef?: MutableRefObject<{
+    messages: UIMessage[];
+    isStreaming: boolean;
+    banner: string | null;
+  }>;
   /** Reports the live turn-token total (reasoning + output) for the in-flight
    *  turn so the parent can show a header badge that ticks mid-stream. THROTTLED
    *  here (~8 Hz) so the parent re-renders a handful of times a second, not on
@@ -309,18 +313,37 @@ export default function ChatThread({
     if (isStreaming) setStopNotice(null);
   }, [isStreaming]);
 
+  // Classify the turn error into a heading + detail so the banner names the cause
+  // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
+  // of a generic "Something went wrong". Computed here (not only in the JSX) so
+  // the SAME on-screen banner text can be mirrored into the export (issue #160).
+  const errorView = error ? describeChatError(error.message ?? "", t) : null;
+
+  // The exact banner the user sees under the message list, flattened to a single
+  // string for the "Copy chat" export so the artifact records the interruption
+  // WYSIWYG. Mirrors the JSX precedence below: error first, else the stop notice.
+  const banner = errorView
+    ? errorView.detail
+      ? `${errorView.title} — ${errorView.detail}`
+      : errorView.title
+    : stopNotice === "manual"
+      ? t("Response stopped.")
+      : stopNotice === "disconnect"
+        ? t("Connection lost — the answer was interrupted.")
+        : null;
+
   // Mirror the live useChat snapshot into the parent-owned ref so the export
-  // (handled in AiChatWindow) can include the in-progress streaming turn. The
-  // cleanup clears the ref on unmount so a thread torn down by `key` on chat
-  // switch can't leak its (possibly still-streaming) tail into the next chat's
-  // export before the new thread's effect repopulates the ref.
+  // (handled in AiChatWindow) can include the in-progress streaming turn AND the
+  // on-screen banner. The cleanup clears the ref on unmount so a thread torn down
+  // by `key` on chat switch can't leak its (possibly still-streaming) tail into
+  // the next chat's export before the new thread's effect repopulates the ref.
   useEffect(() => {
     if (!liveStateRef) return;
-    liveStateRef.current = { messages, isStreaming };
+    liveStateRef.current = { messages, isStreaming, banner };
     return () => {
-      liveStateRef.current = { messages: [], isStreaming: false };
+      liveStateRef.current = { messages: [], isStreaming: false, banner: null };
     };
-  }, [liveStateRef, messages, isStreaming]);
+  }, [liveStateRef, messages, isStreaming, banner]);
 
   // Report the live turn-token total to the parent header badge, THROTTLED to
   // ~8 Hz so the parent re-renders a few times a second instead of on every
@@ -369,11 +392,6 @@ export default function ChatThread({
       if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
     };
   }, []);
-
-  // Classify the turn error into a heading + detail so the banner names the cause
-  // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
-  // of a generic "Something went wrong".
-  const errorView = error ? describeChatError(error.message ?? "", t) : null;
 
   // A role was picked with autoStart=false: the role is bound but NOTHING was
   // sent, so chatId stays null and the empty state would keep showing the cards.
