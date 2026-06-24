@@ -14,8 +14,8 @@ import { AiNotConfiguredException } from './ai-not-configured.exception';
 import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured.exception';
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
-// DIAGNOSTIC (provider ECONNRESET investigation) — temporary.
-import { createDiagnosticFetch } from './ai-http-diagnostics';
+import { createInstrumentedFetch } from './ai-provider-http';
+import { createStreamingFetch } from './ai-streaming-fetch';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -45,11 +45,14 @@ export interface ChatModelOverride {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  // DIAGNOSTIC (provider ECONNRESET investigation) — temporary: passive
-  // instrumentation of the OpenAI-compatible provider HTTP calls (z.ai).
-  // Logs call timing/outcome only — no behavior change.
-  private readonly aiDiagnosticFetch = createDiagnosticFetch(
+  // Provider HTTP fetch for the chat path: the streaming fetch — which RAISES
+  // undici's 300s headers/body timeouts to a generous-but-finite silence timeout
+  // so a long agent turn is not severed mid-stream (#175) — wrapped with the
+  // provider-HTTP instrumentation so the logs observe that exact transport. Held
+  // for the service lifetime to reuse the streaming dispatcher's connection pool.
+  private readonly aiProviderFetch = createInstrumentedFetch(
     'AiService:provider-http',
+    createStreamingFetch(),
   );
 
   constructor(
@@ -148,13 +151,12 @@ export class AiService {
         // endpoint. The default callable createOpenAI(...)(model) targets the
         // Responses API (/responses), which OpenAI-compatible gateways
         // (OpenRouter, etc.) reject on multi-turn requests (history with
-        // assistant messages) → 400.
-        // DIAGNOSTIC (provider ECONNRESET investigation) — temporary: pass the
-        // passive instrumented fetch (logging only; no behavior change).
+        // assistant messages) → 400. The provider fetch is the instrumented
+        // streaming fetch (finite-but-generous stream timeouts, #175).
         return createOpenAI({
           apiKey,
           baseURL: baseUrl,
-          fetch: this.aiDiagnosticFetch,
+          fetch: this.aiProviderFetch,
         }).chat(chatModel);
       case 'gemini':
         return createGoogleGenerativeAI({ apiKey })(chatModel);
