@@ -16,7 +16,10 @@ import { AiEmbeddingNotConfiguredException } from './ai-embedding-not-configured
 import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
 import { createInstrumentedFetch } from './ai-provider-http';
-import { createStreamingFetch } from './ai-streaming-fetch';
+import {
+  createStreamingFetch,
+  withPreResponseRetry,
+} from './ai-streaming-fetch';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -46,14 +49,15 @@ export interface ChatModelOverride {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  // Provider HTTP fetch for the chat path: the streaming fetch — which RAISES
-  // undici's 300s headers/body timeouts to a generous-but-finite silence timeout
-  // so a long agent turn is not severed mid-stream (#175) — wrapped with the
-  // provider-HTTP instrumentation so the logs observe that exact transport. Held
-  // for the service lifetime to reuse the streaming dispatcher's connection pool.
-  private readonly aiProviderFetch = createInstrumentedFetch(
-    'AiService:provider-http',
-    createStreamingFetch(),
+  // Provider HTTP fetch for the chat path, layered so each transport concern is
+  // observed (#175). Inside-out: the streaming fetch (finite silence timeouts +
+  // keep-alive recycling) → provider-HTTP instrumentation (logs every attempt) →
+  // pre-response connection-reset retry as the OUTERMOST layer. Retry-outer means
+  // a reset the retry recovers from is still logged with its idle-gap, instead of
+  // collapsing into a clean "OK". Held for the service lifetime to reuse the
+  // streaming dispatcher's connection pool.
+  private readonly aiProviderFetch = withPreResponseRetry(
+    createInstrumentedFetch('AiService:provider-http', createStreamingFetch()),
   );
 
   constructor(
