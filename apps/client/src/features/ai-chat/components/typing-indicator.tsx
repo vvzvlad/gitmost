@@ -16,12 +16,6 @@ interface TypingIndicatorProps {
    * assistant row above already shows the same name, to avoid a duplicate label.
    */
   showName?: boolean;
-  /**
-   * Live thinking/reasoning token count for the in-flight turn. When > 0 the
-   * typing line becomes `Thinking… · {count} tokens` (like Claude Code). Omitted
-   * / 0 keeps the plain `Thinking…` line.
-   */
-  thinkingTokens?: number;
 }
 
 /**
@@ -32,18 +26,12 @@ interface TypingIndicatorProps {
  *
  * Mirrors the assistant row layout in MessageItem (the dimmed label), so it reads
  * as the assistant's bubble taking shape. The dimmed label uses the configured
- * identity name when provided (otherwise the generic "AI agent"), while the
- * typing line is always the generic "Thinking…" (it never includes the
- * role/identity name).
+ * identity name when provided (otherwise the generic "AI agent"); below it the
+ * animated dots stand in for the nascent bubble until content arrives.
  */
-export default function TypingIndicator({ assistantName, showName = true, thinkingTokens }: TypingIndicatorProps) {
+export default function TypingIndicator({ assistantName, showName = true }: TypingIndicatorProps) {
   const { t } = useTranslation();
   const name = resolveAssistantName(assistantName);
-  // Show the running thinking-token count only once there is something to count.
-  const thinkingLine =
-    thinkingTokens && thinkingTokens > 0
-      ? t("Thinking… · {{count}} tokens", { count: thinkingTokens })
-      : t("Thinking…");
 
   return (
     <Box className={classes.messageRow}>
@@ -58,9 +46,6 @@ export default function TypingIndicator({ assistantName, showName = true, thinki
           <span />
           <span />
         </span>
-        <Text size="sm" c="dimmed">
-          {thinkingLine}
-        </Text>
       </Group>
     </Box>
   );
