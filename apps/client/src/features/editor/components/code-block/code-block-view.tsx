@@ -47,6 +47,26 @@ export default function CodeBlockView(props: NodeViewProps) {
 
   return (
     <NodeViewWrapper className="codeBlock">
+      {/* #146: the editable <pre><code> (contentDOM) MUST come first in the DOM.
+          With the non-editable menu rendered before it, the browser's click
+          hit-testing snapped the caret up one line. Render content first; the
+          menu is rendered after it and lifted back above visually via flex
+          `order: -1` (the `.codeBlock` wrapper is a flex column — see
+          code-block.module.css). It stays fully in flow as a full-width row
+          above the code: no overlay/absolute positioning. The second #146
+          mitigation lives in editor-paste-handler.tsx (reflowAfterPaste). */}
+      <pre
+        spellCheck="false"
+        hidden={
+          ((language === "mermaid" && !editor.isEditable) ||
+            (language === "mermaid" && !isSelected)) &&
+          node.textContent.length > 0
+        }
+      >
+        {/* @ts-ignore */}
+        <NodeViewContent as="code" className={`language-${language}`} />
+      </pre>
+
       <Group
         justify="flex-end"
         contentEditable={false}
@@ -82,18 +102,6 @@ export default function CodeBlockView(props: NodeViewProps) {
           )}
         </CopyButton>
       </Group>
-
-      <pre
-        spellCheck="false"
-        hidden={
-          ((language === "mermaid" && !editor.isEditable) ||
-            (language === "mermaid" && !isSelected)) &&
-          node.textContent.length > 0
-        }
-      >
-        {/* @ts-ignore */}
-        <NodeViewContent as="code" className={`language-${language}`} />
-      </pre>
 
       {language === "mermaid" && (
         <Suspense fallback={null}>

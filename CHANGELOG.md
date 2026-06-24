@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cut from 300 to 100 on upgrade. Set `SHARE_AI_WORKSPACE_MAX_PER_HOUR` to
   keep the previous limit. (#62)
 
+### Fixed
+
+- **Editor: caret/selection landed on the wrong line when clicking inside code
+  blocks and footnotes.** The affected NodeViews rendered their non-editable
+  chrome (language menu, footnotes heading, footnote number marker) before the
+  editable content, so the browser's click hit-testing missed the contentDOM and
+  snapped the caret to a previous node. Content now renders first in the DOM
+  (chrome is lifted back into place via CSS flex `order`), and scroll containers
+  are nudged after a paste to refresh stale hit-testing geometry. The caret
+  symptom is macOS-specific and was confirmed manually on macOS; the automated
+  guard pins the DOM-order invariant, not the caret behavior itself. (#146, #147)
+
 ## [0.93.0] - 2026-06-21
 
 This release builds on the 0.91.0 AI foundation: admin-defined AI agent roles,
