@@ -14,6 +14,8 @@ import {
   MaskedAiSettings,
   ResolvedAiConfig,
   SttApiStyle,
+  ChatApiStyle,
+  PROVIDER_SETTINGS_KEYS,
 } from './ai.types';
 
 /**
@@ -24,6 +26,7 @@ import {
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
@@ -157,6 +160,8 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
+      chatApiStyle: provider.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; reuses the chat
       // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
       publicShareChatModel: provider.publicShareChatModel,
@@ -238,6 +243,7 @@ export class AiSettingsService {
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      chatApiStyle: provider.chatApiStyle,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,
       embeddingBaseUrl: provider.embeddingBaseUrl,
@@ -275,20 +281,8 @@ export class AiSettingsService {
 
     // Persist non-secret provider fields (only those present in the partial).
     const providerPatch: Partial<AiProviderSettings> = {};
-    for (const key of [
-      'driver',
-      'chatModel',
-      'embeddingModel',
-      'baseUrl',
-      'embeddingBaseUrl',
-      'sttModel',
-      'sttBaseUrl',
-      'sttApiStyle',
-      'sttLanguage',
-      'systemPrompt',
-      'publicShareChatModel',
-      'publicShareAssistantRoleId',
-    ] as const) {
+    // Single source of truth for the writable provider keys (see ai.types).
+    for (const key of PROVIDER_SETTINGS_KEYS) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];
       }

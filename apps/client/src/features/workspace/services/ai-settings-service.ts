@@ -9,6 +9,12 @@ export type AiDriver = "openai" | "gemini" | "ollama";
 //   - 'json'      -> JSON body with base64-encoded audio (OpenRouter)
 export type SttApiStyle = "multipart" | "json";
 
+// Chat provider implementation for the `openai` driver (chosen explicitly):
+//   - 'openai-compatible' -> maps streamed reasoning_content to reasoning parts
+//     (z.ai/GLM, DeepSeek, OpenRouter, ...). Default.
+//   - 'openai'            -> official provider; real-OpenAI reasoning-model shaping.
+export type ChatApiStyle = "openai-compatible" | "openai";
+
 // Masked AI provider settings returned by the server.
 // No API key is ever returned; only `hasApiKey` / `hasEmbeddingApiKey` indicate
 // whether one is stored. `embeddingBaseUrl` is the RAW stored value (empty means
@@ -16,6 +22,7 @@ export type SttApiStyle = "multipart" | "json";
 export interface IAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  chatApiStyle?: ChatApiStyle;
   // Cheap model id for the anonymous public-share assistant; empty = chatModel.
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts; empty =
@@ -49,6 +56,7 @@ export interface IAiSettings {
 export interface IAiSettingsUpdate {
   driver?: AiDriver;
   chatModel?: string;
+  chatApiStyle?: ChatApiStyle;
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts; empty =
   // built-in locked persona.

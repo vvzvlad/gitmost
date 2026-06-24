@@ -285,3 +285,64 @@ describe('AiService.getChatModel role model override', () => {
     );
   });
 });
+
+/**
+ * Chat provider selection by the EXPLICIT `chatApiStyle` (NOT inferred from
+ * baseUrl): 'openai-compatible' (default) uses @ai-sdk/openai-compatible, which
+ * maps streamed reasoning_content to reasoning parts; 'openai' uses the official
+ * provider; and openai-compatible without a baseURL safely falls back to the
+ * official provider (it has no default endpoint). Asserted via `.provider`.
+ */
+describe('AiService.getChatModel chatApiStyle provider selection', () => {
+  function serviceWith(opts: {
+    baseUrl?: string;
+    chatApiStyle?: 'openai-compatible' | 'openai';
+  }) {
+    const aiSettings = {
+      resolve: jest.fn().mockResolvedValue({
+        driver: 'openai',
+        chatModel: 'glm-5.2',
+        apiKey: 'key',
+        baseUrl: opts.baseUrl,
+        chatApiStyle: opts.chatApiStyle,
+      }),
+    };
+    return new AiService(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aiSettings as any,
+      { find: jest.fn() } as never,
+      { decryptSecret: jest.fn() } as never,
+    );
+  }
+
+  const providerOf = async (svc: AiService) =>
+    (
+      (await svc.getChatModel('ws-1')) as { provider: string }
+    ).provider;
+
+  it("'openai-compatible' + baseURL -> openai-compatible provider", async () => {
+    expect(
+      await providerOf(
+        serviceWith({ baseUrl: 'https://api.z.ai/v4', chatApiStyle: 'openai-compatible' }),
+      ),
+    ).toContain('openai-compatible');
+  });
+
+  it("'openai' + baseURL -> official openai provider", async () => {
+    expect(
+      await providerOf(serviceWith({ baseUrl: 'https://api.z.ai/v4', chatApiStyle: 'openai' })),
+    ).toBe('openai.chat');
+  });
+
+  it('unset + baseURL -> defaults to openai-compatible', async () => {
+    expect(
+      await providerOf(serviceWith({ baseUrl: 'https://api.z.ai/v4' })),
+    ).toContain('openai-compatible');
+  });
+
+  it("'openai-compatible' WITHOUT baseURL -> safe fallback to official openai", async () => {
+    expect(
+      await providerOf(serviceWith({ chatApiStyle: 'openai-compatible' })),
+    ).toBe('openai.chat');
+  });
+});

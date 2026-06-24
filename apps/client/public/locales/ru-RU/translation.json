@@ -1160,5 +1160,9 @@
   "Render the full nested tree of all descendant pages": "Показать полное вложенное дерево всех дочерних страниц",
   "Showing {{count}} subpages_one": "Показано {{count}} подстраница",
   "Showing {{count}} subpages_few": "Показано {{count}} подстраницы",
-  "Showing {{count}} subpages_many": "Показано {{count}} подстраниц"
+  "Showing {{count}} subpages_many": "Показано {{count}} подстраниц",
+  "Protocol": "Протокол",
+  "How chat requests are sent and how reasoning is surfaced": "Как отправляются запросы чата и как показывается reasoning",
+  "OpenAI-compatible (surfaces reasoning)": "OpenAI-совместимый (показывает reasoning)",
+  "OpenAI (official)": "OpenAI (официальный)"
 }

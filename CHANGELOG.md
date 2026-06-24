@@ -25,8 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flagging dangling references, empty or duplicate definitions, and `[^id]`
   markers inside table rows, so an agent can fix its own markup. The page is
   still created; the field is omitted when there are no problems. (#166)
+- **AI chat "Protocol" setting (`chatApiStyle`).** A new admin choice in AI
+  settings for the `openai` driver: `openai-compatible` (default) routes chat
+  through `@ai-sdk/openai-compatible`, which surfaces a provider's streamed
+  reasoning (`reasoning_content` → reasoning parts) for z.ai/GLM, DeepSeek,
+  OpenRouter, etc.; `openai` uses the official provider (real-OpenAI
+  reasoning-model request shaping). Chosen explicitly rather than inferred from
+  the base URL, since a custom URL can front real OpenAI too. (#175, #177)
 
 ### Changed
+
+- **AI chat default provider is now `openai-compatible` (reasoning surfaced).**
+  For the `openai` driver the chat provider defaults to the openai-compatible
+  implementation, so a workspace pointing at z.ai/GLM/DeepSeek now streams the
+  model's reasoning out of the box. An endpoint that is real OpenAI behind a
+  custom base URL should set the new `chatApiStyle` "Protocol" to `openai`. (#177)
 
 - **Footnotes now reuse (Pandoc semantics).** Multiple `[^a]` references to the
   same id are ONE footnote — one number, one definition, several back-references
