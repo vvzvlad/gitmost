@@ -157,6 +157,19 @@ below.
 | `origin` | GitHub mirror `vvzvlad/gitmost` — **do not push**, updated by the owner's CI |
 | `upstream` | The original Docmost — **never push** |
 
+## Creating issues (Gitea `tea` CLI)
+
+Issues are filed with the official Gitea CLI `tea`, already logged in as
+`claude_code` (`tea logins list` shows the `gitea` login as default):
+
+```bash
+tea issues create --repo vvzvlad/gitmost --labels feature \
+  --title '<title>' --description "$(cat body.md)"
+```
+
+> Gotcha (tea 0.14.1): the issue body flag is `--description`/`-d`, **not**
+> `--body` — passing `--body` fails with `flag provided but not defined: -body`.
+
 ---
 
 # Architecture and codebase
