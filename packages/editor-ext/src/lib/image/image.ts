@@ -376,10 +376,10 @@ export const TiptapImage = Image.extend<ImageOptions>({
   },
 });
 
-function applyAlignment(container: HTMLElement, align: string) {
+export function applyAlignment(container: HTMLElement, align: string) {
   // Reset the float-mode styles first so toggling between any two modes is clean
   // (a previous float must not leak into a later left/center/right).
-  container.style.float = "";
+  container.style.cssFloat = "";
   container.style.padding = "";
   // Mirror the resolved alignment onto the CONTAINER as a data attribute so the
   // responsive stylesheet can neutralize the float on small screens (an inline
@@ -389,11 +389,11 @@ function applyAlignment(container: HTMLElement, align: string) {
   if (align === "floatLeft") {
     // Real text wrap: the (shrink-to-fit) container floats left, text flows on
     // its right. The inner <img> already carries max-width:100%.
-    container.style.float = "left";
+    container.style.cssFloat = "left";
     container.style.padding = "0 10px 0 0";
     container.style.justifyContent = "flex-start";
   } else if (align === "floatRight") {
-    container.style.float = "right";
+    container.style.cssFloat = "right";
     container.style.padding = "0 0 0 10px";
     container.style.justifyContent = "flex-end";
   } else if (align === "left") {

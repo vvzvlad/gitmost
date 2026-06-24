@@ -73,3 +73,18 @@
     display: none !important;
   }
 }
+
+/* Float image (#145): on narrow screens a floated image would crowd the text to
+   an unreadable column, so collapse it to full width and drop the float.
+   `!important` is required because applyAlignment sets `float`/`padding` inline,
+   which a normal rule cannot override. Keys off the `data-image-align` attribute
+   the image node view mirrors onto its container. This module is the one actually
+   imported by the resize node views (node-resize-handles.ts), so the rule loads. */
+@media (max-width: 600px) {
+  :global([data-image-align="floatLeft"]),
+  :global([data-image-align="floatRight"]) {
+    float: none !important;
+    width: 100% !important;
+    padding: 0 !important;
+  }
+}
