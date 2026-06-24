@@ -1150,5 +1150,7 @@
   "Create subpage of {{name}}": "Создать подстраницу для {{name}}",
   "Dictation language": "Язык диктовки",
   "Auto-detect": "Автоопределение",
-  "Spoken language hint sent to the transcription model. Auto-detect lets the model decide.": "Подсказка языка речи для модели транскрипции. «Автоопределение» оставляет выбор за моделью."
+  "Spoken language hint sent to the transcription model. Auto-detect lets the model decide.": "Подсказка языка речи для модели транскрипции. «Автоопределение» оставляет выбор за моделью.",
+  "Float left (wrap text)": "Обтекание слева",
+  "Float right (wrap text)": "Обтекание справа"
 }

@@ -51,7 +51,9 @@ declare module "@tiptap/core" {
       setImageAt: (
         attributes: ImageAttributes & { pos: number | Range },
       ) => ReturnType;
-      setImageAlign: (align: "left" | "center" | "right") => ReturnType;
+      setImageAlign: (
+        align: "left" | "center" | "right" | "floatLeft" | "floatRight",
+      ) => ReturnType;
       setImageWidth: (width: number) => ReturnType;
       setImageSize: (width: number, height: number) => ReturnType;
     };
@@ -374,8 +376,27 @@ export const TiptapImage = Image.extend<ImageOptions>({
   },
 });
 
-function applyAlignment(container: HTMLElement, align: string) {
-  if (align === "left") {
+export function applyAlignment(container: HTMLElement, align: string) {
+  // Reset the float-mode styles first so toggling between any two modes is clean
+  // (a previous float must not leak into a later left/center/right).
+  container.style.cssFloat = "";
+  container.style.padding = "";
+  // Mirror the resolved alignment onto the CONTAINER as a data attribute so the
+  // responsive stylesheet can neutralize the float on small screens (an inline
+  // `float` can only be overridden by `!important`, which keys off this attr).
+  container.dataset.imageAlign = align;
+
+  if (align === "floatLeft") {
+    // Real text wrap: the (shrink-to-fit) container floats left, text flows on
+    // its right. The inner <img> already carries max-width:100%.
+    container.style.cssFloat = "left";
+    container.style.padding = "0 10px 0 0";
+    container.style.justifyContent = "flex-start";
+  } else if (align === "floatRight") {
+    container.style.cssFloat = "right";
+    container.style.padding = "0 0 0 10px";
+    container.style.justifyContent = "flex-end";
+  } else if (align === "left") {
     container.style.justifyContent = "flex-start";
   } else if (align === "right") {
     container.style.justifyContent = "flex-end";

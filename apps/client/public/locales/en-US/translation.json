@@ -1298,5 +1298,7 @@
   "Analytics / tracker": "Analytics / tracker",
   "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.": "Injected verbatim into the <head> of PUBLIC SHARE pages only (same-origin). For analytics snippets (Google Analytics, Yandex.Metrika, etc.). Admin only.",
   "Go to login page": "Go to login page",
-  "Move to space": "Move to space"
+  "Move to space": "Move to space",
+  "Float left (wrap text)": "Float left (wrap text)",
+  "Float right (wrap text)": "Float right (wrap text)"
 }
