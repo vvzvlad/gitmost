@@ -2,7 +2,9 @@ import * as http from 'node:http';
 import {
   createStreamingFetch,
   streamTimeoutMs,
+  streamKeepAliveMs,
   streamingDispatcherOptions,
+  isRetryableConnectError,
 } from './ai-streaming-fetch';
 
 /**
@@ -38,12 +40,51 @@ describe('streamTimeoutMs', () => {
     }
   });
 
-  it('applies the timeout to BOTH undici stream timeouts', () => {
+  it('applies the silence timeout + keep-alive recycle window to the dispatcher', () => {
     delete process.env.AI_STREAM_TIMEOUT_MS;
+    delete process.env.AI_STREAM_KEEPALIVE_MS;
     expect(streamingDispatcherOptions()).toEqual({
       headersTimeout: 900_000,
       bodyTimeout: 900_000,
+      keepAliveTimeout: 10_000,
+      keepAliveMaxTimeout: 10_000,
     });
+  });
+});
+
+describe('streamKeepAliveMs', () => {
+  const ORIG = process.env.AI_STREAM_KEEPALIVE_MS;
+  afterEach(() => {
+    if (ORIG === undefined) delete process.env.AI_STREAM_KEEPALIVE_MS;
+    else process.env.AI_STREAM_KEEPALIVE_MS = ORIG;
+  });
+
+  it('defaults to 10s (recycle idle sockets so a NAT/proxy drop cannot poison reuse)', () => {
+    delete process.env.AI_STREAM_KEEPALIVE_MS;
+    expect(streamKeepAliveMs()).toBe(10_000);
+  });
+
+  it('honours a positive override and ignores invalid/non-positive', () => {
+    process.env.AI_STREAM_KEEPALIVE_MS = '4000';
+    expect(streamKeepAliveMs()).toBe(4000);
+    for (const bad of ['0', '-1', 'x', '']) {
+      process.env.AI_STREAM_KEEPALIVE_MS = bad;
+      expect(streamKeepAliveMs()).toBe(10_000);
+    }
+  });
+});
+
+describe('isRetryableConnectError', () => {
+  it('matches connection-level codes on the error or its cause', () => {
+    expect(isRetryableConnectError({ cause: { code: 'ECONNRESET' } })).toBe(true);
+    expect(isRetryableConnectError({ cause: { code: 'UND_ERR_SOCKET' } })).toBe(true);
+    expect(isRetryableConnectError({ code: 'ECONNREFUSED' })).toBe(true);
+  });
+  it('does NOT match aborts / unrelated errors', () => {
+    expect(isRetryableConnectError({ name: 'AbortError', cause: { code: 'ABORT_ERR' } })).toBe(false);
+    expect(isRetryableConnectError({ cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } })).toBe(false);
+    expect(isRetryableConnectError(new Error('plain'))).toBe(false);
+    expect(isRetryableConnectError(undefined)).toBe(false);
   });
 });
 
@@ -108,5 +149,58 @@ describe('createStreamingFetch — against a delayed server', () => {
     // When present, the undici cause is the headers timeout.
     const code = (caught as { cause?: { code?: string } })?.cause?.code;
     if (code) expect(code).toBe('UND_ERR_HEADERS_TIMEOUT');
+  });
+});
+
+describe('createStreamingFetch — pre-response connection retry', () => {
+  let server: http.Server;
+  let url: string;
+  let requests = 0;
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      requests += 1;
+      if (requests === 1) {
+        // Reset the FIRST connection before any response byte (a poisoned/stale
+        // keep-alive socket). The retry must open a fresh connection.
+        const sock = req.socket as import('node:net').Socket & {
+          resetAndDestroy?: () => void;
+        };
+        if (typeof sock.resetAndDestroy === 'function') sock.resetAndDestroy();
+        else sock.destroy();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as import('node:net').AddressInfo;
+    url = `http://127.0.0.1:${addr.port}/`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    requests = 0;
+  });
+
+  it('retries a pre-response reset on a fresh connection and succeeds', async () => {
+    const streamingFetch = createStreamingFetch();
+    const res = await streamingFetch(url);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok');
+    // first request reset -> retry -> second request served.
+    expect(requests).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does NOT retry an aborted request (no retry storm)', async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const streamingFetch = createStreamingFetch();
+    await expect(streamingFetch(url, { signal: ctrl.signal })).rejects.toBeDefined();
+    // Pre-aborted: the request never reached the server, so nothing was retried.
+    expect(requests).toBe(0);
   });
 });
