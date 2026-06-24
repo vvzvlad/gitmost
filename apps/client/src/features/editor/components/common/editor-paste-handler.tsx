@@ -22,12 +22,81 @@ const ATTACHMENT_NODE_TYPES = [
 
 const ATTACHMENT_URL_RE = /\/api\/files\/([0-9a-f-]+)\//;
 
+const SCROLLABLE_OVERFLOW = new Set(["auto", "scroll", "overlay"]);
+
+/**
+ * Collect every scrollable ancestor of the editor DOM whose hit-test layer
+ * could be stale after a paste, plus the document scrolling element. We nudge
+ * ALL of them (a zero-delta nudge is harmless) because the real scroll container
+ * varies — a styled overflow ancestor on most pages, the document itself on
+ * others — and `overflow: overlay` (common on macOS, where #146 reproduces)
+ * must count as scrollable too. Called only AFTER the paste has committed, so
+ * `scrollHeight > clientHeight` reflects the inserted content.
+ */
+export function collectScrollAncestors(node: HTMLElement): HTMLElement[] {
+  const targets: HTMLElement[] = [];
+  // Walk every ancestor (incl. body/html) — on some layouts the scroll lives on
+  // body rather than the documentElement that scrollingElement points at.
+  let el: HTMLElement | null = node.parentElement;
+  while (el) {
+    const { overflowX, overflowY } = getComputedStyle(el);
+    const scrollsY =
+      SCROLLABLE_OVERFLOW.has(overflowY) && el.scrollHeight > el.clientHeight;
+    const scrollsX =
+      SCROLLABLE_OVERFLOW.has(overflowX) && el.scrollWidth > el.clientWidth;
+    if (scrollsY || scrollsX) targets.push(el);
+    el = el.parentElement;
+  }
+  const docEl = document.scrollingElement as HTMLElement | null;
+  if (docEl && !targets.includes(docEl)) targets.push(docEl);
+  return targets;
+}
+
+/**
+ * Re-flow the editor's scroll containers after a paste so the browser refreshes
+ * its click hit-testing geometry (#146). Pasting markdown/code inserts React
+ * NodeViews that mount ASYNCHRONOUSLY; until the next reflow, ProseMirror's
+ * posAtCoords/caretRangeFromPoint can map a click to a stale (offset) line —
+ * which users observed clears itself on any scroll. We reproduce that scroll's
+ * side effect with a ZERO-delta nudge (re-assign scrollTop/Left to their current
+ * value), invalidating the hit-test layer WITHOUT moving the viewport. The
+ * container lookup AND the nudge run across two animation frames so they happen
+ * AFTER the pasted content + NodeViews commit (only then is the real scroll
+ * container measurable).
+ *
+ * This is the SECOND of two #146 mitigations; the FIRST is the content-first DOM
+ * order in the NodeViews (code-block-view.tsx, footnotes-list-view.tsx,
+ * footnote-definition-view.tsx). Editing one, check the other.
+ */
+export function reflowAfterPaste(editor: Editor) {
+  const dom = editor.view.dom as HTMLElement;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      for (const el of collectScrollAncestors(dom)) {
+        // Zero-delta nudge: re-set the scroll position to its current value to
+        // invalidate the browser's hit-test layer WITHOUT moving the viewport.
+        // `scrollTo(x, y)` is the repo idiom and avoids a lint-flagged
+        // self-assignment.
+        el.scrollTo(el.scrollLeft, el.scrollTop);
+      }
+    });
+  });
+}
+
 export const handlePaste = (
   editor: Editor,
   event: ClipboardEvent,
   pageId: string,
   creatorId?: string,
 ) => {
+  // Schedule a post-paste reflow on EVERY paste path — intentionally. handlePaste
+  // returns BEFORE the markdown/code-insertion plugin runs, so it cannot know here
+  // whether async NodeViews will be inserted; the nudge is a cheap layout read on
+  // the next frames and a no-op for the viewport, so scheduling it unconditionally
+  // is simpler and harmless. Pairs with the content-first DOM order in the
+  // NodeViews — both address #146 from different angles.
+  reflowAfterPaste(editor);
+
   const clipboardData = event.clipboardData.getData("text/plain");
 
   if (INTERNAL_LINK_REGEX.test(clipboardData)) {
