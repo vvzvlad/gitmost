@@ -285,44 +285,6 @@ const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/;
 function escapeFootnoteAttr(value) {
     return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
-function escapeFootnoteRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-/**
- * Derive a DETERMINISTIC unique footnote id for the k-th (k >= 2) occurrence of
- * an original id `X` during definition dedup.
- *
- * EXACT MIRROR of editor-ext `deriveFootnoteId`
- * (packages/editor-ext/src/lib/footnote/footnote-util.ts). These two copies MUST
- * STAY IN SYNC: the same markdown imported through the editor and through this
- * MCP path has to produce identical ids, and the sync plugin (which re-ids on
- * every collaborating client) relies on the same scheme to converge. NEVER use
- * Math.random()/Date.now()/uuid here — a random id would diverge across clients.
- *
- * Scheme: base candidate `${originalId}__${occurrence}` (e.g. `X__2`), bumped
- * with a stable alphabetic suffix (`X__2b`, `X__2c`, ...) until it is not in
- * `taken` (the set of ids already present / already minted — pure doc state).
- */
-function deriveFootnoteId(originalId, occurrence, taken) {
-    let candidate = `${originalId}__${occurrence}`;
-    let n = 0;
-    while (taken.has(candidate)) {
-        n += 1;
-        candidate = `${originalId}__${occurrence}${footnoteSuffix(n)}`;
-    }
-    return candidate;
-}
-/** Map 1 -> "b", 2 -> "c", ... (mirror of editor-ext `suffix`). */
-function footnoteSuffix(n) {
-    let out = "";
-    let x = n;
-    while (x > 0) {
-        const rem = (x - 1) % 25;
-        out = String.fromCharCode(98 + rem) + out; // 98 = 'b'
-        x = Math.floor((x - 1) / 25);
-    }
-    return out;
-}
 const footnoteRefMarkedExtension = {
     name: "footnoteRef",
     level: "inline",
@@ -371,43 +333,22 @@ function extractFootnotes(markdown) {
     }
     if (defs.length === 0)
         return { body: markdown, section: "" };
-    // De-duplicate colliding definition ids (mirror of editor-ext
-    // extractFootnoteDefinitions). Two definitions sharing an id would otherwise
-    // collapse into one footnote downstream; rename each colliding id to a
-    // DETERMINISTIC derived one (NOT random) and rewrite the corresponding `[^id]`
-    // marker so the (reference, definition) pairing stays 1:1. Determinism lets
-    // the same markdown imported here and via the editor produce identical ids.
-    let dedupedBody = bodyLines.join("\n");
-    const taken = new Set(defs.map((d) => d.id));
-    const seenDefIds = new Map();
+    // Duplicate definition ids: FIRST WINS, the rest are DROPPED (mirror of
+    // editor-ext extractFootnoteDefinitions). Reference markers are left untouched
+    // so repeated `[^a]` references reuse the single footnote (Pandoc semantics,
+    // #166). The dropped duplicate is surfaced to the caller via analyzeFootnotes
+    // (`duplicateDefinitions`), not silently lost. MUST stay in sync with the
+    // editor-ext mirror.
+    const firstById = new Map(); // id -> first definition text
     for (const def of defs) {
-        const originalId = def.id;
-        const count = seenDefIds.get(originalId) ?? 0;
-        seenDefIds.set(originalId, count + 1);
-        if (count === 0)
-            continue; // first definition keeps its id
-        const newId = deriveFootnoteId(originalId, count + 1, taken);
-        taken.add(newId);
-        def.id = newId;
-        // Remaining `[^originalId]` matches: index 0 = keeper's marker (left alone),
-        // index 1 = this duplicate's marker. Rewrite index 1.
-        let occurrence = 0;
-        let rewritten = false;
-        const re = new RegExp(`\\[\\^${escapeFootnoteRegExp(originalId)}\\]`, "g");
-        dedupedBody = dedupedBody.replace(re, (match) => {
-            const idx = occurrence++;
-            if (!rewritten && idx === 1) {
-                rewritten = true;
-                return `[^${newId}]`;
-            }
-            return match;
-        });
+        if (!firstById.has(def.id))
+            firstById.set(def.id, def.text);
     }
-    const inner = defs
-        .map((d) => `<div data-footnote-def data-id="${escapeFootnoteAttr(d.id)}"><p>${marked.parseInline(d.text || "")}</p></div>`)
+    const inner = [...firstById.entries()]
+        .map(([id, text]) => `<div data-footnote-def data-id="${escapeFootnoteAttr(id)}"><p>${marked.parseInline(text || "")}</p></div>`)
         .join("");
     return {
-        body: dedupedBody,
+        body: bodyLines.join("\n"),
         section: `<section data-footnotes>${inner}</section>`,
     };
 }

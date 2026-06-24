@@ -23,6 +23,7 @@ import {
   MutationResult,
 } from "./lib/collaboration.js";
 import { docmostExtensions } from "./lib/docmost-schema.js";
+import { analyzeFootnotes } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import {
   serializeDocmostMarkdown,
@@ -1054,7 +1055,11 @@ export class DocmostClient {
       await this.client.post("/pages/update", { pageId: newPageId, title });
     }
 
-    return this.getPage(newPageId);
+    const page = await this.getPage(newPageId);
+    // Surface non-fatal footnote problems (dangling refs, empty/duplicate
+    // definitions, markers in tables) so the agent can fix its markup (#166).
+    const { warnings } = analyzeFootnotes(content);
+    return warnings.length > 0 ? { ...page, footnoteWarnings: warnings } : page;
   }
 
   /**
@@ -1095,12 +1100,15 @@ export class DocmostClient {
       throw new Error(`Failed to update page content: ${error.message}`);
     }
 
+    const { warnings } = analyzeFootnotes(content);
     return {
       success: true,
       modified: true,
       message: "Page updated successfully.",
       pageId: pageId,
       verify: mutation.verify,
+      // Non-fatal footnote diagnostics (#166); omitted when there are none.
+      ...(warnings.length > 0 ? { footnoteWarnings: warnings } : {}),
     };
   }
 
@@ -1416,6 +1424,10 @@ export class DocmostClient {
     if (meta?.pageId && meta.pageId !== pageId) {
       result.warning = `File was exported from page ${meta.pageId} but is being imported into ${pageId}.`;
     }
+    // Non-fatal footnote diagnostics (#166), analyzed on the body (definitions
+    // and references live there, not in the front-matter/comments sections).
+    const { warnings } = analyzeFootnotes(body);
+    if (warnings.length > 0) result.footnoteWarnings = warnings;
     return result;
   }
 

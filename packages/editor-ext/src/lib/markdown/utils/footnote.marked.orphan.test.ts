@@ -13,36 +13,33 @@ function bodyMarkers(body: string): string[] {
   return [...body.matchAll(/\[\^([^\]\s]+)\]/g)].map((m) => m[1]);
 }
 
-describe("extractFootnoteDefinitions: more definitions than markers (orphans)", () => {
-  // Body has ONE `[^d]` reference marker but THREE `[^d]:` definitions. The
-  // surplus definitions have no marker to pair with — they must NOT be silently
-  // merged into one footnote (the editor's last-wins sync would otherwise drop
-  // two of them). The dedup gives each colliding definition a deterministic
-  // derived id so all three survive as distinct footnoteDefinition nodes.
+describe("extractFootnoteDefinitions: duplicate definition ids (first-wins)", () => {
+  // Body has ONE `[^d]` reference but THREE `[^d]:` definitions. Under the
+  // import model (#166) a duplicate definition id is FIRST-WINS: only the first
+  // definition is kept; the rest are DROPPED (and surfaced by analyzeFootnotes,
+  // not silently re-id'd into orphan footnotes as before). Reference markers are
+  // never rewritten, so repeated references would reuse the single footnote.
   const md = ["See[^d].", "", "[^d]: a", "[^d]: b", "[^d]: c"].join("\n");
 
-  it("emits 3 DISTINCT definition ids: d, d__2, d__3 (derived scheme, in order)", () => {
+  it("keeps only the FIRST definition for the id (first-wins)", () => {
     const { section } = extractFootnoteDefinitions(md);
     const ids = defIds(section);
-    expect(ids).toEqual(["d", "d__2", "d__3"]);
-    // All distinct: nothing was merged away.
-    expect(new Set(ids).size).toBe(3);
+    expect(ids).toEqual(["d"]);
   });
 
-  it("preserves each definition's text against its (possibly derived) id", () => {
+  it("keeps the first definition's text and drops the duplicates", () => {
     const { section } = extractFootnoteDefinitions(md);
-    // First definition keeps the original id and its text.
     expect(section).toContain('data-footnote-def data-id="d"><p>a</p>');
-    // The two surplus definitions survive as orphans with derived ids.
-    expect(section).toContain('data-footnote-def data-id="d__2"><p>b</p>');
-    expect(section).toContain('data-footnote-def data-id="d__3"><p>c</p>');
+    // No derived `d__2` / `d__3` ids are emitted anymore.
+    expect(section).not.toContain("d__2");
+    expect(section).not.toContain("d__3");
+    // The dropped duplicate texts are not in the section.
+    expect(section).not.toContain("<p>b</p>");
+    expect(section).not.toContain("<p>c</p>");
   });
 
-  it("leaves the SINGLE body marker as [^d] (no surplus marker to rewrite)", () => {
+  it("leaves the SINGLE body marker as [^d] (markers are never rewritten)", () => {
     const { body } = extractFootnoteDefinitions(md);
-    // There is exactly one reference marker and it is untouched: the keeper
-    // definition pairs with it. The orphan defs have no marker, so the body is
-    // unchanged except for the stripped definition lines.
     expect(bodyMarkers(body)).toEqual(["d"]);
     expect(body).toContain("See[^d].");
     // The definition lines themselves were pulled OUT of the body.
@@ -55,9 +52,21 @@ describe("extractFootnoteDefinitions: more definitions than markers (orphans)", 
     const { section } = extractFootnoteDefinitions(md);
     expect(section.startsWith("<section data-footnotes>")).toBe(true);
     expect(section.endsWith("</section>")).toBe(true);
-    // Exactly three definition divs.
-    expect(
-      [...section.matchAll(/<div data-footnote-def/g)],
-    ).toHaveLength(3);
+    // Exactly one definition div (first-wins).
+    expect([...section.matchAll(/<div data-footnote-def/g)]).toHaveLength(1);
+  });
+});
+
+describe("extractFootnoteDefinitions: reuse (repeated references, one definition)", () => {
+  // Pandoc semantics: many `[^a]` references + one `[^a]:` definition = one
+  // footnote, shared. Markers are left intact so the editor numbers them as one.
+  const md = ["A[^a] B[^a] C[^a].", "", "[^a]: shared note"].join("\n");
+
+  it("emits exactly one definition and leaves every reference marker as [^a]", () => {
+    const { section, body } = extractFootnoteDefinitions(md);
+    expect(defIds(section)).toEqual(["a"]);
+    expect(section).toContain('data-footnote-def data-id="a"><p>shared note</p>');
+    // All three reference markers stay `a` (no `a__2`/`a__3` minting).
+    expect(bodyMarkers(body)).toEqual(["a", "a", "a"]);
   });
 });

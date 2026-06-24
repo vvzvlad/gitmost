@@ -307,13 +307,12 @@ describe("footnote sync plugin (orphans)", () => {
     editor.destroy();
   });
 
-  it("two definitions sharing an id (with two matching references) BOTH survive the first edit (no data loss)", () => {
-    // Reproduces the verified data-loss bug: two footnoteDefinition nodes share
-    // id "d", and there are two references with id "d". The OLD code built the
-    // definitions Map last-wins and emitted exactly one definition for the
-    // de-duplicated reference, so the very first keystroke's sync transaction
-    // deleted the whole list and rebuilt it from one definition — silently
-    // destroying "first" and keeping only "second".
+  it("repeated references REUSE one footnote; a duplicate definition is dropped (first-wins)", () => {
+    // Reuse semantics (#166): two references with id "d" are the SAME footnote
+    // (one number, shared definition) — they are NEVER re-id'd. Two definitions
+    // sharing id "d" are first-wins: the first keeps "d", the second is re-id'd
+    // to a deterministic orphan id and then dropped by the orphan policy (it has
+    // no matching reference). So the result is ONE reused footnote on "first".
     const editor = makeEditor({
       type: "doc",
       content: [
@@ -351,8 +350,8 @@ describe("footnote sync plugin (orphans)", () => {
     editor.commands.insertContentAt(1, " ");
 
     const doc = editor.state.doc;
-    // BOTH definitions survive.
-    expect(countType(doc, FOOTNOTE_DEFINITION_NAME)).toBe(2);
+    // One shared definition survives (first-wins); the duplicate is dropped.
+    expect(countType(doc, FOOTNOTE_DEFINITION_NAME)).toBe(1);
     const defTexts: string[] = [];
     const defIds: string[] = [];
     doc.descendants((node) => {
@@ -361,27 +360,23 @@ describe("footnote sync plugin (orphans)", () => {
         defTexts.push(node.textContent);
       }
     });
-    // No content was lost: both "first" and "second" are still present.
-    expect(defTexts.sort()).toEqual(["first", "second"]);
-    // The colliding ids were made distinct.
-    expect(new Set(defIds).size).toBe(2);
-    // Each definition's id matches exactly one reference (1:1 pairing).
+    expect(defTexts).toEqual(["first"]);
+    expect(defIds).toEqual(["d"]);
+    // Both references keep id "d" (reuse — not re-id'd).
     const refIds: string[] = [];
     doc.descendants((node) => {
       if (node.type.name === FOOTNOTE_REFERENCE_NAME) refIds.push(node.attrs.id);
     });
-    expect(refIds.sort()).toEqual(defIds.sort());
+    expect(refIds).toEqual(["d", "d"]);
     editor.destroy();
   });
 
-  it("re-ids colliding duplicates DETERMINISTICALLY (two clients converge to identical ids)", () => {
+  it("reuse outcome is DETERMINISTIC across clients (Yjs convergence)", () => {
     // Cross-client determinism guard. Two collaborating clients each see the
-    // SAME duplicate-id document and each make a local edit. The sync plugin
-    // runs identically on every client, so it MUST mint the SAME new ids on both
-    // — otherwise the two clients diverge permanently over Yjs (duplicated
-    // footnotes). This is exactly the blocker the previous random-id
-    // (generateFootnoteId / Math.random) implementation caused: it would mint
-    // DIFFERENT ids on each client and this assertion would fail.
+    // SAME document and make a local edit; the sync plugin runs identically, so
+    // the resolved state MUST be identical (else they diverge over Yjs). Under
+    // reuse the three "d" references collapse to one footnote and the duplicate
+    // definitions are dropped (first-wins) — deterministically on every client.
     const duplicateDoc = {
       type: "doc",
       content: [
@@ -435,30 +430,28 @@ describe("footnote sync plugin (orphans)", () => {
       editor.commands.insertContentAt(1, " "); // local keystroke -> sync runs
       const refIds: string[] = [];
       const defIds: string[] = [];
+      const defTexts: string[] = [];
       editor.state.doc.descendants((node) => {
         if (node.type.name === FOOTNOTE_REFERENCE_NAME)
           refIds.push(node.attrs.id);
-        if (node.type.name === FOOTNOTE_DEFINITION_NAME)
+        if (node.type.name === FOOTNOTE_DEFINITION_NAME) {
           defIds.push(node.attrs.id);
+          defTexts.push(node.textContent);
+        }
       });
       editor.destroy();
-      return { refIds, defIds };
+      return { refIds, defIds, defTexts };
     };
 
     const clientA = idsAfterLocalEdit();
     const clientB = idsAfterLocalEdit();
 
-    // Both clients computed IDENTICAL ids (the property that makes Yjs converge).
-    expect(clientA.refIds).toEqual(clientB.refIds);
-    expect(clientA.defIds).toEqual(clientB.defIds);
-
-    // And the ids are deterministic-derived (not random uuid-style): the keeper
-    // keeps "d", the duplicates become "d__2", "d__3".
-    expect(new Set(clientA.refIds)).toEqual(new Set(["d", "d__2", "d__3"]));
-    // Every definition survived with a unique id, 1:1 with the references.
-    expect(clientA.defIds.length).toBe(3);
-    expect(new Set(clientA.defIds).size).toBe(3);
-    expect([...clientA.refIds].sort()).toEqual([...clientA.defIds].sort());
+    // Both clients resolved to IDENTICAL state (the Yjs-convergence property).
+    expect(clientA).toEqual(clientB);
+    // Reuse: the three references stay "d"; one definition survives (first-wins).
+    expect(clientA.refIds).toEqual(["d", "d", "d"]);
+    expect(clientA.defIds).toEqual(["d"]);
+    expect(clientA.defTexts).toEqual(["one"]);
   });
 
   it("removes an orphan definition with no matching reference", () => {

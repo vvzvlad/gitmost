@@ -55,10 +55,11 @@ describe("footnote markdown round-trip", () => {
     expect(html).not.toContain("data-footnote-def");
   });
 
-  it("extractFootnoteDefinitions de-duplicates colliding ids and rewrites markers", () => {
-    // Two definitions share id `d`, and the body has two `[^d]` markers. The
-    // output must keep BOTH definitions with DISTINCT ids and rewrite the second
-    // marker so the (reference, definition) pairing stays 1:1.
+  it("extractFootnoteDefinitions keeps the FIRST duplicate definition and reuses markers", () => {
+    // Two definitions share id `d`, and the body has two `[^d]` markers. Under
+    // the import model (#166) duplicate definition ids are FIRST-WINS: only the
+    // first definition is kept; markers are NEVER rewritten, so the two `[^d]`
+    // references reuse the single footnote.
     const md = [
       "See here[^d] and there[^d].",
       "",
@@ -68,30 +69,23 @@ describe("footnote markdown round-trip", () => {
 
     const { body, section } = extractFootnoteDefinitions(md);
 
-    // Pull out the def ids from the section in order.
     const defIds = Array.from(
       section.matchAll(/data-footnote-def data-id="([^"]+)"/g),
     ).map((m) => m[1]);
-    expect(defIds.length).toBe(2);
-    expect(new Set(defIds).size).toBe(2); // distinct
-    expect(defIds[0]).toBe("d"); // first definition keeps the id
-
-    // Both definition texts survive.
+    expect(defIds).toEqual(["d"]); // first-wins: one definition
     expect(section).toContain("first");
-    expect(section).toContain("second");
+    expect(section).not.toContain("second"); // duplicate dropped
 
-    // The body still has two markers, now pointing at the two distinct ids.
+    // Both markers stay `[^d]` (reuse) — no `d__2` minting.
     const refIds = Array.from(body.matchAll(/\[\^([^\]\s]+)\]/g)).map(
       (m) => m[1],
     );
-    expect(refIds.length).toBe(2);
-    expect(refIds.sort()).toEqual(defIds.sort());
+    expect(refIds).toEqual(["d", "d"]);
   });
 
-  it("extractFootnoteDefinitions dedups DETERMINISTICALLY (same input -> same ids)", () => {
-    // The derived id must be a pure function of the input markdown so importing
-    // the same source twice (or via the editor and the MCP mirror) yields
-    // identical ids — never random/time-based.
+  it("extractFootnoteDefinitions is DETERMINISTIC and stable (same input -> same output)", () => {
+    // The output must be a pure function of the input markdown so importing the
+    // same source twice (or via the editor and the MCP mirror) is identical.
     const md = [
       "See[^d] one[^d] two[^d].",
       "",
@@ -113,15 +107,13 @@ describe("footnote markdown round-trip", () => {
 
     const a = run();
     const b = run();
-    // Identical across runs (this is what would FAIL on the random-id version).
-    expect(a.defIds).toEqual(b.defIds);
-    expect(a.refIds).toEqual(b.refIds);
-    // Deterministic derived scheme: keeper "d", duplicates "d__2", "d__3".
-    expect(a.defIds).toEqual(["d", "d__2", "d__3"]);
-    expect(a.refIds.sort()).toEqual(a.defIds.sort());
+    expect(a).toEqual(b);
+    // First-wins: one kept definition `d`; all three reuse markers stay `d`.
+    expect(a.defIds).toEqual(["d"]);
+    expect(a.refIds).toEqual(["d", "d", "d"]);
   });
 
-  it("markdownToHtml with duplicate ids renders two distinct footnote defs", async () => {
+  it("markdownToHtml with a reused id renders ONE shared footnote def", async () => {
     const md = [
       "See here[^d] and there[^d].",
       "",
@@ -132,9 +124,8 @@ describe("footnote markdown round-trip", () => {
     const defIds = Array.from(
       html.matchAll(/data-footnote-def data-id="([^"]+)"/g),
     ).map((m) => m[1]);
-    expect(defIds.length).toBe(2);
-    expect(new Set(defIds).size).toBe(2);
+    expect(defIds).toEqual(["d"]); // one shared definition
     expect(html).toContain("first");
-    expect(html).toContain("second");
+    expect(html).not.toContain("second");
   });
 });

@@ -73,51 +73,58 @@ function scan(doc: ProseMirrorNode): FootnoteScan {
  *
  * The overriding invariant is that NO definition is ever dropped here: every
  * definition occurrence ends up with a unique id and therefore survives the
- * canonical rebuild. Duplicate references are likewise re-id'd (and paired with
- * a duplicate definition when one exists) so importing/pasting `[^d]` twice with
- * two `[^d]:` definitions yields TWO distinct footnotes rather than one.
+ * canonical rebuild. Repeated references that share an id are REUSE (one
+ * footnote) and are left untouched; only duplicate DEFINITIONS are re-id'd, so a
+ * pasted/merged second `[^d]:` survives as its own (then orphaned) footnote.
  */
 interface CollisionPlan {
   /**
-   * Reference ids in document order, de-duplicated AFTER re-id. This is the
-   * source of truth for definition order/numbering, exactly as before — only
-   * now collisions have been resolved so it no longer hides duplicates.
+   * Distinct reference ids in document order (first appearance). Repeated ids
+   * are reuse and collapse to a single entry. Source of truth for definition
+   * order/numbering.
    */
   referenceIds: string[];
-  /** id -> definition node, after duplicates were re-id'd. One entry per id. */
+  /** id -> definition node, after duplicate definitions were re-id'd. One per id. */
   definitions: Map<string, ProseMirrorNode>;
   /**
-   * Body reference re-id edits to apply (position of a reference node -> the
-   * fresh id it must carry). Empty when there are no colliding references.
+   * Body reference re-id edits. ALWAYS EMPTY under reuse semantics (references
+   * are never re-id'd); retained so the downstream consumer stays a harmless
+   * no-op rather than needing removal.
    */
   refReids: Array<{ pos: number; node: ProseMirrorNode; newId: string }>;
-  /** True when any collision required a re-id (refs and/or defs). */
+  /** True when a duplicate definition required a re-id. */
   changed: boolean;
 }
 
 /**
- * Resolve duplicate-id collisions among references and definitions WITHOUT ever
- * dropping a definition.
+ * Resolve the footnote id topology WITHOUT ever dropping a definition.
  *
- * Strategy:
- *  - Walk references in document order. The FIRST reference for an id keeps it.
- *    Any later reference sharing that id is a duplicate and gets a fresh unique
- *    id; if a still-unclaimed duplicate definition with the original id exists,
- *    it is re-id'd to the SAME fresh id so the (ref, def) pair stays matched.
- *  - Walk definitions in document order. The FIRST definition for an id keeps
- *    it; later duplicates that were not already claimed by a duplicate reference
- *    get their own fresh unique id (surviving as a distinct footnote/orphan).
+ * Reference REUSE (Pandoc semantics, #166): repeated `[^a]` references that share
+ * an id are the SAME footnote — they get one number and one definition and are
+ * NEVER re-id'd. So the reference walk only records the FIRST occurrence of each
+ * id (de-duplicating in document order); later occurrences are reuse and produce
+ * no mutation at all.
  *
- * Re-id determinism: every fresh id is DERIVED from document state via
- * deriveFootnoteId (e.g. `X__2`, `X__3`, collision-bumped against the set of ids
- * already present) — NEVER random/time-based. Because the sync plugin runs
- * identically on every collaborating client, a deterministic re-id is the only
- * way they can converge on the SAME ids; a random id (the previous
- * implementation) made two clients editing the same duplicate-id document mint
- * DIFFERENT ids for the same duplicate, causing permanent Yjs divergence.
+ * Duplicate DEFINITIONS (two `[^d]:` nodes sharing an id reaching the LIVE editor
+ * via paste/collab merge) keep the never-lose policy: the first keeps the id, and
+ * each later duplicate is re-id'd to a DETERMINISTIC fresh id (deriveFootnoteId:
+ * `X__2`, `X__3`, collision-bumped) so it survives as a distinct footnote — which,
+ * having no matching reference, then falls under the normal orphan policy. It is
+ * only ever dropped for lacking a reference, never for colliding. The IMPORT
+ * paths (footnote.marked.ts / MCP extractFootnotes) instead apply first-wins +
+ * drop + warn for duplicate definitions; that divergence is intentional — import
+ * is an agent-authored artifact we sanitize, the editor is live user data we must
+ * not lose.
+ *
+ * Re-id determinism: every fresh id is DERIVED from document state, NEVER
+ * random/time-based, because the sync plugin runs identically on every
+ * collaborating client and a random id would make two clients mint DIFFERENT ids
+ * for the same duplicate, causing permanent Yjs divergence.
  */
 function resolveCollisions(scan: FootnoteScan): CollisionPlan {
   const definitions = new Map<string, ProseMirrorNode>();
+  // References are never re-id'd under reuse semantics, so this stays empty; it
+  // is retained so the CollisionPlan shape (and its no-op consumer) is unchanged.
   const refReids: Array<{
     pos: number;
     node: ProseMirrorNode;
@@ -127,17 +134,14 @@ function resolveCollisions(scan: FootnoteScan): CollisionPlan {
   const seenRefIds = new Set<string>();
   let changed = false;
 
-  // `taken` is the set of every id that must be avoided when minting a derived
-  // id: all original reference + definition ids in the document PLUS every id we
-  // mint during this pass. It is pure document state, so the derivation stays
-  // deterministic across clients. Per-original occurrence counters make the k-th
-  // duplicate of `X` deterministically become `X__2`, `X__3`, ...
+  // `taken` is the set of every id to avoid when minting a derived id for a
+  // duplicate definition: all original reference + definition ids PLUS every id
+  // minted in this pass. Pure document state, so the derivation is deterministic
+  // across clients.
   const taken = new Set<string>();
   for (const occ of scan.refOccurrences) taken.add(occ.id);
   for (const occ of scan.defOccurrences) taken.add(occ.id);
   const occurrenceOf = new Map<string, number>();
-  // Mint a deterministic unique id for a duplicate of `originalId`. The first
-  // duplicate is occurrence 2 (the keeper is occurrence 1), then 3, 4, ...
   const mintId = (originalId: string): string => {
     const next = (occurrenceOf.get(originalId) ?? 1) + 1;
     occurrenceOf.set(originalId, next);
@@ -146,63 +150,23 @@ function resolveCollisions(scan: FootnoteScan): CollisionPlan {
     return id;
   };
 
-  // Bucket definition occurrences by their original id so a duplicate reference
-  // can claim a matching (as-yet-unclaimed) duplicate definition and re-id the
-  // pair together. defByOriginalId[id] is consumed front-to-back.
-  const defByOriginalId = new Map<string, DefOccurrence[]>();
-  for (const occ of scan.defOccurrences) {
-    const arr = defByOriginalId.get(occ.id);
-    if (arr) arr.push(occ);
-    else defByOriginalId.set(occ.id, [occ]);
-  }
-  // The FIRST definition for each id is the canonical keeper of that id.
-  const claimed = new Set<DefOccurrence>();
-
+  // References: record each DISTINCT id once, in first-appearance order. Repeated
+  // ids are reuse — nothing to mint, nothing to re-id.
   for (const ref of scan.refOccurrences) {
     if (!seenRefIds.has(ref.id)) {
-      // First reference with this id keeps it.
       seenRefIds.add(ref.id);
       referenceIds.push(ref.id);
-      continue;
-    }
-    // Duplicate reference: assign a deterministic derived id. Pair it with the
-    // next unclaimed duplicate definition (NOT the first keeper) carrying the
-    // same original id, if one exists, so the (ref, def) pairing is preserved
-    // 1:1.
-    const newId = mintId(ref.id);
-    refReids.push({ pos: ref.pos, node: ref.node, newId });
-    seenRefIds.add(newId);
-    referenceIds.push(newId);
-    changed = true;
-
-    const candidates = defByOriginalId.get(ref.id) ?? [];
-    // Skip the first occurrence (it keeps the original id); pick the first
-    // duplicate not already claimed.
-    for (let i = 1; i < candidates.length; i++) {
-      const cand = candidates[i];
-      if (!claimed.has(cand)) {
-        claimed.add(cand);
-        definitions.set(newId, cand.node);
-        break;
-      }
     }
   }
 
-  // Now place every definition under a unique id. The first occurrence of each
-  // original id keeps it; remaining duplicates either were paired with a
-  // duplicate reference above (already placed) or get a fresh standalone id.
+  // Definitions: the first occurrence of each id keeps it; a later duplicate is
+  // re-id'd deterministically so it is never silently dropped (never-lose).
   const seenDefIds = new Set<string>();
   for (const occ of scan.defOccurrences) {
-    if (claimed.has(occ)) continue; // already placed against a duplicate ref id
     if (!seenDefIds.has(occ.id)) {
       seenDefIds.add(occ.id);
       definitions.set(occ.id, occ.node);
     } else {
-      // Duplicate definition with no duplicate reference to pair with: keep it
-      // with a deterministic derived id so it is NEVER silently dropped. (It
-      // becomes an orphan and is then subject to the normal orphan policy — but
-      // only ever because it has no matching reference, never because it
-      // collided.)
       const newId = mintId(occ.id);
       definitions.set(newId, occ.node);
       changed = true;
@@ -546,13 +510,17 @@ export const footnotePastePluginKey = new PluginKey("footnotePaste");
  * Without this, pasting a reference+definition pair copied from elsewhere — or
  * duplicating one in place — would merge with (or clobber) the existing footnote
  * of the same id. The schema-sync plugin already guarantees no definition is
- * ever silently deleted after the fact (it re-id's collisions), but regenerating
- * at paste time keeps the pasted footnote cleanly separate from the start and
- * avoids any transient merge.
+ * ever silently deleted after the fact (it re-id's duplicate definitions), but
+ * regenerating at paste time keeps the pasted footnote cleanly separate from the
+ * start and avoids any transient merge.
  *
- * Only COLLIDING ids are remapped: a self-paste of a lone reference whose id is
- * not present elsewhere is left untouched (so it still resolves to its existing
- * definition).
+ * REUSE-aware (#166): only a colliding DEFINITION forces a remap. Pasting a lone
+ * reference whose id already exists is REUSE — it must keep the id so it resolves
+ * to the existing footnote (one number, shared definition). So we remap an id
+ * only when the pasted slice itself carries a `footnoteDefinition` for it (which
+ * would otherwise clobber the existing definition's text); the matching pasted
+ * references are remapped along with it to stay paired. A self-paste of just a
+ * reference is left untouched.
  */
 export function footnotePastePlugin(): Plugin {
   return new Plugin({
@@ -572,31 +540,35 @@ export function footnotePastePlugin(): Plugin {
         });
         if (existing.size === 0) return slice;
 
-        // Build a remap (old id -> fresh id) for every COLLIDING id found in the
-        // pasted slice, shared by references and definitions so a pasted pair
-        // stays matched. A paste is a distinct local user action (not a
-        // shared-state convergence point), so determinism is not strictly
-        // required here — but we derive the new id deterministically anyway
-        // (deriveFootnoteId against the current doc's id set) for consistency
-        // with the sync/import paths and to keep Math.random off this code path.
-        const remap = new Map<string, string>();
-        const collectColliding = (node: ProseMirrorNode) => {
-          if (
-            node.type.name === FOOTNOTE_REFERENCE_NAME ||
-            node.type.name === FOOTNOTE_DEFINITION_NAME
-          ) {
+        // Ids the pasted slice DEFINES (carries a footnoteDefinition for). Only
+        // these can clobber an existing footnote's text, so only these force a
+        // remap; a pasted reference to an already-existing id is reuse and keeps
+        // its id.
+        const sliceDefIds = new Set<string>();
+        const collectDefIds = (node: ProseMirrorNode) => {
+          if (node.type.name === FOOTNOTE_DEFINITION_NAME) {
             const id = node.attrs.id;
-            if (id && existing.has(id) && !remap.has(id)) {
-              const newId = deriveFootnoteId(id, 2, existing);
-              remap.set(id, newId);
-              // Reserve it so a second colliding id deriving to the same base
-              // bumps instead of clashing.
-              existing.add(newId);
-            }
+            if (id) sliceDefIds.add(id);
           }
-          node.descendants(collectColliding);
+          node.descendants(collectDefIds);
         };
-        slice.content.descendants(collectColliding);
+        slice.content.descendants(collectDefIds);
+
+        // Build a remap (old id -> fresh id) for every colliding id the slice
+        // DEFINES, shared by references and definitions so a pasted pair stays
+        // matched. The new id is derived deterministically (deriveFootnoteId
+        // against the current doc's id set) for consistency with the sync/import
+        // paths and to keep Math.random off this code path.
+        const remap = new Map<string, string>();
+        for (const id of sliceDefIds) {
+          if (existing.has(id) && !remap.has(id)) {
+            const newId = deriveFootnoteId(id, 2, existing);
+            remap.set(id, newId);
+            // Reserve it so a second colliding id deriving to the same base
+            // bumps instead of clashing.
+            existing.add(newId);
+          }
+        }
         if (remap.size === 0) return slice;
 
         // Rewrite the colliding ids throughout the slice.
