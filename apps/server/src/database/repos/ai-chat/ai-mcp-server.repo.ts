@@ -21,32 +21,35 @@ export class AiMcpServerRepo {
     id: string,
     workspaceId: string,
   ): Promise<AiMcpServer | undefined> {
-    return this.db
+    const row = await this.db
       .selectFrom('aiMcpServers')
       .selectAll('aiMcpServers')
       .where('id', '=', id)
       .where('workspaceId', '=', workspaceId)
       .executeTakeFirst();
+    return row ? normalizeRow(row) : row;
   }
 
   async listByWorkspace(workspaceId: string): Promise<AiMcpServer[]> {
-    return this.db
+    const rows = await this.db
       .selectFrom('aiMcpServers')
       .selectAll('aiMcpServers')
       .where('workspaceId', '=', workspaceId)
       .orderBy('createdAt', 'asc')
       .execute();
+    return rows.map(normalizeRow);
   }
 
   /** Enabled servers only — used by the agent loop to build the toolset. */
   async listEnabled(workspaceId: string): Promise<AiMcpServer[]> {
-    return this.db
+    const rows = await this.db
       .selectFrom('aiMcpServers')
       .selectAll('aiMcpServers')
       .where('workspaceId', '=', workspaceId)
       .where('enabled', '=', true)
       .orderBy('createdAt', 'asc')
       .execute();
+    return rows.map(normalizeRow);
   }
 
   async insert(
@@ -130,6 +133,14 @@ export class AiMcpServerRepo {
  * Encode a string[] as a jsonb bind for the `tool_allowlist` column. Passing a
  * plain JS array to the postgres driver would serialize it as a Postgres array
  * literal (incompatible with jsonb), so we bind the JSON text and cast it.
+ *
+ * The cast is `::text::jsonb`, NOT `::jsonb`: if the parameter is bound straight
+ * to a jsonb cast, node-postgres infers its type as jsonb and JSON-stringifies
+ * the (already-JSON) string a SECOND time, so the column ends up holding a jsonb
+ * STRING SCALAR (`"[\"a\"]"`) instead of a jsonb ARRAY. Forcing the param through
+ * `::text` first binds it as text (sent verbatim), and `::jsonb` then parses it
+ * into a real array. (`normalizeRow` below repairs rows written the old way.)
+ *
  * Returns null for null/empty arrays (an empty allowlist means "no restriction"
  * is not intended — callers pass null to clear; an empty array is normalized to
  * null here so it never round-trips as `[]`).
@@ -139,5 +150,37 @@ function jsonbArray(value: string[] | null | undefined) {
     return null;
   }
   // Typed as string[] so it is assignable to the toolAllowlist column.
-  return sql<string[]>`${JSON.stringify(value)}::jsonb`;
+  return sql<string[]>`${JSON.stringify(value)}::text::jsonb`;
+}
+
+/**
+ * Parse the `toolAllowlist` value read from the DB into the `string[] | null`
+ * the entity type promises. The jsonb column historically round-trips as a JSON
+ * STRING (rows written by the old double-encoding `jsonbArray`, see above), so
+ * the driver hands back a string like `'["a","b"]'` rather than an array. Be
+ * tolerant: an already-parsed array passes through; a JSON string is parsed; null
+ * / a non-array / unparseable value becomes null (unrestricted).
+ */
+export function parseToolAllowlist(value: unknown): string[] | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    return value.every((v) => typeof v === 'string') ? (value as string[]) : null;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) &&
+        parsed.every((v) => typeof v === 'string')
+        ? (parsed as string[])
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Normalize a DB row so `toolAllowlist` is always `string[] | null`. */
+function normalizeRow(row: AiMcpServer): AiMcpServer {
+  return { ...row, toolAllowlist: parseToolAllowlist(row.toolAllowlist) };
 }
