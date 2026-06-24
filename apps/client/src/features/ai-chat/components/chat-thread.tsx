@@ -21,6 +21,10 @@ import {
   IAiChatMessageRow,
   IAiRole,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
+import {
+  roleLaunchMessage,
+  shouldResetRolePicked,
+} from "@/features/ai-chat/utils/role-launch.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import { extractServerChatId } from "@/features/ai-chat/utils/adopt-chat-id.ts";
 import {
@@ -330,13 +334,14 @@ export default function ChatThread({
   const handleRolePick = (role: IAiRole): void => {
     roleIdRef.current = role.id;
     onRolePicked?.(role);
-    if (role.autoStart) {
-      // Custom launch message when set; otherwise the built-in default text.
-      sendMessage({
-        text: role.launchMessage?.trim() || t("Take a look at the current document"),
-      });
+    const launch = roleLaunchMessage(
+      role,
+      t("Take a look at the current document"),
+    );
+    if (launch !== null) {
+      sendMessage({ text: launch });
     } else {
-      // Bind only: hide the cards and show the composer, send nothing.
+      // autoStart=false -> bind only: hide the cards, show the composer.
       setRolePickedNoSend(true);
     }
   };
@@ -348,7 +353,7 @@ export default function ChatThread({
   // correctly stay hidden then. Render-phase reset (React "adjust state on prop
   // change"): one-shot — it re-renders with the flag false and the guard no longer
   // matches, so it cannot loop. (Review of #149.)
-  if (chatId === null && roleId == null && rolePickedNoSend) {
+  if (shouldResetRolePicked(chatId, roleId, rolePickedNoSend)) {
     setRolePickedNoSend(false);
   }
   const showRoleCards =

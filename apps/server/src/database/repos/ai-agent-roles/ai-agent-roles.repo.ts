@@ -96,7 +96,7 @@ export class AiAgentRoleRepo {
         enabled: values.enabled ?? true,
         autoStart: values.autoStart ?? true,
         // Empty string is treated as "no custom text" => null.
-        launchMessage: values.launchMessage ? values.launchMessage : null,
+        launchMessage: values.launchMessage || null,
       })
       .returningAll()
       .executeTakeFirst();
@@ -133,7 +133,7 @@ export class AiAgentRoleRepo {
     if (patch.autoStart !== undefined) set.autoStart = patch.autoStart;
     if (patch.launchMessage !== undefined) {
       // Empty string clears to null (client default launch message).
-      set.launchMessage = patch.launchMessage ? patch.launchMessage : null;
+      set.launchMessage = patch.launchMessage || null;
     }
     await db
       .updateTable('aiAgentRoles')
