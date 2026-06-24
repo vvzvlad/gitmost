@@ -52,7 +52,7 @@ function singleLetterSuffixes(): string[] {
   return Array.from({ length: 25 }, (_, i) => String.fromCharCode(98 + i));
 }
 
-describe("deriveFootnoteId golden table (cross-package drift guard)", () => {
+describe("deriveFootnoteId golden table (deterministic-scheme pin)", () => {
   for (const row of DERIVE_GOLDEN) {
     it(`derive("${row.originalId}", ${row.occurrence}, {${row.taken.join(",")}}) === "${row.expected}" — ${row.why}`, () => {
       const got = deriveFootnoteId(

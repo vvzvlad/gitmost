@@ -9,7 +9,7 @@ import WebSocket from "ws";
 import { convertProseMirrorToMarkdown } from "./lib/markdown-converter.js";
 import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, } from "./lib/collaboration.js";
 import { docmostExtensions } from "./lib/docmost-schema.js";
-import { analyzeFootnotes } from "./lib/footnote-analyze.js";
+import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import { serializeDocmostMarkdown, parseDocmostMarkdown, } from "./lib/markdown-document.js";
 import { replaceNodeById, deleteNodeById, insertNodeRelative, buildOutline, getNodeByRef, readTable, insertTableRow, deleteTableRow, updateTableCell, } from "./lib/node-ops.js";
@@ -820,8 +820,7 @@ export class DocmostClient {
         const page = await this.getPage(newPageId);
         // Surface non-fatal footnote problems (dangling refs, empty/duplicate
         // definitions, markers in tables) so the agent can fix its markup (#166).
-        const { warnings } = analyzeFootnotes(content);
-        return warnings.length > 0 ? { ...page, footnoteWarnings: warnings } : page;
+        return { ...page, ...footnoteWarningsField(content) };
     }
     /**
      * Update a page's content from markdown and optionally its title.
@@ -851,7 +850,6 @@ export class DocmostClient {
             }
             throw new Error(`Failed to update page content: ${error.message}`);
         }
-        const { warnings } = analyzeFootnotes(content);
         return {
             success: true,
             modified: true,
@@ -859,7 +857,7 @@ export class DocmostClient {
             pageId: pageId,
             verify: mutation.verify,
             // Non-fatal footnote diagnostics (#166); omitted when there are none.
-            ...(warnings.length > 0 ? { footnoteWarnings: warnings } : {}),
+            ...footnoteWarningsField(content),
         };
     }
     /**
@@ -1129,11 +1127,11 @@ export class DocmostClient {
         if (meta?.pageId && meta.pageId !== pageId) {
             result.warning = `File was exported from page ${meta.pageId} but is being imported into ${pageId}.`;
         }
-        // Non-fatal footnote diagnostics (#166), analyzed on the body (definitions
-        // and references live there, not in the front-matter/comments sections).
-        const { warnings } = analyzeFootnotes(body);
-        if (warnings.length > 0)
-            result.footnoteWarnings = warnings;
+        // Non-fatal footnote diagnostics (#166), analyzed on the BODY (the part after
+        // the docmost:meta / docmost:comments blocks) — so a `[^x]`-like token inside
+        // those JSON blocks never produces a false warning, while real markers in the
+        // body do. `body` comes from parseDocmostMarkdown(fullMarkdown) above.
+        Object.assign(result, footnoteWarningsField(body));
         return result;
     }
     /**

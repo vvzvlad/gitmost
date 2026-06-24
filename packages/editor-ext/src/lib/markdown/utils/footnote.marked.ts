@@ -12,8 +12,12 @@ import { marked } from "marked";
  *    single <section data-footnotes> with one <div data-footnote-def> per
  *    definition, so the round-trip rebuilds footnotesList + footnoteDefinition.
  *
- * Only definitions that have a matching reference are emitted (and vice-versa
- * the sync plugin fills any gaps on the editor side), keeping the output valid.
+ * Every FIRST definition line is emitted — duplicate ids are first-wins (the
+ * rest are dropped, and surfaced via analyzeFootnotes), and reference markers are
+ * left untouched so repeated `[^a]` references reuse the one footnote (#166).
+ * Orphan definitions (no matching reference) are still emitted here; the editor's
+ * sync plugin reconciles the final reference/definition set (drops orphans,
+ * synthesizes a single empty definition for a reference that lacks one).
  */
 
 const DEFINITION_RE = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/;

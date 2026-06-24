@@ -114,3 +114,16 @@ export function analyzeFootnotes(markdown: string): FootnoteDiagnostics {
     warnings,
   };
 }
+
+/**
+ * The optional `footnoteWarnings` field for a page-write tool result: present
+ * (with the warning lines) only when `markdown` has footnote problems, omitted
+ * otherwise. One helper so all three call sites (create/update/import) attach the
+ * field identically. Spread into the result: `{ ...result, ...footnoteWarningsField(text) }`.
+ */
+export function footnoteWarningsField(markdown: string): {
+  footnoteWarnings?: string[];
+} {
+  const { warnings } = analyzeFootnotes(markdown);
+  return warnings.length > 0 ? { footnoteWarnings: warnings } : {};
+}
