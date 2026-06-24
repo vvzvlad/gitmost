@@ -19,80 +19,16 @@ import {
   useSharedPageSubpages,
   useSharedPageSubtree,
 } from "@/features/share/hooks/use-shared-page-subpages";
-import { IPage } from "@/features/page/types/page.types";
-import { SharedPageTreeNode } from "@/features/share/utils";
+import {
+  SubpageNode,
+  buildSubtree,
+  mapSharedNodes,
+  countNodes,
+} from "./subpages-view.utils";
 
 // Threshold above which the recursive tree shows a small count note. We never
 // cap the data — this is only an informational hint for very large trees.
 const LARGE_TREE_THRESHOLD = 300;
-
-// Normalized node shared by the flat and recursive renderers so the same
-// link/icon markup works for both API pages and shared-tree nodes.
-interface SubpageNode {
-  id: string;
-  slugId: string;
-  title: string;
-  icon?: string;
-  children: SubpageNode[];
-}
-
-// Subpage node carrying `position` so each level can be sorted in place.
-type SubpageNodeWithPos = SubpageNode & {
-  position: string;
-  children: SubpageNodeWithPos[];
-};
-
-// Build a nested subtree from the flat IPage[] returned by /pages/tree.
-function buildSubtree(pages: IPage[], rootId: string): SubpageNode[] {
-  const byId = new Map<string, SubpageNodeWithPos>(
-    pages.map((p) => [
-      p.id,
-      {
-        id: p.id,
-        slugId: p.slugId,
-        title: p.title,
-        icon: p.icon,
-        position: p.position,
-        children: [],
-      },
-    ]),
-  );
-
-  for (const p of pages) {
-    const node = byId.get(p.id);
-    const parent = p.parentPageId ? byId.get(p.parentPageId) : undefined;
-    // Guard against cycles / self-parenting: never attach a node to itself or
-    // to the root, and only attach when the parent is actually present.
-    if (node && parent && p.id !== rootId) {
-      parent.children.push(node);
-    }
-  }
-
-  const sortRecursive = (nodes: SubpageNodeWithPos[]) => {
-    const sorted = sortPositionKeys(nodes) as SubpageNodeWithPos[];
-    sorted.forEach((n) => sortRecursive(n.children));
-    return sorted;
-  };
-
-  const root = byId.get(rootId);
-  return root ? sortRecursive(root.children) : [];
-}
-
-// Map shared-tree nodes (already nested) onto the normalized SubpageNode shape.
-function mapSharedNodes(nodes: SharedPageTreeNode[]): SubpageNode[] {
-  return nodes.map((node) => ({
-    id: node.value,
-    slugId: node.slugId,
-    title: node.name,
-    icon: node.icon,
-    children: node.children ? mapSharedNodes(node.children) : [],
-  }));
-}
-
-// Count every descendant in a normalized subtree.
-function countNodes(nodes: SubpageNode[]): number {
-  return nodes.reduce((acc, n) => acc + 1 + countNodes(n.children), 0);
-}
 
 interface TreeNodeProps {
   node: SubpageNode;
@@ -194,7 +130,7 @@ interface SubpagesVariantProps {
   currentPageId: string;
   shareId?: string;
   spaceSlug?: string;
-  t: (key: string) => string;
+  t: (key: string, options?: Record<string, unknown>) => string;
 }
 
 function FlatSubpages({
@@ -368,7 +304,7 @@ function RecursiveSubpages({
         </Stack>
         {total > LARGE_TREE_THRESHOLD && (
           <Text c="dimmed" size="xs" pt="xs">
-            {t("Showing")} {total} {t("subpages")}
+            {t("Showing {{count}} subpages", { count: total })}
           </Text>
         )}
       </div>

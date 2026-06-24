@@ -1152,5 +1152,13 @@
   "Auto-detect": "Автоопределение",
   "Spoken language hint sent to the transcription model. Auto-detect lets the model decide.": "Подсказка языка речи для модели транскрипции. «Автоопределение» оставляет выбор за моделью.",
   "Float left (wrap text)": "Обтекание слева",
-  "Float right (wrap text)": "Обтекание справа"
+  "Float right (wrap text)": "Обтекание справа",
+  "Switch to tree": "Переключить на дерево",
+  "Switch to flat list": "Переключить на плоский список",
+  "Toggle subpages display mode": "Переключить режим отображения подстраниц",
+  "Page tree (child pages, recursive)": "Дерево страниц (дочерние, рекурсивно)",
+  "Render the full nested tree of all descendant pages": "Показать полное вложенное дерево всех дочерних страниц",
+  "Showing {{count}} subpages_one": "Показано {{count}} подстраница",
+  "Showing {{count}} subpages_few": "Показано {{count}} подстраницы",
+  "Showing {{count}} subpages_many": "Показано {{count}} подстраниц"
 }

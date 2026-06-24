@@ -1,7 +1,7 @@
 import { BubbleMenu as BaseBubbleMenu } from "@tiptap/react/menus";
-import { posToDOMRect, findParentNode } from "@tiptap/react";
+import { posToDOMRect, findParentNode, useEditorState } from "@tiptap/react";
 import { Node as PMNode } from "@tiptap/pm/model";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback } from "react";
 import { ActionIcon, Group, Tooltip } from "@mantine/core";
 import { IconTrash, IconList, IconSitemap } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
@@ -64,24 +64,14 @@ export const SubpagesMenu = React.memo(
         .run();
     }, [editor]);
 
-    // The component is memoized on `editor` (a stable reference), so reading the
-    // attribute at render time would leave the mode icon/tooltip stale right
-    // after toggling. Track it in state synced on editor transactions; setState
-    // bails when the value is unchanged, so this does not re-render per keystroke.
-    const [isRecursive, setIsRecursive] = useState<boolean>(
-      () => editor.getAttributes("subpages")?.recursive ?? false,
-    );
-    useEffect(() => {
-      const sync = () => {
-        const value = editor.getAttributes("subpages")?.recursive ?? false;
-        setIsRecursive((prev) => (prev === value ? prev : value));
-      };
-      sync();
-      editor.on("transaction", sync);
-      return () => {
-        editor.off("transaction", sync);
-      };
-    }, [editor]);
+    // Subscribe to the live `recursive` attribute the standard way (as the
+    // sibling bubble menus do): useEditorState re-renders only when the selected
+    // value actually changes, so the mode icon/tooltip stay current after a
+    // toggle without re-rendering on every keystroke.
+    const isRecursive = useEditorState({
+      editor,
+      selector: (ctx) => ctx.editor?.getAttributes("subpages")?.recursive ?? false,
+    });
 
     return (
       <BaseBubbleMenu
