@@ -27,3 +27,11 @@ export function useSharedPageSubpages(pageId: string | undefined) {
     return findSubpages(treeData);
   }, [treeData, pageId]);
 }
+
+// Recursive variant for the subpages node in a shared/public context. The shared
+// tree (`sharedTreeDataAtom`) is ALREADY fully nested, so a page's `children`
+// each carry their own nested `children` — exactly what the recursive renderer
+// needs. The data is therefore identical to the flat hook; only the rendering
+// differs (the recursive view walks `children` instead of showing one level).
+// Thin alias to avoid duplicating the lookup. No `/pages/tree` request here.
+export const useSharedPageSubtree = useSharedPageSubpages;

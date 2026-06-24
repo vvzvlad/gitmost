@@ -1,9 +1,9 @@
 import { BubbleMenu as BaseBubbleMenu } from "@tiptap/react/menus";
 import { posToDOMRect, findParentNode } from "@tiptap/react";
 import { Node as PMNode } from "@tiptap/pm/model";
-import React, { useCallback } from "react";
-import { ActionIcon, Tooltip } from "@mantine/core";
-import { IconTrash } from "@tabler/icons-react";
+import React, { useCallback, useEffect, useState } from "react";
+import { ActionIcon, Group, Tooltip } from "@mantine/core";
+import { IconTrash, IconList, IconSitemap } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { Editor } from "@tiptap/core";
 import { isEditorReady } from "@docmost/editor-ext";
@@ -47,6 +47,13 @@ export const SubpagesMenu = React.memo(
       return posToDOMRect(editor.view, selection.from, selection.to);
     }, [editor]);
 
+    const toggleRecursive = useCallback(() => {
+      const current = editor.getAttributes("subpages")?.recursive ?? false;
+      editor.commands.updateAttributes("subpages", {
+        recursive: !current,
+      });
+    }, [editor]);
+
     const deleteNode = useCallback(() => {
       const { selection } = editor.state;
       editor
@@ -57,6 +64,25 @@ export const SubpagesMenu = React.memo(
         .run();
     }, [editor]);
 
+    // The component is memoized on `editor` (a stable reference), so reading the
+    // attribute at render time would leave the mode icon/tooltip stale right
+    // after toggling. Track it in state synced on editor transactions; setState
+    // bails when the value is unchanged, so this does not re-render per keystroke.
+    const [isRecursive, setIsRecursive] = useState<boolean>(
+      () => editor.getAttributes("subpages")?.recursive ?? false,
+    );
+    useEffect(() => {
+      const sync = () => {
+        const value = editor.getAttributes("subpages")?.recursive ?? false;
+        setIsRecursive((prev) => (prev === value ? prev : value));
+      };
+      sync();
+      editor.on("transaction", sync);
+      return () => {
+        editor.off("transaction", sync);
+      };
+    }, [editor]);
+
     return (
       <BaseBubbleMenu
         editor={editor}
@@ -64,17 +90,41 @@ export const SubpagesMenu = React.memo(
         updateDelay={0}
         shouldShow={shouldShow}
       >
-        <Tooltip position="top" label={t("Delete")}>
-          <ActionIcon
-            onClick={deleteNode}
-            variant="default"
-            size="lg"
-            color="red"
-            aria-label={t("Delete")}
+        <Group gap={4} wrap="nowrap">
+          <Tooltip
+            position="top"
+            label={
+              isRecursive
+                ? t("Switch to flat list")
+                : t("Switch to tree")
+            }
           >
-            <IconTrash size={18} />
-          </ActionIcon>
-        </Tooltip>
+            <ActionIcon
+              onClick={toggleRecursive}
+              variant="default"
+              size="lg"
+              aria-label={t("Toggle subpages display mode")}
+            >
+              {isRecursive ? (
+                <IconList size={18} />
+              ) : (
+                <IconSitemap size={18} />
+              )}
+            </ActionIcon>
+          </Tooltip>
+
+          <Tooltip position="top" label={t("Delete")}>
+            <ActionIcon
+              onClick={deleteNode}
+              variant="default"
+              size="lg"
+              color="red"
+              aria-label={t("Delete")}
+            >
+              <IconTrash size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
       </BaseBubbleMenu>
     );
   }
