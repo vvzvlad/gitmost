@@ -1300,5 +1300,12 @@
   "Go to login page": "Go to login page",
   "Move to space": "Move to space",
   "Float left (wrap text)": "Float left (wrap text)",
-  "Float right (wrap text)": "Float right (wrap text)"
+  "Float right (wrap text)": "Float right (wrap text)",
+  "Switch to tree": "Switch to tree",
+  "Switch to flat list": "Switch to flat list",
+  "Toggle subpages display mode": "Toggle subpages display mode",
+  "Page tree (child pages, recursive)": "Page tree (child pages, recursive)",
+  "Render the full nested tree of all descendant pages": "Render the full nested tree of all descendant pages",
+  "Showing {{count}} subpages_one": "Showing {{count}} subpage",
+  "Showing {{count}} subpages_other": "Showing {{count}} subpages"
 }

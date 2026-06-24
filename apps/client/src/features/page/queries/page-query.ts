@@ -21,6 +21,7 @@ import {
   getAllSidebarPages,
   getDeletedPages,
   restorePage,
+  getSpaceTree,
 } from "@/features/page/services/page-service";
 import {
   IMovePage,
@@ -303,6 +304,15 @@ export function useGetRootSidebarPagesQuery(data: SidebarPagesParams) {
   });
 }
 
+export function useGetPageTreeQuery(pageId: string) {
+  return useQuery({
+    queryKey: ["page-tree", pageId],
+    queryFn: () => getSpaceTree({ pageId }),
+    enabled: !!pageId,
+    staleTime: 30 * 1000,
+  });
+}
+
 export function usePageBreadcrumbsQuery(
   pageId: string,
 ): UseQueryResult<Partial<IPage[]>, Error> {
@@ -363,7 +373,18 @@ export function useDeletedPagesQuery(
   });
 }
 
+/**
+ * Invalidate every cached page-subtree (the recursive `subpages` node, issue
+ * #150). Called from each tree-structure cache helper below so a create / move /
+ * rename / delete (local OR websocket-echoed) refreshes any open recursive tree.
+ * Keyed loosely (`["page-tree"]` prefix) so all subtrees are caught.
+ */
+function invalidatePageTree() {
+  queryClient.invalidateQueries({ queryKey: ["page-tree"] });
+}
+
 export function invalidateOnCreatePage(data: Partial<IPage>) {
+  invalidatePageTree();
   const newPage: Partial<IPage> = {
     creatorId: data.creatorId,
     hasChildren: data.hasChildren,
@@ -478,6 +499,7 @@ export function invalidateOnUpdatePage(
   title: string,
   icon: string,
 ) {
+  invalidatePageTree();
   let queryKey: QueryKey = null;
   if (parentPageId === null) {
     queryKey = ["root-sidebar-pages", spaceId];
@@ -516,6 +538,7 @@ export function updateCacheOnMovePage(
   newParentId: string | null,
   pageData: Partial<IPage>,
 ) {
+  invalidatePageTree();
   // Remove page from old parent's cache
   const oldQueryKey =
     oldParentId === null
@@ -633,6 +656,7 @@ export function updateCacheOnMovePage(
 }
 
 export function invalidateOnDeletePage(pageId: string) {
+  invalidatePageTree();
   //update all sidebar pages
   const allSideBarMatches = queryClient.getQueriesData({
     predicate: (query) =>

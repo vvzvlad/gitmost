@@ -525,6 +525,29 @@ const CommandGroups: SlashMenuGroupedItemsType = {
       },
     },
     {
+      title: "Page tree (child pages, recursive)",
+      description: "Render the full nested tree of all descendant pages",
+      searchTerms: [
+        "subpages",
+        "child",
+        "children",
+        "nested",
+        "hierarchy",
+        "tree",
+        "recursive",
+        "toc",
+      ],
+      icon: IconSitemap,
+      command: ({ editor, range }: CommandProps) => {
+        editor
+          .chain()
+          .focus()
+          .deleteRange(range)
+          .insertSubpages({ recursive: true })
+          .run();
+      },
+    },
+    {
       title: "Synced block",
       description: "Create a block that stays in sync across pages.",
       searchTerms: [

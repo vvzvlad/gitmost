@@ -93,7 +93,7 @@ export async function getAllSidebarPages(
 }
 
 export async function getSpaceTree(params: {
-  spaceId: string;
+  spaceId?: string;
   pageId?: string;
 }): Promise<IPage[]> {
   const req = await api.post<{ items: IPage[] }>("/pages/tree", params);
