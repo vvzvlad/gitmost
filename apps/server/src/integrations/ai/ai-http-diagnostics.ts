@@ -25,7 +25,13 @@ import { Logger } from '@nestjs/common';
  * The seq/last-call timestamps are module-level, so under concurrent turns the
  * idle-gap figure is approximate (fine for single-user reproduction).
  */
-export function createDiagnosticFetch(context: string): typeof fetch {
+export function createDiagnosticFetch(
+  context: string,
+  // The underlying fetch to instrument. Defaults to the global fetch; the chat
+  // provider passes a streaming fetch (disabled undici stream timeouts, #175) so
+  // the telemetry observes the SAME transport the long agent turn actually uses.
+  baseFetch: typeof fetch = fetch,
+): typeof fetch {
   const logger = new Logger(context);
   let callSeq = 0;
   let lastCallStartedAt: number | undefined;
@@ -46,9 +52,9 @@ export function createDiagnosticFetch(context: string): typeof fetch {
           ? body.byteLength
           : undefined;
     try {
-      // Delegate to global fetch; return the Response UNTOUCHED (never read/clone
-      // the body) so the streamed SSE response is unaffected.
-      const res = await fetch(input, init);
+      // Delegate to the base fetch; return the Response UNTOUCHED (never read/
+      // clone the body) so the streamed SSE response is unaffected.
+      const res = await baseFetch(input, init);
       logger.log(
         `provider HTTP DIAGNOSTIC: call#${callId} OK ` +
           `headersAfter=${Date.now() - startedAt}ms status=${res.status} ` +

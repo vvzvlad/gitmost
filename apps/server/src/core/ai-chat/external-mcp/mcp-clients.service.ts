@@ -6,6 +6,7 @@ import { createMCPClient } from '@ai-sdk/mcp';
 import { Agent, type Dispatcher } from 'undici';
 import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
 import { AiMcpServer } from '@docmost/db/types/entity.types';
+import { streamingDispatcherOptions } from '../../../integrations/ai/ai-streaming-fetch';
 import { SecretBoxService } from '../../../integrations/crypto/secret-box';
 import { isUrlAllowed, isIpAllowed } from './ssrf-guard';
 
@@ -400,6 +401,16 @@ export function validateResolvedAddresses(
  */
 function buildPinnedDispatcher(): Agent {
   return new Agent({
+    // Raise undici's default 300s headers/body timeouts on external MCP traffic
+    // to the same generous-but-finite silence timeout the chat fetch uses (#175).
+    // A long agent turn keeps an SSE transport (e.g. crawl4ai's /mcp/sse) open
+    // across the whole turn; that connection can idle BETWEEN tool calls longer
+    // than 5 min, and undici's bodyTimeout would otherwise sever it mid-task — a
+    // tool-call failure that aborts the streamed turn and shows the user "Lost
+    // connection to the AI provider". A slow single tool call (a crawl) can
+    // likewise exceed headersTimeout. The timeout stays FINITE so a genuinely
+    // hung server is still broken eventually.
+    ...streamingDispatcherOptions(),
     connect: {
       lookup: (hostname, _options, callback) => {
         // Always resolve ALL addresses ourselves; do not trust the caller's

@@ -16,6 +16,7 @@ import { AiSttNotConfiguredException } from './ai-stt-not-configured.exception';
 import { describeProviderError } from './ai-error.util';
 // DIAGNOSTIC (provider ECONNRESET investigation) — temporary.
 import { createDiagnosticFetch } from './ai-http-diagnostics';
+import { createStreamingFetch } from './ai-streaming-fetch';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
@@ -45,11 +46,14 @@ export interface ChatModelOverride {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  // DIAGNOSTIC (provider ECONNRESET investigation) — temporary: passive
-  // instrumentation of the OpenAI-compatible provider HTTP calls (z.ai).
-  // Logs call timing/outcome only — no behavior change.
+  // Provider HTTP fetch for the chat path: a streaming fetch that DISABLES
+  // undici's 300s headers/body timeouts (#175 — long agent turns were severed
+  // mid-stream), wrapped with passive ECONNRESET-investigation telemetry so the
+  // logs observe the exact transport the turn uses. Held for the service
+  // lifetime to reuse the streaming dispatcher's connection pool.
   private readonly aiDiagnosticFetch = createDiagnosticFetch(
     'AiService:provider-http',
+    createStreamingFetch(),
   );
 
   constructor(
