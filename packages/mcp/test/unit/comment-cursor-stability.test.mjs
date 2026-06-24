@@ -73,3 +73,21 @@ test("anchoring a comment mark keeps the cursor in the marked text (issue #152)"
   const abs = Y.createAbsolutePositionFromRelativePosition(relPos, ydoc);
   assert.notEqual(abs, null, "comment anchoring must not destroy the cursor anchor");
 });
+
+// The diagnostic catch branch of applyDocToFragment (#154 review): a doc that
+// cannot be hydrated/encoded must be re-thrown wrapped with the stage label, not
+// leak the raw ProseMirror/Yjs error. An unknown node type makes
+// PMNode.fromJSON (against the docmost schema) throw — a reliable trigger
+// (sanitizeForYjs only strips `undefined`, so an undefined attr would be removed
+// before it could fail).
+test("applyDocToFragment wraps an encode/build failure with the (updateYFragment) diagnostic", () => {
+  const ydoc = new Y.Doc();
+  const bad = {
+    type: "doc",
+    content: [{ type: "totally_unknown_node_xyz_12345" }],
+  };
+  assert.throws(
+    () => applyDocToFragment(ydoc, bad),
+    /Failed to encode document to Yjs \(updateYFragment\)/,
+  );
+});

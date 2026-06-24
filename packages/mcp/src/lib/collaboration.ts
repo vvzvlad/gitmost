@@ -4,19 +4,28 @@ import * as Y from "yjs";
 import WebSocket from "ws";
 import { marked } from "marked";
 import { generateJSON } from "@tiptap/html";
-import { getSchema } from "@tiptap/core";
 import { Node as PMNode } from "@tiptap/pm/model";
 import { updateYFragment } from "y-prosemirror";
 import { JSDOM } from "jsdom";
-import { docmostExtensions } from "./docmost-schema.js";
+import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
 
-// The ProseMirror schema for the docmost editor, built once (mirrors diff.ts).
-// `updateYFragment` needs a real PM Node, so we re-hydrate the transformed JSON
-// against this schema before diffing it into the live Yjs fragment.
-const docmostSchema = getSchema(docmostExtensions);
+/**
+ * Build the descriptive error for an opaque Yjs encode failure ("Unexpected
+ * content type"), shared by both encode paths (`buildYDoc` -> `toYdoc` and
+ * `applyDocToFragment` -> `updateYFragment`) so the message wording stays in one
+ * place. `label` names the stage that failed (diagnostic). `sanitizeForYjs`
+ * already stripped `undefined` attrs, so a remaining failure is pinpointed via
+ * `findUnstorableAttr`.
+ */
+function unstorableYjsError(safe: any, label: string, e: unknown): Error {
+  const bad = findUnstorableAttr(safe);
+  return new Error(
+    `Failed to encode document to Yjs (${label}): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
+  );
+}
 
 /**
  * The resolved value of every content-mutating collab write: the document that
@@ -507,10 +516,7 @@ export function buildYDoc(doc: any): Y.Doc {
   try {
     return TiptapTransformer.toYdoc(safe, "default", docmostExtensions);
   } catch (e) {
-    const bad = findUnstorableAttr(safe);
-    throw new Error(
-      `Failed to encode document to Yjs (toYdoc): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
-    );
+    throw unstorableYjsError(safe, "toYdoc", e);
   }
 }
 
@@ -543,17 +549,19 @@ export function applyDocToFragment(ydoc: Y.Doc, newDoc: any): void {
       });
     });
   } catch (e) {
-    const bad = findUnstorableAttr(safe);
-    throw new Error(
-      `Failed to encode document to Yjs (updateYFragment): ${e instanceof Error ? e.message : String(e)}.${bad ? ` Offending attribute: ${bad}.` : " A node/mark attribute likely holds a value Yjs cannot store (e.g. undefined)."}`,
-    );
+    throw unstorableYjsError(safe, "updateYFragment", e);
   }
 }
 
 /**
- * Validate that a doc is Yjs-encodable by building (and discarding) a Y.Doc.
- * Throws the same descriptive error as the apply path when it is not. Used by
- * the dry-run preview so it fails identically to apply.
+ * Run an independent Yjs-encodability check (the same `sanitizeForYjs` + schema
+ * the apply path uses) and throw the same descriptive error when the doc cannot
+ * be stored. Used by the dry-run preview.
+ *
+ * Note: it does NOT run `updateYFragment` against the live fragment, so it is an
+ * encodability GATE, not a byte-for-byte rehearsal of apply — `buildYDoc`
+ * (`toYdoc`) and `applyDocToFragment` (`updateYFragment`) are two different
+ * encoders that nonetheless reject the same unstorable attributes.
  */
 export function assertYjsEncodable(doc: any): void {
   buildYDoc(doc);
