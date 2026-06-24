@@ -5,6 +5,7 @@ import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
 import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
 import ChatStoppedNotice from "@/features/ai-chat/components/chat-stopped-notice.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
+import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
@@ -65,6 +66,16 @@ export default function MessageItem({
       </Box>
     );
   }
+
+  // An assistant message with nothing visible to render yet (an empty streaming
+  // text part, or a reasoning/step-start part while the model is still thinking)
+  // renders nothing here. The standalone TypingIndicator stands in for the nascent
+  // bubble (name + dots) until real content arrives, so exactly one element owns
+  // the agent name during the pre-content gap and the layout never jumps. Persisted
+  // errored/aborted turns DO have visible content per the helper (metadata.error /
+  // finishReason === "aborted"), so their banners below still render — this early
+  // return won't fire for them.
+  if (!assistantMessageHasVisibleContent(message)) return null;
 
   return (
     <Box className={classes.messageRow}>

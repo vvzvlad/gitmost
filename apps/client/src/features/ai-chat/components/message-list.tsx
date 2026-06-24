@@ -5,6 +5,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
 import { isToolPart, toolRunState, ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
+import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
@@ -79,13 +80,18 @@ export function showTypingIndicator(messages: UIMessage[], isStreaming: boolean)
 
 /**
  * Whether the standalone typing indicator should render its own assistant-name
- * label. True only when it stands in for a not-yet-started assistant row (it IS
- * the nascent bubble). False once an assistant row exists at the tail, because
- * that row's MessageItem already shows the same name — avoids a duplicate label.
+ * label. The indicator OWNS the name while the tail assistant row has no visible
+ * content yet (an empty streaming text part, or reasoning/step-start while the
+ * model is still thinking): in that gap the assistant MessageItem renders nothing,
+ * so the indicator stands in for the nascent bubble (name + dots) at a constant
+ * gap. It hides the name only once that row shows visible content, because then
+ * MessageItem draws the same name — avoids a duplicate stacked label and the
+ * layout jump that switching owners mid-stream used to cause.
  */
 export function typingIndicatorShowsName(messages: UIMessage[]): boolean {
   const last = messages[messages.length - 1];
-  return !(last && last.role === "assistant");
+  if (!last || last.role !== "assistant") return true;
+  return !assistantMessageHasVisibleContent(last);
 }
 
 /**
