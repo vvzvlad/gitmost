@@ -2,12 +2,14 @@ import { Box, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import ToolCallCard from "@/features/ai-chat/components/tool-call-card.tsx";
+import ReasoningBlock from "@/features/ai-chat/components/reasoning-block.tsx";
 import ChatErrorAlert from "@/features/ai-chat/components/chat-error-alert.tsx";
 import ChatStoppedNotice from "@/features/ai-chat/components/chat-stopped-notice.tsx";
 import { ToolUiPart, isToolPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
+import { reasoningTokensForPart } from "@/features/ai-chat/utils/reasoning-tokens.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -77,12 +79,31 @@ export default function MessageItem({
   // return won't fire for them.
   if (!assistantMessageHasVisibleContent(message)) return null;
 
+  // Authoritative reasoning token count to attribute to a reasoning block, or
+  // undefined when the block must estimate on its own. See reasoningTokensForPart
+  // for the #151 anti-double-count rule (only a single reasoning part may carry
+  // the turn total). The authoritative turn total is still surfaced live in the
+  // header badge regardless.
+  const reasoningTokens = reasoningTokensForPart(message);
+
   return (
     <Box className={classes.messageRow}>
       <Text size="xs" c="dimmed" mb={4}>
         {resolveAssistantName(assistantName) ?? t("AI agent")}
       </Text>
       {message.parts.map((part, index) => {
+        if (part.type === "reasoning") {
+          // Reasoning ("thinking") -> a collapsible block with its own token
+          // count. Empty/whitespace reasoning with no authoritative count carries
+          // nothing to show, so skip it (avoids an empty 0-token block).
+          const text = (part as { text?: string }).text ?? "";
+          if (!text.trim() && !(reasoningTokens && reasoningTokens > 0))
+            return null;
+          return (
+            <ReasoningBlock key={index} text={text} tokens={reasoningTokens} />
+          );
+        }
+
         if (part.type === "text") {
           // Skip empty/whitespace-only text parts (a streaming message often
           // starts with an empty text part before the first token arrives); the

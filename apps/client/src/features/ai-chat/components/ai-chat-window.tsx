@@ -156,6 +156,12 @@ export default function AiChatWindow() {
     isStreaming: false,
   });
 
+  // Live turn-token total (reasoning + output) for the in-flight turn, pushed up
+  // (THROTTLED to ~8 Hz inside ChatThread) so the header badge ticks mid-stream.
+  // `null` means no turn is in flight -> the badge falls back to the persisted
+  // context size below.
+  const [liveTurnTokens, setLiveTurnTokens] = useState<number | null>(null);
+
   // The page the user is currently viewing. AiChatWindow lives in a pathless
   // parent layout route, so useParams() can't see :pageSlug. Match the full
   // pathname against the authenticated page route instead so "the current page"
@@ -485,11 +491,19 @@ export default function AiChatWindow() {
         )}
 
         <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
-          {contextTokens > 0 && (
+          {/* While a turn streams, show the LIVE turn-token count (ticks ~8 Hz);
+              once it finishes, fall back to the persisted context size. Require
+              > 0 so the very first emit (an empty tail message, count 0) does not
+              flash a "0" badge before any token streams in (#151 review). */}
+          {liveTurnTokens !== null && liveTurnTokens > 0 ? (
+            <Tooltip label={t("Tokens generated this turn")} withArrow>
+              <span className={classes.badge}>{formatTokens(liveTurnTokens)}</span>
+            </Tooltip>
+          ) : contextTokens > 0 ? (
             <Tooltip label={t("Current context size")} withArrow>
               <span className={classes.badge}>{formatTokens(contextTokens)}</span>
             </Tooltip>
-          )}
+          ) : null}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -608,6 +622,7 @@ export default function AiChatWindow() {
               assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
               liveStateRef={liveThreadRef}
+              onLiveTurnTokens={setLiveTurnTokens}
             />
           )}
         </div>

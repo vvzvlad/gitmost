@@ -16,6 +16,12 @@ interface TypingIndicatorProps {
    * assistant row above already shows the same name, to avoid a duplicate label.
    */
   showName?: boolean;
+  /**
+   * Live thinking/reasoning token count for the in-flight turn. When > 0 the
+   * typing line becomes `Thinking… · {count} tokens` (like Claude Code). Omitted
+   * / 0 keeps the plain `Thinking…` line.
+   */
+  thinkingTokens?: number;
 }
 
 /**
@@ -30,9 +36,14 @@ interface TypingIndicatorProps {
  * typing line is always the generic "Thinking…" (it never includes the
  * role/identity name).
  */
-export default function TypingIndicator({ assistantName, showName = true }: TypingIndicatorProps) {
+export default function TypingIndicator({ assistantName, showName = true, thinkingTokens }: TypingIndicatorProps) {
   const { t } = useTranslation();
   const name = resolveAssistantName(assistantName);
+  // Show the running thinking-token count only once there is something to count.
+  const thinkingLine =
+    thinkingTokens && thinkingTokens > 0
+      ? t("Thinking… · {{count}} tokens", { count: thinkingTokens })
+      : t("Thinking…");
 
   return (
     <Box className={classes.messageRow}>
@@ -48,7 +59,7 @@ export default function TypingIndicator({ assistantName, showName = true }: Typi
           <span />
         </span>
         <Text size="sm" c="dimmed">
-          {t("Thinking…")}
+          {thinkingLine}
         </Text>
       </Group>
     </Box>

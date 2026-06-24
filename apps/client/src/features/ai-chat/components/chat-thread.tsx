@@ -27,6 +27,7 @@ import {
 } from "@/features/ai-chat/utils/role-launch.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import { extractServerChatId } from "@/features/ai-chat/utils/adopt-chat-id.ts";
+import { liveTurnTokens } from "@/features/ai-chat/utils/count-stream-tokens.ts";
 import {
   dequeue,
   enqueueMessage,
@@ -73,6 +74,12 @@ interface ChatThreadProps {
    *  assistant message. A ref (not state) avoids re-rendering the parent on
    *  every streamed delta. */
   liveStateRef?: MutableRefObject<{ messages: UIMessage[]; isStreaming: boolean }>;
+  /** Reports the live turn-token total (reasoning + output) for the in-flight
+   *  turn so the parent can show a header badge that ticks mid-stream. THROTTLED
+   *  here (~8 Hz) so the parent re-renders a handful of times a second, not on
+   *  every streamed delta. Called with `null` when no turn is in flight (the
+   *  parent then reverts the badge to the persisted context size). */
+  onLiveTurnTokens?: (tokens: number | null) => void;
 }
 
 /**
@@ -117,6 +124,7 @@ export default function ChatThread({
   assistantName,
   onTurnFinished,
   liveStateRef,
+  onLiveTurnTokens,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -313,6 +321,54 @@ export default function ChatThread({
       liveStateRef.current = { messages: [], isStreaming: false };
     };
   }, [liveStateRef, messages, isStreaming]);
+
+  // Report the live turn-token total to the parent header badge, THROTTLED to
+  // ~8 Hz so the parent re-renders a few times a second instead of on every
+  // streamed delta. The tail assistant message's reasoning+output (estimate while
+  // streaming, authoritative once a step reports usage) is the live figure. When
+  // the turn ends we emit a final exact value, then `null` so the parent reverts
+  // the badge to the persisted context size.
+  const lastEmitRef = useRef(0);
+  const emitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!onLiveTurnTokens) return;
+    if (!isStreaming) {
+      // Turn ended (or never started): clear any pending throttle and revert.
+      if (emitTimerRef.current) {
+        clearTimeout(emitTimerRef.current);
+        emitTimerRef.current = null;
+      }
+      lastEmitRef.current = 0;
+      onLiveTurnTokens(null);
+      return;
+    }
+    const tail = messages[messages.length - 1];
+    const live =
+      tail?.role === "assistant" ? liveTurnTokens(tail) : null;
+    const total = live ? live.reasoning + live.output : 0;
+    const now = Date.now();
+    const MIN_INTERVAL = 120; // ms (~8 Hz)
+    const elapsed = now - lastEmitRef.current;
+    if (elapsed >= MIN_INTERVAL) {
+      lastEmitRef.current = now;
+      onLiveTurnTokens(total);
+    } else if (!emitTimerRef.current) {
+      // Schedule a trailing emit so the FINAL value of a burst is not dropped.
+      emitTimerRef.current = setTimeout(() => {
+        emitTimerRef.current = null;
+        lastEmitRef.current = Date.now();
+        onLiveTurnTokens(total);
+      }, MIN_INTERVAL - elapsed);
+    }
+  }, [messages, isStreaming, onLiveTurnTokens]);
+
+  // Clear any pending throttle timer on unmount (chat switch via `key`) so a
+  // trailing emit can't fire into a torn-down thread's parent.
+  useEffect(() => {
+    return () => {
+      if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
+    };
+  }, []);
 
   // Classify the turn error into a heading + detail so the banner names the cause
   // (connection reset, timeout, rate limit, context overflow, quota, ...) instead

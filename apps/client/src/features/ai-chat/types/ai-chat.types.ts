@@ -106,6 +106,10 @@ export interface IAiChatMessageRow {
       inputTokens?: number;
       outputTokens?: number;
       totalTokens?: number;
+      // Reasoning (thinking) tokens, when the provider reports them. Optional so
+      // old history rows (recorded before this shipped) stay valid. Included in
+      // `outputTokens` per the AI SDK usage shape.
+      reasoningTokens?: number;
     };
     // Current context size for the turn = final-step (input+output) tokens, i.e.
     // how much the conversation occupies in the model's context window after this

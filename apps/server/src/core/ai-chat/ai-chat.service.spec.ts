@@ -5,7 +5,8 @@ import {
   rowToUiMessage,
   prepareAgentStep,
   buildPartialAssistantRecord,
-  chatStreamStartMetadata,
+  chatStreamMetadata,
+  accumulateStepUsage,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -298,18 +299,135 @@ describe('buildPartialAssistantRecord', () => {
 });
 
 /**
- * chatStreamStartMetadata: attach the authoritative chatId to the streamed
- * assistant UI message ONLY on the `start` part (so the client adopts the real
- * created chat id at the first chunk — see #137). Any non-start part adds none.
+ * chatStreamMetadata: attach metadata to the streamed assistant UI message per
+ * part type — `chatId` on `start` (so the client adopts the real created chat id
+ * at the first chunk — see #137), and AUTHORITATIVE usage (incl. reasoning
+ * tokens) on `finish-step` and `finish` so the client's live token counter snaps
+ * to exact at each step/turn boundary.
  */
-describe('chatStreamStartMetadata', () => {
+describe('chatStreamMetadata', () => {
   it('returns { chatId } for the start part', () => {
-    expect(chatStreamStartMetadata({ type: 'start' }, 'chat-1')).toEqual({
+    expect(chatStreamMetadata({ type: 'start' }, 'chat-1')).toEqual({
       chatId: 'chat-1',
     });
   });
 
-  it('returns undefined for a finish part (any non-start part)', () => {
-    expect(chatStreamStartMetadata({ type: 'finish' }, 'chat-1')).toBeUndefined();
+  it('returns the CUMULATIVE step usage passed in for the finish-step part', () => {
+    // finish-step usage is per-step in v6; the caller accumulates and passes the
+    // running sum, which this just wraps.
+    expect(
+      chatStreamMetadata(
+        { type: 'finish-step', usage: { outputTokens: 100 } },
+        'chat-1',
+        { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+      ),
+    ).toEqual({
+      usage: { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+    });
+  });
+
+  it('returns turn usage for the finish part (reasoning from deprecated top-level field)', () => {
+    expect(
+      chatStreamMetadata(
+        {
+          type: 'finish',
+          totalUsage: {
+            inputTokens: 1000,
+            outputTokens: 250,
+            totalTokens: 1250,
+            reasoningTokens: 50,
+          },
+        },
+        'chat-1',
+      ),
+    ).toEqual({
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 250,
+        totalTokens: 1250,
+        reasoningTokens: 50,
+      },
+    });
+  });
+
+  it('prefers outputTokenDetails.reasoningTokens over the deprecated field (finish)', () => {
+    expect(
+      chatStreamMetadata(
+        {
+          type: 'finish',
+          totalUsage: {
+            outputTokens: 100,
+            reasoningTokens: 5,
+            outputTokenDetails: { reasoningTokens: 30 },
+          },
+        },
+        'chat-1',
+      ),
+    ).toEqual({
+      usage: {
+        inputTokens: undefined,
+        outputTokens: 100,
+        totalTokens: undefined,
+        reasoningTokens: 30,
+      },
+    });
+  });
+
+  it('returns undefined for a finish-step with no accumulated usage', () => {
+    expect(
+      chatStreamMetadata({ type: 'finish-step' }, 'chat-1'),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for an unrelated part (e.g. text-delta)', () => {
+    expect(
+      chatStreamMetadata({ type: 'text-delta' }, 'chat-1'),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * accumulateStepUsage: sums per-step usage into a running cumulative total so the
+ * client never sees the live counter jump DOWN on a multi-step agent turn (#151).
+ */
+describe('accumulateStepUsage', () => {
+  it('sums every field across two steps', () => {
+    expect(
+      accumulateStepUsage(
+        { inputTokens: 500, outputTokens: 100, totalTokens: 600, reasoningTokens: 30 },
+        { inputTokens: 520, outputTokens: 80, totalTokens: 600, reasoningTokens: 10 },
+      ),
+    ).toEqual({
+      inputTokens: 1020,
+      outputTokens: 180,
+      totalTokens: 1200,
+      reasoningTokens: 40,
+    });
+  });
+
+  it('returns the step as-is when there is no accumulator yet', () => {
+    expect(accumulateStepUsage(undefined, { outputTokens: 10 })).toEqual({
+      outputTokens: 10,
+    });
+  });
+
+  it('returns the accumulator unchanged when the step usage is absent', () => {
+    const acc = { outputTokens: 10 };
+    expect(accumulateStepUsage(acc, undefined)).toBe(acc);
+  });
+
+  it('returns undefined when both sides are absent', () => {
+    expect(accumulateStepUsage(undefined, undefined)).toBeUndefined();
+  });
+
+  it('keeps a field undefined only when neither side has it', () => {
+    expect(
+      accumulateStepUsage({ outputTokens: 5 }, { outputTokens: 7 }),
+    ).toEqual({
+      inputTokens: undefined,
+      outputTokens: 12,
+      totalTokens: undefined,
+      reasoningTokens: undefined,
+    });
   });
 });
