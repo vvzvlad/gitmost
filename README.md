@@ -114,7 +114,7 @@ community feature, with no enterprise license. Open it from the page header; the
 - 🔭 **Viewer comments** — let read-only viewers leave comments.
 - 🔭 **Password-protected pages** — protect individual pages / shares with a password.
 - 🔭 **Windows / Linux app** — native desktop app for Windows and Linux.
-- 🔭 **Mobile app** — mobile apps (iOS first, Android to follow), reusing the existing responsive web UI and editor via a Capacitor wrapper, with offline planned for later. See [docs/mobile-app-plan.md](docs/mobile-app-plan.md).
+- 🔭 **Mobile app** — mobile apps (iOS first, Android to follow), reusing the existing responsive web UI and editor via a Capacitor wrapper, with offline planned for later. See [issue #195](https://gitea.vvzvlad.xyz/vvzvlad/gitmost/issues/195).
 - 🔭 **Offline mode** — offline sync & PWA support.
 - 🔭 **Editor & UX improvements** — blocks inside tables (lists, to-do items), column layout, additional heading levels, highlight blocks, custom emoji in callouts, floating images, anchor links for page mentions, toggles (shared-page width, aside/sidebar, spellcheck, ligatures), sanitized space-tree export, and mentions in breadcrumbs.
 
