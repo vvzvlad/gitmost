@@ -18,7 +18,8 @@ import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagin
 // (multi-instance deploy).
 const SWEEP_STREAMING_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
-// Hard upper bound on the rows materialized by `findAllByChat` (export path).
+// Hard upper bound on the rows materialized by `findAllByChat`, which now feeds
+// BOTH the Markdown export and the per-turn model history.
 // A generous cap so a pathologically huge chat cannot load an unbounded result
 // into memory; far above any realistic transcript length.
 const FIND_ALL_BY_CHAT_LIMIT = 5000;
@@ -78,14 +79,17 @@ export class AiChatMessageRepo {
   }
 
   // Load ALL (non-deleted) messages of a chat in ascending chronological order
-  // (oldest -> newest), unpaginated. Used by the server-side Markdown export
-  // (#183), where the DB is the single source of truth and the whole transcript
-  // must be rendered in one pass (findByChat is cursor-paginated and would only
-  // return the first page).
+  // (oldest -> newest), unpaginated. Two callers, both treating the DB as the
+  // single source of truth and needing the whole transcript in one pass
+  // (findByChat is cursor-paginated and would only return the first page):
+  //   - the server-side Markdown export (#183);
+  //   - the per-turn model history, rebuilt fresh on every turn so the model
+  //     sees the full authoritative transcript.
   //
   // Hard-capped at FIND_ALL_BY_CHAT_LIMIT rows (a generous bound, far above any
-  // realistic transcript) so exporting a pathologically huge chat cannot
-  // materialize an unbounded result set in memory.
+  // realistic transcript) — a shared memory-safety backstop for BOTH paths so a
+  // pathologically huge chat cannot materialize an unbounded result set in
+  // memory. On overflow the NEWEST rows are kept and a warning is logged.
   async findAllByChat(
     chatId: string,
     workspaceId: string,
@@ -93,9 +97,9 @@ export class AiChatMessageRepo {
     limit: number = FIND_ALL_BY_CHAT_LIMIT,
   ): Promise<AiChatMessage[]> {
     // Fetch newest-first (+1 to DETECT truncation), so on overflow we keep the
-    // NEWEST `limit` messages — the recent conversation matters most for an
-    // export — rather than silently dropping the tail (#183 review). Reverse back
-    // to chronological for rendering, like findRecent.
+    // NEWEST `limit` messages — the recent conversation matters most — rather
+    // than silently dropping the tail (#183 review). Then reverse back to
+    // chronological order (oldest -> newest) for rendering / model replay.
     const rows = await this.db
       .selectFrom('aiChatMessages')
       .select(this.baseFields)
@@ -110,35 +114,10 @@ export class AiChatMessageRepo {
     if (rows.length > limit) {
       rows.length = limit; // keep the newest `limit` (rows are newest-first here)
       this.logger.warn(
-        `Chat ${chatId} export truncated to the newest ${limit} messages ` +
+        `Chat ${chatId} truncated to the newest ${limit} messages ` +
           `(older messages omitted).`,
       );
     }
-    return rows.reverse();
-  }
-
-  // Load the most RECENT `limit` messages for a chat and return them in
-  // ascending chronological order (oldest -> newest), as the model expects.
-  // `findByChat` returns the FIRST page ASC (the OLDEST messages), which loses
-  // recent turns once a chat grows beyond a page; this rebuilds the model
-  // history from the tail instead. Plain query (no cursor pagination).
-  async findRecent(
-    chatId: string,
-    workspaceId: string,
-    limit: number,
-  ): Promise<AiChatMessage[]> {
-    const rows = await this.db
-      .selectFrom('aiChatMessages')
-      .select(this.baseFields)
-      .where('chatId', '=', chatId)
-      .where('workspaceId', '=', workspaceId)
-      .where('deletedAt', 'is', null)
-      .orderBy('createdAt', 'desc')
-      .orderBy('id', 'desc')
-      .limit(limit)
-      .execute();
-
-    // Selected newest-first for the limit; reverse to oldest-first for the model.
     return rows.reverse();
   }
 

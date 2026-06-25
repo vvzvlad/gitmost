@@ -240,7 +240,7 @@ describe('prepareAgentStep', () => {
  * write path. It runs identically for the upfront insert (empty steps,
  * 'streaming'), every per-step update, and the terminal finalize — so a future
  * background worker can call the same function. These tests pin the four status
- * shapes and the `metadata.parts` shape that rowToUiMessage/findRecent depend on
+ * shapes and the `metadata.parts` shape that rowToUiMessage/findAllByChat depend on
  * (per-step text + tool parts via assistantParts, in-progress text appended).
  */
 describe('flushAssistant', () => {
