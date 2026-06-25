@@ -535,6 +535,19 @@ export class AiChatService {
       },
       });
 
+      // Drain the stream independently of the client socket so the turn always
+      // runs to completion (or to its abort) and the terminal callbacks
+      // (onFinish/onError/onAbort) fire — releasing the per-turn object graph
+      // (history, the per-request toolset closures, captured steps, SDK buffers)
+      // and closing leased MCP clients. WITHOUT this, a client disconnect leaves
+      // the pipe's dead socket as the only reader; backpressure stalls the stream,
+      // the callbacks never run, and every dropped turn stays rooted in memory —
+      // the heap-OOM leak. consumeStream removes that backpressure (AI SDK v6
+      // "Handling client disconnects"). NOT awaited (fire-and-forget); the stream
+      // errors are already logged by the streamText `onError` callback above, so
+      // swallow here to avoid an unhandledRejection.
+      void result.consumeStream({ onError: () => undefined });
+
       // Stream the UI-message protocol straight to the hijacked Node response.
       // Without onError the AI SDK masks the cause ('An error occurred.') and the
       // UI shows a generic failure. Surface the real provider message instead.
