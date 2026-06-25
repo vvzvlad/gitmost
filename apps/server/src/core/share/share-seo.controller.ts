@@ -63,19 +63,38 @@ export class ShareSeoController {
 
       const pageId = this.extractPageSlugId(pageSlug);
 
-      const share = await this.shareService.getShareForPage(
+      // Funnel through the canonical readable-share boundary (NOT the raw
+      // getShareForPage) so the restricted-ancestor gate runs: a permission-
+      // restricted descendant of an includeSubPages share must NOT leak its
+      // title to anonymous visitors / crawlers (red-team finding #3). null =>
+      // not publicly readable => serve the plain SPA index with no meta.
+      const resolved = await this.shareService.resolveReadableSharePage(
+        undefined,
         pageId,
         workspace.id,
       );
 
-      if (!share) {
+      if (!resolved) {
+        return this.sendIndex(indexFilePath, res);
+      }
+
+      // Honour a workspace/space-level sharing toggle flipped off AFTER this
+      // share was created: the content API gates on isSharingAllowed, so the SEO
+      // path must too or it keeps serving the title for a no-longer-shared page.
+      const sharingAllowed = await this.shareService.isSharingAllowed(
+        workspace.id,
+        resolved.share.spaceId,
+      );
+      if (!sharingAllowed) {
         return this.sendIndex(indexFilePath, res);
       }
 
       const html = fs.readFileSync(indexFilePath, 'utf8');
+      // Title of the PAGE being viewed (server-resolved), and noindex unless the
+      // share opted into search indexing (buildShareMetaHtml injects it).
       let transformedHtml = buildShareMetaHtml(html, {
-        title: share?.sharedPage.title,
-        searchIndexing: share.searchIndexing,
+        title: resolved.page.title,
+        searchIndexing: resolved.share.searchIndexing,
       });
 
       // Deliberate same-origin tracker surface: this is the ONE place where an
