@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Box, Collapse, Group, Text, UnstyledButton } from "@mantine/core";
 import { IconChevronDown } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
@@ -26,14 +26,20 @@ interface ReasoningBlockProps {
  * Providers that don't stream reasoning TEXT still render this block from the
  * authoritative count alone (header only, empty body) so the cost is visible.
  */
-export default function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
+function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   // Authoritative count wins; otherwise estimate live from the streamed text.
   const count = tokens && tokens > 0 ? tokens : estimateTokens(text);
   const trimmed = text.trim();
-  const html = trimmed ? renderChatMarkdown(trimmed, {}) : "";
+  // Memoize the markdown render so toggling `open` (or a parent re-render caused
+  // by an unrelated streamed delta) does not re-parse the reasoning text; it
+  // recomputes only when the reasoning text itself changes (while it streams in).
+  const html = useMemo(
+    () => (trimmed ? renderChatMarkdown(trimmed, {}) : ""),
+    [trimmed],
+  );
 
   return (
     <Box className={classes.reasoningBlock} mb={6}>
@@ -81,3 +87,8 @@ export default function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
     </Box>
   );
 }
+
+// Memoized: re-renders only when `text`/`tokens` change (primitive props, default
+// shallow compare), so a parent re-render during streaming of OTHER content does
+// not re-run the markdown parse for an already-finalized reasoning block.
+export default memo(ReasoningBlock);

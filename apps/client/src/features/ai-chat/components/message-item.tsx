@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Box, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
@@ -35,18 +36,52 @@ interface MessageItemProps {
 }
 
 /**
+ * One assistant text part rendered as sanitized markdown. Memoized on its inputs
+ * so a finalized text part is NOT re-parsed on every streamed delta: during a
+ * turn only the actively-growing tail part changes its `text`, so every earlier
+ * part hits the memo and skips the expensive marked + DOMPurify pass. Props are
+ * primitives, so React.memo's default shallow compare is exactly right (the
+ * `text` string is compared by value).
+ */
+const MarkdownPart = memo(function MarkdownPart({
+  text,
+  neutralizeInternalLinks,
+}: {
+  text: string;
+  neutralizeInternalLinks: boolean;
+}) {
+  const html = renderChatMarkdown(text, { neutralizeInternalLinks });
+  if (html) {
+    return (
+      <div
+        className={classes.markdown}
+        // Sanitized by renderChatMarkdown (DOMPurify) before insertion.
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  // Fallback when markdown could not render synchronously: raw text.
+  return (
+    <Text className={classes.markdown} style={{ whiteSpace: "pre-wrap" }}>
+      {text}
+    </Text>
+  );
+});
+
+/**
  * Render a single UIMessage by iterating its `parts`:
  *  - `text` parts -> sanitized markdown.
  *  - `tool-*` / `dynamic-tool` parts -> an action-log card (with citations).
  * Other part kinds (reasoning, sources, files, step-start) are ignored for v1.
  * User messages render their text as a right-aligned plain bubble.
  *
- * This component is intentionally NOT memoized: `useChat` replaces the streaming
- * assistant message with a freshly cloned object on every streamed delta, so the
- * `message` prop identity (and its `parts`) changes each tick. Re-rendering the
- * text parts on each delta is what makes the answer stream in progressively.
+ * This component is memoized (see `arePropsEqual` at the bottom) on a cheap
+ * per-message content signature: the streaming TAIL message's signature changes
+ * on each delta so it still re-renders and streams in, while finalized rows are
+ * skipped. Each text part's markdown is itself memoized via `MarkdownPart`, so a
+ * long turn no longer re-parses the whole transcript on every token.
  */
-export default function MessageItem({
+function MessageItem({
   message,
   showCitations = true,
   neutralizeInternalLinks = false,
@@ -109,24 +144,12 @@ export default function MessageItem({
           // starts with an empty text part before the first token arrives); the
           // typing indicator covers that gap until real content streams in.
           if (!part.text.trim()) return null;
-          const html = renderChatMarkdown(part.text, {
-            neutralizeInternalLinks,
-          });
-          if (html) {
-            return (
-              <div
-                key={index}
-                className={classes.markdown}
-                // Sanitized by renderChatMarkdown (DOMPurify) before insertion.
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
-            );
-          }
-          // Fallback when markdown could not render synchronously: raw text.
           return (
-            <Text key={index} className={classes.markdown} style={{ whiteSpace: "pre-wrap" }}>
-              {part.text}
-            </Text>
+            <MarkdownPart
+              key={index}
+              text={part.text}
+              neutralizeInternalLinks={neutralizeInternalLinks}
+            />
           );
         }
 
@@ -177,3 +200,65 @@ export default function MessageItem({
     </Box>
   );
 }
+
+/** Cheap content signature for one message: changes iff something VISIBLE in the
+ *  row changed. Streaming is APPEND-ONLY (text parts only grow, parts are only
+ *  appended, a tool/text part flips state once), so a per-part [type, text
+ *  length, state, error/output presence] tuple + the persisted metadata
+ *  (error/finishReason) is a sufficient change signal without comparing full
+ *  strings on every delta. */
+function messageSignature(message: UIMessage): string {
+  const parts = message.parts
+    .map((p) => {
+      const any = p as {
+        type: string;
+        text?: string;
+        state?: string;
+        errorText?: string;
+        output?: unknown;
+      };
+      return [
+        any.type,
+        any.text?.length ?? 0,
+        any.state ?? "",
+        any.errorText ? 1 : 0,
+        any.output !== undefined ? 1 : 0,
+      ].join(":");
+    })
+    .join("|");
+  const meta = message.metadata as
+    | { error?: string; finishReason?: string; usage?: { reasoningTokens?: number } }
+    | undefined;
+  // `usage.reasoningTokens` is neither append-only nor part-bound: the authoritative
+  // turn total arrives on the final `finish-step` AFTER the reasoning text length and
+  // state are already frozen. Without it in the signature the row's signature would be
+  // unchanged at that point and the re-render skipped, so the "Thinking · N tokens"
+  // header (reasoningTokensForPart) would keep the live estimate instead of snapping
+  // to the exact figure.
+  return `${message.id}#${message.role}#${parts}#${meta?.error ?? ""}#${
+    meta?.finishReason ?? ""
+  }#${meta?.usage?.reasoningTokens ?? ""}`;
+}
+
+/** Skip re-rendering a message whose visible content is unchanged. The streaming
+ *  TAIL message gets a fresh object whose signature changes each delta, so it
+ *  still re-renders and streams in; every FINALIZED message is skipped, turning a
+ *  per-token whole-transcript re-render into a tail-only one. */
+function arePropsEqual(
+  prev: MessageItemProps,
+  next: MessageItemProps,
+): boolean {
+  if (
+    prev.showCitations !== next.showCitations ||
+    prev.neutralizeInternalLinks !== next.neutralizeInternalLinks ||
+    prev.assistantName !== next.assistantName
+  ) {
+    return false;
+  }
+  // Fast path: identical message object (finalized rows keep their identity
+  // across deltas) — skip without building signatures.
+  if (prev.message === next.message) return true;
+  return messageSignature(prev.message) === messageSignature(next.message);
+}
+
+export default memo(MessageItem, arePropsEqual);

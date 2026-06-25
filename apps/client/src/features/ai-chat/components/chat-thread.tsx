@@ -36,6 +36,14 @@ import {
 } from "@/features/ai-chat/utils/queue-helpers.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
+// Throttle how often the streamed `messages` state triggers a re-render. Without
+// it, useChat updates state on EVERY token, so the whole transcript's markdown
+// (marked + DOMPurify) is re-parsed per token — on a long agent run that grows
+// into a quadratic CPU storm that pins the main thread and freezes the UI.
+// ~50ms (20 Hz) keeps streaming visually smooth while decoupling re-render cost
+// from the token rate.
+const STREAM_THROTTLE_MS = 50;
+
 /** The page the user is currently viewing, sent as chat context. */
 export interface OpenPageContext {
   id: string;
@@ -253,6 +261,8 @@ export default function ChatThread({
     id: chatStoreId,
     messages: initialMessages,
     transport,
+    // See STREAM_THROTTLE_MS — bounds re-render/markdown-reparse frequency.
+    experimental_throttle: STREAM_THROTTLE_MS,
     // `onFinish` (ai@6 useChat) fires from a `finally` on EVERY terminal outcome
     // — success, user Stop/abort (`isAbort`), network drop (`isDisconnect`), and
     // stream error (`isError`). Keep calling `onTurnFinished()` on all of them
