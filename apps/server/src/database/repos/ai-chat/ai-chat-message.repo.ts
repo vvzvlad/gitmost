@@ -134,16 +134,26 @@ export class AiChatMessageRepo {
       metadata: unknown;
       status: string | null;
     }>,
-    trx?: KyselyTransaction,
+    opts?: { onlyIfStreaming?: boolean; trx?: KyselyTransaction },
   ): Promise<AiChatMessage | undefined> {
-    const db = dbOrTx(this.db, trx);
-    return db
+    const db = dbOrTx(this.db, opts?.trx);
+    let query = db
       .updateTable('aiChatMessages')
       .set({ ...(patch as Record<string, unknown>), updatedAt: new Date() })
       .where('id', '=', id)
-      .where('workspaceId', '=', workspaceId)
-      .returning(this.baseFields)
-      .executeTakeFirst();
+      .where('workspaceId', '=', workspaceId);
+    // Concurrency guard (#183 review): a per-step 'streaming' update must NEVER
+    // overwrite a row the terminal callback already finalized. onStepFinish
+    // fires the streaming update fire-and-forget, so its UPDATE can land AFTER
+    // finalize on a DIFFERENT pool connection (commit order is not guaranteed).
+    // Scoping the streaming update to rows STILL in 'streaming' makes a late
+    // update a no-op once the row is completed/error/aborted — regardless of
+    // commit order. The terminal finalize runs WITHOUT this guard so it always
+    // wins.
+    if (opts?.onlyIfStreaming) {
+      query = query.where('status', '=', 'streaming');
+    }
+    return query.returning(this.baseFields).executeTakeFirst();
   }
 
   /**

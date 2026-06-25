@@ -73,6 +73,40 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
     );
   });
 
+  it('onlyIfStreaming update is a NO-OP once the row is finalized (race guard)', async () => {
+    // Reproduce the step-update-vs-finalize race (#183 review): the row is
+    // finalized to 'completed', then a LATE per-step 'streaming' update lands.
+    // With `onlyIfStreaming` it must match nothing and leave the finalized row
+    // untouched (no clobber back to 'streaming', no lost usage).
+    const seeded = await repo.insert({
+      chatId,
+      workspaceId,
+      userId,
+      role: 'assistant',
+      content: 'partial',
+      status: 'streaming',
+    });
+    // Terminal finalize (unguarded) wins.
+    await repo.update(seeded.id, workspaceId, {
+      content: 'final answer',
+      status: 'completed',
+      metadata: { usage: { totalTokens: 42 } } as never,
+    });
+    // A straggler per-step update arrives AFTER finalize.
+    const late = await repo.update(
+      seeded.id,
+      workspaceId,
+      { content: 'partial', status: 'streaming', metadata: {} as never },
+      { onlyIfStreaming: true },
+    );
+    expect(late).toBeUndefined(); // matched no 'streaming' row -> no-op
+    const rows = await repo.findAllByChat(chatId, workspaceId);
+    const row = rows.find((r) => r.id === seeded.id)!;
+    expect(row.status).toBe('completed'); // NOT clobbered back to streaming
+    expect(row.content).toBe('final answer');
+    expect((row.metadata as any).usage.totalTokens).toBe(42); // usage preserved
+  });
+
   it('update is workspace-scoped: a foreign workspace id matches nothing', async () => {
     const seeded = await repo.insert({
       chatId,

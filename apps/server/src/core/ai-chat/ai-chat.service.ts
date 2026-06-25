@@ -420,11 +420,18 @@ export class AiChatService implements OnModuleInit {
     // throws into the stream. Keeps status 'streaming'.
     const updateStreaming = async (): Promise<void> => {
       if (!assistantId) return;
+      // Cheap short-circuit once the turn is finalized (see `finalized` below).
+      // The AUTHORITATIVE guard is `onlyIfStreaming` on the UPDATE: a late
+      // fire-and-forget step update could still be in flight on another pool
+      // connection when finalize runs, so the SQL `WHERE status='streaming'`
+      // (not this flag) is what prevents it clobbering the terminal row.
+      if (finalized) return;
       try {
         await this.aiChatMessageRepo.update(
           assistantId,
           workspace.id,
           flushAssistant(capturedSteps, '', 'streaming'),
+          { onlyIfStreaming: true },
         );
       } catch (err) {
         this.logger.warn(
