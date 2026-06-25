@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persistent AI-chat history as the source of truth + server-side export.**
+  An assistant turn is now persisted to the database step by step: the row is
+  inserted upfront as `streaming` and updated as each agent step finishes, then
+  finalized once to `completed`/`error`/`aborted`. A process that dies mid-turn
+  keeps every finished step, and a startup sweep flips any dangling `streaming`
+  row (untouched for 10 minutes) to `aborted`. Chat "Copy" now exports
+  server-side from these rows (`POST /ai-chat/export`) rather than from live
+  client state, so the export is identical whether a chat is freshly streaming,
+  just switched to, or reloaded — and is available from the first turn of a new
+  chat. (#183, #174)
+
 - **AI-agent attribution for MCP writes.** Comments (and pages) created through
   the MCP endpoint by a dedicated agent account are now badged as "AI", with
   unspoofable provenance derived from a per-user `is_agent` flag (not from the

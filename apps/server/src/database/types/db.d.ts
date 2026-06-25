@@ -620,6 +620,10 @@ export interface AiChatMessages {
   content: string | null;
   toolCalls: Json | null;
   metadata: Json | null;
+  // Turn lifecycle status (#183): 'streaming' | 'completed' | 'error' |
+  // 'aborted'. NULL on rows written before the status column existed; the app
+  // treats NULL as 'completed' (a settled, pre-status message).
+  status: string | null;
   tsv: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;

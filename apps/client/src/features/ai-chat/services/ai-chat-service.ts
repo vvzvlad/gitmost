@@ -51,6 +51,24 @@ export async function deleteAiChat(chatId: string): Promise<void> {
 }
 
 /**
+ * Export a chat to Markdown (#183). The server renders the transcript from the
+ * persisted rows (the DB is the single source of truth — including an
+ * interrupted turn's in-progress row, persisted upfront + per step), so the
+ * client just copies the returned string. `lang` localizes the few fixed
+ * role/tool labels; defaults to English server-side when omitted.
+ */
+export async function exportAiChat(
+  chatId: string,
+  lang?: string,
+): Promise<string> {
+  const req = await api.post<{ markdown: string }>("/ai-chat/export", {
+    chatId,
+    lang,
+  });
+  return req.data.markdown;
+}
+
+/**
  * Agent roles API (`/ai-chat/roles`). `list` is available to any workspace
  * member (for the chat-creation picker); create/update/delete are admin-only
  * (the server enforces this). Same `{ data }` unwrap convention as above.
@@ -76,6 +94,8 @@ export async function updateAiRole(data: IAiRoleUpdate): Promise<IAiRole> {
 
 /** Soft-delete a role (admin). */
 export async function deleteAiRole(id: string): Promise<{ success: true }> {
-  const req = await api.post<{ success: true }>("/ai-chat/roles/delete", { id });
+  const req = await api.post<{ success: true }>("/ai-chat/roles/delete", {
+    id,
+  });
   return req.data;
 }

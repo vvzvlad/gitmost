@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { type UIMessage } from "@ai-sdk/react";
 import { Group, Loader, Tooltip } from "@mantine/core";
 import {
   IconArrowsDiagonal,
@@ -40,7 +39,7 @@ import {
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import ConversationList from "@/features/ai-chat/components/conversation-list.tsx";
 import ChatThread from "@/features/ai-chat/components/chat-thread.tsx";
-import { buildChatMarkdown } from "@/features/ai-chat/utils/chat-markdown.ts";
+import { exportAiChat } from "@/features/ai-chat/services/ai-chat-service.ts";
 import { useChatSession } from "@/features/ai-chat/hooks/use-chat-session.ts";
 import {
   shouldCollapseOnOutsidePointer,
@@ -121,7 +120,7 @@ function clampGeom(g: {
  * ported from the GitmostAgent.jsx design.
  */
 export default function AiChatWindow() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const clipboard = useClipboard({ timeout: 500 });
   const queryClient = useQueryClient();
   const [windowOpen, setWindowOpen] = useAtom(aiChatWindowOpenAtom);
@@ -162,30 +161,11 @@ export default function AiChatWindow() {
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
-  // Live snapshot of the active thread's useChat state, kept up to date by
-  // ChatThread. Lets the export include the in-progress (not-yet-persisted)
-  // streaming turn. A ref avoids re-rendering this window on every token.
-  const liveThreadRef = useRef<{
-    messages: UIMessage[];
-    isStreaming: boolean;
-    banner: string | null;
-  }>({
-    messages: [],
-    isStreaming: false,
-    banner: null,
-  });
-
   // Live turn-token total (reasoning + output) for the in-flight turn, pushed up
   // (THROTTLED to ~8 Hz inside ChatThread) so the header badge ticks mid-stream.
   // `null` means no turn is in flight -> the badge falls back to the persisted
   // context size below.
   const [liveTurnTokens, setLiveTurnTokens] = useState<number | null>(null);
-  // Whether the on-screen thread currently holds at least one message. Reported
-  // reactively by ChatThread (the live snapshot lives in a non-reactive ref). This
-  // lets the "Copy chat" button stay available for a brand-new, not-yet-persisted
-  // chat whose first turn is in flight or was interrupted — that case has no
-  // persisted rows yet, so a persisted-rows-only gate would hide the button (#174).
-  const [hasLiveContent, setHasLiveContent] = useState(false);
 
   // The page the user is currently viewing. AiChatWindow lives in a pathless
   // parent layout route, so useParams() can't see :pageSlug. Match the full
@@ -214,6 +194,7 @@ export default function AiChatWindow() {
     threadKey,
     waitingForHistory,
     onTurnFinished,
+    onServerChatId,
     cancelPendingAdoption,
   } = useChatSession({
     activeChatId,
@@ -254,20 +235,19 @@ export default function AiChatWindow() {
     [cancelPendingAdoption, setActiveChatId, setDraft, setSelectedRoleId],
   );
 
-  // The active chat object (for its title) and an export gate: only enable the
-  // export button when an existing chat with loaded persisted rows is active.
+  // The active chat object (for its title) and an export gate. The export is now
+  // SERVER-sourced (the DB is the single source of truth — #183): the assistant
+  // row is persisted upfront + per step, so even a brand-new chat whose first
+  // turn is streaming/interrupted has a server row to render. Enable the button
+  // whenever a persisted chat is active (`activeChatId` is set). For a BRAND-NEW
+  // chat that id is adopted EARLY — at the stream's `start` chunk via
+  // onServerChatId (#174) — so the Copy button is available during the first
+  // turn's stream, not only after it terminates.
   const activeChat = useMemo(
     () => chats?.items?.find((c) => c.id === activeChatId) ?? null,
     [chats, activeChatId],
   );
-  // Export is available when there is anything to export: either persisted rows
-  // for the active chat, OR a live on-screen thread with at least one message.
-  // The live arm covers a brand-new chat whose first turn is streaming or was
-  // interrupted before the server persisted any row (#174); the persisted arm is
-  // the steady-state path for an already-saved chat (#160).
-  const canExport =
-    hasLiveContent ||
-    (!!activeChatId && !!messageRows && messageRows.length > 0);
+  const canExport = !!activeChatId;
 
   // The role to display in the header and as the assistant's name. Prefer the
   // persisted role of an existing chat (chat-list JOIN); fall back to the role
@@ -284,53 +264,21 @@ export default function AiChatWindow() {
     return picked ? { name: picked.name, emoji: picked.emoji } : null;
   }, [activeChat, enabledRoles, selectedRoleId]);
 
-  // Build a Markdown export from the already-loaded persisted rows (no network
-  // call) and copy it to the clipboard. The "Copied" notification is the
-  // feedback.
-  const handleCopy = useCallback(() => {
-    // Export gate. There must be SOMETHING to export — either a live on-screen
-    // message or a persisted row. A brand-new chat whose first turn is streaming
-    // or was interrupted has live messages but no persisted rows yet; it still
-    // exports the on-screen thread WYSIWYG (#174). Only a truly empty chat (no
-    // live messages and no rows) is non-exportable (the button is hidden too —
-    // see `canExport`).
-    const live = liveThreadRef.current;
-    const hasRows = !!messageRows && messageRows.length > 0;
-    if (live.messages.length === 0 && !hasRows) return;
-    // WYSIWYG export: the live on-screen messages ARE the document (so a partial
-    // reply from an interrupted turn — which never reached the persisted rows —
-    // is exported just as it appears). The persisted rows enrich each live
-    // message (token usage / error / timestamp) by id and serve as the fallback
-    // when the live mirror is empty. The on-screen banner is appended too. See
-    // issues #160 and #174. `chatId` may be null for a not-yet-saved chat — use a
-    // placeholder so the header line still renders.
-    const markdown = buildChatMarkdown({
-      title: activeChat?.title ?? null,
-      chatId: activeChatId ?? "unsaved",
-      live: live.messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        parts: (m.parts ?? []) as { type: string; text?: string }[],
-        metadata: m.metadata as
-          | {
-              usage?: {
-                inputTokens?: number;
-                outputTokens?: number;
-                totalTokens?: number;
-                reasoningTokens?: number;
-              };
-              error?: string;
-            }
-          | undefined,
-      })),
-      rows: messageRows,
-      isStreaming: live.isStreaming,
-      banner: live.banner,
-      t,
-    });
-    clipboard.copy(markdown);
-    notifications.show({ message: t("Copied") });
-  }, [activeChatId, messageRows, activeChat, clipboard, t]);
+  // Fetch the server-rendered Markdown export and copy it to the clipboard. The
+  // server is the single source of truth (#183): it renders the transcript from
+  // the persisted rows — including an interrupted turn's in-progress row — so the
+  // export is identical whether the chat is freshly streaming, just switched to,
+  // or reloaded. The `lang` of the active i18n drives the few localized labels.
+  const handleCopy = useCallback(async () => {
+    if (!activeChatId) return;
+    try {
+      const markdown = await exportAiChat(activeChatId, i18n.language);
+      clipboard.copy(markdown);
+      notifications.show({ message: t("Copied") });
+    } catch {
+      notifications.show({ message: t("Failed to export chat"), color: "red" });
+    }
+  }, [activeChatId, clipboard, t, i18n.language]);
 
   // Current context size for the active chat: how much the conversation now
   // occupies in the model's context window — NOT the cumulative tokens spent.
@@ -685,9 +633,8 @@ export default function AiChatWindow() {
               onRolePicked={(role) => setSelectedRoleId(role.id)}
               assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
-              liveStateRef={liveThreadRef}
+              onServerChatId={onServerChatId}
               onLiveTurnTokens={setLiveTurnTokens}
-              onLiveContentChange={setHasLiveContent}
             />
           )}
         </div>
