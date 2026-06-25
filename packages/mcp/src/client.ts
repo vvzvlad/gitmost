@@ -1625,7 +1625,13 @@ export class DocmostClient {
         replaced = 0;
         const { doc: nd, replaced: r } = replaceNodeById(liveDoc, nodeId, target);
         replaced = r;
-        if (replaced === 0) return null; // no match -> skip the write entirely
+        // 0 matches -> skip the write. >1 matches -> the id is AMBIGUOUS: Docmost
+        // duplicates block ids on copy/paste (and copyPageContent writes them
+        // verbatim), so replacing "the node with id X" would silently clobber
+        // EVERY duplicate (#159). Refuse: skip the write and throw below so the
+        // model re-targets with a more specific anchor instead of corrupting the
+        // page. Only an unambiguous single match is written.
+        if (replaced !== 1) return null;
         return nd;
       },
     );
@@ -1633,6 +1639,11 @@ export class DocmostClient {
     if (replaced === 0) {
       throw new Error(
         `patch_node: no node with id "${nodeId}" found on page ${pageId}`,
+      );
+    }
+    if (replaced > 1) {
+      throw new Error(
+        `patch_node: id "${nodeId}" is ambiguous — ${replaced} nodes on page ${pageId} share it (block ids are duplicated on copy/paste). Refusing to replace all of them; nothing was changed. Re-target with a more specific anchor.`,
       );
     }
 
@@ -1755,7 +1766,12 @@ export class DocmostClient {
         deleted = 0;
         const { doc: nd, deleted: d } = deleteNodeById(liveDoc, nodeId);
         deleted = d;
-        if (deleted === 0) return null; // no match -> skip the write entirely
+        // 0 matches -> skip the write. >1 matches -> the id is AMBIGUOUS (block
+        // ids are duplicated on copy/paste, #159): deleting "the node with id X"
+        // would silently remove EVERY duplicate. Refuse: skip the write and throw
+        // below so the model re-targets. Only an unambiguous single match is
+        // deleted.
+        if (deleted !== 1) return null;
         return nd;
       },
     );
@@ -1763,6 +1779,11 @@ export class DocmostClient {
     if (deleted === 0) {
       throw new Error(
         `delete_node: no node with id "${nodeId}" found on page ${pageId}`,
+      );
+    }
+    if (deleted > 1) {
+      throw new Error(
+        `delete_node: id "${nodeId}" is ambiguous — ${deleted} nodes on page ${pageId} share it (block ids are duplicated on copy/paste). Refusing to delete all of them; nothing was changed. Re-target with a more specific anchor.`,
       );
     }
 
