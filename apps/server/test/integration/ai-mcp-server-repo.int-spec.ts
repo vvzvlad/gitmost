@@ -91,6 +91,25 @@ describe('AiMcpServerRepo tool_allowlist jsonb round-trip [integration]', () => 
     const healed = enabled.find((r) => r.id === id);
     expect(healed?.toolAllowlist).toEqual(['alpha', 'beta']);
   });
+
+  it('FAIL-OPEN: a present-but-corrupt tool_allowlist reads back as null (no restriction)', async () => {
+    // #185 re-review pt 8: normalizeRow's fail-open branch — the column is
+    // PRESENT but does not parse into a string[] (here a jsonb string scalar
+    // holding non-array JSON). The read must degrade to `null` ("no restriction"),
+    // not crash. (A warn is logged with the server id; not asserted here.)
+    const id = randomUUID();
+    await sql`
+      INSERT INTO ai_mcp_servers (id, workspace_id, name, transport, url, tool_allowlist)
+      VALUES (
+        ${id}, ${ws}, ${`srv-${id}`}, 'http', 'https://example.com/mcp',
+        to_jsonb(${'{"not":"an array"}'}::text)
+      )
+    `.execute(db);
+    // Sanity: the column is present (a jsonb string scalar), not SQL NULL.
+    expect(await jsonbTypeof(id)).toBe('string');
+    // ...yet the read degrades to null (fail-open).
+    expect((await repo.findById(id, ws))?.toolAllowlist).toBeNull();
+  });
 });
 
 /**

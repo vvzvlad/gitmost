@@ -162,6 +162,111 @@ describe('getFootnoteRefCount (cached, live editor)', () => {
     expect(getFootnoteRefCount(editor.state, 'nope')).toBe(0);
     editor.destroy();
   });
+
+  // #185 re-review pt 9: the cached count must update on a doc change (mirror of
+  // the number-cache invalidation test) — add another `[^a]` reference and the
+  // count goes 2 -> 3.
+  it('recomputes the cached ref count when a reference is added', () => {
+    const editor = makeEditor({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'a' } },
+            { type: 'text', text: ' and ' },
+            { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'a' } },
+          ],
+        },
+        {
+          type: FOOTNOTES_LIST_NAME,
+          content: [
+            {
+              type: FOOTNOTE_DEFINITION_NAME,
+              attrs: { id: 'a' },
+              content: [{ type: 'paragraph' }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(getFootnoteRefCount(editor.state, 'a')).toBe(2);
+
+    // Insert a THIRD reference to `a` at the start of the first paragraph.
+    const refType = editor.schema.nodes[FOOTNOTE_REFERENCE_NAME];
+    editor.view.dispatch(
+      editor.state.tr.insert(1, refType.create({ id: 'a' })),
+    );
+
+    expect(getFootnoteRefCount(editor.state, 'a')).toBe(3);
+    editor.destroy();
+  });
+});
+
+// #185 re-review pt 6: scrollToReference picks the index-th occurrence among the
+// reused references, falls back to the first for an out-of-range index, and is a
+// no-op (false) for an empty id. Runs the REAL command against the editor's DOM
+// (scrollIntoView is stubbed — jsdom does not implement it).
+describe('scrollToReference command (occurrence selection + fallback)', () => {
+  it('selects the index-th occurrence, falls back to the first, false for empty id', () => {
+    const scrolled: Element[] = [];
+    const original = (Element.prototype as any).scrollIntoView;
+    (Element.prototype as any).scrollIntoView = function () {
+      scrolled.push(this as Element);
+    };
+    try {
+      const editor = makeEditor({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'a' } },
+              { type: 'text', text: ' x ' },
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'a' } },
+              { type: 'text', text: ' y ' },
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'a' } },
+            ],
+          },
+          {
+            type: FOOTNOTES_LIST_NAME,
+            content: [
+              {
+                type: FOOTNOTE_DEFINITION_NAME,
+                attrs: { id: 'a' },
+                content: [{ type: 'paragraph' }],
+              },
+            ],
+          },
+        ],
+      });
+      const sups = editor.view.dom.querySelectorAll(
+        'sup[data-footnote-ref][data-id="a"]',
+      );
+      expect(sups.length).toBe(3);
+
+      // index 1 -> the SECOND occurrence.
+      expect(editor.commands.scrollToReference('a', 1)).toBe(true);
+      expect(scrolled[scrolled.length - 1]).toBe(sups[1]);
+
+      // out-of-range index -> falls back to the FIRST occurrence.
+      expect(editor.commands.scrollToReference('a', 99)).toBe(true);
+      expect(scrolled[scrolled.length - 1]).toBe(sups[0]);
+
+      // default index (0) -> first.
+      expect(editor.commands.scrollToReference('a')).toBe(true);
+      expect(scrolled[scrolled.length - 1]).toBe(sups[0]);
+
+      // empty id -> false, no scroll.
+      const before = scrolled.length;
+      expect(editor.commands.scrollToReference('')).toBe(false);
+      expect(scrolled.length).toBe(before);
+
+      editor.destroy();
+    } finally {
+      (Element.prototype as any).scrollIntoView = original;
+    }
+  });
 });
 
 describe('setFootnote command', () => {

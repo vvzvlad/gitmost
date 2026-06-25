@@ -75,7 +75,9 @@ vi.mock("@/features/editor/components/code-block/mermaid-view.tsx", () => ({
 }));
 
 import FootnotesListView from "./footnotes-list-view";
-import FootnoteDefinitionView from "./footnote-definition-view";
+import FootnoteDefinitionView, {
+  backlinkLabel,
+} from "./footnote-definition-view";
 import CodeBlockView from "../code-block/code-block-view";
 
 // Minimal NodeViewProps stub: definition view only touches node.attrs.id and
@@ -212,5 +214,18 @@ describe("#168 footnote definition multi-backlinks", () => {
       "fn-1",
       0,
     );
+  });
+});
+
+// #185 re-review pt 7: backlinkLabel is base-26 (a..z, then aa…). The component
+// tests only cover a,b,c (index 0-2); pin the >= 26 carry boundary.
+describe("backlinkLabel base-26 boundary (#168)", () => {
+  it("maps 0->a, 25->z, 26->aa, 27->ab, 51->az, 52->ba", () => {
+    expect(backlinkLabel(0)).toBe("a");
+    expect(backlinkLabel(25)).toBe("z");
+    expect(backlinkLabel(26)).toBe("aa");
+    expect(backlinkLabel(27)).toBe("ab");
+    expect(backlinkLabel(51)).toBe("az");
+    expect(backlinkLabel(52)).toBe("ba");
   });
 });

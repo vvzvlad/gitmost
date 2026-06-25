@@ -7,7 +7,7 @@ import classes from "./footnote.module.css";
  * A 0-based backlink index -> its lowercase letter label (0 -> "a", 25 -> "z",
  * 26 -> "aa", ...), matching the Pandoc/Wikipedia "↩ a b c" convention.
  */
-function backlinkLabel(index: number): string {
+export function backlinkLabel(index: number): string {
   let out = "";
   let x = index;
   while (x >= 0) {
