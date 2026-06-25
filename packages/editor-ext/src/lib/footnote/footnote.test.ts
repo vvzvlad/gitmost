@@ -267,6 +267,55 @@ describe('scrollToReference command (occurrence selection + fallback)', () => {
       (Element.prototype as any).scrollIntoView = original;
     }
   });
+
+  // #185 auto-review pt 2: a NON-empty id that renders ZERO references — the real
+  // desync where the definition still exists but its inline ref was removed from
+  // the DOM. querySelectorAll returns 0 matches, so `matches[index] ?? matches[0]`
+  // is undefined and the command must bail with `false` (not throw, not scroll).
+  it('returns false for a non-empty id with no rendered references', () => {
+    const scrolled: Element[] = [];
+    const original = (Element.prototype as any).scrollIntoView;
+    (Element.prototype as any).scrollIntoView = function () {
+      scrolled.push(this as Element);
+    };
+    try {
+      // A lone definition for id 'ghost' and a reference for a DIFFERENT id, so
+      // there is a footnotes structure but no `sup[data-id="ghost"]` in the DOM.
+      const editor = makeEditor({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              { type: FOOTNOTE_REFERENCE_NAME, attrs: { id: 'other' } },
+            ],
+          },
+          {
+            type: FOOTNOTES_LIST_NAME,
+            content: [
+              {
+                type: FOOTNOTE_DEFINITION_NAME,
+                attrs: { id: 'ghost' },
+                content: [{ type: 'paragraph' }],
+              },
+            ],
+          },
+        ],
+      });
+      expect(
+        editor.view.dom.querySelectorAll(
+          'sup[data-footnote-ref][data-id="ghost"]',
+        ).length,
+      ).toBe(0);
+
+      expect(editor.commands.scrollToReference('ghost')).toBe(false);
+      expect(scrolled.length).toBe(0);
+
+      editor.destroy();
+    } finally {
+      (Element.prototype as any).scrollIntoView = original;
+    }
+  });
 });
 
 describe('setFootnote command', () => {
