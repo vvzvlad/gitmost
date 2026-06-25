@@ -15,6 +15,38 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Real Postgres + Redis so the server integration suite (`*.int-spec.ts`,
+    # behind `pnpm --filter server test:int`) runs in CI (red-team finding #7).
+    # Without it, cost-cap / FK-cascade / jsonb-round-trip / real-apply tests
+    # only ran locally, so regressions in those paths stayed green in CI.
+    # Postgres uses the pgvector image because migrations create vector columns
+    # and global-setup runs `CREATE EXTENSION vector`. Credentials/db match the
+    # defaults in apps/server/test/integration/db.ts + global-setup.ts
+    # (docmost / docmost_dev_pw, maintenance db `docmost`, redis on 6379), so no
+    # TEST_*_URL overrides are needed.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: docmost
+          POSTGRES_PASSWORD: docmost_dev_pw
+          POSTGRES_DB: docmost
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docmost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,5 +68,12 @@ jobs:
       - name: Build editor-ext
         run: pnpm --filter @docmost/editor-ext build
 
-      - name: Run tests
+      - name: Run unit tests
         run: pnpm -r test
+
+      # Integration suite against the real Postgres/Redis services above. Runs
+      # the FK-cascade, cost-cap, jsonb-round-trip and real-apply specs that the
+      # unit run (mocks only) cannot cover. global-setup drops/recreates the
+      # isolated `docmost_test` DB and migrates it to latest.
+      - name: Run server integration tests
+        run: pnpm --filter server test:int
