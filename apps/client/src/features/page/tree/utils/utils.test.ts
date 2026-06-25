@@ -7,6 +7,7 @@ import {
   openBranches,
   closeIds,
   mergeRootTrees,
+  loadedOpenBranchIds,
 } from "./utils";
 import type { IPage } from "@/features/page/types/page.types.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -319,5 +320,43 @@ describe("mergeRootTrees (#159 #2 reconnect reconcile)", () => {
     const incoming = [{ ...root("a", "a0"), name: "NEW" }];
     const merged = mergeRootTrees(prev, incoming);
     expect(merged[0].name).toBe("NEW");
+  });
+});
+
+describe("loadedOpenBranchIds (#159 #8 reconnect refresh targets)", () => {
+  function n(id: string, children?: SpaceTreeNode[]): SpaceTreeNode {
+    return {
+      id,
+      slugId: `slug-${id}`,
+      name: id.toUpperCase(),
+      icon: undefined,
+      position: "a0",
+      spaceId: "space-1",
+      parentPageId: null as unknown as string,
+      hasChildren: !!children,
+      children: children as SpaceTreeNode[],
+    };
+  }
+
+  it("returns OPEN branches whose children are loaded (array)", () => {
+    const tree = [n("a", [n("a1")]), n("b", [n("b1")])];
+    const ids = loadedOpenBranchIds(tree, new Set(["a"]));
+    expect(ids).toEqual(["a"]); // b is closed; a is open+loaded
+  });
+
+  it("skips an open branch whose children are NOT loaded (undefined)", () => {
+    const tree = [n("a")]; // children undefined
+    expect(loadedOpenBranchIds(tree, new Set(["a"]))).toEqual([]);
+  });
+
+  it("includes a loaded-but-empty open branch (a child may have been added during the gap)", () => {
+    const tree = [n("a", [])];
+    expect(loadedOpenBranchIds(tree, new Set(["a"]))).toEqual(["a"]);
+  });
+
+  it("walks nested open+loaded branches (deep chain refreshes every level)", () => {
+    const tree = [n("a", [n("a1", [n("a1a")])])];
+    const ids = loadedOpenBranchIds(tree, new Set(["a", "a1"]));
+    expect(ids.sort()).toEqual(["a", "a1"]);
   });
 });

@@ -255,6 +255,51 @@ describe("treeModel.insertByPosition", () => {
   });
 });
 
+// reconcileChildren (#159 #8): on a socket-reconnect refresh, an already-loaded
+// branch is reconciled against a fresh server fetch — removed children drop,
+// new ones appear, order follows the server, and surviving children keep their
+// own loaded grandchildren (deeper expansion is not collapsed).
+describe("treeModel.reconcileChildren", () => {
+  type N = TreeNode<{ name: string }>;
+  const leaf = (id: string): N => ({ id, name: id.toUpperCase() });
+
+  it("drops removed children, adds new ones, and follows the fresh order", () => {
+    const tree: N[] = [
+      { id: "p", name: "P", children: [leaf("a"), leaf("b")] },
+    ];
+    // Server now has b, c (a was deleted/moved away; c is new) in this order.
+    const next = treeModel.reconcileChildren(tree, "p", [leaf("b"), leaf("c")]);
+    expect(treeModel.find(next, "p")?.children?.map((n) => n.id)).toEqual([
+      "b",
+      "c",
+    ]);
+    expect(treeModel.find(next, "a")).toBeNull();
+  });
+
+  it("preserves a surviving child's loaded grandchildren", () => {
+    const tree: N[] = [
+      {
+        id: "p",
+        name: "P",
+        children: [{ id: "a", name: "A", children: [leaf("a1")] }, leaf("b")],
+      },
+    ];
+    // Fresh fetch returns only top-level children (no grandchildren).
+    const next = treeModel.reconcileChildren(tree, "p", [leaf("a"), leaf("b")]);
+    // 'a' keeps its previously loaded grandchild 'a1'.
+    expect(treeModel.find(next, "a")?.children?.map((n) => n.id)).toEqual([
+      "a1",
+    ]);
+  });
+
+  it("leaves an UNLOADED parent (children undefined) untouched", () => {
+    const tree: N[] = [{ id: "p", name: "P" }]; // children: undefined
+    const next = treeModel.reconcileChildren(tree, "p", [leaf("a")]);
+    expect(next).toBe(tree); // no-op: lazy-load handles an unloaded branch
+    expect(treeModel.find(next, "p")?.children).toBeUndefined();
+  });
+});
+
 // addTreeNode idempotency: the receiver early-returns when the node id already
 // exists, so re-delivery (or the author's optimistic node) is never duplicated.
 // This guards the find-then-skip contract insertByPosition relies on.

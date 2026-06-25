@@ -223,6 +223,48 @@ export const treeModel = {
     return touched ? out : tree;
   },
 
+  // Replace a parent's DIRECT children with the authoritative `fresh` set while
+  // PRESERVING each surviving child's already-loaded grandchildren (deeper
+  // expansion). Unlike `appendChildren` (add-only), this DROPS children that are
+  // no longer present and reorders to `fresh` — so a move/delete/rename that
+  // happened inside a loaded branch while events were missed (a socket reconnect
+  // gap) is reflected, not left stale (#159 #8). Only used to reconcile an
+  // already-loaded branch against a fresh fetch; a parent with no loaded children
+  // (`children === undefined`) is left untouched (lazy-load handles it).
+  reconcileChildren<T extends object>(
+    tree: TreeNode<T>[],
+    parentId: string,
+    fresh: TreeNode<T>[],
+  ): TreeNode<T>[] {
+    let touched = false;
+    const walk = (nodes: TreeNode<T>[]): TreeNode<T>[] =>
+      nodes.map((n) => {
+        if (n.id === parentId) {
+          // Only reconcile a branch whose children were actually loaded; an
+          // unloaded parent stays unloaded (lazy-load fetches it fresh later).
+          if (n.children === undefined) return n;
+          const prevById = new Map(n.children.map((c) => [c.id, c]));
+          const merged = fresh.map((f) => {
+            const prev = prevById.get(f.id);
+            // Preserve the surviving child's previously loaded grandchildren so
+            // deeper expansion is not collapsed by the reconcile.
+            return prev?.children !== undefined
+              ? { ...f, children: prev.children }
+              : f;
+          });
+          touched = true;
+          return { ...n, children: merged };
+        }
+        if (n.children) {
+          const next = walk(n.children);
+          if (next !== n.children) return { ...n, children: next };
+        }
+        return n;
+      });
+    const out = walk(tree);
+    return touched ? out : tree;
+  },
+
   place<T extends object>(
     tree: TreeNode<T>[],
     sourceId: string,

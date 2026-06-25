@@ -246,6 +246,29 @@ export function mergeRootTrees(
   return sortPositionKeys(reconciled);
 }
 
+/**
+ * Ids of branches a socket-reconnect refresh should re-fetch and reconcile
+ * (#159 #8): a node that is currently OPEN and whose children are LOADED
+ * (`children` is an array — possibly empty). An unloaded branch (`children ===
+ * undefined`) is skipped because lazy-load fetches it fresh on the next expand,
+ * so there is nothing stale to reconcile. Walks the whole tree (a deep open
+ * chain refreshes every loaded level).
+ */
+export function loadedOpenBranchIds(
+  tree: SpaceTreeNode[],
+  openIds: ReadonlySet<string>,
+): string[] {
+  const ids: string[] = [];
+  const walk = (nodes: SpaceTreeNode[]) => {
+    for (const n of nodes) {
+      if (openIds.has(n.id) && Array.isArray(n.children)) ids.push(n.id);
+      if (n.children) walk(n.children);
+    }
+  };
+  walk(tree);
+  return ids;
+}
+
 // Collect every node id in the tree (roots, branches, leaves). Used by
 // collapseAll to clear the open-state map for all current-space nodes.
 export function collectAllIds(nodes: SpaceTreeNode[]): string[] {
