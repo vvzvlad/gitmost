@@ -231,4 +231,40 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
     // ...while the stale one alongside it was swept to 'aborted'.
     expect(byId.get(stale.id)!.status).toBe('aborted');
   });
+
+  it('findAllByChat caps the result, keeping the NEWEST messages in order (#183 review)', async () => {
+    // A dedicated chat so the cap test is independent of the rows above.
+    const cappedChat = (
+      await createChat(db, { workspaceId, creatorId: userId })
+    ).id;
+    const base = Date.now();
+    // Three messages at strictly increasing timestamps.
+    await createMessage(db, {
+      workspaceId,
+      chatId: cappedChat,
+      content: 'm1-oldest',
+      createdAt: new Date(base),
+    });
+    await createMessage(db, {
+      workspaceId,
+      chatId: cappedChat,
+      content: 'm2',
+      createdAt: new Date(base + 1000),
+    });
+    await createMessage(db, {
+      workspaceId,
+      chatId: cappedChat,
+      content: 'm3-newest',
+      createdAt: new Date(base + 2000),
+    });
+
+    // Cap of 2 -> the OLDEST message is dropped; the newest two stay, in
+    // chronological order (oldest -> newest).
+    const capped = await repo.findAllByChat(cappedChat, workspaceId, 2);
+    expect(capped.map((r) => r.content)).toEqual(['m2', 'm3-newest']);
+
+    // Without a cap (well above the row count) all three come back in order.
+    const all = await repo.findAllByChat(cappedChat, workspaceId, 100);
+    expect(all.map((r) => r.content)).toEqual(['m1-oldest', 'm2', 'm3-newest']);
+  });
 });

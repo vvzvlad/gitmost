@@ -122,6 +122,80 @@ describe('buildChatMarkdown (server) — structure', () => {
     expect(md).toContain('"title": "Hello"');
   });
 
+  // #186 re-review pt 1: restore the parity coverage of the removed client spec —
+  // error state, unknown-tool fallback (en + ru), and the circular-stringify catch.
+  it('renders a tool part in the error state with its errorText', () => {
+    const md = buildChatMarkdown({
+      title: 'T',
+      chatId: 'c',
+      rows: [
+        row({
+          role: 'assistant',
+          metadata: {
+            parts: [
+              {
+                type: 'tool-getPage',
+                state: 'output-error',
+                input: { id: 'p1' },
+                errorText: 'page not found',
+              },
+            ],
+          } as never,
+        }),
+      ],
+    });
+    expect(md).toContain('**Tool: Read page** (`getPage`) — error');
+    expect(md).toContain('**Error:** page not found');
+  });
+
+  it('falls back to "Ran tool <name>" for an unknown tool (en) and the ru variant', () => {
+    const parts = [
+      {
+        type: 'tool-mysteryTool',
+        state: 'output-available',
+        output: { ok: 1 },
+      },
+    ];
+    const en = buildChatMarkdown({
+      title: 'T',
+      chatId: 'c',
+      rows: [row({ role: 'assistant', metadata: { parts } as never })],
+    });
+    expect(en).toContain('**Tool: Ran tool mysteryTool** (`mysteryTool`)');
+    const ru = buildChatMarkdown({
+      title: 'T',
+      chatId: 'c',
+      lang: 'ru',
+      rows: [row({ role: 'assistant', metadata: { parts } as never })],
+    });
+    expect(ru).toContain('Выполнил инструмент mysteryTool');
+  });
+
+  it('does not throw on a circular tool output (falls back to String)', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() =>
+      buildChatMarkdown({
+        title: 'T',
+        chatId: 'c',
+        rows: [
+          row({
+            role: 'assistant',
+            metadata: {
+              parts: [
+                {
+                  type: 'tool-getPage',
+                  state: 'output-available',
+                  output: circular,
+                },
+              ],
+            } as never,
+          }),
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it('emits a token footer + total when usage is present', () => {
     const md = buildChatMarkdown({
       title: 'T',

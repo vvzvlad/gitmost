@@ -445,6 +445,13 @@ export class AiChatService implements OnModuleInit {
       }
     };
 
+    // Serialize the per-step updates (#183 review): onStepFinish fires them
+    // without await, so two could otherwise commit out of order on different pool
+    // connections (step N landing after N+1). Chaining each onto the previous
+    // keeps the persisted row monotonic with step order; each link short-circuits
+    // on `finalized`, so a tail of late updates is cheap.
+    let stepUpdateChain: Promise<void> = Promise.resolve();
+
     // Terminal finalize: write the completed/error/aborted row exactly once
     // across the (mutually-exclusive, at-most-once) onFinish/onError/onAbort
     // callbacks — mirroring the pre-#183 persist-at-most-once guard for the
@@ -457,32 +464,21 @@ export class AiChatService implements OnModuleInit {
       if (finalized) return;
       finalized = true;
       const plan = planFinalizeAssistant(assistantId);
-      if (plan.kind === 'insert') {
-        // The upfront insert failed: fall back to inserting the terminal row so
-        // the turn is not lost entirely.
-        try {
-          await this.aiChatMessageRepo.insert({
-            chatId,
-            workspaceId: workspace.id,
-            userId: user.id,
-            role: 'assistant',
-            content: flushed.content,
-            toolCalls: (flushed.toolCalls ?? null) as never,
-            metadata: flushed.metadata as never,
-            status: flushed.status,
-          });
-        } catch (err) {
-          this.logger.error(
-            'Failed to persist terminal assistant message',
-            err as Error,
-          );
-        }
-        return;
-      }
       try {
-        await this.aiChatMessageRepo.update(plan.id, workspace.id, flushed);
+        // Shared dispatch (see applyFinalize): UPDATE the upfront row, or — when
+        // the upfront insert failed (kind 'insert') — INSERT the terminal row as
+        // the only safety against losing the turn entirely.
+        await applyFinalize(
+          this.aiChatMessageRepo,
+          plan,
+          { chatId, workspaceId: workspace.id, userId: user.id },
+          flushed,
+        );
       } catch (err) {
-        this.logger.error('Failed to finalize assistant message', err as Error);
+        this.logger.error(
+          `Failed to finalize assistant message (kind=${plan.kind})`,
+          err as Error,
+        );
       }
     };
 
@@ -536,9 +532,10 @@ export class AiChatService implements OnModuleInit {
           inProgressText = '';
           // Step-granular durability (#183): persist this finished step (its text +
           // tool calls + tool RESULTS) the moment it ends, so a process death after
-          // this point still recovers the step. Fire-and-forget but error-tolerant
-          // (updateStreaming logs + swallows) — never throw into the stream.
-          void updateStreaming();
+          // this point still recovers the step. Not awaited here (never block the
+          // stream), but SERIALIZED via stepUpdateChain so the writes commit in
+          // step order; updateStreaming is error-tolerant (logs + swallows).
+          stepUpdateChain = stepUpdateChain.then(() => updateStreaming());
         },
         onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
           // DIAGNOSTIC (Safari stream-drop investigation) — temporary: success
@@ -1114,6 +1111,46 @@ export function planFinalizeAssistant(
   assistantId: string | undefined,
 ): { kind: 'update'; id: string } | { kind: 'insert' } {
   return assistantId ? { kind: 'update', id: assistantId } : { kind: 'insert' };
+}
+
+/** The repo surface the terminal finalize needs (structural — the real repo and
+ *  a test mock both satisfy it). */
+export interface FinalizeRepo {
+  insert(insertable: Record<string, unknown>): Promise<unknown>;
+  update(
+    id: string,
+    workspaceId: string,
+    patch: AssistantFlush,
+  ): Promise<unknown>;
+}
+
+/**
+ * Apply a finalize `plan` to the repo with the terminal `flushed` payload (#183):
+ * UPDATE the upfront row, or INSERT a fresh terminal row as the fallback when the
+ * upfront insert failed. The SINGLE dispatch shared by the service's
+ * finalizeAssistant and its test, so the test exercises the real path instead of
+ * a copy (#186 review). Pure of error handling — the caller wraps it.
+ */
+export async function applyFinalize(
+  repo: FinalizeRepo,
+  plan: { kind: 'update'; id: string } | { kind: 'insert' },
+  base: { chatId: string; workspaceId: string; userId: string },
+  flushed: AssistantFlush,
+): Promise<void> {
+  if (plan.kind === 'update') {
+    await repo.update(plan.id, base.workspaceId, flushed);
+    return;
+  }
+  await repo.insert({
+    chatId: base.chatId,
+    workspaceId: base.workspaceId,
+    userId: base.userId,
+    role: 'assistant',
+    content: flushed.content,
+    toolCalls: flushed.toolCalls ?? null,
+    metadata: flushed.metadata,
+    status: flushed.status,
+  });
 }
 
 /**

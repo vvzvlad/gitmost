@@ -2,6 +2,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { AiChatController } from './ai-chat.controller';
 import {
   planFinalizeAssistant,
+  applyFinalize,
   flushAssistant,
   type AssistantFlush,
 } from './ai-chat.service';
@@ -103,35 +104,25 @@ describe('AiChatController.export', () => {
  * (assistantId is undefined) finalize falls back to INSERTing the terminal row
  * so the turn is not lost — the only safety against losing the turn entirely.
  *
- * `planFinalizeAssistant` is the pure decision; this also drives a tiny harness
- * that mirrors the service's `finalizeAssistant` repo dispatch over a mock repo,
- * proving both branches issue the right call with the terminal payload.
+ * `planFinalizeAssistant` is the pure decision; `applyFinalize` is the REAL
+ * dispatch the service uses, exercised here over a mock repo (not a copy of the
+ * logic) so a production drift would fail the test (#186 review).
  */
-describe('finalizeAssistant dispatch (planFinalizeAssistant)', () => {
+describe('finalizeAssistant dispatch (planFinalizeAssistant + applyFinalize)', () => {
   const workspaceId = 'ws1';
 
-  // Mirror of the service's finalize repo-dispatch over the plan: UPDATE when an
-  // upfront row exists, else INSERT the terminal row.
+  // Drive the SAME applyFinalize the service calls (no duplicated logic).
   async function dispatchFinalize(
     repo: { insert: jest.Mock; update: jest.Mock },
     assistantId: string | undefined,
     flushed: AssistantFlush,
   ): Promise<void> {
-    const plan = planFinalizeAssistant(assistantId);
-    if (plan.kind === 'insert') {
-      await repo.insert({
-        chatId: 'c1',
-        workspaceId,
-        userId: 'u1',
-        role: 'assistant',
-        content: flushed.content,
-        toolCalls: flushed.toolCalls ?? null,
-        metadata: flushed.metadata,
-        status: flushed.status,
-      });
-    } else {
-      await repo.update(plan.id, workspaceId, flushed);
-    }
+    await applyFinalize(
+      repo,
+      planFinalizeAssistant(assistantId),
+      { chatId: 'c1', workspaceId, userId: 'u1' },
+      flushed,
+    );
   }
 
   it('plan: update when the upfront insert returned an id', () => {

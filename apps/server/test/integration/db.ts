@@ -238,6 +238,9 @@ export async function createMessage(
     content?: string | null;
     status?: string | null;
     metadata?: unknown;
+    // Explicit timestamp so a test can control message ORDER (the default DB
+    // now() can tie within a millisecond, and the v4 id is not time-ordered).
+    createdAt?: Date;
   },
 ): Promise<{ id: string }> {
   const id = randomUUID();
@@ -252,6 +255,7 @@ export async function createMessage(
       content: args.content ?? null,
       status: args.status ?? null,
       metadata: (args.metadata ?? null) as any,
+      ...(args.createdAt ? { createdAt: args.createdAt } : {}),
     })
     .returning(['id'])
     .executeTakeFirstOrThrow();

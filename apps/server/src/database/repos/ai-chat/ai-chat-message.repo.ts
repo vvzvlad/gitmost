@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
 import { dbOrTx } from '../../utils';
@@ -25,6 +25,8 @@ const FIND_ALL_BY_CHAT_LIMIT = 5000;
 
 @Injectable()
 export class AiChatMessageRepo {
+  private readonly logger = new Logger(AiChatMessageRepo.name);
+
   constructor(@InjectKysely() private readonly db: KyselyDB) {}
 
   // The `tsv` column is a trigger-maintained tsvector used only for
@@ -87,17 +89,32 @@ export class AiChatMessageRepo {
   async findAllByChat(
     chatId: string,
     workspaceId: string,
+    // Injectable for tests so truncation can be exercised on a modest volume.
+    limit: number = FIND_ALL_BY_CHAT_LIMIT,
   ): Promise<AiChatMessage[]> {
-    return this.db
+    // Fetch newest-first (+1 to DETECT truncation), so on overflow we keep the
+    // NEWEST `limit` messages — the recent conversation matters most for an
+    // export — rather than silently dropping the tail (#183 review). Reverse back
+    // to chronological for rendering, like findRecent.
+    const rows = await this.db
       .selectFrom('aiChatMessages')
       .select(this.baseFields)
       .where('chatId', '=', chatId)
       .where('workspaceId', '=', workspaceId)
       .where('deletedAt', 'is', null)
-      .orderBy('createdAt', 'asc')
-      .orderBy('id', 'asc')
-      .limit(FIND_ALL_BY_CHAT_LIMIT)
+      .orderBy('createdAt', 'desc')
+      .orderBy('id', 'desc')
+      .limit(limit + 1)
       .execute();
+
+    if (rows.length > limit) {
+      rows.length = limit; // keep the newest `limit` (rows are newest-first here)
+      this.logger.warn(
+        `Chat ${chatId} export truncated to the newest ${limit} messages ` +
+          `(older messages omitted).`,
+      );
+    }
+    return rows.reverse();
   }
 
   // Load the most RECENT `limit` messages for a chat and return them in
