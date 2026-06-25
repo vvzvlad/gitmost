@@ -64,7 +64,10 @@ describe("useChatSession", () => {
     result.current.onTurnFinished(undefined);
     expect(setActiveChatId).not.toHaveBeenCalled();
     // The refetch lands with the new row => adopt it.
-    rerender({ activeChatId: null, chats: { items: [{ id: "x" }, { id: "new" }] } });
+    rerender({
+      activeChatId: null,
+      chats: { items: [{ id: "x" }, { id: "new" }] },
+    });
     expect(setActiveChatId).toHaveBeenCalledWith("new");
   });
 
@@ -88,7 +91,10 @@ describe("useChatSession", () => {
     });
     result.current.onTurnFinished(undefined);
     // a was deleted, new was added — same length, but membership changed.
-    rerender({ activeChatId: null, chats: { items: [{ id: "b" }, { id: "new" }] } });
+    rerender({
+      activeChatId: null,
+      chats: { items: [{ id: "b" }, { id: "new" }] },
+    });
     expect(setActiveChatId).toHaveBeenCalledWith("new");
   });
 
@@ -169,6 +175,40 @@ describe("useChatSession", () => {
       chats: { items: [{ id: "x" }, { id: "late" }] },
     });
     expect(setActiveChatId).not.toHaveBeenCalledWith("late");
+  });
+
+  it("#174 early adopt: onServerChatId adopts the streamed id mid-stream (Copy button available during the first turn)", () => {
+    // Brand-new chat: no id yet. The server streams the real chat id "A" on the
+    // `start` chunk WHILE the first turn is still streaming (before onTurnFinished
+    // fires at the terminal outcome). The hook must adopt it immediately so the
+    // window's activeChatId-gated Copy/export button lights up during the stream.
+    const { result, setActiveChatId } = setup({
+      activeChatId: null,
+      chats: { items: [] },
+    });
+    result.current.onServerChatId("A");
+    expect(setActiveChatId).toHaveBeenCalledWith("A");
+  });
+
+  it("#174 early adopt is in-place: threadKey stays stable (live stream not torn down)", () => {
+    const chats = { items: [] };
+    const { result, rerender } = setup({ activeChatId: null, chats });
+    const keyBefore = result.current.threadKey;
+    result.current.onServerChatId("A");
+    // Parent reflects the adopted id back in; the SAME mount key is kept so the
+    // in-flight useChat store (the streaming turn) is preserved.
+    rerender({ activeChatId: "A", chats });
+    expect(result.current.threadKey).toBe(keyBefore);
+  });
+
+  it("#174 early adopt: no-op for an existing chat and for a missing id", () => {
+    const { result, setActiveChatId } = setup({
+      activeChatId: "chat-1",
+      chats: { items: [{ id: "chat-1" }] },
+    });
+    result.current.onServerChatId("chat-1"); // already has an id
+    result.current.onServerChatId(undefined); // no streamed id
+    expect(setActiveChatId).not.toHaveBeenCalled();
   });
 
   it("in-place adopt keeps threadKey stable; an external switch remounts", () => {

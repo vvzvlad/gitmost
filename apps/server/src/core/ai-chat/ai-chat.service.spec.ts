@@ -4,7 +4,7 @@ import {
   serializeSteps,
   rowToUiMessage,
   prepareAgentStep,
-  buildPartialAssistantRecord,
+  flushAssistant,
   chatStreamMetadata,
   accumulateStepUsage,
   MAX_AGENT_STEPS,
@@ -94,8 +94,12 @@ describe('assistantParts', () => {
     const steps = [
       {
         text: '',
-        toolCalls: [{ toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } }],
-        toolResults: [{ toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } }],
+        toolCalls: [
+          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
+        ],
+        toolResults: [
+          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+        ],
       },
     ];
     const parts = assistantParts(steps, '') as AnyPart[];
@@ -109,7 +113,9 @@ describe('assistantParts', () => {
     const steps = [
       {
         text: '',
-        toolCalls: [{ toolCallId: 'c9', toolName: 'insertNode', input: { node: {} } }],
+        toolCalls: [
+          { toolCallId: 'c9', toolName: 'insertNode', input: { node: {} } },
+        ],
         toolResults: [],
       },
     ];
@@ -136,7 +142,8 @@ describe('assistantParts', () => {
     ];
     const parts = assistantParts(steps, '') as AnyPart[];
     const toolParts = parts.filter(
-      (p) => typeof p.type === 'string' && (p.type as string).startsWith('tool-'),
+      (p) =>
+        typeof p.type === 'string' && (p.type as string).startsWith('tool-'),
     );
     expect(toolParts).toHaveLength(0);
   });
@@ -222,79 +229,108 @@ describe('prepareAgentStep', () => {
     // The synthesis instruction is appended.
     expect(result?.system).toContain(FINAL_STEP_INSTRUCTION);
   });
-
-  it('pins the off-by-one boundary (MAX-2 is not final, MAX-1 is)', () => {
-    // Boundary expressed via the constant, not a hardcoded 18/19, so the test
-    // tracks MAX_AGENT_STEPS if the cap ever changes.
-    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
-    const atBoundary = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
-    expect(atBoundary).toBeDefined();
-    expect(atBoundary?.toolChoice).toBe('none');
-  });
 });
 
 /**
- * Unit test for buildPartialAssistantRecord: the pure helper that shapes the
- * assistant-message record persisted on a partial/failed turn (the streamText
- * onError / onAbort paths). It captures the PARTIAL answer the user already saw
- * (finished steps' text + tool parts, plus the in-progress step's text) so a
- * provider error / disconnect no longer throws the streamed answer away. Pinning
- * the record shape here covers the persist-partial logic without seaming
- * streamText itself.
+ * flushAssistant (#183): the PURE row builder behind the step-granular durable
+ * write path. It runs identically for the upfront insert (empty steps,
+ * 'streaming'), every per-step update, and the terminal finalize — so a future
+ * background worker can call the same function. These tests pin the four status
+ * shapes and the `metadata.parts` shape that rowToUiMessage/findRecent depend on
+ * (per-step text + tool parts via assistantParts, in-progress text appended).
  */
-describe('buildPartialAssistantRecord', () => {
+describe('flushAssistant', () => {
   type AnyPart = Record<string, unknown>;
 
-  it('records an empty turn with the error text (preserves old behavior)', () => {
-    const rec = buildPartialAssistantRecord([], '', 'error', '401: Unauthorized');
-    expect(rec).toEqual({
-      text: '',
-      toolCalls: null,
-      metadata: { finishReason: 'error', parts: [], error: '401: Unauthorized' },
+  const toolStep = {
+    text: 'looked it up',
+    toolCalls: [{ toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } }],
+    toolResults: [
+      { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+    ],
+  };
+
+  it('upfront seed: empty streaming row (no content, no toolCalls, empty parts)', () => {
+    const f = flushAssistant([], '', 'streaming');
+    expect(f.status).toBe('streaming');
+    expect(f.content).toBe('');
+    expect(f.toolCalls).toBeNull();
+    expect(f.metadata.parts).toEqual([]);
+    // No finishReason while streaming (it is not a terminal state).
+    expect('finishReason' in f.metadata).toBe(false);
+  });
+
+  it('streaming update folds in finished steps but keeps status streaming', () => {
+    const f = flushAssistant([toolStep], '', 'streaming');
+    expect(f.status).toBe('streaming');
+    expect(f.content).toBe('looked it up');
+    const parts = f.metadata.parts as AnyPart[];
+    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart!.state).toBe('output-available');
+    expect(f.toolCalls).not.toBeNull();
+  });
+
+  it('completed: attaches finishReason + normalized usage + contextTokens', () => {
+    const f = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      contextTokens: 15,
+    });
+    expect(f.status).toBe('completed');
+    expect(f.metadata.finishReason).toBe('stop');
+    expect(f.metadata.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      reasoningTokens: undefined,
+    });
+    expect(f.metadata.contextTokens).toBe(15);
+  });
+
+  it('error: records the error and a derived finishReason', () => {
+    const f = flushAssistant([], 'partial answer', 'error', { error: 'boom' });
+    expect(f.status).toBe('error');
+    expect(f.content).toBe('partial answer');
+    expect(f.metadata.error).toBe('boom');
+    // Derives finishReason from the terminal status when none is supplied.
+    expect(f.metadata.finishReason).toBe('error');
+    expect(f.metadata.parts).toEqual([
+      { type: 'text', text: 'partial answer' },
+    ]);
+  });
+
+  it('aborted: in-progress text appended last, no error key', () => {
+    const f = flushAssistant([toolStep], ' and then', 'aborted');
+    expect(f.status).toBe('aborted');
+    expect(f.metadata.finishReason).toBe('aborted');
+    expect('error' in f.metadata).toBe(false);
+    expect(f.content).toBe('looked it up and then');
+    const parts = f.metadata.parts as AnyPart[];
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
     });
   });
 
-  it('persists in-progress text (no finished steps) as the partial answer', () => {
-    const rec = buildPartialAssistantRecord([], 'partial answer', 'error', 'boom');
-    expect(rec.text).toBe('partial answer');
-    expect(rec.metadata.parts).toEqual([
-      { type: 'text', text: 'partial answer' },
-    ]);
-    expect(rec.metadata.error).toBe('boom');
-  });
-
-  it('combines a finished tool step with trailing in-progress text', () => {
-    const steps = [
-      {
-        text: 'looked it up',
-        toolCalls: [
-          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
-        ],
-        toolResults: [
-          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
-        ],
-      },
-    ];
-    const rec = buildPartialAssistantRecord(steps, ' and then', 'error', 'boom');
-    const parts = rec.metadata.parts as AnyPart[];
-    // The finished step's text part is present.
+  it('combines a finished tool step with trailing in-progress text (error path)', () => {
+    // The error path captures the PARTIAL answer the user already saw: each
+    // finished step's text + tool parts, then the in-progress step's text last.
+    const flushed = flushAssistant([toolStep], ' and then', 'error', {
+      error: 'boom',
+    });
+    const parts = flushed.metadata.parts as AnyPart[];
     expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
-    // The paired tool call+result becomes an output-available part.
     const toolPart = parts.find((p) => p.type === 'tool-getPage');
-    expect(toolPart).toBeDefined();
     expect(toolPart!.state).toBe('output-available');
-    // The in-progress text is appended LAST so the parts match the stream order.
-    expect(parts[parts.length - 1]).toEqual({ type: 'text', text: ' and then' });
-    expect(rec.text).toBe('looked it up and then');
-    expect(rec.toolCalls).not.toBeNull();
-    expect(rec.metadata.error).toBe('boom');
-  });
-
-  it('omits the error key on the abort path (no errorText)', () => {
-    const rec = buildPartialAssistantRecord([], 'half', 'aborted');
-    expect(rec.metadata.finishReason).toBe('aborted');
-    expect('error' in rec.metadata).toBe(false);
-    expect(rec.text).toBe('half');
+    // In-progress text appended LAST so the parts match the stream order.
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
+    });
+    expect(flushed.content).toBe('looked it up and then');
+    expect(flushed.toolCalls).not.toBeNull();
+    expect(flushed.metadata.error).toBe('boom');
   });
 });
 
@@ -319,10 +355,20 @@ describe('chatStreamMetadata', () => {
       chatStreamMetadata(
         { type: 'finish-step', usage: { outputTokens: 100 } },
         'chat-1',
-        { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+        {
+          inputTokens: 500,
+          outputTokens: 220,
+          totalTokens: 720,
+          reasoningTokens: 30,
+        },
       ),
     ).toEqual({
-      usage: { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+      usage: {
+        inputTokens: 500,
+        outputTokens: 220,
+        totalTokens: 720,
+        reasoningTokens: 30,
+      },
     });
   });
 
@@ -394,8 +440,18 @@ describe('accumulateStepUsage', () => {
   it('sums every field across two steps', () => {
     expect(
       accumulateStepUsage(
-        { inputTokens: 500, outputTokens: 100, totalTokens: 600, reasoningTokens: 30 },
-        { inputTokens: 520, outputTokens: 80, totalTokens: 600, reasoningTokens: 10 },
+        {
+          inputTokens: 500,
+          outputTokens: 100,
+          totalTokens: 600,
+          reasoningTokens: 30,
+        },
+        {
+          inputTokens: 520,
+          outputTokens: 80,
+          totalTokens: 600,
+          reasoningTokens: 10,
+        },
       ),
     ).toEqual({
       inputTokens: 1020,

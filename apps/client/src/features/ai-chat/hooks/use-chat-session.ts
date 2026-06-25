@@ -34,6 +34,13 @@ export interface UseChatSessionResult {
   /** Call when a turn finishes; `serverChatId` is the authoritative streamed id
    *  (undefined on a failed turn). Handles new-chat id adoption + invalidations. */
   onTurnFinished: (serverChatId?: string) => void;
+  /** Call EARLY (at the stream's `start` chunk) with the authoritative streamed
+   *  chat id so a brand-new chat adopts its real id WHILE its first turn is still
+   *  streaming — making `activeChatId`-gated affordances (e.g. the Copy/export
+   *  button, #174) available immediately. In-place adoption only (same mount key,
+   *  no list/messages invalidation — that is left to onTurnFinished at the end).
+   *  Idempotent and a no-op once the chat already has an id. */
+  onServerChatId: (serverChatId?: string) => void;
   /** Disarm any pending error-path new-chat fallback. The window calls this from
    *  startNewChat/selectChat so a late refetch can't yank the user back into a
    *  just-failed chat after they explicitly moved on. */
@@ -85,13 +92,10 @@ export function useChatSession(
   // `newThread`/`switchThread` to (re)mount, `adoptThread` for in-place adoption.
   // Initial: a non-null activeChatId switches to it; a null one gets a fresh
   // session key with no chat id yet.
-  const [thread, dispatch] = useReducer(
-    threadSessionReducer,
-    undefined,
-    () =>
-      activeChatId === null
-        ? newThread(`new-${generateId()}`)
-        : switchThread(activeChatId),
+  const [thread, dispatch] = useReducer(threadSessionReducer, undefined, () =>
+    activeChatId === null
+      ? newThread(`new-${generateId()}`)
+      : switchThread(activeChatId),
   );
 
   // Error-path fallback for new-chat id adoption. When a brand-new chat's first
@@ -148,6 +152,31 @@ export function useChatSession(
       }
     },
     [chats, setActiveChatId, onInvalidateChatList, onInvalidateChatMessages],
+  );
+
+  // EARLY adoption (#174): adopt the authoritative streamed chat id the moment
+  // the server emits it on the `start` chunk, so a brand-new chat gets its real
+  // `activeChatId` WHILE its first turn streams — not only at terminal
+  // onTurnFinished. This makes the activeChatId-gated Copy/export button
+  // available during the first turn. Pure in-place adoption (same mount key, like
+  // the primary path) with NO invalidation: the list/messages refresh stays on
+  // onTurnFinished at the end of the turn. Reads the live id from the ref so a
+  // repeat call after adoption is a no-op (resolveAdoptedChatId only fires for a
+  // still-new chat).
+  const onServerChatId = useCallback(
+    (serverChatId?: string) => {
+      const adopted = resolveAdoptedChatId(
+        activeChatIdRef.current,
+        serverChatId,
+      );
+      if (!adopted) return;
+      activeChatIdRef.current = adopted;
+      setActiveChatId(adopted);
+      dispatch({ type: "adopt", chatId: adopted });
+      // Early adoption beat the error-path fallback to it — disarm.
+      pendingNewChatRef.current = null;
+    },
+    [setActiveChatId],
   );
 
   // FALLBACK resolver. Armed only by onTurnFinished when a brand-new chat's first
@@ -233,6 +262,7 @@ export function useChatSession(
     threadKey: thread.key,
     waitingForHistory,
     onTurnFinished,
+    onServerChatId,
     cancelPendingAdoption,
   };
 }

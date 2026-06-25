@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateId } from "ai";
 import { ActionIcon, Box, Group, Stack, Text } from "@mantine/core";
 import { IconClockHour4, IconX } from "@tabler/icons-react";
@@ -68,30 +61,18 @@ interface ChatThreadProps {
    *  authoritative id the server streamed on the assistant message metadata, or
    *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
   onTurnFinished: (serverChatId?: string) => void;
-  /** Parent-owned ref that this thread keeps updated with its live useChat
-   *  snapshot (full message list + streaming flag), so the header's
-   *  "Copy chat" export can include the in-progress, not-yet-persisted
-   *  assistant message. A ref (not state) avoids re-rendering the parent on
-   *  every streamed delta. */
-  liveStateRef?: MutableRefObject<{
-    messages: UIMessage[];
-    isStreaming: boolean;
-    banner: string | null;
-  }>;
+  /** Called EARLY (at the stream's `start` chunk) with the authoritative server
+   *  chat id streamed on the assistant message metadata, so a brand-new chat
+   *  adopts its real id WHILE the first turn is still streaming (#174 — makes the
+   *  Copy/export button available mid-stream). Distinct from onTurnFinished,
+   *  which fires only at the terminal outcome. */
+  onServerChatId?: (serverChatId?: string) => void;
   /** Reports the live turn-token total (reasoning + output) for the in-flight
    *  turn so the parent can show a header badge that ticks mid-stream. THROTTLED
    *  here (~8 Hz) so the parent re-renders a handful of times a second, not on
    *  every streamed delta. Called with `null` when no turn is in flight (the
    *  parent then reverts the badge to the persisted context size). */
   onLiveTurnTokens?: (tokens: number | null) => void;
-  /** Reports whether the live thread currently holds at least one message, so the
-   *  parent can gate the "Copy chat" button on the on-screen thread rather than on
-   *  the persisted rows alone. This stays truthy for a brand-new, not-yet-saved
-   *  chat the moment its first user message appears — so an interrupted very first
-   *  turn (no persisted rows yet) is still exportable (#174). Called with `false`
-   *  on unmount so a thread torn down by `key` on chat switch can't leave the
-   *  button enabled for the next, possibly empty, chat. */
-  onLiveContentChange?: (hasContent: boolean) => void;
 }
 
 /**
@@ -135,9 +116,8 @@ export default function ChatThread({
   onRolePicked,
   assistantName,
   onTurnFinished,
-  liveStateRef,
+  onServerChatId,
   onLiveTurnTokens,
-  onLiveContentChange,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -306,6 +286,26 @@ export default function ChatThread({
   // Keep the flush helper pointed at the latest sendMessage instance.
   sendMessageRef.current = sendMessage;
 
+  // EARLY chat-id adoption (#174): the server streams the authoritative chat id
+  // on the assistant message metadata at the `start` chunk (message.metadata.
+  // chatId — see adopt-chat-id.ts / chatStreamMetadata). Forward it to the parent
+  // AS SOON AS it appears (mid-stream), so a brand-new chat adopts its real id
+  // WHILE the first turn is still streaming and activeChatId-gated affordances
+  // (the Copy/export button) light up immediately, instead of only at onFinish.
+  // Keyed by the last-seen id so we forward each distinct id exactly once. The
+  // parent's onServerChatId is idempotent and a no-op once the chat has an id.
+  const lastForwardedChatIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!onServerChatId) return;
+    const tail = messages[messages.length - 1];
+    if (tail?.role !== "assistant") return;
+    const serverChatId = extractServerChatId(tail);
+    if (!serverChatId || serverChatId === lastForwardedChatIdRef.current)
+      return;
+    lastForwardedChatIdRef.current = serverChatId;
+    onServerChatId(serverChatId);
+  }, [messages, onServerChatId]);
+
   // Live "turn was interrupted" marker for the CURRENT session. The red error
   // banner (driven by `error`) covers the error case; this covers an aborted
   // turn, distinguishing a manual Stop (`isAbort`) from a dropped connection
@@ -327,44 +327,6 @@ export default function ChatThread({
   // of a generic "Something went wrong". Computed here (not only in the JSX) so
   // the SAME on-screen banner text can be mirrored into the export (issue #160).
   const errorView = error ? describeChatError(error.message ?? "", t) : null;
-
-  // The exact banner the user sees under the message list, flattened to a single
-  // string for the "Copy chat" export so the artifact records the interruption
-  // WYSIWYG. Mirrors the JSX precedence below: error first, else the stop notice.
-  const banner = errorView
-    ? errorView.detail
-      ? `${errorView.title} — ${errorView.detail}`
-      : errorView.title
-    : stopNotice === "manual"
-      ? t("Response stopped.")
-      : stopNotice === "disconnect"
-        ? t("Connection lost — the answer was interrupted.")
-        : null;
-
-  // Mirror the live useChat snapshot into the parent-owned ref so the export
-  // (handled in AiChatWindow) can include the in-progress streaming turn AND the
-  // on-screen banner. The cleanup clears the ref on unmount so a thread torn down
-  // by `key` on chat switch can't leak its (possibly still-streaming) tail into
-  // the next chat's export before the new thread's effect repopulates the ref.
-  useEffect(() => {
-    if (!liveStateRef) return;
-    liveStateRef.current = { messages, isStreaming, banner };
-    return () => {
-      liveStateRef.current = { messages: [], isStreaming: false, banner: null };
-    };
-  }, [liveStateRef, messages, isStreaming, banner]);
-
-  // Reactively report "the live thread has content" to the parent. `liveStateRef`
-  // above is a ref (deliberately non-reactive so streaming deltas don't re-render
-  // the parent), so the export button needs a SEPARATE reactive signal to flip on
-  // for a not-yet-persisted chat. Keyed on the boolean only — identical values are
-  // a no-op setState in the parent, so this does not add per-delta re-renders.
-  const hasLiveContent = messages.length > 0;
-  useEffect(() => {
-    if (!onLiveContentChange) return;
-    onLiveContentChange(hasLiveContent);
-    return () => onLiveContentChange(false);
-  }, [onLiveContentChange, hasLiveContent]);
 
   // Report the live turn-token total to the parent header badge, THROTTLED to
   // ~8 Hz so the parent re-renders a few times a second instead of on every

@@ -26,3 +26,17 @@ export class GetChatMessagesDto {
   @IsString()
   cursor?: string;
 }
+
+/** Export a chat to Markdown (#183). `lang` localizes the few fixed
+ *  role/tool-action labels; defaults to English server-side. */
+export class ExportChatDto {
+  @IsString()
+  chatId: string;
+
+  // A full client locale tag (e.g. 'en-US', 'ru-RU') — normalized server-side to
+  // a supported export language (see normalizeLang). Accept any string so a
+  // region-qualified locale is not rejected (the 400 that broke the real client).
+  @IsOptional()
+  @IsString()
+  lang?: string;
+}
