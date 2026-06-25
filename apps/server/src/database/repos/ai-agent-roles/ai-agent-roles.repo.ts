@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
-import { sql } from 'kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
-import { dbOrTx } from '../../utils';
+import { dbOrTx, jsonbBind } from '../../utils';
 import { AiAgentRole } from '@docmost/db/types/entity.types';
 
 /** The jsonb shape persisted in `model_config` (loosely typed for the column). */
@@ -23,13 +22,14 @@ export class AiAgentRoleRepo {
     id: string,
     workspaceId: string,
   ): Promise<AiAgentRole | undefined> {
-    return this.db
+    const row = await this.db
       .selectFrom('aiAgentRoles')
       .selectAll('aiAgentRoles')
       .where('id', '=', id)
       .where('workspaceId', '=', workspaceId)
       .where('deletedAt', 'is', null)
       .executeTakeFirst();
+    return row ? normalizeRow(row) : row;
   }
 
   /**
@@ -45,7 +45,7 @@ export class AiAgentRoleRepo {
     id: string,
     workspaceId: string,
   ): Promise<AiAgentRole | undefined> {
-    return this.db
+    const row = await this.db
       .selectFrom('aiAgentRoles')
       .selectAll('aiAgentRoles')
       .where('id', '=', id)
@@ -53,17 +53,19 @@ export class AiAgentRoleRepo {
       .where('deletedAt', 'is', null)
       .where('enabled', '=', true)
       .executeTakeFirst();
+    return row ? normalizeRow(row) : row;
   }
 
   /** All live roles for the workspace (management list + chat picker). */
   async listByWorkspace(workspaceId: string): Promise<AiAgentRole[]> {
-    return this.db
+    const rows = await this.db
       .selectFrom('aiAgentRoles')
       .selectAll('aiAgentRoles')
       .where('workspaceId', '=', workspaceId)
       .where('deletedAt', 'is', null)
       .orderBy('createdAt', 'asc')
       .execute();
+    return rows.map(normalizeRow);
   }
 
   async insert(
@@ -83,7 +85,7 @@ export class AiAgentRoleRepo {
     trx?: KyselyTransaction,
   ): Promise<AiAgentRole> {
     const db = dbOrTx(this.db, trx);
-    return db
+    const row = await db
       .insertInto('aiAgentRoles')
       .values({
         workspaceId: values.workspaceId,
@@ -92,7 +94,11 @@ export class AiAgentRoleRepo {
         emoji: values.emoji ?? null,
         description: values.description ?? null,
         instructions: values.instructions,
-        modelConfig: jsonbObject(values.modelConfig),
+        // Cast: the generated `model_config` column type is the broad JsonValue
+        // union, which the concrete RawBuilder<Record> is not structurally
+        // assignable to (same reason the old jsonbObject cast to any).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        modelConfig: jsonbBind(values.modelConfig) as any,
         enabled: values.enabled ?? true,
         autoStart: values.autoStart ?? true,
         // Empty string is treated as "no custom text" => null.
@@ -100,6 +106,7 @@ export class AiAgentRoleRepo {
       })
       .returningAll()
       .executeTakeFirst();
+    return normalizeRow(row);
   }
 
   async update(
@@ -127,7 +134,7 @@ export class AiAgentRoleRepo {
     if (patch.description !== undefined) set.description = patch.description;
     if (patch.instructions !== undefined) set.instructions = patch.instructions;
     if (patch.modelConfig !== undefined) {
-      set.modelConfig = jsonbObject(patch.modelConfig);
+      set.modelConfig = jsonbBind(patch.modelConfig);
     }
     if (patch.enabled !== undefined) set.enabled = patch.enabled;
     if (patch.autoStart !== undefined) set.autoStart = patch.autoStart;
@@ -163,16 +170,40 @@ export class AiAgentRoleRepo {
 }
 
 /**
- * Encode an object as a jsonb bind for the `model_config` column. The postgres
- * driver would otherwise need an explicit cast; bind the JSON text and cast it.
- * Returns null for null/undefined/empty objects. Cast to `any` because the
- * generated column type is the broad `JsonValue` union, which a concrete object
- * type is not structurally assignable to.
+ * Parse the `model_config` value read from the DB into the object the entity
+ * type promises. Rows written by the old double-encoding bind (`::jsonb` instead
+ * of `::text::jsonb`) round-trip as a JSON STRING, so the driver hands back e.g.
+ * `'{"driver":"gemini"}'` rather than an object; the read-path check
+ * `typeof cfg === 'object'` then failed and the model override was SILENTLY
+ * dropped (the role fell back to the default model). Be tolerant: a JSON string
+ * is parsed; an already-parsed object passes through; null / a non-object (incl.
+ * an array) / unparseable value becomes null (= no override). This self-heals
+ * already-corrupted rows on read, no migration required.
  */
-export function jsonbObject(value: ModelConfigValue | undefined) {
-  if (value === null || value === undefined || Object.keys(value).length === 0) {
-    return null;
+export function parseModelConfig(
+  value: unknown,
+): Record<string, unknown> | null {
+  let v: unknown = value;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v); // legacy double-encoded read
+    } catch {
+      return null;
+    }
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return sql`${JSON.stringify(value)}::jsonb` as any;
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+/** Normalize a DB row so `modelConfig` is always an object or null. The cast
+ *  bridges parseModelConfig's concrete `Record | null` to the column's broad
+ *  generated `JsonValue` type (an object is a valid JsonValue at runtime). */
+function normalizeRow(row: AiAgentRole): AiAgentRole {
+  return {
+    ...row,
+    modelConfig: parseModelConfig(
+      row.modelConfig,
+    ) as AiAgentRole['modelConfig'],
+  };
 }

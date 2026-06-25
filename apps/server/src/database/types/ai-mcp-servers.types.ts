@@ -20,7 +20,9 @@ export interface AiMcpServers {
   // Encrypted JSON of the auth headers. Nullable (a server may need no auth).
   headersEnc: string | null;
   // Optional allowlist of remote tool names to expose; null = expose all.
-  // Stored as jsonb; reads come back as a string[] from the postgres driver.
+  // Stored as jsonb. The postgres driver may return a JSON string for legacy
+  // double-encoded rows; `AiMcpServerRepo` normalizes every read to
+  // `string[] | null` via `parseToolAllowlist`.
   toolAllowlist: string[] | null;
   enabled: Generated<boolean>;
   createdAt: Generated<Timestamp>;

@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
-import { sql } from 'kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
-import { dbOrTx } from '../../utils';
+import { dbOrTx, jsonbBind } from '../../utils';
 import { AiMcpServer } from '@docmost/db/types/entity.types';
+
+const logger = new Logger('AiMcpServerRepo');
 
 /**
  * Repository for per-workspace external MCP servers the agent may use (§5.4).
@@ -75,7 +76,7 @@ export class AiMcpServerRepo {
         headersEnc: values.headersEnc ?? null,
         // jsonb column: the postgres driver would otherwise encode a JS array as
         // a Postgres array literal. Bind the JSON text and cast it to jsonb.
-        toolAllowlist: jsonbArray(values.toolAllowlist),
+        toolAllowlist: jsonbBind(values.toolAllowlist),
         enabled: values.enabled ?? true,
       })
       .returningAll()
@@ -104,7 +105,7 @@ export class AiMcpServerRepo {
     if (patch.url !== undefined) set.url = patch.url;
     if (patch.headersEnc !== undefined) set.headersEnc = patch.headersEnc;
     if (patch.toolAllowlist !== undefined) {
-      set.toolAllowlist = jsonbArray(patch.toolAllowlist);
+      set.toolAllowlist = jsonbBind(patch.toolAllowlist);
     }
     if (patch.enabled !== undefined) set.enabled = patch.enabled;
     await db
@@ -130,57 +131,42 @@ export class AiMcpServerRepo {
 }
 
 /**
- * Encode a string[] as a jsonb bind for the `tool_allowlist` column. Passing a
- * plain JS array to the postgres driver would serialize it as a Postgres array
- * literal (incompatible with jsonb), so we bind the JSON text and cast it.
- *
- * The cast is `::text::jsonb`, NOT `::jsonb`: if the parameter is bound straight
- * to a jsonb cast, node-postgres infers its type as jsonb and JSON-stringifies
- * the (already-JSON) string a SECOND time, so the column ends up holding a jsonb
- * STRING SCALAR (`"[\"a\"]"`) instead of a jsonb ARRAY. Forcing the param through
- * `::text` first binds it as text (sent verbatim), and `::jsonb` then parses it
- * into a real array. (`normalizeRow` below repairs rows written the old way.)
- *
- * Returns null for null/empty arrays (an empty allowlist means "no restriction"
- * is not intended — callers pass null to clear; an empty array is normalized to
- * null here so it never round-trips as `[]`).
- */
-function jsonbArray(value: string[] | null | undefined) {
-  if (value === null || value === undefined || value.length === 0) {
-    return null;
-  }
-  // Typed as string[] so it is assignable to the toolAllowlist column.
-  return sql<string[]>`${JSON.stringify(value)}::text::jsonb`;
-}
-
-/**
  * Parse the `toolAllowlist` value read from the DB into the `string[] | null`
  * the entity type promises. The jsonb column historically round-trips as a JSON
- * STRING (rows written by the old double-encoding `jsonbArray`, see above), so
- * the driver hands back a string like `'["a","b"]'` rather than an array. Be
- * tolerant: an already-parsed array passes through; a JSON string is parsed; null
- * / a non-array / unparseable value becomes null (unrestricted).
+ * STRING (rows written by the old double-encoding bind before the `::text::jsonb`
+ * fix), so the driver hands back a string like `'["a","b"]'` rather than an
+ * array. Be tolerant: normalize a JSON string to its value, then accept it only
+ * if it is an array of strings; null / a non-array / unparseable value / an
+ * array with a non-string element all become null (unrestricted).
  */
 export function parseToolAllowlist(value: unknown): string[] | null {
-  if (value == null) return null;
-  if (Array.isArray(value)) {
-    return value.every((v) => typeof v === 'string') ? (value as string[]) : null;
-  }
-  if (typeof value === 'string') {
+  let v: unknown = value;
+  if (typeof v === 'string') {
     try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) &&
-        parsed.every((v) => typeof v === 'string')
-        ? (parsed as string[])
-        : null;
+      v = JSON.parse(v); // legacy double-encoded read
     } catch {
       return null;
     }
   }
-  return null;
+  return Array.isArray(v) && v.every((x) => typeof x === 'string')
+    ? (v as string[])
+    : null;
 }
 
-/** Normalize a DB row so `toolAllowlist` is always `string[] | null`. */
+/**
+ * Normalize a DB row so `toolAllowlist` is always `string[] | null`.
+ *
+ * FAIL-OPEN logging: a stored value that is present but cannot be parsed into a
+ * string[] (corrupt JSON, a non-array, non-string elements) degrades to `null` =
+ * "no restriction", so the agent silently gets ALL of the server's tools. Log
+ * one line (server id only, never the contents) so that widening is not silent.
+ */
 function normalizeRow(row: AiMcpServer): AiMcpServer {
-  return { ...row, toolAllowlist: parseToolAllowlist(row.toolAllowlist) };
+  const parsed = parseToolAllowlist(row.toolAllowlist);
+  if (parsed === null && row.toolAllowlist != null) {
+    logger.warn(
+      `Corrupt tool_allowlist for MCP server ${row.id}; ignoring it (no tool restriction applied)`,
+    );
+  }
+  return { ...row, toolAllowlist: parsed };
 }
