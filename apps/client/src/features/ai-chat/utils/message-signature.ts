@@ -5,7 +5,11 @@ import type { UIMessage } from "@ai-sdk/react";
  *  appended, a tool/text part flips state once), so a per-part [type, text
  *  length, state, error/output presence] tuple + the persisted metadata
  *  (error/finishReason) is a sufficient change signal without comparing full
- *  strings on every delta. */
+ *  strings on every delta. WARNING — load-bearing for the MessageItem memo:
+ *  if a future part kind's VISIBLE content can change WITHOUT changing [type,
+ *  text length, state, error/output presence] (e.g. a tool that streams
+ *  `preliminary` output, or a client-side regenerate that edits a finalized
+ *  row in place), extend this signature or the memo will freeze a stale row. */
 export function messageSignature(message: UIMessage): string {
   const parts = message.parts
     .map((p) => {
