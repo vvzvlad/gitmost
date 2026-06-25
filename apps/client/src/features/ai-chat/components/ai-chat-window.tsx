@@ -80,17 +80,31 @@ function computeInitialGeom() {
     Math.min(DEFAULT_HEIGHT, window.innerHeight - 2 * EDGE_MARGIN),
   );
   const left = Math.max(EDGE_MARGIN, window.innerWidth - width - 24);
-  const maxTop = Math.max(EDGE_MARGIN, window.innerHeight - height - EDGE_MARGIN);
+  const maxTop = Math.max(
+    EDGE_MARGIN,
+    window.innerHeight - height - EDGE_MARGIN,
+  );
   const top = Math.min(60, maxTop);
   return { left, top, width, height };
 }
 
 // Clamp a geometry so the window stays within the current viewport.
-function clampGeom(g: { left: number; top: number; width: number; height: number }) {
+function clampGeom(g: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}) {
   const effWidth = Math.max(g.width, MIN_WIDTH);
   const effHeight = Math.max(g.height, MIN_HEIGHT);
-  const maxLeft = Math.max(EDGE_MARGIN, window.innerWidth - effWidth - EDGE_MARGIN);
-  const maxTop = Math.max(EDGE_MARGIN, window.innerHeight - effHeight - EDGE_MARGIN);
+  const maxLeft = Math.max(
+    EDGE_MARGIN,
+    window.innerWidth - effWidth - EDGE_MARGIN,
+  );
+  const maxTop = Math.max(
+    EDGE_MARGIN,
+    window.innerHeight - effHeight - EDGE_MARGIN,
+  );
   return {
     ...g,
     left: Math.min(Math.max(EDGE_MARGIN, g.left), maxLeft),
@@ -166,6 +180,12 @@ export default function AiChatWindow() {
   // `null` means no turn is in flight -> the badge falls back to the persisted
   // context size below.
   const [liveTurnTokens, setLiveTurnTokens] = useState<number | null>(null);
+  // Whether the on-screen thread currently holds at least one message. Reported
+  // reactively by ChatThread (the live snapshot lives in a non-reactive ref). This
+  // lets the "Copy chat" button stay available for a brand-new, not-yet-persisted
+  // chat whose first turn is in flight or was interrupted — that case has no
+  // persisted rows yet, so a persisted-rows-only gate would hide the button (#174).
+  const [hasLiveContent, setHasLiveContent] = useState(false);
 
   // The page the user is currently viewing. AiChatWindow lives in a pathless
   // parent layout route, so useParams() can't see :pageSlug. Match the full
@@ -190,17 +210,21 @@ export default function AiChatWindow() {
   // The invalidate closures are passed inline: `onTurnFinished` is read live by
   // useChat's onFinish (never in an effect dep array), so their identity does not
   // matter — no memoization ceremony needed.
-  const { threadKey, waitingForHistory, onTurnFinished, cancelPendingAdoption } =
-    useChatSession({
-      activeChatId,
-      setActiveChatId,
-      chats,
-      messagesLoading,
-      onInvalidateChatList: () =>
-        queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY }),
-      onInvalidateChatMessages: (id) =>
-        queryClient.invalidateQueries({ queryKey: AI_CHAT_MESSAGES_RQ_KEY(id) }),
-    });
+  const {
+    threadKey,
+    waitingForHistory,
+    onTurnFinished,
+    cancelPendingAdoption,
+  } = useChatSession({
+    activeChatId,
+    setActiveChatId,
+    chats,
+    messagesLoading,
+    onInvalidateChatList: () =>
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY }),
+    onInvalidateChatMessages: (id) =>
+      queryClient.invalidateQueries({ queryKey: AI_CHAT_MESSAGES_RQ_KEY(id) }),
+  });
 
   // startNewChat/selectChat set the public atom; the hook's render-phase
   // reconciler handles the remount when activeChatId actually CHANGES. But
@@ -236,13 +260,23 @@ export default function AiChatWindow() {
     () => chats?.items?.find((c) => c.id === activeChatId) ?? null,
     [chats, activeChatId],
   );
-  const canExport = !!activeChatId && !!messageRows && messageRows.length > 0;
+  // Export is available when there is anything to export: either persisted rows
+  // for the active chat, OR a live on-screen thread with at least one message.
+  // The live arm covers a brand-new chat whose first turn is streaming or was
+  // interrupted before the server persisted any row (#174); the persisted arm is
+  // the steady-state path for an already-saved chat (#160).
+  const canExport =
+    hasLiveContent ||
+    (!!activeChatId && !!messageRows && messageRows.length > 0);
 
   // The role to display in the header and as the assistant's name. Prefer the
   // persisted role of an existing chat (chat-list JOIN); fall back to the role
   // picked via a card click for a brand-new or just-adopted chat. selectChat
   // resets selectedRoleId, so this fallback never leaks into an unrelated chat.
-  const currentRole = useMemo<{ name: string; emoji: string | null } | null>(() => {
+  const currentRole = useMemo<{
+    name: string;
+    emoji: string | null;
+  } | null>(() => {
     if (activeChat?.roleName) {
       return { name: activeChat.roleName, emoji: activeChat.roleEmoji ?? null };
     }
@@ -254,23 +288,25 @@ export default function AiChatWindow() {
   // call) and copy it to the clipboard. The "Copied" notification is the
   // feedback.
   const handleCopy = useCallback(() => {
-    // Export gate. Requiring at least one persisted row means a brand-new chat
-    // whose VERY FIRST turn dropped before the server persisted even the user
-    // message cannot be exported (the button is also hidden — see `canExport`).
-    // That narrow first-turn case is deliberately out of scope for #160; the user
-    // message is normally persisted before model contact, so an interrupted later
-    // turn still has rows and exports the on-screen partial reply WYSIWYG.
-    if (!activeChatId || !messageRows || messageRows.length === 0) return;
+    // Export gate. There must be SOMETHING to export — either a live on-screen
+    // message or a persisted row. A brand-new chat whose first turn is streaming
+    // or was interrupted has live messages but no persisted rows yet; it still
+    // exports the on-screen thread WYSIWYG (#174). Only a truly empty chat (no
+    // live messages and no rows) is non-exportable (the button is hidden too —
+    // see `canExport`).
+    const live = liveThreadRef.current;
+    const hasRows = !!messageRows && messageRows.length > 0;
+    if (live.messages.length === 0 && !hasRows) return;
     // WYSIWYG export: the live on-screen messages ARE the document (so a partial
     // reply from an interrupted turn — which never reached the persisted rows —
     // is exported just as it appears). The persisted rows enrich each live
     // message (token usage / error / timestamp) by id and serve as the fallback
     // when the live mirror is empty. The on-screen banner is appended too. See
-    // issue #160.
-    const live = liveThreadRef.current;
+    // issues #160 and #174. `chatId` may be null for a not-yet-saved chat — use a
+    // placeholder so the header line still renders.
     const markdown = buildChatMarkdown({
       title: activeChat?.title ?? null,
-      chatId: activeChatId,
+      chatId: activeChatId ?? "unsaved",
       live: live.messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -370,7 +406,8 @@ export default function AiChatWindow() {
       const width = el.offsetWidth;
       const height = el.offsetHeight;
       setGeom((prev) => {
-        if (!prev || (prev.width === width && prev.height === height)) return prev;
+        if (!prev || (prev.width === width && prev.height === height))
+          return prev;
         return { ...prev, width, height };
       });
     });
@@ -516,11 +553,15 @@ export default function AiChatWindow() {
               flash a "0" badge before any token streams in (#151 review). */}
           {liveTurnTokens !== null && liveTurnTokens > 0 ? (
             <Tooltip label={t("Tokens generated this turn")} withArrow>
-              <span className={classes.badge}>{formatTokens(liveTurnTokens)}</span>
+              <span className={classes.badge}>
+                {formatTokens(liveTurnTokens)}
+              </span>
             </Tooltip>
           ) : contextTokens > 0 ? (
             <Tooltip label={t("Current context size")} withArrow>
-              <span className={classes.badge}>{formatTokens(contextTokens)}</span>
+              <span className={classes.badge}>
+                {formatTokens(contextTokens)}
+              </span>
             </Tooltip>
           ) : null}
         </div>
@@ -534,7 +575,11 @@ export default function AiChatWindow() {
               aria-label={t("Copy chat")}
               onClick={handleCopy}
             >
-              {clipboard.copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+              {clipboard.copied ? (
+                <IconCheck size={14} />
+              ) : (
+                <IconCopy size={14} />
+              )}
             </button>
           )}
           <button
@@ -642,6 +687,7 @@ export default function AiChatWindow() {
               onTurnFinished={onTurnFinished}
               liveStateRef={liveThreadRef}
               onLiveTurnTokens={setLiveTurnTokens}
+              onLiveContentChange={setHasLiveContent}
             />
           )}
         </div>

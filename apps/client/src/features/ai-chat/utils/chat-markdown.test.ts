@@ -165,7 +165,9 @@ describe("buildChatMarkdown — tool parts", () => {
       ],
       t,
     });
-    expect(md).toContain("**Tool: Ran tool mysteryTool** (`mysteryTool`) — error");
+    expect(md).toContain(
+      "**Tool: Ran tool mysteryTool** (`mysteryTool`) — error",
+    );
     expect(md).toContain("**Error:** boom");
   });
 
@@ -307,7 +309,9 @@ describe("buildChatMarkdown — token totals", () => {
         row({
           role: "assistant",
           content: "x",
-          metadata: { usage: { inputTokens: 3, outputTokens: 4, totalTokens: 99 } },
+          metadata: {
+            usage: { inputTokens: 3, outputTokens: 4, totalTokens: 99 },
+          },
         }),
       ],
       t,
@@ -390,8 +394,16 @@ describe("buildChatMarkdown — live (WYSIWYG) source", () => {
       // Persisted rows hold only the user turn; the assistant reply is live-only.
       rows: [row({ id: "u1", role: "user", content: "persisted user" })],
       live: [
-        live({ id: "u1", role: "user", parts: [{ type: "text", text: "on-screen user" }] }),
-        live({ id: "a1", role: "assistant", parts: [{ type: "text", text: "on-screen reply" }] }),
+        live({
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "on-screen user" }],
+        }),
+        live({
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "on-screen reply" }],
+        }),
       ],
       isStreaming: false,
       t,
@@ -435,9 +447,21 @@ describe("buildChatMarkdown — live (WYSIWYG) source", () => {
       chatId: "c",
       rows: [],
       live: [
-        live({ id: "a", role: "assistant", parts: [{ type: "text", text: "done earlier" }] }),
-        live({ id: "u", role: "user", parts: [{ type: "text", text: "next q" }] }),
-        live({ id: "b", role: "assistant", parts: [{ type: "text", text: "streaming now" }] }),
+        live({
+          id: "a",
+          role: "assistant",
+          parts: [{ type: "text", text: "done earlier" }],
+        }),
+        live({
+          id: "u",
+          role: "user",
+          parts: [{ type: "text", text: "next q" }],
+        }),
+        live({
+          id: "b",
+          role: "assistant",
+          parts: [{ type: "text", text: "streaming now" }],
+        }),
       ],
       isStreaming: true,
       t,
@@ -449,7 +473,13 @@ describe("buildChatMarkdown — live (WYSIWYG) source", () => {
       title: "t",
       chatId: "c",
       rows: [],
-      live: [live({ id: "b", role: "assistant", parts: [{ type: "text", text: "final" }] })],
+      live: [
+        live({
+          id: "b",
+          role: "assistant",
+          parts: [{ type: "text", text: "final" }],
+        }),
+      ],
       isStreaming: false,
       t,
     });
@@ -466,8 +496,16 @@ describe("buildChatMarkdown — live (WYSIWYG) source", () => {
       chatId: "c",
       rows: [],
       live: [
-        live({ id: "a", role: "assistant", parts: [{ type: "text", text: "completed answer" }] }),
-        live({ id: "u", role: "user", parts: [{ type: "text", text: "the new question" }] }),
+        live({
+          id: "a",
+          role: "assistant",
+          parts: [{ type: "text", text: "completed answer" }],
+        }),
+        live({
+          id: "u",
+          role: "user",
+          parts: [{ type: "text", text: "the new question" }],
+        }),
       ],
       isStreaming: true,
       t,
@@ -504,12 +542,19 @@ describe("buildChatMarkdown — live enrichment from persisted rows", () => {
           role: "assistant",
           content: "x",
           createdAt: "2026-06-22T10:00:00.000Z",
-          metadata: { usage: { inputTokens: 10, outputTokens: 5 }, error: "rate limited" },
+          metadata: {
+            usage: { inputTokens: 10, outputTokens: 5 },
+            error: "rate limited",
+          },
         }),
       ],
       live: [
         // Same id as the persisted row, but no usage/error/timestamp on the live msg.
-        live({ id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }] }),
+        live({
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "reply" }],
+        }),
       ],
       isStreaming: false,
       t,
@@ -532,7 +577,9 @@ describe("buildChatMarkdown — live enrichment from persisted rows", () => {
           id: "a1",
           role: "assistant",
           content: "x",
-          metadata: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+          metadata: {
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          },
         }),
       ],
       live: [
@@ -540,7 +587,9 @@ describe("buildChatMarkdown — live enrichment from persisted rows", () => {
           id: "a1",
           role: "assistant",
           parts: [{ type: "text", text: "reply" }],
-          metadata: { usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
+          metadata: {
+            usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+          },
         }),
       ],
       isStreaming: false,
@@ -558,7 +607,11 @@ describe("buildChatMarkdown — live enrichment from persisted rows", () => {
       rows: [row({ id: "u1", role: "user", content: "q" })],
       live: [
         live({ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] }),
-        live({ id: "a-live", role: "assistant", parts: [{ type: "text", text: "fresh reply" }] }),
+        live({
+          id: "a-live",
+          role: "assistant",
+          parts: [{ type: "text", text: "fresh reply" }],
+        }),
       ],
       isStreaming: false,
       t,
@@ -599,14 +652,18 @@ describe("buildChatMarkdown — fallback + banner", () => {
       title: "t",
       chatId: "c",
       rows: [row({ role: "user", content: "q" })],
-      live: [live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] })],
+      live: [
+        live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] }),
+      ],
       isStreaming: false,
       banner: "Rate limit reached — try again shortly.",
       t,
     });
     expect(md).toContain("_⚠️ Rate limit reached — try again shortly._");
     // Banner comes after the (only) message block.
-    expect(md.indexOf("Rate limit reached")).toBeGreaterThan(md.indexOf("## 1."));
+    expect(md.indexOf("Rate limit reached")).toBeGreaterThan(
+      md.indexOf("## 1."),
+    );
   });
 
   it("omits the banner block when there is no banner", () => {
@@ -614,11 +671,77 @@ describe("buildChatMarkdown — fallback + banner", () => {
       title: "t",
       chatId: "c",
       rows: [row({ role: "user", content: "q" })],
-      live: [live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] })],
+      live: [
+        live({ id: "u", role: "user", parts: [{ type: "text", text: "q" }] }),
+      ],
       isStreaming: false,
       banner: null,
       t,
     });
     expect(md).not.toContain("_⚠️");
+  });
+});
+
+// #174: a brand-new, not-yet-persisted chat whose first turn is streaming (or was
+// interrupted) has live messages but NO persisted rows yet, and its chat id is not
+// known (the caller passes a placeholder). The export must still capture the
+// on-screen thread WYSIWYG from the live messages alone.
+describe("buildChatMarkdown — first-turn export with no persisted base (#174)", () => {
+  it("builds the document from live messages alone when rows are empty", () => {
+    const md = buildChatMarkdown({
+      title: null,
+      chatId: "unsaved",
+      rows: [],
+      live: [
+        live({
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        }),
+        live({
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "partial reply" }],
+        }),
+      ],
+      isStreaming: true,
+      t,
+    });
+    // Both on-screen messages are serialized, numbered from 1.
+    expect(md).toContain("## 1. You");
+    expect(md).toContain("hello");
+    expect(md).toContain("## 2. AI agent");
+    expect(md).toContain("partial reply");
+    // The streaming tail assistant is flagged as in-progress.
+    expect(md).toContain("still being generated");
+    // The placeholder chat id and the live message count are recorded.
+    expect(md).toContain("- Chat ID: `unsaved`");
+    expect(md).toContain("- Messages: 2");
+    // No persisted timestamp exists for a current-turn live message.
+    expect(md).not.toContain("<!--");
+  });
+
+  it("captures an interrupted first turn (no rows, not streaming) without a generating note", () => {
+    const md = buildChatMarkdown({
+      title: null,
+      chatId: "unsaved",
+      rows: [],
+      live: [
+        live({ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] }),
+        live({
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "half an answer" }],
+        }),
+      ],
+      isStreaming: false,
+      banner: "Connection dropped — the response was cut off.",
+      t,
+    });
+    expect(md).toContain("half an answer");
+    // An interrupted (non-streaming) partial is exported as-is, no generating note.
+    expect(md).not.toContain("still being generated");
+    // The on-screen banner records the interruption.
+    expect(md).toContain("_⚠️ Connection dropped — the response was cut off._");
   });
 });

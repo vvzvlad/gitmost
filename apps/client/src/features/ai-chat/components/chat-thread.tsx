@@ -84,6 +84,14 @@ interface ChatThreadProps {
    *  every streamed delta. Called with `null` when no turn is in flight (the
    *  parent then reverts the badge to the persisted context size). */
   onLiveTurnTokens?: (tokens: number | null) => void;
+  /** Reports whether the live thread currently holds at least one message, so the
+   *  parent can gate the "Copy chat" button on the on-screen thread rather than on
+   *  the persisted rows alone. This stays truthy for a brand-new, not-yet-saved
+   *  chat the moment its first user message appears — so an interrupted very first
+   *  turn (no persisted rows yet) is still exportable (#174). Called with `false`
+   *  on unmount so a thread torn down by `key` on chat switch can't leave the
+   *  button enabled for the next, possibly empty, chat. */
+  onLiveContentChange?: (hasContent: boolean) => void;
 }
 
 /**
@@ -129,6 +137,7 @@ export default function ChatThread({
   onTurnFinished,
   liveStateRef,
   onLiveTurnTokens,
+  onLiveContentChange,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -345,6 +354,18 @@ export default function ChatThread({
     };
   }, [liveStateRef, messages, isStreaming, banner]);
 
+  // Reactively report "the live thread has content" to the parent. `liveStateRef`
+  // above is a ref (deliberately non-reactive so streaming deltas don't re-render
+  // the parent), so the export button needs a SEPARATE reactive signal to flip on
+  // for a not-yet-persisted chat. Keyed on the boolean only — identical values are
+  // a no-op setState in the parent, so this does not add per-delta re-renders.
+  const hasLiveContent = messages.length > 0;
+  useEffect(() => {
+    if (!onLiveContentChange) return;
+    onLiveContentChange(hasLiveContent);
+    return () => onLiveContentChange(false);
+  }, [onLiveContentChange, hasLiveContent]);
+
   // Report the live turn-token total to the parent header badge, THROTTLED to
   // ~8 Hz so the parent re-renders a few times a second instead of on every
   // streamed delta. The tail assistant message's reasoning+output (estimate while
@@ -366,8 +387,7 @@ export default function ChatThread({
       return;
     }
     const tail = messages[messages.length - 1];
-    const live =
-      tail?.role === "assistant" ? liveTurnTokens(tail) : null;
+    const live = tail?.role === "assistant" ? liveTurnTokens(tail) : null;
     const total = live ? live.reasoning + live.output : 0;
     const now = Date.now();
     const MIN_INTERVAL = 120; // ms (~8 Hz)
