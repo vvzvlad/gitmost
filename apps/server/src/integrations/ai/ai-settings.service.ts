@@ -26,6 +26,8 @@ import {
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens for the chat header badge. 0/empty = no limit.
+  chatContextWindow?: number;
   chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
@@ -157,9 +159,20 @@ export class AiSettingsService {
     const provider = await this.readProvider(workspaceId);
     if (!provider.driver) return null;
 
+    // Provider values are stored as ::text (see workspace.repo.ts), so
+    // chatContextWindow arrives as a string here; parse it back to a positive
+    // integer or undefined.
+    const ctxWindow = Number(provider.chatContextWindow);
+
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Max context window for the chat header badge denominator. 0/unset = no
+      // limit.
+      chatContextWindow:
+        Number.isFinite(ctxWindow) && ctxWindow > 0
+          ? Math.floor(ctxWindow)
+          : undefined,
       // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
       chatApiStyle: provider.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; reuses the chat
@@ -219,6 +232,15 @@ export class AiSettingsService {
   async getMasked(workspaceId: string): Promise<MaskedAiSettings> {
     const provider = await this.readProvider(workspaceId);
 
+    // Provider values are stored as ::text (see workspace.repo.ts), so
+    // chatContextWindow arrives as a string; coerce it to a positive integer or
+    // undefined so the client receives a real number.
+    const ctxWindow = Number(provider.chatContextWindow);
+    const chatContextWindow =
+      Number.isFinite(ctxWindow) && ctxWindow > 0
+        ? Math.floor(ctxWindow)
+        : undefined;
+
     let hasApiKey = false;
     let hasEmbeddingApiKey = false;
     let hasSttApiKey = false;
@@ -243,6 +265,7 @@ export class AiSettingsService {
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      chatContextWindow,
       chatApiStyle: provider.chatApiStyle,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,

@@ -32,6 +32,9 @@ export const CHAT_API_STYLES: ChatApiStyle[] = ['openai-compatible', 'openai'];
 export interface AiProviderSettings {
   driver: AiDriver;
   chatModel: string;
+  // Max context window in tokens; surfaced to the chat header badge as the
+  // denominator ("current / max"). 0/unset = no limit (badge shows no denominator).
+  chatContextWindow?: number;
   // Chat provider implementation for the `openai` driver. Unset → defaults to
   // 'openai-compatible' (so reasoning is surfaced by default). See ChatApiStyle.
   chatApiStyle?: ChatApiStyle;
@@ -72,6 +75,7 @@ export interface AiProviderSettings {
 export const PROVIDER_SETTINGS_KEYS = [
   'driver',
   'chatModel',
+  'chatContextWindow',
   'chatApiStyle',
   'embeddingModel',
   'baseUrl',
@@ -98,6 +102,9 @@ export const PROVIDER_SETTINGS_KEYS = [
 export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens; surfaced to the chat header badge as the
+  // "current / max" denominator. 0/unset = no limit.
+  chatContextWindow?: number;
   // Cheap model id for the public-share assistant; reuses the chat creds.
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts (empty/unset
@@ -116,6 +123,9 @@ export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
 export interface MaskedAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens; the chat header badge denominator. 0/unset =
+  // no limit.
+  chatContextWindow?: number;
   chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;

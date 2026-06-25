@@ -161,12 +161,6 @@ export default function AiChatWindow() {
   const { data: messageRows, isLoading: messagesLoading } =
     useAiChatMessagesQuery(activeChatId ?? undefined);
 
-  // Live turn-token total (reasoning + output) for the in-flight turn, pushed up
-  // (THROTTLED to ~8 Hz inside ChatThread) so the header badge ticks mid-stream.
-  // `null` means no turn is in flight -> the badge falls back to the persisted
-  // context size below.
-  const [liveTurnTokens, setLiveTurnTokens] = useState<number | null>(null);
-
   // The page the user is currently viewing. AiChatWindow lives in a pathless
   // parent layout route, so useParams() can't see :pageSlug. Match the full
   // pathname against the authenticated page route instead so "the current page"
@@ -301,6 +295,25 @@ export default function AiChatWindow() {
           usage.totalTokens ??
           (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
         if (fallback > 0) return fallback;
+      }
+    }
+    return 0;
+  }, [activeChatId, messageRows]);
+
+  // The model's max context window (badge denominator). Read the most recent row
+  // carrying `maxContextTokens` (set alongside contextTokens on a completed
+  // turn); 0 when no row has it (older rows, or no admin-configured limit) — the
+  // badge then shows just the current size with no denominator.
+  const maxContextTokens = useMemo(() => {
+    if (!activeChatId || !messageRows) return 0;
+    for (let i = messageRows.length - 1; i >= 0; i--) {
+      const meta = messageRows[i].metadata;
+      if (!meta) continue;
+      if (
+        typeof meta.maxContextTokens === "number" &&
+        meta.maxContextTokens > 0
+      ) {
+        return meta.maxContextTokens;
       }
     }
     return 0;
@@ -495,20 +508,17 @@ export default function AiChatWindow() {
         )}
 
         <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
-          {/* While a turn streams, show the LIVE turn-token count (ticks ~8 Hz);
-              once it finishes, fall back to the persisted context size. Require
-              > 0 so the very first emit (an empty tail message, count 0) does not
-              flash a "0" badge before any token streams in (#151 review). */}
-          {liveTurnTokens !== null && liveTurnTokens > 0 ? (
-            <Tooltip label={t("Tokens generated this turn")} withArrow>
-              <span className={classes.badge}>
-                {formatTokens(liveTurnTokens)}
-              </span>
-            </Tooltip>
-          ) : contextTokens > 0 ? (
-            <Tooltip label={t("Current context size")} withArrow>
+          {/* Always show the persisted "current / max" context. The denominator
+              (the admin-configured model limit) is appended only when known;
+              not clamped when current > max (shown as-is, e.g. "210k / 200k").
+              Hidden entirely until a turn has recorded a context figure. */}
+          {contextTokens > 0 ? (
+            <Tooltip label={t("Context size / model limit")} withArrow>
               <span className={classes.badge}>
                 {formatTokens(contextTokens)}
+                {maxContextTokens > 0
+                  ? ` / ${formatTokens(maxContextTokens)}`
+                  : ""}
               </span>
             </Tooltip>
           ) : null}
@@ -634,7 +644,6 @@ export default function AiChatWindow() {
               assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
               onServerChatId={onServerChatId}
-              onLiveTurnTokens={setLiveTurnTokens}
             />
           )}
         </div>

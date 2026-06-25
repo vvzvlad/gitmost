@@ -22,6 +22,8 @@ export type ChatApiStyle = "openai-compatible" | "openai";
 export interface IAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens shown in the chat header badge; 0/unset = no limit.
+  chatContextWindow?: number;
   chatApiStyle?: ChatApiStyle;
   // Cheap model id for the anonymous public-share assistant; empty = chatModel.
   publicShareChatModel?: string;
@@ -56,6 +58,8 @@ export interface IAiSettings {
 export interface IAiSettingsUpdate {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens for the chat header badge; 0 = clear the limit.
+  chatContextWindow?: number;
   chatApiStyle?: ChatApiStyle;
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts; empty =

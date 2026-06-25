@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import {
   AI_DRIVERS,
   AiDriver,
@@ -24,6 +24,13 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   chatModel?: string;
+
+  // Max context window in tokens shown in the chat header badge. 0/empty =
+  // clear the limit (no denominator shown).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  chatContextWindow?: number;
 
   @IsOptional()
   @IsIn(CHAT_API_STYLES)

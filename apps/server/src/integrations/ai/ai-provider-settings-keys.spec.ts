@@ -41,3 +41,35 @@ describe('UpdateAiSettingsDto.chatApiStyle', () => {
     expect(errs.find((e) => e.property === 'chatApiStyle')).toBeUndefined();
   });
 });
+
+/** DTO validation for the new chatContextWindow field (@IsInt @Min(0)). */
+describe('UpdateAiSettingsDto.chatContextWindow', () => {
+  const errorsFor = async (chatContextWindow: unknown) =>
+    validate(plainToInstance(UpdateAiSettingsDto, { chatContextWindow }));
+
+  it('accepts a non-negative integer (incl. 0 = clear the limit)', async () => {
+    for (const v of [0, 200000]) {
+      const errs = await errorsFor(v);
+      expect(
+        errs.find((e) => e.property === 'chatContextWindow'),
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects a negative value', async () => {
+    const errs = await errorsFor(-1);
+    expect(errs.find((e) => e.property === 'chatContextWindow')).toBeDefined();
+  });
+
+  it('rejects a non-integer value', async () => {
+    const errs = await errorsFor(1.5);
+    expect(errs.find((e) => e.property === 'chatContextWindow')).toBeDefined();
+  });
+
+  it('accepts the field being omitted (optional)', async () => {
+    const errs = await validate(plainToInstance(UpdateAiSettingsDto, {}));
+    expect(
+      errs.find((e) => e.property === 'chatContextWindow'),
+    ).toBeUndefined();
+  });
+});
