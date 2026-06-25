@@ -20,9 +20,9 @@ import {
   mutatePageContent,
   buildCollabWsUrl,
   assertYjsEncodable,
+  applyDocToFragment,
   MutationResult,
 } from "./lib/collaboration.js";
-import { docmostExtensions } from "./lib/docmost-schema.js";
 import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import {
@@ -479,18 +479,14 @@ export class DocmostClient {
               return;
             }
 
-            const tempDoc = TiptapTransformer.toYdoc(
-              newDoc,
-              "default",
-              docmostExtensions,
-            );
-            const fragment = ydoc.getXmlFragment("default");
-            ydoc.transact(() => {
-              if (fragment.length > 0) {
-                fragment.delete(0, fragment.length);
-              }
-              Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(tempDoc));
-            });
+            // Structural diff into the live fragment (issue #152), mirroring
+            // the main write path: preserves the Yjs ids of unchanged nodes so
+            // an open editor's cursor is not yanked to the end of the document.
+            // The previous destructive rewrite (delete-all + applyUpdate of a
+            // fresh Y.Doc) discarded every node id, so replaceImage — the only
+            // caller of this method — still reproduced the #152 cursor jump
+            // (#164). applyDocToFragment runs its own atomic `transact`.
+            applyDocToFragment(ydoc, newDoc);
           } catch (e) {
             finish(e instanceof Error ? e : new Error(String(e)));
             return;
