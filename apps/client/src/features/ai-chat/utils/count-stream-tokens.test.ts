@@ -117,3 +117,55 @@ describe("liveTurnTokens — authoritative path", () => {
     expect(r).toEqual({ reasoning: 0, output: 1, authoritative: false });
   });
 });
+
+describe("liveTurnTokens — combined authoritative + estimate (#163)", () => {
+  it("ticks the in-flight step above the completed-steps authoritative base", () => {
+    // The authoritative usage is the sum over COMPLETED steps (step 1). The
+    // CURRENT step is streaming and its text is NOT in `usage` yet, but it IS in
+    // the parts -> the running estimate must push the live figure above the base
+    // so the badge keeps growing between step boundaries.
+    const longText = "x".repeat(800); // 800 chars -> 200 est output tokens
+    const r = liveTurnTokens(
+      msg([{ type: "text", text: longText }], {
+        usage: { inputTokens: 500, outputTokens: 40 }, // step-1 base: 40 output
+      }),
+    );
+    // max(authOutput=40, estOutput=200) = 200 -> the counter ticks, not frozen.
+    expect(r.output).toBe(200);
+    expect(r.authoritative).toBe(true);
+  });
+
+  it("ticks reasoning of the in-flight step above the authoritative reasoning base", () => {
+    const longReasoning = "r".repeat(400); // 400 chars -> 100 est reasoning
+    const r = liveTurnTokens(
+      msg([{ type: "reasoning", text: longReasoning }], {
+        usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 20 },
+      }),
+    );
+    // reasoning: max(20, 100) = 100 ; output: max(max(0,20-20)=0, 0) = 0.
+    expect(r.reasoning).toBe(100);
+    expect(r.output).toBe(0);
+    expect(r.authoritative).toBe(true);
+  });
+
+  it("snaps to the authoritative figure once it exceeds the rough estimate", () => {
+    // Short on-screen text (estimate tiny) but a large authoritative output:
+    // the exact figure wins at the boundary (the counter never under-reports).
+    const r = liveTurnTokens(
+      msg([{ type: "text", text: "abcd" }], {
+        usage: { inputTokens: 10, outputTokens: 5000 },
+      }),
+    );
+    expect(r.output).toBe(5000);
+  });
+
+  it("is monotonic: max never drops below the authoritative base when the estimate is smaller", () => {
+    // Mirrors the legacy 'verbatim' tests: estimate < authoritative -> unchanged.
+    const r = liveTurnTokens(
+      msg([{ type: "text", text: "tiny" }], {
+        usage: { inputTokens: 500, outputTokens: 100, reasoningTokens: 30 },
+      }),
+    );
+    expect(r).toEqual({ reasoning: 30, output: 70, authoritative: true });
+  });
+});

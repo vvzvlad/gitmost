@@ -3,6 +3,7 @@ import { Box, Collapse, Group, Text, UnstyledButton } from "@mantine/core";
 import { IconChevronDown } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { estimateTokens } from "@/features/ai-chat/utils/count-stream-tokens.ts";
+import { collapseBlankLines } from "@/features/ai-chat/utils/collapse-blank-lines.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -36,8 +37,11 @@ function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
   // Memoize the markdown render so toggling `open` (or a parent re-render caused
   // by an unrelated streamed delta) does not re-parse the reasoning text; it
   // recomputes only when the reasoning text itself changes (while it streams in).
+  // collapseBlankLines collapses the blank-line gaps the model emits between every
+  // list item / paragraph so the reasoning renders compactly (tight lists, joined
+  // paragraphs) — ONLY here, not in the normal answer.
   const html = useMemo(
-    () => (trimmed ? renderChatMarkdown(trimmed, {}) : ""),
+    () => (trimmed ? renderChatMarkdown(collapseBlankLines(trimmed), {}) : ""),
     [trimmed],
   );
 

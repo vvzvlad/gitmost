@@ -1,3 +1,4 @@
+import { sql, RawBuilder } from 'kysely';
 import { KyselyDB, KyselyTransaction } from './types/kysely.types';
 
 /*
@@ -30,4 +31,62 @@ export function dbOrTx(
   } else {
     return db; // Use normal database instance
   }
+}
+
+/**
+ * Bind a JS array/object as a `jsonb` column value, working around a postgres
+ * driver double-encoding quirk. THE single implementation — repos that persist
+ * jsonb (`tool_allowlist`, `model_config`, ...) call this instead of re-deriving
+ * the cast.
+ *
+ * THE QUIRK: with the `kysely-postgres-js` / postgres.js driver, casting a bound
+ * parameter straight to `::jsonb` makes the driver infer the param type as jsonb
+ * and JSON-stringify the (already-JSON) text a SECOND time, so the column ends
+ * up holding a jsonb STRING SCALAR (`"[\"a\"]"` / `"{\"k\":1}"`) instead of a
+ * real jsonb array/object. Read paths then see a string, not the structure, and
+ * silently fall back (an allowlist becomes "unrestricted", a model override is
+ * ignored). Forcing the param through `::text` first binds it as text (sent
+ * verbatim); `::jsonb` then parses it into a real array/object. Read-side
+ * parsers repair rows written the old buggy way without a migration.
+ *
+ * Returns `null` for null/undefined and for "empty" values (an empty array, or
+ * an object with no own enumerable keys) — callers treat empty as "clear/unset",
+ * so an empty allowlist/config never round-trips as `[]`/`{}`.
+ */
+export function jsonbBind<T>(
+  value: T | null | undefined,
+): RawBuilder<T> | null {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+  } else if (typeof value === 'object') {
+    if (Object.keys(value as object).length === 0) return null;
+  }
+  return sql<T>`${JSON.stringify(value)}::text::jsonb`;
+}
+
+/**
+ * READ-side counterpart to {@link jsonbBind}: tolerantly decode a jsonb value
+ * read back from the DB and validate its shape with `guard`. THE single place
+ * the legacy double-encoding self-heal lives, so repos keep only a type-guard.
+ *
+ * A row written by the old `::jsonb` bind round-trips as a JSON STRING (see the
+ * quirk in jsonbBind), so the driver hands back e.g. `'["a"]'` / `'{"k":1}'`
+ * rather than the structure. This parses such a string once, then applies the
+ * caller's `guard`. Returns `null` for null / an unparseable string / a value
+ * the guard rejects (so a corrupt or wrong-shaped value degrades to "unset").
+ */
+export function parseJsonbValue<T>(
+  value: unknown,
+  guard: (v: unknown) => v is T,
+): T | null {
+  let v: unknown = value;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v); // legacy double-encoded read
+    } catch {
+      return null;
+    }
+  }
+  return guard(v) ? v : null;
 }

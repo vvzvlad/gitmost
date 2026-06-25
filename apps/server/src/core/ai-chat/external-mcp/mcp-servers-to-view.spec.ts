@@ -17,6 +17,7 @@ function row(overrides: Partial<AiMcpServer>): AiMcpServer {
     enabled: true,
     toolAllowlist: null,
     headersEnc: null,
+    instructions: null,
     ...overrides,
   } as unknown as AiMcpServer;
 }
@@ -28,11 +29,7 @@ describe('McpServersService.toView (via list) — encrypted-header leak guard', 
     };
     // secretBox + clients are unused by the list/toView path; pass stubs to
     // satisfy the constructor.
-    return new McpServersService(
-      repoStub as never,
-      {} as never,
-      {} as never,
-    );
+    return new McpServersService(repoStub as never, {} as never, {} as never);
   }
 
   it('exposes hasHeaders:true and NO headersEnc when auth headers are set', async () => {
@@ -67,6 +64,7 @@ describe('McpServersService.toView (via list) — encrypted-header leak guard', 
         enabled: false,
         toolAllowlist: ['search'],
         headersEnc: 'BLOB',
+        instructions: 'Use search for fresh web facts.',
       }),
     ]);
 
@@ -80,6 +78,19 @@ describe('McpServersService.toView (via list) — encrypted-header leak guard', 
       enabled: false,
       toolAllowlist: ['search'],
       hasHeaders: true,
+      instructions: 'Use search for fresh web facts.',
     });
+  });
+
+  it('returns instructions (NON-secret) in the view, null when unset', async () => {
+    const service = buildService([
+      row({ id: 'a', instructions: 'How to use these tools.' }),
+      row({ id: 'b', instructions: null }),
+    ]);
+
+    const [withText, withoutText] = await service.list('ws-1');
+
+    expect(withText.instructions).toBe('How to use these tools.');
+    expect(withoutText.instructions).toBeNull();
   });
 });

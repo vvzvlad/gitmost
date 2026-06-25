@@ -214,21 +214,59 @@ export function appendNodeChildren(
 }
 
 /**
- * Merge root nodes; keep existing ones intact, append new ones,
+ * Reconcile the loaded root nodes to the authoritative INCOMING set (the
+ * server's complete current roots for the space), preserving any lazy-loaded
+ * children/subtree of a root that still exists.
+ *
+ * This runs only once all root pages are fetched, so `incomingRoots` is the full
+ * server root set and is authoritative for WHICH roots exist:
+ *  - a root in BOTH: kept, with its own fields refreshed from `incoming` (so a
+ *    rename/move during a gap shows) while PRESERVING its previously lazy-loaded
+ *    `children` (expanded subtrees + open-state survive a refetch);
+ *  - a root only in `incoming`: a new root, added as-is;
+ *  - a root only in `prev`: it was DELETED or moved under another page while we
+ *    were not receiving events (e.g. a socket reconnect after a sleep/wifi gap).
+ *    It is DROPPED instead of lingering as a 404 "ghost" root (#159 #2). The old
+ *    append-only merge kept it forever.
  */
 export function mergeRootTrees(
   prevRoots: SpaceTreeNode[],
   incomingRoots: SpaceTreeNode[],
 ): SpaceTreeNode[] {
-  const seen = new Set(prevRoots.map((r) => r.id));
+  const prevById = new Map(prevRoots.map((r) => [r.id, r]));
 
-  // add new roots that were not present before
-  const merged = [...prevRoots];
-  incomingRoots.forEach((node) => {
-    if (!seen.has(node.id)) merged.push(node);
+  const reconciled = incomingRoots.map((incoming) => {
+    const prev = prevById.get(incoming.id);
+    // Preserve the previously loaded children/subtree (the root query returns
+    // only top-level roots, so `incoming` carries no children); refresh the
+    // node's own fields from the authoritative incoming copy.
+    return prev ? { ...incoming, children: prev.children } : incoming;
   });
 
-  return sortPositionKeys(merged);
+  return sortPositionKeys(reconciled);
+}
+
+/**
+ * Ids of branches a socket-reconnect refresh should re-fetch and reconcile
+ * (#159 #8): a node that is currently OPEN and whose children are LOADED
+ * (`children` is an array — possibly empty). An unloaded branch (`children ===
+ * undefined`) is skipped because lazy-load fetches it fresh on the next expand,
+ * so there is nothing stale to reconcile. Walks the whole tree (a deep open
+ * chain refreshes every loaded level).
+ */
+export function loadedOpenBranchIds(
+  tree: SpaceTreeNode[],
+  openIds: ReadonlySet<string>,
+): string[] {
+  const ids: string[] = [];
+  const walk = (nodes: SpaceTreeNode[]) => {
+    for (const n of nodes) {
+      if (openIds.has(n.id) && Array.isArray(n.children)) ids.push(n.id);
+      if (n.children) walk(n.children);
+    }
+  };
+  walk(tree);
+  return ids;
 }
 
 // Collect every node id in the tree (roots, branches, leaves). Used by

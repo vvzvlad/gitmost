@@ -35,7 +35,13 @@ describe('AiAgentRoleRepo.findLiveEnabled', () => {
 
     const result = await repo.findLiveEnabled('r-1', 'ws-1');
 
-    expect(result).toBe(role);
+    // The repo normalizes the row (modelConfig parse), so it returns a COPY, not
+    // the same reference; assert the row's fields are carried through.
+    expect(result).toMatchObject({
+      id: 'r-1',
+      workspaceId: 'ws-1',
+      enabled: true,
+    });
     expect(db.selectFrom).toHaveBeenCalledWith('aiAgentRoles');
     // Every security filter must be present.
     expect(where).toHaveBeenCalledWith('id', '=', 'r-1');

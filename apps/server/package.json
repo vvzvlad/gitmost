@@ -11,7 +11,7 @@
     "start": "cross-env NODE_ENV=development nest start",
     "start:dev": "cross-env NODE_ENV=development nest start --watch",
     "start:debug": "cross-env NODE_ENV=development nest start --debug --watch",
-    "start:prod": "cross-env NODE_ENV=production node dist/main",
+    "start:prod": "cross-env NODE_ENV=production node --heapsnapshot-near-heap-limit=2 dist/main",
     "collab:prod": "cross-env NODE_ENV=production node dist/collaboration/server/collab-main",
     "collab:dev": "cross-env NODE_ENV=development node dist/collaboration/server/collab-main",
     "email:dev": "email dev -p 5019 -d ./src/integrations/transactional/emails",

@@ -99,12 +99,15 @@ export function buildOutline(doc: any): OutlineEntry[] {
     const entry: OutlineEntry = {
       index: i,
       type,
-      id: isObject(block) && isObject(block.attrs) ? block.attrs.id ?? null : null,
+      id:
+        isObject(block) && isObject(block.attrs)
+          ? (block.attrs.id ?? null)
+          : null,
       firstText: truncate(blockPlainText(block), 100),
     };
 
     if (type === "heading") {
-      entry.level = isObject(block.attrs) ? block.attrs.level ?? null : null;
+      entry.level = isObject(block.attrs) ? (block.attrs.level ?? null) : null;
     } else if (type === "table") {
       const headerRow = block.content?.[0]?.content ?? [];
       entry.rows = block.content?.length ?? 0;
@@ -247,6 +250,33 @@ export function deleteNodeById(
     out.content = walkContent(out.content);
   }
   return { doc: out, deleted };
+}
+
+/**
+ * Throw a clear, model-actionable error when a node-id write op did NOT match
+ * exactly one node (#159). `count === 0` -> "no node found"; `count > 1` ->
+ * "ambiguous, refused" — Docmost duplicates block ids on copy/paste, so a write
+ * by id could clobber/remove EVERY duplicate. The caller skips the write for any
+ * `count !== 1` (the transform returns null), so this only REPORTS; nothing was
+ * changed. No-op for the unambiguous single-match case.
+ */
+export function assertUnambiguousMatch(
+  op: "patch_node" | "delete_node",
+  verb: "replace" | "delete",
+  count: number,
+  nodeId: string,
+  pageId: string,
+): void {
+  if (count === 0) {
+    throw new Error(
+      `${op}: no node with id "${nodeId}" found on page ${pageId}`,
+    );
+  }
+  if (count > 1) {
+    throw new Error(
+      `${op}: id "${nodeId}" is ambiguous — ${count} nodes on page ${pageId} share it (block ids are duplicated on copy/paste). Refusing to ${verb} all of them; nothing was changed. Re-target with a more specific anchor.`,
+    );
+  }
 }
 
 /**
@@ -644,7 +674,8 @@ function locateTable(
   if (!isObject(rootClone)) return null;
 
   // "#<n>": index into the top-level content array; must be a table.
-  const indexMatch = typeof tableRef === "string" ? tableRef.match(/^#(\d+)$/) : null;
+  const indexMatch =
+    typeof tableRef === "string" ? tableRef.match(/^#(\d+)$/) : null;
   if (indexMatch) {
     const index = Number(indexMatch[1]);
     const block = Array.isArray(rootClone.content)
@@ -744,7 +775,7 @@ export function readTable(
         : undefined;
       const id =
         isObject(firstPara) && isObject(firstPara.attrs)
-          ? firstPara.attrs.id ?? null
+          ? (firstPara.attrs.id ?? null)
           : null;
       rowIds.push(id);
     }
@@ -778,14 +809,17 @@ export function insertTableRow(
   if (!Array.isArray(table.content)) table.content = [];
   const rows = table.content.length;
   const headerRow = table.content[0];
-  const headerCells = Array.isArray(headerRow?.content) ? headerRow.content : [];
+  const headerCells = Array.isArray(headerRow?.content)
+    ? headerRow.content
+    : [];
 
   // Column count is the WIDEST existing row, so the guard below stays
   // meaningful for ragged tables and the new row matches the table's width.
   // Fall back to the supplied cell count only when the table has no rows.
   let colCount = 0;
   for (const r of table.content) {
-    if (isObject(r) && Array.isArray(r.content)) colCount = Math.max(colCount, r.content.length);
+    if (isObject(r) && Array.isArray(r.content))
+      colCount = Math.max(colCount, r.content.length);
   }
   if (colCount === 0) colCount = Array.isArray(cells) ? cells.length : 0;
 
@@ -798,7 +832,10 @@ export function insertTableRow(
   // Resolve the landing index up front so the cell-type decision and the splice
   // below agree: a valid integer in [0, rows] splices there, else we append.
   const landingIndex =
-    typeof index === "number" && Number.isInteger(index) && index >= 0 && index <= rows
+    typeof index === "number" &&
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index <= rows
       ? index
       : rows;
 
@@ -817,7 +854,8 @@ export function insertTableRow(
     // A row landing at index 0 becomes the new header row, so inherit the
     // current header cell's type per column (Docmost uses "tableHeader" there);
     // every other position is a plain data cell.
-    const cellType = landingIndex === 0 ? headerCells[i]?.type ?? "tableCell" : "tableCell";
+    const cellType =
+      landingIndex === 0 ? (headerCells[i]?.type ?? "tableCell") : "tableCell";
     newCells.push({
       type: cellType,
       attrs,
@@ -889,9 +927,10 @@ export function updateTableCell(
   const rowNodes = Array.isArray(table.content) ? table.content : [];
   const rows = rowNodes.length;
   const rowNode = rowNodes[row];
-  const cols = isObject(rowNode) && Array.isArray(rowNode.content)
-    ? rowNode.content.length
-    : 0;
+  const cols =
+    isObject(rowNode) && Array.isArray(rowNode.content)
+      ? rowNode.content.length
+      : 0;
 
   if (
     !Number.isInteger(row) ||

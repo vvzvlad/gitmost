@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateId } from "ai";
 import { ActionIcon, Box, Group, Stack, Text } from "@mantine/core";
 import { IconClockHour4, IconX } from "@tabler/icons-react";
@@ -76,12 +69,12 @@ interface ChatThreadProps {
    *  authoritative id the server streamed on the assistant message metadata, or
    *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
   onTurnFinished: (serverChatId?: string) => void;
-  /** Parent-owned ref that this thread keeps updated with its live useChat
-   *  snapshot (full message list + streaming flag), so the header's
-   *  "Copy chat" export can include the in-progress, not-yet-persisted
-   *  assistant message. A ref (not state) avoids re-rendering the parent on
-   *  every streamed delta. */
-  liveStateRef?: MutableRefObject<{ messages: UIMessage[]; isStreaming: boolean }>;
+  /** Called EARLY (at the stream's `start` chunk) with the authoritative server
+   *  chat id streamed on the assistant message metadata, so a brand-new chat
+   *  adopts its real id WHILE the first turn is still streaming (#174 — makes the
+   *  Copy/export button available mid-stream). Distinct from onTurnFinished,
+   *  which fires only at the terminal outcome. */
+  onServerChatId?: (serverChatId?: string) => void;
   /** Reports the live turn-token total (reasoning + output) for the in-flight
    *  turn so the parent can show a header badge that ticks mid-stream. THROTTLED
    *  here (~8 Hz) so the parent re-renders a handful of times a second, not on
@@ -131,7 +124,7 @@ export default function ChatThread({
   onRolePicked,
   assistantName,
   onTurnFinished,
-  liveStateRef,
+  onServerChatId,
   onLiveTurnTokens,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -303,6 +296,26 @@ export default function ChatThread({
   // Keep the flush helper pointed at the latest sendMessage instance.
   sendMessageRef.current = sendMessage;
 
+  // EARLY chat-id adoption (#174): the server streams the authoritative chat id
+  // on the assistant message metadata at the `start` chunk (message.metadata.
+  // chatId — see adopt-chat-id.ts / chatStreamMetadata). Forward it to the parent
+  // AS SOON AS it appears (mid-stream), so a brand-new chat adopts its real id
+  // WHILE the first turn is still streaming and activeChatId-gated affordances
+  // (the Copy/export button) light up immediately, instead of only at onFinish.
+  // Keyed by the last-seen id so we forward each distinct id exactly once. The
+  // parent's onServerChatId is idempotent and a no-op once the chat has an id.
+  const lastForwardedChatIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!onServerChatId) return;
+    const tail = messages[messages.length - 1];
+    if (tail?.role !== "assistant") return;
+    const serverChatId = extractServerChatId(tail);
+    if (!serverChatId || serverChatId === lastForwardedChatIdRef.current)
+      return;
+    lastForwardedChatIdRef.current = serverChatId;
+    onServerChatId(serverChatId);
+  }, [messages, onServerChatId]);
+
   // Live "turn was interrupted" marker for the CURRENT session. The red error
   // banner (driven by `error`) covers the error case; this covers an aborted
   // turn, distinguishing a manual Stop (`isAbort`) from a dropped connection
@@ -319,18 +332,11 @@ export default function ChatThread({
     if (isStreaming) setStopNotice(null);
   }, [isStreaming]);
 
-  // Mirror the live useChat snapshot into the parent-owned ref so the export
-  // (handled in AiChatWindow) can include the in-progress streaming turn. The
-  // cleanup clears the ref on unmount so a thread torn down by `key` on chat
-  // switch can't leak its (possibly still-streaming) tail into the next chat's
-  // export before the new thread's effect repopulates the ref.
-  useEffect(() => {
-    if (!liveStateRef) return;
-    liveStateRef.current = { messages, isStreaming };
-    return () => {
-      liveStateRef.current = { messages: [], isStreaming: false };
-    };
-  }, [liveStateRef, messages, isStreaming]);
+  // Classify the turn error into a heading + detail so the banner names the cause
+  // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
+  // of a generic "Something went wrong". Computed here (not only in the JSX) so
+  // the SAME on-screen banner text can be mirrored into the export (issue #160).
+  const errorView = error ? describeChatError(error.message ?? "", t) : null;
 
   // Report the live turn-token total to the parent header badge, THROTTLED to
   // ~8 Hz so the parent re-renders a few times a second instead of on every
@@ -353,8 +359,7 @@ export default function ChatThread({
       return;
     }
     const tail = messages[messages.length - 1];
-    const live =
-      tail?.role === "assistant" ? liveTurnTokens(tail) : null;
+    const live = tail?.role === "assistant" ? liveTurnTokens(tail) : null;
     const total = live ? live.reasoning + live.output : 0;
     const now = Date.now();
     const MIN_INTERVAL = 120; // ms (~8 Hz)
@@ -379,11 +384,6 @@ export default function ChatThread({
       if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
     };
   }, []);
-
-  // Classify the turn error into a heading + detail so the banner names the cause
-  // (connection reset, timeout, rate limit, context overflow, quota, ...) instead
-  // of a generic "Something went wrong".
-  const errorView = error ? describeChatError(error.message ?? "", t) : null;
 
   // A role was picked with autoStart=false: the role is bound but NOTHING was
   // sent, so chatId stays null and the empty state would keep showing the cards.

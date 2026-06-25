@@ -244,6 +244,15 @@ export class PublicShareChatService {
         },
       });
 
+      // Drain the stream independently of the client socket so the turn always
+      // runs to completion (or to its abort) even when the anonymous client
+      // disconnects — otherwise the dead socket is the only reader, backpressure
+      // stalls the stream, and the per-turn object graph stays rooted (heap-OOM
+      // leak). consumeStream removes that backpressure (AI SDK v6 "Handling
+      // client disconnects"). Fire-and-forget; stream errors are already logged
+      // by the streamText `onError` callback above.
+      void result.consumeStream({ onError: () => undefined });
+
       // Stream the UI-message protocol straight to the hijacked Node response.
       // Surface the real provider message (AI SDK error bodies never carry the
       // API key, so this is safe; we never dump the resolved config).

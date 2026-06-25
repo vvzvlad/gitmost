@@ -55,6 +55,45 @@
     padding-inline-start: 1.4em;
 }
 
+/* GFM tables in assistant markdown. The chat lives in a NARROW side panel, so a
+   wide LLM table must scroll horizontally instead of collapsing its columns:
+   `.markdown` sets `word-break: break-word`, which (with the default table
+   layout) shrinks columns to a single glyph and wraps headers mid-word
+   ("Секция" -> "Секци / я"). Make the table a horizontally scrollable block,
+   give cells a readable minimum width, and restore word-boundary wrapping. */
+.markdown table {
+    display: block;
+    /* lets the table scroll horizontally on its own */
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin-block-end: 0.5em;
+}
+
+.markdown th,
+.markdown td {
+    border: 1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+    padding: 3px 8px;
+    /* readable floor; the block scrolls when the row exceeds the panel */
+    min-width: 6em;
+    text-align: left;
+    vertical-align: top;
+    /* cancel the inherited break-word so words don't split mid-glyph */
+    word-break: normal;
+    /* still wrap genuinely long words / URLs at the cell edge */
+    overflow-wrap: break-word;
+}
+
+.markdown th {
+    background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+    font-weight: 600;
+}
+
+/* GFM wraps cell text in <p>; drop its default block margin inside cells. */
+.markdown table p {
+    margin: 0;
+}
+
 /* Animated three-dot "typing" indicator shown while the agent is thinking but
    has not yet produced any visible text/tool parts. */
 .typingDots {
@@ -122,7 +161,11 @@
     margin-top: 4px;
     font-size: var(--mantine-font-size-xs);
     color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
-    white-space: pre-wrap;
+    /* NOTE: `white-space: pre-wrap` is intentionally NOT set here. On the
+       rendered markdown <div> it would turn the newlines between block tags
+       (</li>\n<li>, </p>\n<ol>) into visible blank lines/indents on top of the
+       margins. The plain-text fallback <Text> that needs pre-wrap sets it
+       inline itself (see reasoning-block.tsx). */
 }
 
 .reasoningText p {

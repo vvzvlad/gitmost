@@ -70,6 +70,47 @@ export function streamKeepAliveMs(): number {
   return positiveEnv('AI_STREAM_KEEPALIVE_MS', DEFAULT_STREAM_KEEPALIVE_MS);
 }
 
+/** Default SILENCE timeout for EXTERNAL-MCP transport (5 min). */
+const DEFAULT_MCP_STREAM_TIMEOUT_MS = 300_000;
+
+/** Default total wall-clock cap for ONE external MCP tool call (15 min). */
+const DEFAULT_MCP_CALL_TIMEOUT_MS = 900_000;
+
+/**
+ * SILENCE timeout (ms) for EXTERNAL-MCP transport ONLY. Override with
+ * `AI_MCP_STREAM_TIMEOUT_MS`; a missing/invalid/non-positive value falls back to
+ * {@link DEFAULT_MCP_STREAM_TIMEOUT_MS} (5 min).
+ *
+ * Deliberately tighter than the chat provider's {@link streamTimeoutMs} (15 min)
+ * so a byte-silent/hung MCP upstream is broken in ~5 min instead of 15. This is
+ * the undici `headersTimeout`/`bodyTimeout` for the external-MCP dispatcher only
+ * — it must NOT change the chat provider, which legitimately needs 15 min between
+ * reasoning chunks (#175).
+ *
+ * Trade-off: a legitimately long but byte-silent single tool call (a slow crawl
+ * that emits nothing until done) and an SSE transport that idles >5 min BETWEEN
+ * tool calls are also cut here. The per-call total cap ({@link mcpCallTimeoutMs},
+ * applied in mcp-clients.service) is the complementary guard for chatty-but-stuck
+ * calls that keep the socket warm yet never return.
+ */
+export function mcpStreamTimeoutMs(): number {
+  return positiveEnv('AI_MCP_STREAM_TIMEOUT_MS', DEFAULT_MCP_STREAM_TIMEOUT_MS);
+}
+
+/**
+ * Total wall-clock cap (ms) for ONE external MCP tool call — APP-LEVEL, not
+ * transport. Override with `AI_MCP_CALL_TIMEOUT_MS`; a missing/invalid/
+ * non-positive value falls back to {@link DEFAULT_MCP_CALL_TIMEOUT_MS} (15 min).
+ *
+ * Catches a tool that keeps the connection warm (SSE heartbeats / trickle) but
+ * never returns a result — which the transport silence timeout
+ * ({@link mcpStreamTimeoutMs}) would never break because the socket never goes
+ * byte-silent.
+ */
+export function mcpCallTimeoutMs(): number {
+  return positiveEnv('AI_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS);
+}
+
 /**
  * undici `Agent` options for streaming AI traffic — the (generous, finite)
  * silence timeouts plus the keep-alive recycle window. Shared by the chat

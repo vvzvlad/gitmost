@@ -56,39 +56,58 @@ function metadataUsage(message: UIMessage): AuthoritativeUsage | undefined {
 /**
  * Token split for the given (streaming) assistant message.
  *
- * Prefers AUTHORITATIVE `metadata.usage` when the server has attached it (at a
- * step/turn boundary, incl. `reasoningTokens`) — so the live counter snaps to the
- * provider's exact figures. Until then it returns a running ESTIMATE summed over
- * the message parts: `reasoning` parts feed the reasoning estimate, `text` parts
- * feed the output estimate. Multi-part / multi-step turns accumulate naturally
- * because every part of the turn is summed.
+ * COMBINES the authoritative server usage with the running text estimate so the
+ * counter ticks in real time AND lands exact. The server only attaches
+ * `metadata.usage` at a step/turn boundary (`finish-step`/`finish`) and it is
+ * CUMULATIVE over COMPLETED steps — it does NOT yet include the in-flight step.
+ * So a multi-step turn that returned the authoritative figure verbatim would
+ * FREEZE between boundaries and jump in steps (issue #163).
+ *
+ * Instead we always compute the running ESTIMATE (chars/≈4 over the message's
+ * `reasoning`/`text` parts, which grows on every streamed delta) and take the
+ * per-component MAX of the authoritative base and the estimate:
+ *   - between boundaries the estimate of the in-flight step ticks the number up;
+ *   - at a boundary the authoritative figure snaps it to exact;
+ *   - because the server's usage is cumulative and we only ever take the max, the
+ *     number is MONOTONIC — it never drops.
  *
  * Providers that don't stream reasoning text still surface a reasoning count once
- * the authoritative usage arrives (`usage.reasoningTokens`); on the pure estimate
- * path such a turn simply shows `reasoning: 0` until then.
+ * the authoritative usage arrives (`max(reasoningTokens, 0)`); on the pure
+ * estimate path (no usage yet) such a turn shows `reasoning: 0` until then.
  */
 export function liveTurnTokens(message: UIMessage | undefined): LiveTurnTokens {
   if (!message) return { reasoning: 0, output: 0, authoritative: false };
 
-  const usage = metadataUsage(message);
-  if (usage) {
-    // Authoritative branch: outputTokens already INCLUDES reasoning tokens in the
-    // AI SDK usage shape, so subtract reasoning out for the "answer" figure (never
-    // go negative if a provider reports them inconsistently).
-    const reasoning = usage.reasoningTokens ?? 0;
-    const totalOutput = usage.outputTokens ?? 0;
-    const output = Math.max(0, totalOutput - reasoning);
-    return { reasoning, output, authoritative: true };
-  }
-
-  let reasoning = 0;
-  let output = 0;
+  // Running ESTIMATE over every reasoning/text part — grows on each delta. This
+  // includes the IN-FLIGHT step, which the authoritative usage does not cover yet.
+  let estReasoning = 0;
+  let estOutput = 0;
   for (const part of message.parts ?? []) {
     if (part.type === "reasoning") {
-      reasoning += estimateTokens((part as { text?: string }).text ?? "");
+      estReasoning += estimateTokens((part as { text?: string }).text ?? "");
     } else if (part.type === "text") {
-      output += estimateTokens((part as { text?: string }).text ?? "");
+      estOutput += estimateTokens((part as { text?: string }).text ?? "");
     }
   }
-  return { reasoning, output, authoritative: false };
+
+  const usage = metadataUsage(message);
+  if (!usage) {
+    // No authoritative usage streamed yet: the estimate IS the live figure.
+    return { reasoning: estReasoning, output: estOutput, authoritative: false };
+  }
+
+  // Authoritative sum over COMPLETED steps. `outputTokens` already INCLUDES
+  // reasoning in the AI SDK usage shape, so subtract it out for the "answer"
+  // figure (never go negative if a provider reports them inconsistently).
+  const authReasoning = usage.reasoningTokens ?? 0;
+  const authOutput = Math.max(0, (usage.outputTokens ?? 0) - authReasoning);
+
+  // Per-component max: the in-flight step's estimate ticks above the completed-
+  // steps base between boundaries, and the authoritative figure wins once it
+  // exceeds the (rough) estimate at the next boundary. Monotonic by construction.
+  return {
+    reasoning: Math.max(authReasoning, estReasoning),
+    output: Math.max(authOutput, estOutput),
+    authoritative: true,
+  };
 }
