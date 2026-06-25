@@ -174,47 +174,10 @@ describe('buildSystemPrompt mcp tooling guidance', () => {
   const workspace = { name: 'Acme' } as unknown as Workspace;
   const SAFETY_MARKER = 'Operating rules (always in effect)';
 
-  it('renders the server name, tool prefix and text when guidance is present', () => {
-    const prompt = buildSystemPrompt({
-      workspace,
-      mcpInstructions: [
-        {
-          serverName: 'Tavily',
-          toolPrefix: 'tavily',
-          instructions: 'Use tavily_search for fresh web facts; cite sources.',
-        },
-      ],
-    });
-    expect(prompt).toContain('<mcp_tooling');
-    expect(prompt).toContain('Tavily');
-    // The header names the namespace prefix as `<prefix>_*`.
-    expect(prompt).toContain('tavily_*');
-    expect(prompt).toContain(
-      'Use tavily_search for fresh web facts; cite sources.',
-    );
-  });
-
-  it('renders nothing for an empty list', () => {
-    const prompt = buildSystemPrompt({ workspace, mcpInstructions: [] });
-    expect(prompt).not.toContain('<mcp_tooling');
-  });
-
-  it('renders nothing for an undefined list', () => {
-    const prompt = buildSystemPrompt({ workspace });
-    expect(prompt).not.toContain('<mcp_tooling');
-  });
-
-  it('renders nothing when every entry has blank text', () => {
-    const prompt = buildSystemPrompt({
-      workspace,
-      mcpInstructions: [
-        { serverName: 'A', toolPrefix: 'a', instructions: '   ' },
-        { serverName: 'B', toolPrefix: 'b', instructions: '' },
-      ],
-    });
-    expect(prompt).not.toContain('<mcp_tooling');
-  });
-
+  // The block's CONTENT and its empty/undefined/all-blank handling are covered by
+  // the buildMcpToolingBlock unit tests below; here we only pin the INTEGRATION
+  // invariants that are unique to buildSystemPrompt: sandwich placement and that
+  // both safety copies survive.
   it('places the block inside the safety sandwich, after context, before the trailing SAFETY', () => {
     const prompt = buildSystemPrompt({
       workspace,

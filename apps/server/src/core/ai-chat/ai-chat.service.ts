@@ -332,38 +332,14 @@ export class AiChatService {
       );
     }
 
-    const system = buildSystemPrompt({
-      workspace,
-      adminPrompt: resolved?.systemPrompt,
-      // The role (pre-resolved by the controller) REPLACES the persona layer;
-      // the safety framework is still appended by buildSystemPrompt.
-      roleInstructions: role?.instructions,
-      // Server-validated open page (authoritative title), not the client value.
-      openedPage: openPageContext,
-      // Guidance only for servers that connected and yielded ≥1 callable tool.
-      mcpInstructions: external.instructions,
-    });
-
-    // Pass the resolved chatId so the write tools can mint provenance tokens
-    // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
-    // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
-    const docmostTools = await this.tools.forUser(
-      user,
-      sessionId,
-      workspace.id,
-      chatId,
-      // Same server-validated open page used by the system prompt above; exposed
-      // to the model via getCurrentPage so page identity (and the AUTHORITATIVE
-      // title) survives prompt mangling and client title spoofing (#159).
-      openPageContext,
-    );
-
-    const tools = { ...external.tools, ...docmostTools };
-
     // Close every external client EXACTLY ONCE across the turn's terminal
     // callbacks (onFinish/onError/onAbort all fire at most once collectively,
-    // but guard anyway). Close errors are swallowed so they never break the
-    // response.
+    // but guard anyway). DEFINED HERE — before the prompt/toolset are built — so
+    // that if buildSystemPrompt or forUser throws AFTER the external lease was
+    // taken (toolsFor above), the lease is still released. Otherwise its refCount
+    // stays >= 1 forever and the external undici sockets leak until restart
+    // (#180 reorder moved toolsFor ahead of these; #185 review). Close errors are
+    // swallowed so they never break the response.
     let clientsClosed = false;
     const closeExternalClients = async (): Promise<void> => {
       if (clientsClosed) return;
@@ -380,6 +356,44 @@ export class AiChatService {
         ),
       );
     };
+
+    // Build the system prompt + Docmost toolset. If either throws after the
+    // external MCP lease was taken above, release the lease before rethrowing so
+    // the leased transports are not leaked (#185 review).
+    let system: string;
+    let docmostTools: Awaited<ReturnType<AiChatToolsService['forUser']>>;
+    try {
+      system = buildSystemPrompt({
+        workspace,
+        adminPrompt: resolved?.systemPrompt,
+        // The role (pre-resolved by the controller) REPLACES the persona layer;
+        // the safety framework is still appended by buildSystemPrompt.
+        roleInstructions: role?.instructions,
+        // Server-validated open page (authoritative title), not the client value.
+        openedPage: openPageContext,
+        // Guidance only for servers that connected and yielded ≥1 callable tool.
+        mcpInstructions: external.instructions,
+      });
+
+      // Pass the resolved chatId so the write tools can mint provenance tokens
+      // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
+      // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
+      docmostTools = await this.tools.forUser(
+        user,
+        sessionId,
+        workspace.id,
+        chatId,
+        // Same server-validated open page used by the system prompt above;
+        // exposed to the model via getCurrentPage so page identity (and the
+        // AUTHORITATIVE title) survives prompt mangling / client title spoofing.
+        openPageContext,
+      );
+    } catch (err) {
+      await closeExternalClients();
+      throw err;
+    }
+
+    const tools = { ...external.tools, ...docmostTools };
 
     // Persist the assistant message. Used by onFinish (full result) and the
     // abort/error paths (partial result). Guarded so we persist at most once.

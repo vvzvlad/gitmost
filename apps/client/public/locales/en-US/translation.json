@@ -1078,6 +1078,8 @@
   "Undo": "Undo",
   "Redo": "Redo",
   "Backlinks": "Backlinks",
+  "Back to references": "Back to references",
+  "Back to reference {{label}}": "Back to reference {{label}}",
   "Last updated by": "Last updated by",
   "Last updated": "Last updated",
   "Stats": "Stats",

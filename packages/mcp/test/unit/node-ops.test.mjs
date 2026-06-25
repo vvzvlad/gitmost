@@ -5,6 +5,7 @@ import {
   blockPlainText,
   replaceNodeById,
   deleteNodeById,
+  assertUnambiguousMatch,
   insertNodeRelative,
 } from "../../build/lib/node-ops.js";
 
@@ -216,10 +217,7 @@ test("deleteNodeById removes EVERY node sharing the id", () => {
 });
 
 test("deleteNodeById does NOT mutate input (deep-equal snapshot)", () => {
-  const input = doc(
-    para("p-1", textNode("one")),
-    para("p-2", textNode("two")),
-  );
+  const input = doc(para("p-1", textNode("one")), para("p-2", textNode("two")));
   const snap = snapshot(input);
   const { doc: out } = deleteNodeById(input, "p-2");
   assert.deepEqual(input, snap);
@@ -486,4 +484,36 @@ test("insertNodeRelative truly-missing anchor still returns inserted:false", () 
     anchorText: "**gamma**",
   });
   assert.equal(inserted, false);
+});
+
+// assertUnambiguousMatch (#159, #185 review pt 2): the patch_node/delete_node
+// guard. Docmost duplicates block ids on copy/paste, so a write by id that
+// matches >1 node must be REFUSED (the caller already skipped the write for any
+// count !== 1; this reports the error). The duplicate COUNT itself is covered by
+// the replaceNodeById/deleteNodeById tests above (count===2 for a 2-dup doc).
+test("assertUnambiguousMatch: count 0 throws 'no node found'", () => {
+  assert.throws(
+    () => assertUnambiguousMatch("patch_node", "replace", 0, "n1", "p1"),
+    /patch_node: no node with id "n1" found on page p1/,
+  );
+});
+
+test("assertUnambiguousMatch: count > 1 refuses with an 'ambiguous' error", () => {
+  assert.throws(
+    () => assertUnambiguousMatch("patch_node", "replace", 2, "dup", "p1"),
+    /ambiguous.*Refusing to replace all of them; nothing was changed/,
+  );
+  assert.throws(
+    () => assertUnambiguousMatch("delete_node", "delete", 3, "dup", "p1"),
+    /ambiguous.*Refusing to delete all of them; nothing was changed/,
+  );
+});
+
+test("assertUnambiguousMatch: exactly one match does NOT throw", () => {
+  assert.doesNotThrow(() =>
+    assertUnambiguousMatch("patch_node", "replace", 1, "n1", "p1"),
+  );
+  assert.doesNotThrow(() =>
+    assertUnambiguousMatch("delete_node", "delete", 1, "n1", "p1"),
+  );
 });

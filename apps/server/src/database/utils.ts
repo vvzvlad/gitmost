@@ -64,3 +64,29 @@ export function jsonbBind<T>(
   }
   return sql<T>`${JSON.stringify(value)}::text::jsonb`;
 }
+
+/**
+ * READ-side counterpart to {@link jsonbBind}: tolerantly decode a jsonb value
+ * read back from the DB and validate its shape with `guard`. THE single place
+ * the legacy double-encoding self-heal lives, so repos keep only a type-guard.
+ *
+ * A row written by the old `::jsonb` bind round-trips as a JSON STRING (see the
+ * quirk in jsonbBind), so the driver hands back e.g. `'["a"]'` / `'{"k":1}'`
+ * rather than the structure. This parses such a string once, then applies the
+ * caller's `guard`. Returns `null` for null / an unparseable string / a value
+ * the guard rejects (so a corrupt or wrong-shaped value degrades to "unset").
+ */
+export function parseJsonbValue<T>(
+  value: unknown,
+  guard: (v: unknown) => v is T,
+): T | null {
+  let v: unknown = value;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v); // legacy double-encoded read
+    } catch {
+      return null;
+    }
+  }
+  return guard(v) ? v : null;
+}

@@ -11,7 +11,7 @@ import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, m
 import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import { serializeDocmostMarkdown, parseDocmostMarkdown, } from "./lib/markdown-document.js";
-import { replaceNodeById, deleteNodeById, insertNodeRelative, buildOutline, getNodeByRef, readTable, insertTableRow, deleteTableRow, updateTableCell, } from "./lib/node-ops.js";
+import { replaceNodeById, deleteNodeById, assertUnambiguousMatch, insertNodeRelative, buildOutline, getNodeByRef, readTable, insertTableRow, deleteTableRow, updateTableCell, } from "./lib/node-ops.js";
 import { withPageLock } from "./lib/page-lock.js";
 import { applyTextEdits, } from "./lib/json-edit.js";
 import { getCollabToken, performLogin } from "./lib/auth-utils.js";
@@ -1331,12 +1331,9 @@ export class DocmostClient {
                 return null;
             return nd;
         });
-        if (replaced === 0) {
-            throw new Error(`patch_node: no node with id "${nodeId}" found on page ${pageId}`);
-        }
-        if (replaced > 1) {
-            throw new Error(`patch_node: id "${nodeId}" is ambiguous — ${replaced} nodes on page ${pageId} share it (block ids are duplicated on copy/paste). Refusing to replace all of them; nothing was changed. Re-target with a more specific anchor.`);
-        }
+        // 0 -> "no node"; >1 -> "ambiguous, refused" (the transform already skipped
+        // the write for any count !== 1). Single shared guard (#159, #185 review).
+        assertUnambiguousMatch("patch_node", "replace", replaced, nodeId, pageId);
         return { success: true, replaced, nodeId, verify: mutation.verify };
     }
     /**
@@ -1428,12 +1425,9 @@ export class DocmostClient {
                 return null;
             return nd;
         });
-        if (deleted === 0) {
-            throw new Error(`delete_node: no node with id "${nodeId}" found on page ${pageId}`);
-        }
-        if (deleted > 1) {
-            throw new Error(`delete_node: id "${nodeId}" is ambiguous — ${deleted} nodes on page ${pageId} share it (block ids are duplicated on copy/paste). Refusing to delete all of them; nothing was changed. Re-target with a more specific anchor.`);
-        }
+        // 0 -> "no node"; >1 -> "ambiguous, refused" (the transform already skipped
+        // the write for any count !== 1). Single shared guard (#159, #185 review).
+        assertUnambiguousMatch("delete_node", "delete", deleted, nodeId, pageId);
         return { success: true, deleted, nodeId, verify: mutation.verify };
     }
     /** Build the public share URL for a page. */

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
-import { dbOrTx, jsonbBind } from '../../utils';
+import { dbOrTx, jsonbBind, parseJsonbValue } from '../../utils';
 import { AiAgentRole } from '@docmost/db/types/entity.types';
 
 /** The jsonb shape persisted in `model_config` (loosely typed for the column). */
@@ -183,17 +183,13 @@ export class AiAgentRoleRepo {
 export function parseModelConfig(
   value: unknown,
 ): Record<string, unknown> | null {
-  let v: unknown = value;
-  if (typeof v === 'string') {
-    try {
-      v = JSON.parse(v); // legacy double-encoded read
-    } catch {
-      return null;
-    }
-  }
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : null;
+  // Shape guard only; the legacy double-encoding self-heal lives in
+  // parseJsonbValue (database/utils.ts).
+  return parseJsonbValue(
+    value,
+    (v): v is Record<string, unknown> =>
+      v !== null && typeof v === 'object' && !Array.isArray(v),
+  );
 }
 
 /** Normalize a DB row so `modelConfig` is always an object or null. The cast

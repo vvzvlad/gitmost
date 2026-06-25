@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
-import { dbOrTx, jsonbBind } from '../../utils';
+import { dbOrTx, jsonbBind, parseJsonbValue } from '../../utils';
 import { AiMcpServer } from '@docmost/db/types/entity.types';
 
 const logger = new Logger('AiMcpServerRepo');
@@ -161,17 +161,13 @@ export function blankToNull(value: string | null | undefined): string | null {
  * array with a non-string element all become null (unrestricted).
  */
 export function parseToolAllowlist(value: unknown): string[] | null {
-  let v: unknown = value;
-  if (typeof v === 'string') {
-    try {
-      v = JSON.parse(v); // legacy double-encoded read
-    } catch {
-      return null;
-    }
-  }
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-    ? (v as string[])
-    : null;
+  // Shape guard only; the legacy double-encoding self-heal lives in
+  // parseJsonbValue (database/utils.ts).
+  return parseJsonbValue(
+    value,
+    (v): v is string[] =>
+      Array.isArray(v) && v.every((x) => typeof x === 'string'),
+  );
 }
 
 /**
