@@ -185,6 +185,41 @@ export class AiChatService {
     return this.ai.getChatModel(workspaceId, roleModelOverride(role));
   }
 
+  /**
+   * Validate the client-supplied open page and return its AUTHORITATIVE identity
+   * ({ id, title }) or null. The client controls BOTH the id and the title in the
+   * request body, so neither is trusted: the id must resolve to a real page in
+   * THIS workspace that the user may read, and the title is taken from the DB row
+   * (never the client) so the model can't be told it is "on Page A" while the id
+   * points at page B (#159). Fail-closed — any missing / foreign / inaccessible
+   * page, or any non-Forbidden access-check fault, returns null.
+   */
+  private async resolveOpenPageContext(
+    openPage: { id?: string; title?: string } | null | undefined,
+    workspace: Workspace,
+    user: User,
+  ): Promise<{ id: string; title: string } | null> {
+    const candidatePageId = openPage?.id;
+    if (!candidatePageId) return null;
+    const page = await this.pageRepo.findById(candidatePageId);
+    if (!page || page.workspaceId !== workspace.id) return null;
+    try {
+      await this.pageAccess.validateCanView(page, user);
+    } catch (e) {
+      // A ForbiddenException is the expected "user cannot read this page" case;
+      // log anything else (e.g. a DB error) so a real fault is not masked.
+      if (!(e instanceof ForbiddenException)) {
+        this.logger.warn(
+          `open page access check failed: ${
+            e instanceof Error ? e.message : 'unknown error'
+          }`,
+        );
+      }
+      return null;
+    }
+    return { id: page.id, title: page.title ?? '' };
+  }
+
   async stream({
     user,
     workspace,
@@ -205,37 +240,26 @@ export class AiChatService {
         chatId = undefined;
       }
     }
+    // The open page the client sent is attacker-controllable — BOTH its id and
+    // its title. Resolve it ONCE against the DB (workspace-scoped + access-
+    // checked) and use the AUTHORITATIVE identity everywhere below: the system
+    // prompt context, the getCurrentPage tool, and the new-chat history origin.
+    // Previously the client title was echoed verbatim, so a navigation / two-tab
+    // desync (openPage.id -> page B, title -> "Page A") made the model report
+    // "updated Page A" while it edited page B (#159). Null when no page is open
+    // or the page is foreign / inaccessible / missing.
+    const openPageContext = await this.resolveOpenPageContext(
+      body.openPage,
+      workspace,
+      user,
+    );
+
     if (!chatId) {
-      // Resolve the origin document for the history list. body.openPage.id is
-      // attacker-controllable, so validate it before persisting: it must be a
-      // real page in THIS workspace that the user is allowed to read. Anything
-      // else (foreign workspace, inaccessible/restricted, or non-existent) is
-      // dropped to null — persisting it would leak the page's title via the
-      // chat-list join, or violate the page_id FK on insert (this runs after
-      // res.hijack(), so a DB error would break the stream).
-      let originPageId: string | null = null;
-      const candidatePageId = body.openPage?.id;
-      if (candidatePageId) {
-        const page = await this.pageRepo.findById(candidatePageId);
-        if (page && page.workspaceId === workspace.id) {
-          try {
-            await this.pageAccess.validateCanView(page, user);
-            originPageId = page.id;
-          } catch (e) {
-            // Fail-closed: no provenance on any failure. A ForbiddenException is
-            // the expected "user cannot read this page" case; log anything else
-            // (e.g. a DB error) so a real fault is not masked as "no access".
-            if (!(e instanceof ForbiddenException)) {
-              this.logger.warn(
-                `origin page access check failed: ${
-                  e instanceof Error ? e.message : 'unknown error'
-                }`,
-              );
-            }
-            originPageId = null;
-          }
-        }
-      }
+      // The history-list origin is the validated open page (see above):
+      // persisting an unvalidated id would leak a title via the chat-list join,
+      // or violate the page_id FK on insert (this runs after res.hijack(), so a
+      // DB error would break the stream).
+      const originPageId: string | null = openPageContext?.id ?? null;
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
@@ -314,7 +338,8 @@ export class AiChatService {
       // The role (pre-resolved by the controller) REPLACES the persona layer;
       // the safety framework is still appended by buildSystemPrompt.
       roleInstructions: role?.instructions,
-      openedPage: body.openPage,
+      // Server-validated open page (authoritative title), not the client value.
+      openedPage: openPageContext,
       // Guidance only for servers that connected and yielded ≥1 callable tool.
       mcpInstructions: external.instructions,
     });
@@ -327,9 +352,10 @@ export class AiChatService {
       sessionId,
       workspace.id,
       chatId,
-      // Same open-page value used by the system prompt above; exposed to the
-      // model via getCurrentPage so page identity survives prompt mangling.
-      body.openPage,
+      // Same server-validated open page used by the system prompt above; exposed
+      // to the model via getCurrentPage so page identity (and the AUTHORITATIVE
+      // title) survives prompt mangling and client title spoofing (#159).
+      openPageContext,
     );
 
     const tools = { ...external.tools, ...docmostTools };
