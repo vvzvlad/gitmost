@@ -115,3 +115,18 @@
 .backLink:hover {
   text-decoration: underline;
 }
+
+/* Multi-backlink row (#168): ↩ a b c — one lettered link per reference
+   occurrence. Sits on the right, after the content, like the single ↩. */
+.backLinks {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  user-select: none;
+}
+
+.backLinkArrow {
+  color: var(--mantine-color-dimmed);
+  font-size: 0.9em;
+}

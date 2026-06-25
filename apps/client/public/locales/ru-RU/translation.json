@@ -405,6 +405,8 @@
   "Footnote {{number}}": "Сноска {{number}}",
   "Go to footnote": "Перейти к сноске",
   "Back to reference": "Вернуться к ссылке",
+  "Back to references": "Вернуться к ссылкам",
+  "Back to reference {{label}}": "Вернуться к ссылке {{label}}",
   "Empty footnote": "Пустая сноска",
   "Math inline": "Строчная формула",
   "Insert inline math equation.": "Вставить математическое выражение в строку.",

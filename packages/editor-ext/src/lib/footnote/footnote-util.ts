@@ -1,12 +1,12 @@
-import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Node as ProseMirrorNode } from '@tiptap/pm/model';
 
 /**
  * Node type names for the footnote feature. Centralized so every part of the
  * feature (nodes, plugins, commands) references the same string.
  */
-export const FOOTNOTE_REFERENCE_NAME = "footnoteReference";
-export const FOOTNOTES_LIST_NAME = "footnotesList";
-export const FOOTNOTE_DEFINITION_NAME = "footnoteDefinition";
+export const FOOTNOTE_REFERENCE_NAME = 'footnoteReference';
+export const FOOTNOTES_LIST_NAME = 'footnotesList';
+export const FOOTNOTE_DEFINITION_NAME = 'footnoteDefinition';
 
 /**
  * Generate a uuidv7-style id (time-ordered). Implemented locally so editor-ext
@@ -15,10 +15,10 @@ export const FOOTNOTE_DEFINITION_NAME = "footnoteDefinition";
  */
 export function generateFootnoteId(): string {
   const now = Date.now();
-  const timeHex = now.toString(16).padStart(12, "0");
+  const timeHex = now.toString(16).padStart(12, '0');
 
   const rand = (length: number) => {
-    let out = "";
+    let out = '';
     for (let i = 0; i < length; i++) {
       out += Math.floor(Math.random() * 16).toString(16);
     }
@@ -26,19 +26,19 @@ export function generateFootnoteId(): string {
   };
 
   // version 7 nibble, then variant (8..b) nibble.
-  const versioned = "7" + rand(3);
+  const versioned = '7' + rand(3);
   const variantNibble = (8 + Math.floor(Math.random() * 4)).toString(16);
   const variant = variantNibble + rand(3);
 
   return (
     timeHex.slice(0, 8) +
-    "-" +
+    '-' +
     timeHex.slice(8, 12) +
-    "-" +
+    '-' +
     versioned +
-    "-" +
+    '-' +
     variant +
-    "-" +
+    '-' +
     rand(12)
   );
 }
@@ -89,7 +89,7 @@ export function deriveFootnoteId(
  * Purely deterministic.
  */
 function suffix(n: number): string {
-  let out = "";
+  let out = '';
   let x = n;
   while (x > 0) {
     const rem = (x - 1) % 25;
@@ -130,4 +130,20 @@ export function computeFootnoteNumbers(
     }
   }
   return numbers;
+}
+
+/**
+ * Build a map of `referenceId -> number of reference occurrences` (>= 1) from
+ * document order. After #166 the same id may be referenced multiple times
+ * (reuse: one number, one definition, N forward links); this count drives the
+ * definition's multi-backlink UI (↩ a b c …, #168). Pure function of the doc.
+ */
+export function computeFootnoteRefCounts(
+  doc: ProseMirrorNode,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const id of collectReferenceIds(doc)) {
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
 }
