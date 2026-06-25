@@ -715,6 +715,8 @@
   "Test": "Test",
   "Available tools": "Available tools",
   "No tools available": "No tools available",
+  "Failed": "Failed",
+  "OK · {{n}}": "OK · {{n}}",
   "Created successfully": "Created successfully",
   "Deleted successfully": "Deleted successfully",
   "Clear": "Clear",
