@@ -1,12 +1,16 @@
 import { isIP } from 'node:net';
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { Injectable, Logger } from '@nestjs/common';
-import { type Tool } from 'ai';
+import { type Tool, type ToolCallOptions } from 'ai';
 import { createMCPClient } from '@ai-sdk/mcp';
 import { Agent, type Dispatcher } from 'undici';
 import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
 import { AiMcpServer } from '@docmost/db/types/entity.types';
-import { streamingDispatcherOptions } from '../../../integrations/ai/ai-streaming-fetch';
+import {
+  streamingDispatcherOptions,
+  mcpStreamTimeoutMs,
+  mcpCallTimeoutMs,
+} from '../../../integrations/ai/ai-streaming-fetch';
 import { SecretBoxService } from '../../../integrations/crypto/secret-box';
 import { isUrlAllowed, isIpAllowed } from './ssrf-guard';
 
@@ -219,6 +223,8 @@ export class McpClientsService {
     const tools: Record<string, Tool> = {};
     const clients: McpClient[] = [];
     const outcomes: ServerOutcome[] = [];
+    // Per-call total wall-clock cap, read once for this build (env-overridable).
+    const callTimeoutMs = mcpCallTimeoutMs();
 
     for (const server of servers) {
       try {
@@ -230,10 +236,13 @@ export class McpClientsService {
           Array.isArray(allow) && allow.length > 0
             ? pick(raw, allow)
             : raw;
+        // Bound each tool's execute with a per-call total-timeout guard before
+        // merging, so a single chatty-but-stuck call is aborted after the cap.
+        const guarded = wrapToolsWithCallTimeout(picked, callTimeoutMs);
         // Namespace each tool with the sanitized server name AND disambiguate
         // against names already merged from earlier servers, so no external
         // tool is silently overwritten on collision.
-        this.mergeNamespaced(tools, picked, server.name, server.id);
+        this.mergeNamespaced(tools, guarded, server.name, server.id);
         outcomes.push({ name: server.name, ok: true });
       } catch (err) {
         // A failed server is skipped — the turn proceeds with the rest. Log a
@@ -400,17 +409,21 @@ export function validateResolvedAddresses(
  * to an IP literal).
  */
 function buildPinnedDispatcher(): Agent {
+  // External-MCP traffic uses a DEDICATED, shorter silence timeout
+  // (`AI_MCP_STREAM_TIMEOUT_MS`, default 5 min) — deliberately tighter than the
+  // chat provider's 15-min `streamTimeoutMs()` — so a byte-silent/hung MCP
+  // upstream is broken in ~5 min instead of 15. We keep the keep-alive options
+  // from `streamingDispatcherOptions()` but OVERRIDE headers/body timeouts.
+  // Accepted trade-off: a legitimately long but byte-silent single tool call,
+  // and an SSE transport idling >5 min BETWEEN tool calls, are also cut here; the
+  // per-call total cap (wrapToolsWithCallTimeout, `AI_MCP_CALL_TIMEOUT_MS`) is the
+  // complementary guard for chatty-but-stuck calls that keep the socket warm yet
+  // never return.
+  const mcpSilenceMs = mcpStreamTimeoutMs();
   return new Agent({
-    // Raise undici's default 300s headers/body timeouts on external MCP traffic
-    // to the same generous-but-finite silence timeout the chat fetch uses (#175).
-    // A long agent turn keeps an SSE transport (e.g. crawl4ai's /mcp/sse) open
-    // across the whole turn; that connection can idle BETWEEN tool calls longer
-    // than 5 min, and undici's bodyTimeout would otherwise sever it mid-task — a
-    // tool-call failure that aborts the streamed turn and shows the user "Lost
-    // connection to the AI provider". A slow single tool call (a crawl) can
-    // likewise exceed headersTimeout. The timeout stays FINITE so a genuinely
-    // hung server is still broken eventually.
     ...streamingDispatcherOptions(),
+    headersTimeout: mcpSilenceMs,
+    bodyTimeout: mcpSilenceMs,
     connect: {
       lookup: (hostname, _options, callback) => {
         // Always resolve ALL addresses ourselves; do not trust the caller's
@@ -570,6 +583,78 @@ function disambiguate(
   }
   // Extremely unlikely fallthrough: a timestamp keeps it unique, no overwrite.
   return capName(`${name.slice(0, MAX_TOOL_NAME_LENGTH - 14)}_${Date.now()}`);
+}
+
+/**
+ * Wrap every tool's execute with a per-call total-timeout guard so a single
+ * external MCP tool call that keeps the connection warm but never returns is
+ * aborted after `ms` wall-clock (complements the transport silence timeout).
+ */
+export function wrapToolsWithCallTimeout(
+  tools: Record<string, Tool>,
+  ms: number,
+): Record<string, Tool> {
+  const out: Record<string, Tool> = {};
+  for (const [name, t] of Object.entries(tools)) {
+    out[name] = wrapToolWithCallTimeout(t, ms);
+  }
+  return out;
+}
+
+/**
+ * Per-call total-timeout wrapper for one MCP tool. A fresh AbortController +
+ * timer bounds the call; it is composed with the turn's abortSignal via
+ * AbortSignal.any so EITHER the per-call timeout OR a client disconnect aborts
+ * the call. We RACE the call against the composed abort signal rather than just
+ * awaiting it, because @ai-sdk/mcp does NOT settle its in-flight promise on abort
+ * (verified in @ai-sdk/mcp@1.0.52: request() only does throwIfAborted() once
+ * before send and only re-checks the signal inside the response-message handler,
+ * which runs ONLY when a response arrives). So for a warm-but-stuck call awaiting
+ * `original` alone would hang forever even after the timer aborts.
+ */
+export function wrapToolWithCallTimeout(tool: Tool, ms: number): Tool {
+  const original = tool.execute;
+  if (typeof original !== 'function') return tool;
+  const execute = async (args: unknown, options: ToolCallOptions) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new Error(`MCP tool call timed out after ${ms}ms`));
+    }, ms);
+    timer.unref?.();
+    const abortSignal = options?.abortSignal
+      ? AbortSignal.any([options.abortSignal, controller.signal])
+      : controller.signal;
+    // Reject as soon as the composed signal fires, independent of whether
+    // `original` ever settles. The losing `original` promise is left pending; it
+    // is cleaned up when the client is closed at turn end, and Promise.race
+    // attaches a rejection handler to BOTH inputs so a late rejection of either
+    // is never an unhandled rejection (do NOT add an extra .catch — it could
+    // swallow the real result and would break the race semantics).
+    const aborted = new Promise<never>((_, reject) => {
+      const fail = () => reject(abortReason(abortSignal));
+      if (abortSignal.aborted) fail();
+      else abortSignal.addEventListener('abort', fail, { once: true });
+    });
+    try {
+      return await Promise.race([
+        original(args, { ...options, abortSignal }),
+        aborted,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // `Tool` is a union whose `execute` overloads conflict; cast narrowly so the
+  // wrapped tool keeps every other field while swapping only `execute`.
+  return { ...tool, execute } as unknown as Tool;
+}
+
+/** The signal's reason as an Error (informative thrown value on abort/timeout). */
+function abortReason(signal: AbortSignal): Error {
+  const r = signal.reason;
+  return r instanceof Error
+    ? r
+    : new Error(typeof r === 'string' ? r : 'MCP tool call aborted');
 }
 
 /** Reject a promise after `ms`, so a hung connect/tools() never stalls a turn. */
