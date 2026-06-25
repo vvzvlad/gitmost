@@ -29,9 +29,11 @@ import {
   collectBranchIds,
   openBranches,
   closeIds,
+  loadedOpenBranchIds,
 } from "@/features/page/tree/utils/utils.ts";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
+import { socketAtom } from "@/features/websocket/atoms/socket-atom.ts";
 import {
   getPageBreadcrumbs,
   getSpaceTree,
@@ -39,11 +41,7 @@ import {
 import { IPage } from "@/features/page/types/page.types.ts";
 import { extractPageSlugId } from "@/lib";
 import { isCompactPageTreeEnabled } from "@/lib/config.ts";
-import {
-  DocTree,
-  ROW_HEIGHT_COMPACT,
-  ROW_HEIGHT_STANDARD,
-} from "./doc-tree";
+import { DocTree, ROW_HEIGHT_COMPACT, ROW_HEIGHT_STANDARD } from "./doc-tree";
 import { SpaceTreeRow } from "./space-tree-row";
 
 interface SpaceTreeProps {
@@ -193,6 +191,54 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
     [openTreeNodes],
   );
 
+  // Latest tree + open-state for the reconnect handler (its closure would
+  // otherwise read stale snapshots).
+  const [socket] = useAtom(socketAtom);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const openIdsRef = useRef(openIds);
+  openIdsRef.current = openIds;
+
+  // Reconnect refresh (#159 #8): on a socket reconnect, re-fetch and reconcile
+  // the children of every currently-open, already-loaded branch of THIS space,
+  // so a move/rename/delete that happened INSIDE a loaded branch while events
+  // were missed (laptop sleep / wifi gap) is reflected instead of left stale.
+  // The ROOT level is reconciled separately by the root-query refetch +
+  // mergeRootTrees; an UNLOADED branch is skipped (lazy-load fetches it fresh on
+  // expand). No first-connect guard is needed: space-tree usually mounts AFTER
+  // the initial connect, so every `connect` it sees is a reconnect; the rare
+  // initial-connect case has an empty tree, so the refresh is a harmless no-op.
+  useEffect(() => {
+    if (!socket) return;
+    const onConnect = async () => {
+      const effectSpaceId = spaceIdRef.current;
+      const branchIds = loadedOpenBranchIds(
+        dataRef.current.filter((n) => n?.spaceId === effectSpaceId),
+        openIdsRef.current,
+      );
+      if (branchIds.length === 0) return;
+      for (const id of branchIds) {
+        try {
+          // `fresh: true` bypasses the 30-min sidebar-pages cache so the
+          // reconcile sees the server's CURRENT children (handler-order
+          // independent — no reliance on the global reconnect invalidation).
+          const fresh = await fetchAllAncestorChildren(
+            { pageId: id, spaceId: effectSpaceId },
+            { fresh: true },
+          );
+          if (spaceIdRef.current !== effectSpaceId) return; // space switched
+          setData((prev) => treeModel.reconcileChildren(prev, id, fresh));
+        } catch (err) {
+          console.error("[tree] reconnect branch refresh failed", err);
+        }
+      }
+    };
+    socket.on("connect", onConnect);
+    return () => {
+      socket.off("connect", onConnect);
+    };
+  }, [socket, setData]);
+
   const handleToggle = useCallback(
     async (id: string, isOpen: boolean) => {
       setOpenTreeNodes((prev) => ({ ...prev, [id]: isOpen }));
@@ -245,8 +291,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
       notifications.show({
         color: "red",
         message: t("Couldn't expand the tree: {{reason}}", {
-          reason:
-            err?.response?.data?.message ?? err?.message ?? String(err),
+          reason: err?.response?.data?.message ?? err?.message ?? String(err),
         }),
       });
     } finally {
@@ -262,11 +307,11 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
     setOpenTreeNodes((prev) => closeIds(prev, ids));
   }, [filteredData, setOpenTreeNodes]);
 
-  useImperativeHandle(
-    ref,
-    () => ({ expandAll, collapseAll, isExpanding }),
-    [expandAll, collapseAll, isExpanding],
-  );
+  useImperativeHandle(ref, () => ({ expandAll, collapseAll, isExpanding }), [
+    expandAll,
+    collapseAll,
+    isExpanding,
+  ]);
 
   // Stable callbacks for DocTree. Without these, every parent render recreates
   // the props and tears down every row's draggable/dropTarget subscription,

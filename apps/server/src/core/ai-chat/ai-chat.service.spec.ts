@@ -1,4 +1,6 @@
+import { ForbiddenException } from '@nestjs/common';
 import {
+  AiChatService,
   compactToolOutput,
   assistantParts,
   serializeSteps,
@@ -10,7 +12,9 @@ import {
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
-import type { AiChatMessage } from '@docmost/db/types/entity.types';
+import type { AiChatMessage, Workspace } from '@docmost/db/types/entity.types';
+import { buildSystemPrompt } from './ai-chat.prompt';
+import type { McpClientsService } from './external-mcp/mcp-clients.service';
 
 /**
  * Unit tests for compactToolOutput: the pure helper that shrinks LARGE tool
@@ -485,5 +489,145 @@ describe('accumulateStepUsage', () => {
       totalTokens: undefined,
       reasoningTokens: undefined,
     });
+  });
+});
+
+/**
+ * Contract test for the #180 wiring in AiChatService.handle: the external MCP
+ * toolset must be built BEFORE the system prompt, and its per-server guidance
+ * threaded into buildSystemPrompt({ mcpInstructions }). The full streaming
+ * handle() is not unit-testable, so this reproduces the exact prompt-build call
+ * the service makes with a connected-server toolset and asserts the guidance is
+ * present. The toolsFor->buildSystemPrompt ordering is additionally enforced at
+ * compile time (the prompt input now consumes external.instructions).
+ */
+describe('AiChatService system prompt wiring (#180)', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+
+  it('includes the external MCP server instructions in the built system prompt', () => {
+    // Shape returned by mcpClients.toolsFor (only `instructions` matters here).
+    const external: Pick<
+      Awaited<ReturnType<McpClientsService['toolsFor']>>,
+      'instructions'
+    > = {
+      instructions: [
+        {
+          serverName: 'Tavily',
+          toolPrefix: 'tavily',
+          instructions: 'Prefer tavily_search for current events.',
+        },
+      ],
+    };
+
+    // Exactly the call the service makes after building the external toolset.
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: external.instructions,
+    });
+
+    expect(system).toContain('<mcp_tooling');
+    expect(system).toContain('Tavily');
+    expect(system).toContain('tavily_*');
+    expect(system).toContain('Prefer tavily_search for current events.');
+  });
+
+  it('renders no MCP block when there are no external servers (empty instructions)', () => {
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: [],
+    });
+    expect(system).not.toContain('<mcp_tooling');
+  });
+});
+
+/**
+ * resolveOpenPageContext: the open page the client sends is attacker-controllable
+ * (id AND title), so the service must validate the id against the DB and take the
+ * title from the DB row — never echo the client title (#159, AI edits the wrong
+ * page). Built with Object.create so the test exercises the real method without
+ * the service's full dependency graph (the constructor only assigns fields).
+ */
+describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', () => {
+  const ws = { id: 'ws-1' } as Workspace;
+  const user = { id: 'u-1' } as any;
+
+  function makeService(opts: {
+    page?: { id: string; workspaceId: string; title: string | null } | null;
+    canView?: boolean | 'throw-other';
+  }) {
+    const svc = Object.create(AiChatService.prototype) as AiChatService;
+    (svc as any).logger = { warn: () => {} };
+    (svc as any).pageRepo = {
+      findById: async () => opts.page ?? undefined,
+    };
+    (svc as any).pageAccess = {
+      validateCanView: async () => {
+        if (opts.canView === 'throw-other') throw new Error('db down');
+        if (opts.canView === false) throw new ForbiddenException();
+        return true;
+      },
+    };
+    return svc;
+  }
+
+  const call = (svc: AiChatService, openPage: any) =>
+    (svc as any).resolveOpenPageContext(openPage, ws, user) as Promise<{
+      id: string;
+      title: string;
+    } | null>;
+
+  it('returns null when no page is open (no id)', async () => {
+    const svc = makeService({});
+    expect(await call(svc, null)).toBeNull();
+    expect(await call(svc, {})).toBeNull();
+    expect(await call(svc, { title: 'spoofed' })).toBeNull();
+  });
+
+  it('returns null when the page does not exist', async () => {
+    const svc = makeService({ page: null });
+    expect(await call(svc, { id: 'p-x' })).toBeNull();
+  });
+
+  it('returns null for a page in a DIFFERENT workspace (tenant isolation)', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-OTHER', title: 'Secret' },
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('returns null when the user may not view the page (Forbidden)', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Restricted' },
+      canView: false,
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('returns null (fail-closed) on a non-Forbidden access-check fault', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'X' },
+      canView: 'throw-other',
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('uses the AUTHORITATIVE DB title, IGNORING the client-supplied title', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Real Title B' },
+      canView: true,
+    });
+    // The client claims it is on "Page A" but the id points at page B.
+    const result = await call(svc, { id: 'p-1', title: 'Page A' });
+    expect(result).toEqual({ id: 'p-1', title: 'Real Title B' });
+  });
+
+  it('coerces a null DB title to an empty string', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: null },
+      canView: true,
+    });
+    expect(await call(svc, { id: 'p-1' })).toEqual({ id: 'p-1', title: '' });
   });
 });

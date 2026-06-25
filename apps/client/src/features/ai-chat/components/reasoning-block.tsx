@@ -3,6 +3,7 @@ import { Box, Collapse, Group, Text, UnstyledButton } from "@mantine/core";
 import { IconChevronDown } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { estimateTokens } from "@/features/ai-chat/utils/count-stream-tokens.ts";
+import { collapseBlankLines } from "@/features/ai-chat/utils/collapse-blank-lines.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -33,7 +34,12 @@ export default function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
   // Authoritative count wins; otherwise estimate live from the streamed text.
   const count = tokens && tokens > 0 ? tokens : estimateTokens(text);
   const trimmed = text.trim();
-  const html = trimmed ? renderChatMarkdown(trimmed, {}) : "";
+  // Collapse the blank-line gaps the model emits between every list item /
+  // paragraph so the reasoning renders compactly (tight lists, joined
+  // paragraphs) — see collapseBlankLines. ONLY here, not in the normal answer.
+  const html = trimmed
+    ? renderChatMarkdown(collapseBlankLines(trimmed), {})
+    : "";
 
   return (
     <Box className={classes.reasoningBlock} mb={6}>

@@ -1,14 +1,15 @@
-import { EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { EditorState, Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
   FOOTNOTE_DEFINITION_NAME,
   FOOTNOTE_REFERENCE_NAME,
   computeFootnoteNumbers,
-} from "./footnote-util";
+  computeFootnoteRefCounts,
+} from './footnote-util';
 
 export const footnoteNumberingPluginKey = new PluginKey<FootnoteNumberingState>(
-  "footnoteNumbering",
+  'footnoteNumbering',
 );
 
 /**
@@ -21,6 +22,9 @@ export const footnoteNumberingPluginKey = new PluginKey<FootnoteNumberingState>(
 interface FootnoteNumberingState {
   /** referenceId -> 1-based display number, for the current doc. */
   numbers: Map<string, number>;
+  /** referenceId -> number of reference occurrences (>= 1), for the definition's
+   *  multi-backlink UI (#168). */
+  refCounts: Map<string, number>;
   /** Decorations rendering those numbers (refs + definitions). */
   decorations: DecorationSet;
 }
@@ -46,6 +50,7 @@ function buildFootnoteNumberingState(
   doc: ProseMirrorNode,
 ): FootnoteNumberingState {
   const numbers = computeFootnoteNumbers(doc);
+  const refCounts = computeFootnoteRefCounts(doc);
   const decorations: Decoration[] = [];
 
   doc.descendants((node, pos) => {
@@ -54,7 +59,7 @@ function buildFootnoteNumberingState(
       if (num != null) {
         decorations.push(
           Decoration.node(pos, pos + node.nodeSize, {
-            "data-footnote-number": String(num),
+            'data-footnote-number': String(num),
             style: `--footnote-number: "${num}";`,
           }),
         );
@@ -65,7 +70,7 @@ function buildFootnoteNumberingState(
       if (num != null) {
         decorations.push(
           Decoration.node(pos, pos + node.nodeSize, {
-            "data-footnote-number": String(num),
+            'data-footnote-number': String(num),
             style: `--footnote-number: "${num}";`,
           }),
         );
@@ -73,7 +78,11 @@ function buildFootnoteNumberingState(
     }
   });
 
-  return { numbers, decorations: DecorationSet.create(doc, decorations) };
+  return {
+    numbers,
+    refCounts,
+    decorations: DecorationSet.create(doc, decorations),
+  };
 }
 
 /**
@@ -88,6 +97,16 @@ export function getFootnoteNumber(
   id: string,
 ): number | undefined {
   return footnoteNumberingPluginKey.getState(state)?.numbers.get(id);
+}
+
+/**
+ * Read the cached reference-occurrence count for `id` (how many `[^id]` links
+ * point at this definition). Drives the definition's multi-backlink UI (#168):
+ * `> 1` renders ↩ a b c …, each scrolling to its own occurrence. Returns 0 when
+ * the plugin is not installed or the id is unknown (caller treats as single).
+ */
+export function getFootnoteRefCount(state: EditorState, id: string): number {
+  return footnoteNumberingPluginKey.getState(state)?.refCounts.get(id) ?? 0;
 }
 
 /**

@@ -1,14 +1,14 @@
-import { mergeAttributes, Node } from "@tiptap/core";
-import { TextSelection, Transaction } from "@tiptap/pm/state";
-import { ReactNodeViewRenderer } from "@tiptap/react";
+import { mergeAttributes, Node } from '@tiptap/core';
+import { TextSelection, Transaction } from '@tiptap/pm/state';
+import { ReactNodeViewRenderer } from '@tiptap/react';
 import {
   FOOTNOTE_DEFINITION_NAME,
   FOOTNOTE_REFERENCE_NAME,
   FOOTNOTES_LIST_NAME,
   generateFootnoteId,
-} from "./footnote-util";
-import { footnoteNumberingPlugin } from "./footnote-numbering";
-import { footnoteSyncPlugin, footnotePastePlugin } from "./footnote-sync";
+} from './footnote-util';
+import { footnoteNumberingPlugin } from './footnote-numbering';
+import { footnoteSyncPlugin, footnotePastePlugin } from './footnote-sync';
 
 export interface FootnoteReferenceOptions {
   HTMLAttributes: Record<string, any>;
@@ -27,7 +27,7 @@ export interface FootnoteReferenceOptions {
   enableSync?: boolean;
 }
 
-declare module "@tiptap/core" {
+declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     footnote: {
       /**
@@ -42,8 +42,11 @@ declare module "@tiptap/core" {
       removeFootnote: (id: string) => ReturnType;
       /** Scroll to (and focus) a footnote definition by id. */
       scrollToFootnote: (id: string) => ReturnType;
-      /** Scroll to (and select) a footnote reference by id. */
-      scrollToReference: (id: string) => ReturnType;
+      /** Scroll to a footnote reference by id. `index` selects WHICH occurrence
+       *  to scroll to when the id is referenced more than once (reuse, #166):
+       *  0-based, defaults to the first. Used by the definition's multi-backlink
+       *  UI (#168). */
+      scrollToReference: (id: string, index?: number) => ReturnType;
     };
   }
 }
@@ -66,7 +69,7 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
   // Superscript mark's <sup> rule.
   priority: 101,
 
-  group: "inline",
+  group: 'inline',
   inline: true,
   atom: true,
   selectable: true,
@@ -99,10 +102,10 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
     return {
       id: {
         default: null,
-        parseHTML: (element) => element.getAttribute("data-id"),
+        parseHTML: (element) => element.getAttribute('data-id'),
         renderHTML: (attributes) => {
           if (!attributes.id) return {};
-          return { "data-id": attributes.id };
+          return { 'data-id': attributes.id };
         },
       },
     };
@@ -113,7 +116,7 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
       {
         // High priority so the Superscript mark (which also matches <sup>) does
         // not claim a footnote reference and drop it as empty content.
-        tag: "sup[data-footnote-ref]",
+        tag: 'sup[data-footnote-ref]',
         priority: 100,
       },
     ];
@@ -121,9 +124,9 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
 
   renderHTML({ HTMLAttributes }) {
     return [
-      "sup",
+      'sup',
       mergeAttributes(
-        { "data-footnote-ref": "", class: "footnote-ref" },
+        { 'data-footnote-ref': '', class: 'footnote-ref' },
         this.options.HTMLAttributes,
         HTMLAttributes,
       ),
@@ -132,7 +135,7 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
 
   // Plain-text representation (used by generateText / markdown text fallbacks).
   renderText({ node }) {
-    return `[^${node.attrs.id ?? ""}]`;
+    return `[^${node.attrs.id ?? ''}]`;
   },
 
   addNodeView() {
@@ -170,8 +173,10 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
 
           // Make sure the parent accepts an inline atom here.
           const insertPos = selection.from;
-          if (!$from.parent.type.spec.content?.includes("inline") &&
-              !$from.parent.isTextblock) {
+          if (
+            !$from.parent.type.spec.content?.includes('inline') &&
+            !$from.parent.isTextblock
+          ) {
             return false;
           }
 
@@ -311,19 +316,23 @@ export const FootnoteReference = Node.create<FootnoteReferenceOptions>({
             `[data-footnote-def][data-id="${id}"]`,
           ) as HTMLElement | null;
           if (!dom) return false;
-          dom.scrollIntoView({ behavior: "smooth", block: "center" });
+          dom.scrollIntoView({ behavior: 'smooth', block: 'center' });
           return true;
         },
 
       scrollToReference:
-        (id: string) =>
+        (id: string, index = 0) =>
         ({ editor }) => {
           if (!id) return false;
-          const dom = editor.view.dom.querySelector(
+          // querySelectorAll returns the occurrences in document order, so the
+          // index maps 1:1 to the definition's a/b/c backlink (#168). Fall back
+          // to the first match for an out-of-range index.
+          const matches = editor.view.dom.querySelectorAll(
             `sup[data-footnote-ref][data-id="${id}"]`,
-          ) as HTMLElement | null;
+          );
+          const dom = (matches[index] ?? matches[0]) as HTMLElement | undefined;
           if (!dom) return false;
-          dom.scrollIntoView({ behavior: "smooth", block: "center" });
+          dom.scrollIntoView({ behavior: 'smooth', block: 'center' });
           return true;
         },
     };

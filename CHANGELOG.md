@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenRouter, etc.; `openai` uses the official provider (real-OpenAI
   reasoning-model request shaping). Chosen explicitly rather than inferred from
   the base URL, since a custom URL can front real OpenAI too. (#175, #177)
+- **Per-MCP-server instructions in the agent prompt.** Each external MCP server
+  now has an admin-authored `instructions` field ("how/when to use this server's
+  tools") that is injected into the agent's system prompt next to that server's
+  tool descriptions. Trusted text, rendered inside the prompt safety sandwich;
+  shown only for a server that actually connected and contributed ≥1 callable
+  tool. (#180)
+- **Footnote multi-backlinks.** A footnote referenced more than once now shows a
+  back-link per reference (↩ a b c …), each scrolling to its own occurrence, like
+  Pandoc/Wikipedia; a single-reference footnote keeps the plain ↩. (#168)
 
 ### Changed
 
@@ -78,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are nudged after a paste to refresh stale hit-testing geometry. The caret
   symptom is macOS-specific and was confirmed manually on macOS; the automated
   guard pins the DOM-order invariant, not the caret behavior itself. (#146, #147)
+- **AI chat: the live token counter now ticks between agent steps.** During a
+  multi-step turn the header token badge (and the "Thinking… · N tokens" line)
+  no longer froze on the previous step's authoritative usage; the current step's
+  estimate is combined per-component with `max`, so the count rises smoothly and
+  never jumps backwards. (#163)
 
 ## [0.93.0] - 2026-06-21
 

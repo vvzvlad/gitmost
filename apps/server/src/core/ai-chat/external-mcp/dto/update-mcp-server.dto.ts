@@ -43,6 +43,13 @@ export class UpdateMcpServerDto {
   @IsString({ each: true })
   toolAllowlist?: string[];
 
+  // Admin-authored prompt guidance (#180). Absent => unchanged; blank => cleared
+  // (stored as null by the repo). Capped to bound prompt/token size.
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  instructions?: string;
+
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;

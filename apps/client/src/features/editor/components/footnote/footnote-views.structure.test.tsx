@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, fireEvent } from "@testing-library/react";
 
 /**
  * Structural regression guard for #146 (PR #147).
@@ -36,10 +36,14 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-// footnote-definition-view reads a cached number from the numbering plugin;
-// stub it so we don't need a live ProseMirror state.
+// footnote-definition-view reads a cached number + reference count from the
+// numbering plugin; stub them so we don't need a live ProseMirror state. The
+// ref-count is a hoisted mutable so a test can drive the single-vs-multi
+// backlink branch (#168). Default 1 = single reference (the #146 cases).
+const { mockRefCount } = vi.hoisted(() => ({ mockRefCount: { value: 1 } }));
 vi.mock("@docmost/editor-ext", () => ({
   getFootnoteNumber: () => 1,
+  getFootnoteRefCount: () => mockRefCount.value,
 }));
 
 // Mocks so CodeBlockView renders cheaply (no MantineProvider, no matchMedia).
@@ -59,7 +63,8 @@ vi.mock("@mantine/core", () => ({
   ),
 }));
 vi.mock("@/components/common/copy-button", () => ({
-  CopyButton: ({ children }: any) => children({ copied: false, copy: () => {} }),
+  CopyButton: ({ children }: any) =>
+    children({ copied: false, copy: () => {} }),
 }));
 vi.mock("@tabler/icons-react", () => ({
   IconCheck: () => null,
@@ -70,7 +75,9 @@ vi.mock("@/features/editor/components/code-block/mermaid-view.tsx", () => ({
 }));
 
 import FootnotesListView from "./footnotes-list-view";
-import FootnoteDefinitionView from "./footnote-definition-view";
+import FootnoteDefinitionView, {
+  backlinkLabel,
+} from "./footnote-definition-view";
 import CodeBlockView from "../code-block/code-block-view";
 
 // Minimal NodeViewProps stub: definition view only touches node.attrs.id and
@@ -140,4 +147,85 @@ describe("#146 editable NodeView contentDOM-first invariant", () => {
       }
     },
   );
+});
+
+// #168: a footnote referenced more than once shows one lettered backlink per
+// occurrence (↩ a b c), each scrolling to its own reference; a single-reference
+// footnote keeps the plain ↩.
+describe("#168 footnote definition multi-backlinks", () => {
+  afterEach(() => {
+    // Reset the shared ref-count mock so other tests see a single reference.
+    mockRefCount.value = 1;
+  });
+
+  const makeProps = () =>
+    ({
+      node: { attrs: { id: "fn-1" }, textContent: "" },
+      editor: {
+        state: {},
+        isEditable: true,
+        commands: { scrollToReference: vi.fn() },
+      },
+      getPos: () => 0,
+      updateAttributes: () => {},
+      deleteNode: () => {},
+    }) as any;
+
+  it("renders one lettered backlink per reference (a, b, c) plus the ↩ arrow", () => {
+    mockRefCount.value = 3;
+    const { getByTestId } = render(<FootnoteDefinitionView {...makeProps()} />);
+    const wrapper = getByTestId("nvw");
+
+    const links = wrapper.querySelectorAll('[role="button"]');
+    expect(Array.from(links).map((l) => l.textContent)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    // The ↩ arrow is present (as decorative chrome, not a button).
+    expect(wrapper.textContent).toContain("↩");
+  });
+
+  it("clicking the n-th backlink scrolls to the n-th occurrence (0-based)", () => {
+    mockRefCount.value = 3;
+    const props = makeProps();
+    const { getByTestId } = render(<FootnoteDefinitionView {...props} />);
+    const links = getByTestId("nvw").querySelectorAll('[role="button"]');
+
+    fireEvent.click(links[1]); // "b"
+    expect(props.editor.commands.scrollToReference).toHaveBeenCalledWith(
+      "fn-1",
+      1,
+    );
+  });
+
+  it("a single-reference footnote renders just one ↩ (no letters)", () => {
+    mockRefCount.value = 1;
+    const props = makeProps();
+    const { getByTestId } = render(<FootnoteDefinitionView {...props} />);
+    const wrapper = getByTestId("nvw");
+
+    const links = wrapper.querySelectorAll('[role="button"]');
+    expect(links.length).toBe(1);
+    expect(links[0].textContent).toBe("↩");
+
+    fireEvent.click(links[0]);
+    expect(props.editor.commands.scrollToReference).toHaveBeenCalledWith(
+      "fn-1",
+      0,
+    );
+  });
+});
+
+// #185 re-review pt 7: backlinkLabel is base-26 (a..z, then aa…). The component
+// tests only cover a,b,c (index 0-2); pin the >= 26 carry boundary.
+describe("backlinkLabel base-26 boundary (#168)", () => {
+  it("maps 0->a, 25->z, 26->aa, 27->ab, 51->az, 52->ba", () => {
+    expect(backlinkLabel(0)).toBe("a");
+    expect(backlinkLabel(25)).toBe("z");
+    expect(backlinkLabel(26)).toBe("aa");
+    expect(backlinkLabel(27)).toBe("ab");
+    expect(backlinkLabel(51)).toBe("az");
+    expect(backlinkLabel(52)).toBe("ba");
+  });
 });

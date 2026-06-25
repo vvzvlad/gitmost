@@ -161,7 +161,11 @@
     margin-top: 4px;
     font-size: var(--mantine-font-size-xs);
     color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
-    white-space: pre-wrap;
+    /* NOTE: `white-space: pre-wrap` is intentionally NOT set here. On the
+       rendered markdown <div> it would turn the newlines between block tags
+       (</li>\n<li>, </p>\n<ol>) into visible blank lines/indents on top of the
+       margins. The plain-text fallback <Text> that needs pre-wrap sets it
+       inline itself (see reasoning-block.tsx). */
 }
 
 .reasoningText p {

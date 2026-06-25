@@ -20,8 +20,15 @@ export interface AiMcpServers {
   // Encrypted JSON of the auth headers. Nullable (a server may need no auth).
   headersEnc: string | null;
   // Optional allowlist of remote tool names to expose; null = expose all.
-  // Stored as jsonb; reads come back as a string[] from the postgres driver.
+  // Stored as jsonb. The postgres driver may return a JSON string for legacy
+  // double-encoded rows; `AiMcpServerRepo` normalizes every read to
+  // `string[] | null` via `parseToolAllowlist`.
   toolAllowlist: string[] | null;
+  // Admin-authored guidance ("how/when to use this server's tools") injected
+  // into the agent system prompt (#180). Unlike `headersEnc` this is NON-secret
+  // and IS returned in admin views/forms. Plain text column (no jsonb). Null =
+  // no guidance. Trusted text — it goes inside the prompt safety sandwich.
+  instructions: string | null;
   enabled: Generated<boolean>;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;

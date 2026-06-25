@@ -162,3 +162,70 @@ test("assertYjsEncodable rejects an un-hydratable doc at preview time (fromJSON 
     /Failed to encode document to Yjs/,
   );
 });
+
+// Issue #164: `replaceImage` went through `mutateLiveContentUnlocked`, which
+// (unlike the main write path fixed in #152) still deleted the whole fragment
+// and re-applied a fresh Y.Doc — discarding every node id, so an open editor's
+// cursor jumped to the document end on an image swap. That method now uses the
+// same `applyDocToFragment`, so a sibling paragraph's cursor anchor survives an
+// image `src`/`attachmentId` replacement. These exercise that routine on the
+// image shapes `replaceImage` produces (top-level and nested in a callout).
+
+const image = (attachmentId, src) => ({
+  type: "image",
+  attrs: { attachmentId, src, width: "640", align: "center" },
+});
+
+test("replacing a top-level image keeps a sibling paragraph's cursor anchor (#164)", () => {
+  const ydoc = new Y.Doc();
+  applyDocToFragment(
+    ydoc,
+    doc(para("Caption above"), image("att-old", "/files/old.png")),
+  );
+
+  // The user's cursor sits in the (unchanged) caption paragraph.
+  const relPos = Y.createRelativePositionFromTypeIndex(paragraphText(ydoc, 0), 7);
+
+  // Agent repoints the image to a freshly uploaded attachment (new id + src).
+  applyDocToFragment(
+    ydoc,
+    doc(para("Caption above"), image("att-new", "/files/new.png")),
+  );
+
+  const abs = Y.createAbsolutePositionFromRelativePosition(relPos, ydoc);
+  assert.notEqual(abs, null, "the caption cursor anchor must still resolve");
+  assert.equal(abs.index, 7, "the cursor must stay at the same offset");
+  // The swap actually landed: the image now carries the new attachment id/src.
+  const img = ydoc.getXmlFragment("default").get(1);
+  assert.equal(img.nodeName, "image");
+  assert.equal(img.getAttribute("attachmentId"), "att-new");
+  assert.equal(img.getAttribute("src"), "/files/new.png");
+});
+
+test("replacing an image nested in a callout keeps an outer paragraph's anchor (#164)", () => {
+  const callout = (attachmentId, src) => ({
+    type: "callout",
+    attrs: { type: "info" },
+    content: [image(attachmentId, src)],
+  });
+  const ydoc = new Y.Doc();
+  applyDocToFragment(
+    ydoc,
+    doc(para("Intro paragraph"), callout("att-old", "/files/old.png")),
+  );
+
+  const relPos = Y.createRelativePositionFromTypeIndex(paragraphText(ydoc, 0), 5);
+
+  applyDocToFragment(
+    ydoc,
+    doc(para("Intro paragraph"), callout("att-new", "/files/new.png")),
+  );
+
+  const abs = Y.createAbsolutePositionFromRelativePosition(relPos, ydoc);
+  assert.notEqual(abs, null, "the outer paragraph anchor must still resolve");
+  assert.equal(abs.index, 5, "the cursor must stay at the same offset");
+  // The nested image was repointed.
+  const calloutEl = ydoc.getXmlFragment("default").get(1);
+  const img = calloutEl.get(0);
+  assert.equal(img.getAttribute("attachmentId"), "att-new");
+});

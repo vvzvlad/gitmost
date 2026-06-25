@@ -216,6 +216,41 @@ export class AiChatService implements OnModuleInit {
     return this.ai.getChatModel(workspaceId, roleModelOverride(role));
   }
 
+  /**
+   * Validate the client-supplied open page and return its AUTHORITATIVE identity
+   * ({ id, title }) or null. The client controls BOTH the id and the title in the
+   * request body, so neither is trusted: the id must resolve to a real page in
+   * THIS workspace that the user may read, and the title is taken from the DB row
+   * (never the client) so the model can't be told it is "on Page A" while the id
+   * points at page B (#159). Fail-closed — any missing / foreign / inaccessible
+   * page, or any non-Forbidden access-check fault, returns null.
+   */
+  private async resolveOpenPageContext(
+    openPage: { id?: string; title?: string } | null | undefined,
+    workspace: Workspace,
+    user: User,
+  ): Promise<{ id: string; title: string } | null> {
+    const candidatePageId = openPage?.id;
+    if (!candidatePageId) return null;
+    const page = await this.pageRepo.findById(candidatePageId);
+    if (!page || page.workspaceId !== workspace.id) return null;
+    try {
+      await this.pageAccess.validateCanView(page, user);
+    } catch (e) {
+      // A ForbiddenException is the expected "user cannot read this page" case;
+      // log anything else (e.g. a DB error) so a real fault is not masked.
+      if (!(e instanceof ForbiddenException)) {
+        this.logger.warn(
+          `open page access check failed: ${
+            e instanceof Error ? e.message : 'unknown error'
+          }`,
+        );
+      }
+      return null;
+    }
+    return { id: page.id, title: page.title ?? '' };
+  }
+
   async stream({
     user,
     workspace,
@@ -236,37 +271,26 @@ export class AiChatService implements OnModuleInit {
         chatId = undefined;
       }
     }
+    // The open page the client sent is attacker-controllable — BOTH its id and
+    // its title. Resolve it ONCE against the DB (workspace-scoped + access-
+    // checked) and use the AUTHORITATIVE identity everywhere below: the system
+    // prompt context, the getCurrentPage tool, and the new-chat history origin.
+    // Previously the client title was echoed verbatim, so a navigation / two-tab
+    // desync (openPage.id -> page B, title -> "Page A") made the model report
+    // "updated Page A" while it edited page B (#159). Null when no page is open
+    // or the page is foreign / inaccessible / missing.
+    const openPageContext = await this.resolveOpenPageContext(
+      body.openPage,
+      workspace,
+      user,
+    );
+
     if (!chatId) {
-      // Resolve the origin document for the history list. body.openPage.id is
-      // attacker-controllable, so validate it before persisting: it must be a
-      // real page in THIS workspace that the user is allowed to read. Anything
-      // else (foreign workspace, inaccessible/restricted, or non-existent) is
-      // dropped to null — persisting it would leak the page's title via the
-      // chat-list join, or violate the page_id FK on insert (this runs after
-      // res.hijack(), so a DB error would break the stream).
-      let originPageId: string | null = null;
-      const candidatePageId = body.openPage?.id;
-      if (candidatePageId) {
-        const page = await this.pageRepo.findById(candidatePageId);
-        if (page && page.workspaceId === workspace.id) {
-          try {
-            await this.pageAccess.validateCanView(page, user);
-            originPageId = page.id;
-          } catch (e) {
-            // Fail-closed: no provenance on any failure. A ForbiddenException is
-            // the expected "user cannot read this page" case; log anything else
-            // (e.g. a DB error) so a real fault is not masked as "no access".
-            if (!(e instanceof ForbiddenException)) {
-              this.logger.warn(
-                `origin page access check failed: ${
-                  e instanceof Error ? e.message : 'unknown error'
-                }`,
-              );
-            }
-            originPageId = null;
-          }
-        }
-      }
+      // The history-list origin is the validated open page (see above):
+      // persisting an unvalidated id would leak a title via the chat-list join,
+      // or violate the page_id FK on insert (this runs after res.hijack(), so a
+      // DB error would break the stream).
+      const originPageId: string | null = openPageContext?.id ?? null;
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
@@ -312,38 +336,20 @@ export class AiChatService implements OnModuleInit {
     // The model is resolved by the controller before hijack (clean 503 path).
     // Here we only need the admin-configured system prompt.
     const resolved = await this.aiSettings.resolve(workspace.id);
-    const system = buildSystemPrompt({
-      workspace,
-      adminPrompt: resolved?.systemPrompt,
-      // The role (pre-resolved by the controller) REPLACES the persona layer;
-      // the safety framework is still appended by buildSystemPrompt.
-      roleInstructions: role?.instructions,
-      openedPage: body.openPage,
-    });
 
-    // Pass the resolved chatId so the write tools can mint provenance tokens
-    // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
-    // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
-    const docmostTools = await this.tools.forUser(
-      user,
-      sessionId,
-      workspace.id,
-      chatId,
-      // Same open-page value used by the system prompt above; exposed to the
-      // model via getCurrentPage so page identity survives prompt mangling.
-      body.openPage,
-    );
-
-    // Merge in admin-configured external MCP tools (web search, etc.; §6.8).
-    // A down/slow external server never crashes the turn — toolsFor skips it and
-    // records the outcome. The returned client handles MUST be closed in the
-    // streamText lifecycle (onFinish/onError/onAbort) — leaking them is a bug.
-    // Docmost tools take precedence on a name clash (external are namespaced, so
-    // a clash is not expected; the spread order makes intent explicit).
+    // Build the external MCP toolset FIRST so the system prompt can carry each
+    // connected server's admin-authored guidance (#180). Merge in admin-
+    // configured external MCP tools (web search, etc.; §6.8). A down/slow
+    // external server never crashes the turn — toolsFor skips it and records the
+    // outcome. The returned client handles MUST be closed in the streamText
+    // lifecycle (onFinish/onError/onAbort) — leaking them is a bug. Docmost
+    // tools take precedence on a name clash (external are namespaced, so a clash
+    // is not expected; the spread order makes intent explicit).
     let external: Awaited<ReturnType<McpClientsService['toolsFor']>> = {
       tools: {},
       clients: [],
       outcomes: [],
+      instructions: [],
     };
     try {
       external = await this.mcpClients.toolsFor(workspace.id);
@@ -356,12 +362,15 @@ export class AiChatService implements OnModuleInit {
         }`,
       );
     }
-    const tools = { ...external.tools, ...docmostTools };
 
     // Close every external client EXACTLY ONCE across the turn's terminal
     // callbacks (onFinish/onError/onAbort all fire at most once collectively,
-    // but guard anyway). Close errors are swallowed so they never break the
-    // response.
+    // but guard anyway). DEFINED HERE — before the prompt/toolset are built — so
+    // that if buildSystemPrompt or forUser throws AFTER the external lease was
+    // taken (toolsFor above), the lease is still released. Otherwise its refCount
+    // stays >= 1 forever and the external undici sockets leak until restart
+    // (#180 reorder moved toolsFor ahead of these; #185 review). Close errors are
+    // swallowed so they never break the response.
     let clientsClosed = false;
     const closeExternalClients = async (): Promise<void> => {
       if (clientsClosed) return;
@@ -378,6 +387,44 @@ export class AiChatService implements OnModuleInit {
         ),
       );
     };
+
+    // Build the system prompt + Docmost toolset. If either throws after the
+    // external MCP lease was taken above, release the lease before rethrowing so
+    // the leased transports are not leaked (#185 review).
+    let system: string;
+    let docmostTools: Awaited<ReturnType<AiChatToolsService['forUser']>>;
+    try {
+      system = buildSystemPrompt({
+        workspace,
+        adminPrompt: resolved?.systemPrompt,
+        // The role (pre-resolved by the controller) REPLACES the persona layer;
+        // the safety framework is still appended by buildSystemPrompt.
+        roleInstructions: role?.instructions,
+        // Server-validated open page (authoritative title), not the client value.
+        openedPage: openPageContext,
+        // Guidance only for servers that connected and yielded ≥1 callable tool.
+        mcpInstructions: external.instructions,
+      });
+
+      // Pass the resolved chatId so the write tools can mint provenance tokens
+      // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
+      // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
+      docmostTools = await this.tools.forUser(
+        user,
+        sessionId,
+        workspace.id,
+        chatId,
+        // Same server-validated open page used by the system prompt above;
+        // exposed to the model via getCurrentPage so page identity (and the
+        // AUTHORITATIVE title) survives prompt mangling / client title spoofing.
+        openPageContext,
+      );
+    } catch (err) {
+      await closeExternalClients();
+      throw err;
+    }
+
+    const tools = { ...external.tools, ...docmostTools };
 
     // Accumulate the turn's streamed output so a provider error / disconnect can
     // persist the PARTIAL answer the user already saw — the SDK's onError/onAbort

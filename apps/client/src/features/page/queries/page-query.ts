@@ -274,7 +274,10 @@ export function useRestorePageMutation() {
       queryClient.setQueryData<IPage>(["pages", restoredPage.slugId], merge);
     },
     onError: (error) => {
-      notifications.show({ message: t("Failed to restore page"), color: "red" });
+      notifications.show({
+        message: t("Failed to restore page"),
+        color: "red",
+      });
     },
   });
 }
@@ -285,10 +288,10 @@ export function useGetSidebarPagesQuery(
   return useInfiniteQuery({
     queryKey: ["sidebar-pages", data],
     enabled: !!data?.pageId || !!data?.spaceId,
-    queryFn: ({ pageParam }) => getSidebarPages({ ...data, cursor: pageParam, limit: 100 }),
+    queryFn: ({ pageParam }) =>
+      getSidebarPages({ ...data, cursor: pageParam, limit: 100 }),
     initialPageParam: undefined,
-    getNextPageParam: (lastPage) =>
-      lastPage.meta?.nextCursor ?? undefined,
+    getNextPageParam: (lastPage) => lastPage.meta?.nextCursor ?? undefined,
   });
 }
 
@@ -296,11 +299,14 @@ export function useGetRootSidebarPagesQuery(data: SidebarPagesParams) {
   return useInfiniteQuery({
     queryKey: ["root-sidebar-pages", data.spaceId],
     queryFn: async ({ pageParam }) => {
-      return getSidebarPages({ spaceId: data.spaceId, cursor: pageParam, limit: 100 });
+      return getSidebarPages({
+        spaceId: data.spaceId,
+        cursor: pageParam,
+        limit: 100,
+      });
     },
     initialPageParam: undefined,
-    getNextPageParam: (lastPage) =>
-      lastPage.meta?.nextCursor ?? undefined,
+    getNextPageParam: (lastPage) => lastPage.meta?.nextCursor ?? undefined,
   });
 }
 
@@ -323,12 +329,17 @@ export function usePageBreadcrumbsQuery(
   });
 }
 
-export async function fetchAllAncestorChildren(params: SidebarPagesParams) {
+export async function fetchAllAncestorChildren(
+  params: SidebarPagesParams,
+  // `fresh: true` forces a server refetch (staleTime 0) — used by the reconnect
+  // refresh (#159 #8), which must NOT receive the 30-min-cached children.
+  opts?: { fresh?: boolean },
+) {
   // not using a hook here, so we can call it inside a useEffect hook
   const response = await queryClient.fetchQuery({
     queryKey: ["sidebar-pages", params],
     queryFn: () => getAllSidebarPages(params),
-    staleTime: 30 * 60 * 1000,
+    staleTime: opts?.fresh ? 0 : 30 * 60 * 1000,
   });
 
   const allItems = response.pages.flatMap((page) => page.items);
@@ -347,11 +358,15 @@ export function useRecentChangesQuery(spaceId?: string) {
   });
 }
 
-export function useCreatedByQuery(params?: { userId?: string; spaceId?: string }) {
+export function useCreatedByQuery(params?: {
+  userId?: string;
+  spaceId?: string;
+}) {
   const { userId, spaceId } = params ?? {};
   return useInfiniteQuery({
     queryKey: ["pages-created-by-user", { userId, spaceId }],
-    queryFn: ({ pageParam }) => getCreatedByPages({ userId, spaceId, cursor: pageParam, limit: 15 }),
+    queryFn: ({ pageParam }) =>
+      getCreatedByPages({ userId, spaceId, cursor: pageParam, limit: 15 }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.meta.hasNextPage ? lastPage.meta.nextCursor : undefined,

@@ -6,6 +6,8 @@ import {
   collectBranchIds,
   openBranches,
   closeIds,
+  mergeRootTrees,
+  loadedOpenBranchIds,
 } from "./utils";
 import type { IPage } from "@/features/page/types/page.types.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -44,10 +46,7 @@ function flatNode(
 }
 
 // Nested SpaceTreeNode factory for collectAllIds / collectBranchIds.
-function treeNode(
-  id: string,
-  children: SpaceTreeNode[] = [],
-): SpaceTreeNode {
+function treeNode(id: string, children: SpaceTreeNode[] = []): SpaceTreeNode {
   return {
     id,
     slugId: `slug-${id}`,
@@ -94,11 +93,7 @@ describe("collectBranchIds", () => {
       ]),
       treeNode("root2", [treeNode("leaf3")]),
     ];
-    expect(collectBranchIds(tree).sort()).toEqual([
-      "branch1",
-      "root",
-      "root2",
-    ]);
+    expect(collectBranchIds(tree).sort()).toEqual(["branch1", "root", "root2"]);
   });
 
   it("returns [] for a leaf-only tree", () => {
@@ -271,5 +266,97 @@ describe("closeIds", () => {
     const twice = closeIds(once, ["a", "b"]);
     expect(twice).toEqual(once);
     expect(twice).toEqual({ keep: true, a: false, b: false });
+  });
+});
+
+describe("mergeRootTrees (#159 #2 reconnect reconcile)", () => {
+  // Root node with a position and optional already-loaded children.
+  function root(
+    id: string,
+    position: string,
+    children?: SpaceTreeNode[],
+  ): SpaceTreeNode {
+    return {
+      id,
+      slugId: `slug-${id}`,
+      name: id.toUpperCase(),
+      icon: undefined,
+      position,
+      spaceId: "space-1",
+      parentPageId: null as unknown as string,
+      hasChildren: !!children?.length,
+      children: children as SpaceTreeNode[],
+    };
+  }
+
+  it("DROPS a stale root that is absent from the incoming (authoritative) set", () => {
+    // 'ghost' was a root before the gap; the server's current roots no longer
+    // include it (deleted / moved under another page). It must not linger.
+    const prev = [root("a", "a0"), root("ghost", "a2"), root("b", "a4")];
+    const incoming = [root("a", "a0"), root("b", "a4")];
+    const merged = mergeRootTrees(prev, incoming);
+    expect(merged.map((n) => n.id)).toEqual(["a", "b"]);
+    expect(merged.find((n) => n.id === "ghost")).toBeUndefined();
+  });
+
+  it("PRESERVES a surviving root's lazy-loaded children (subtree not lost on refetch)", () => {
+    const loadedChild = root("a1", "a0");
+    const prev = [root("a", "a0", [loadedChild])];
+    // The root query returns only top-level roots (no children).
+    const incoming = [root("a", "a0")];
+    const merged = mergeRootTrees(prev, incoming);
+    expect(merged[0].children?.map((c) => c.id)).toEqual(["a1"]);
+  });
+
+  it("ADDS a new incoming root", () => {
+    const prev = [root("a", "a0")];
+    const incoming = [root("a", "a0"), root("new", "a2")];
+    const merged = mergeRootTrees(prev, incoming);
+    expect(merged.map((n) => n.id)).toEqual(["a", "new"]);
+  });
+
+  it("REFRESHES a surviving root's own fields from the incoming copy (e.g. rename)", () => {
+    const prev = [{ ...root("a", "a0"), name: "OLD" }];
+    const incoming = [{ ...root("a", "a0"), name: "NEW" }];
+    const merged = mergeRootTrees(prev, incoming);
+    expect(merged[0].name).toBe("NEW");
+  });
+});
+
+describe("loadedOpenBranchIds (#159 #8 reconnect refresh targets)", () => {
+  function n(id: string, children?: SpaceTreeNode[]): SpaceTreeNode {
+    return {
+      id,
+      slugId: `slug-${id}`,
+      name: id.toUpperCase(),
+      icon: undefined,
+      position: "a0",
+      spaceId: "space-1",
+      parentPageId: null as unknown as string,
+      hasChildren: !!children,
+      children: children as SpaceTreeNode[],
+    };
+  }
+
+  it("returns OPEN branches whose children are loaded (array)", () => {
+    const tree = [n("a", [n("a1")]), n("b", [n("b1")])];
+    const ids = loadedOpenBranchIds(tree, new Set(["a"]));
+    expect(ids).toEqual(["a"]); // b is closed; a is open+loaded
+  });
+
+  it("skips an open branch whose children are NOT loaded (undefined)", () => {
+    const tree = [n("a")]; // children undefined
+    expect(loadedOpenBranchIds(tree, new Set(["a"]))).toEqual([]);
+  });
+
+  it("includes a loaded-but-empty open branch (a child may have been added during the gap)", () => {
+    const tree = [n("a", [])];
+    expect(loadedOpenBranchIds(tree, new Set(["a"]))).toEqual(["a"]);
+  });
+
+  it("walks nested open+loaded branches (deep chain refreshes every level)", () => {
+    const tree = [n("a", [n("a1", [n("a1a")])])];
+    const ids = loadedOpenBranchIds(tree, new Set(["a", "a1"]));
+    expect(ids.sort()).toEqual(["a", "a1"]);
   });
 });
