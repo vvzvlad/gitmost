@@ -20,7 +20,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
 import { SkipTransform } from '../../common/decorators/skip-transform.decorator';
-import { User, Workspace } from '@docmost/db/types/entity.types';
+import { AiChat, User, Workspace } from '@docmost/db/types/entity.types';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
@@ -31,10 +31,12 @@ import { AiChatService, AiChatStreamBody } from './ai-chat.service';
 import { AiTranscriptionService } from './ai-transcription.service';
 import {
   ChatIdDto,
+  ExportChatDto,
   GetChatMessagesDto,
   RenameChatDto,
 } from './dto/ai-chat.dto';
 import { describeProviderError } from '../../integrations/ai/ai-error.util';
+import { buildChatMarkdown } from './chat-markdown.util';
 
 /**
  * Per-user AI chat API (§6.1). Routes are POST to match this codebase's
@@ -81,6 +83,35 @@ export class AiChatController {
     );
   }
 
+  /**
+   * Export a chat to Markdown (#183). The DB is the single source of truth: the
+   * whole transcript is loaded (oldest -> newest) and rendered server-side. Now
+   * that the assistant row is persisted upfront and per step, an interrupted
+   * turn is included up to its last finished step. Workspace-scoped and owner-
+   * gated via assertOwnedChat (same as the other read endpoints). Returns
+   * `{ markdown }`. `lang` localizes the few fixed labels (default English).
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post('export')
+  async export(
+    @Body() dto: ExportChatDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<{ markdown: string }> {
+    const chat = await this.assertOwnedChat(dto.chatId, user, workspace);
+    const rows = await this.aiChatMessageRepo.findAllByChat(
+      dto.chatId,
+      workspace.id,
+    );
+    const markdown = buildChatMarkdown({
+      title: chat.title ?? null,
+      chatId: dto.chatId,
+      rows,
+      lang: dto.lang ?? 'en',
+    });
+    return { markdown };
+  }
+
   /** Rename a chat. */
   @HttpCode(HttpStatus.OK)
   @Post('rename')
@@ -90,7 +121,11 @@ export class AiChatController {
     @AuthWorkspace() workspace: Workspace,
   ) {
     await this.assertOwnedChat(dto.chatId, user, workspace);
-    await this.aiChatRepo.update(dto.chatId, { title: dto.title }, workspace.id);
+    await this.aiChatRepo.update(
+      dto.chatId,
+      { title: dto.title },
+      workspace.id,
+    );
     return { success: true };
   }
 
@@ -145,7 +180,10 @@ export class AiChatController {
     // Resolve the agent role for this turn BEFORE hijack: existing chats read it
     // from ai_chats.role_id (authoritative), a new chat from body.roleId. The
     // role drives both the persona and the optional model override below.
-    const role = await this.aiChatService.resolveRoleForRequest(workspace, body);
+    const role = await this.aiChatService.resolveRoleForRequest(
+      workspace,
+      body,
+    );
 
     // Resolve the model (applying the role's optional override) BEFORE hijack so
     // an unconfigured provider — including a role pointing at an unconfigured
@@ -232,7 +270,9 @@ export class AiChatController {
     let file = null;
     try {
       // Whisper hard-caps uploads at 25MB; allow a single file.
-      file = await req.file({ limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+      file = await req.file({
+        limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+      });
     } catch (err: any) {
       if (err?.statusCode === 413) {
         throw new BadRequestException('Audio file too large (max 25MB)');
@@ -283,11 +323,12 @@ export class AiChatController {
     chatId: string,
     user: User,
     workspace: Workspace,
-  ): Promise<void> {
+  ): Promise<AiChat> {
     const chat = await this.aiChatRepo.findById(chatId, workspace.id);
     if (!chat || chat.creatorId !== user.id) {
       throw new ForbiddenException();
     }
+    return chat;
   }
 }
 

@@ -104,7 +104,8 @@ export async function createWorkspace(
       name: overrides.name ?? `ws-${suffix}`,
       // hostname is uniquely constrained; keep it unique per workspace.
       hostname: `host-${suffix}`,
-      settings: overrides.settings === undefined ? null : (overrides.settings as any),
+      settings:
+        overrides.settings === undefined ? null : (overrides.settings as any),
     })
     .returning(['id', 'settings'])
     .executeTakeFirstOrThrow();
@@ -221,6 +222,36 @@ export async function createChat(
       creatorId: args.creatorId,
       roleId: args.roleId ?? null,
       title: args.title ?? `chat-${shortId(id)}`,
+    })
+    .returning(['id'])
+    .executeTakeFirstOrThrow();
+  return { id: row.id as string };
+}
+
+export async function createMessage(
+  db: Kysely<any>,
+  args: {
+    workspaceId: string;
+    chatId: string;
+    userId?: string | null;
+    role?: string;
+    content?: string | null;
+    status?: string | null;
+    metadata?: unknown;
+  },
+): Promise<{ id: string }> {
+  const id = randomUUID();
+  const row = await db
+    .insertInto('aiChatMessages')
+    .values({
+      id,
+      workspaceId: args.workspaceId,
+      chatId: args.chatId,
+      userId: args.userId ?? null,
+      role: args.role ?? 'assistant',
+      content: args.content ?? null,
+      status: args.status ?? null,
+      metadata: (args.metadata ?? null) as any,
     })
     .returning(['id'])
     .executeTakeFirstOrThrow();
