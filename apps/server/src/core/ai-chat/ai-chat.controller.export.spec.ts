@@ -1,5 +1,10 @@
 import { ForbiddenException } from '@nestjs/common';
 import { AiChatController } from './ai-chat.controller';
+import {
+  planFinalizeAssistant,
+  flushAssistant,
+  type AssistantFlush,
+} from './ai-chat.service';
 import type { User, Workspace } from '@docmost/db/types/entity.types';
 
 /**
@@ -88,5 +93,76 @@ describe('AiChatController.export', () => {
     );
     expect(res.markdown).toContain('## 1. Вы');
     expect(res.markdown).toContain('## 2. ИИ-агент');
+  });
+});
+
+/**
+ * The terminal-finalize dispatch (#183): the assistant row is INSERTed upfront
+ * as 'streaming' and finalized once on the terminal callback. When the upfront
+ * insert SUCCEEDED (we hold an id) finalize UPDATEs that row; when it FAILED
+ * (assistantId is undefined) finalize falls back to INSERTing the terminal row
+ * so the turn is not lost — the only safety against losing the turn entirely.
+ *
+ * `planFinalizeAssistant` is the pure decision; this also drives a tiny harness
+ * that mirrors the service's `finalizeAssistant` repo dispatch over a mock repo,
+ * proving both branches issue the right call with the terminal payload.
+ */
+describe('finalizeAssistant dispatch (planFinalizeAssistant)', () => {
+  const workspaceId = 'ws1';
+
+  // Mirror of the service's finalize repo-dispatch over the plan: UPDATE when an
+  // upfront row exists, else INSERT the terminal row.
+  async function dispatchFinalize(
+    repo: { insert: jest.Mock; update: jest.Mock },
+    assistantId: string | undefined,
+    flushed: AssistantFlush,
+  ): Promise<void> {
+    const plan = planFinalizeAssistant(assistantId);
+    if (plan.kind === 'insert') {
+      await repo.insert({
+        chatId: 'c1',
+        workspaceId,
+        userId: 'u1',
+        role: 'assistant',
+        content: flushed.content,
+        toolCalls: flushed.toolCalls ?? null,
+        metadata: flushed.metadata,
+        status: flushed.status,
+      });
+    } else {
+      await repo.update(plan.id, workspaceId, flushed);
+    }
+  }
+
+  it('plan: update when the upfront insert returned an id', () => {
+    expect(planFinalizeAssistant('a1')).toEqual({ kind: 'update', id: 'a1' });
+  });
+
+  it('plan: insert (fallback) when there is no upfront id', () => {
+    expect(planFinalizeAssistant(undefined)).toEqual({ kind: 'insert' });
+  });
+
+  it('(a) upfront insert succeeded -> finalize UPDATEs the row by id', async () => {
+    const repo = { insert: jest.fn(), update: jest.fn() };
+    const flushed = flushAssistant([], 'final answer', 'completed', {
+      finishReason: 'stop',
+    });
+    await dispatchFinalize(repo, 'a1', flushed);
+    expect(repo.update).toHaveBeenCalledWith('a1', workspaceId, flushed);
+    expect(repo.insert).not.toHaveBeenCalled();
+  });
+
+  it('(b) upfront insert failed -> finalize INSERTs the terminal payload', async () => {
+    const repo = { insert: jest.fn(), update: jest.fn() };
+    const flushed = flushAssistant([], 'partial', 'error', { error: 'boom' });
+    await dispatchFinalize(repo, undefined, flushed);
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(repo.insert).toHaveBeenCalledTimes(1);
+    const arg = repo.insert.mock.calls[0][0];
+    // The fallback insert carries the terminal content/status/metadata.
+    expect(arg.role).toBe('assistant');
+    expect(arg.content).toBe('partial');
+    expect(arg.status).toBe('error');
+    expect((arg.metadata as { error?: string }).error).toBe('boom');
   });
 });

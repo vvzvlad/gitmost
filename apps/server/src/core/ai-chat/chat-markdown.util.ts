@@ -48,9 +48,12 @@ interface UsageLike {
   reasoningTokens?: number;
 }
 
-/** Localized label table. Keep the keys identical to the client's i18n keys so
- *  the two exports read the same. Only role + tool-action labels are localized;
- *  everything structural is an English constant in the renderer. */
+/** Localized label table. The client-side Markdown builder was removed by #183
+ *  (the export is now server-side only), so this no longer mirrors a second
+ *  exporter — instead the tool-action labels are kept in parity with the
+ *  on-screen action-log labels in the client's `tool-parts.tsx` (`toolLabelKey`)
+ *  so the export reads the same as the UI. Only role + tool-action labels are
+ *  localized; everything structural is an English constant in the renderer. */
 const LABELS: Record<
   ExportLang,
   {
@@ -232,7 +235,7 @@ export function buildChatMarkdown(args: {
   };
   const errorOf = (row: AiChatMessage): string | undefined => {
     const meta = (row.metadata ?? {}) as { error?: string };
-    return meta.error ?? undefined;
+    return meta.error;
   };
 
   // Metadata bullet list. Total tokens is only shown when there is a sum.

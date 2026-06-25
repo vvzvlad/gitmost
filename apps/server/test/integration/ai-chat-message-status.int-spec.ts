@@ -68,7 +68,8 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
     expect(updated!.content).toBe('final answer');
     expect(updated!.status).toBe('completed');
     expect((updated!.metadata as any).parts).toHaveLength(1);
-    expect(new Date(updated!.updatedAt).getTime()).toBeGreaterThanOrEqual(
+    // The 5ms sleep above guarantees a strictly-later timestamp.
+    expect(new Date(updated!.updatedAt).getTime()).toBeGreaterThan(
       new Date(before).getTime(),
     );
   });
@@ -128,8 +129,23 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
     await repo.update(seeded.id, workspaceId, { status: 'completed' });
   });
 
-  it('sweepStreaming flips dangling streaming rows to aborted and counts them', async () => {
-    // Two dangling streaming rows in our workspace + one in another workspace.
+  // Backdate a row's updatedAt so it qualifies as a STALE streaming row (the
+  // sweep only flips rows untouched for >10 minutes — a live turn bumps
+  // updatedAt every step, so it would never match).
+  async function backdateUpdatedAt(
+    id: string,
+    minutesAgo: number,
+  ): Promise<void> {
+    await db
+      .updateTable('aiChatMessages')
+      .set({ updatedAt: new Date(Date.now() - minutesAgo * 60 * 1000) })
+      .where('id', '=', id)
+      .execute();
+  }
+
+  it('sweepStreaming flips STALE dangling streaming rows to aborted and counts them', async () => {
+    // Two dangling streaming rows in our workspace + one in another workspace —
+    // all backdated past the staleness threshold so the sweep picks them up.
     const a = await createMessage(db, {
       workspaceId,
       chatId,
@@ -142,6 +158,16 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
       role: 'assistant',
       status: 'streaming',
     });
+    const other = await createMessage(db, {
+      workspaceId: otherWorkspaceId,
+      chatId: otherChatId,
+      role: 'assistant',
+      status: 'streaming',
+    });
+    await backdateUpdatedAt(a.id, 20);
+    await backdateUpdatedAt(b.id, 20);
+    await backdateUpdatedAt(other.id, 20);
+
     // A settled row must NOT be touched.
     const done = await createMessage(db, {
       workspaceId,
@@ -156,15 +182,9 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
       role: 'assistant',
       status: null,
     });
-    await createMessage(db, {
-      workspaceId: otherWorkspaceId,
-      chatId: otherChatId,
-      role: 'assistant',
-      status: 'streaming',
-    });
 
     const swept = await repo.sweepStreaming();
-    // At least the 3 streaming rows we created (2 here + 1 in the other ws).
+    // At least the 3 stale streaming rows we created (2 here + 1 in the other ws).
     expect(swept).toBeGreaterThanOrEqual(3);
 
     const rows = await repo.findAllByChat(chatId, workspaceId);
@@ -180,5 +200,35 @@ describe('AiChatMessageRepo.update + sweepStreaming [integration]', () => {
     // Our two rows stay aborted regardless of `again`'s global count.
     expect(rows2.find((r) => r.id === a.id)!.status).toBe('aborted');
     expect(again).toBeGreaterThanOrEqual(0);
+  });
+
+  it('sweepStreaming does NOT sweep a FRESH streaming row (recency bound, #183 review)', async () => {
+    // A row that is actively streaming (recent updatedAt) must survive the sweep:
+    // a fresh replica's boot-sweep must never abort a turn another replica is
+    // still streaming in a multi-instance deploy.
+    const fresh = await createMessage(db, {
+      workspaceId,
+      chatId,
+      role: 'assistant',
+      status: 'streaming',
+    });
+    // A STALE streaming row created alongside it IS swept — proving the sweep
+    // ran and the only difference is recency.
+    const stale = await createMessage(db, {
+      workspaceId,
+      chatId,
+      role: 'assistant',
+      status: 'streaming',
+    });
+    await backdateUpdatedAt(stale.id, 20);
+
+    await repo.sweepStreaming();
+
+    const rows = await repo.findAllByChat(chatId, workspaceId);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    // Fresh (recently-updated) streaming row is left untouched...
+    expect(byId.get(fresh.id)!.status).toBe('streaming');
+    // ...while the stale one alongside it was swept to 'aborted'.
+    expect(byId.get(stale.id)!.status).toBe('aborted');
   });
 });

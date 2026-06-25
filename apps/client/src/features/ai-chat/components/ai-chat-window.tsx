@@ -194,6 +194,7 @@ export default function AiChatWindow() {
     threadKey,
     waitingForHistory,
     onTurnFinished,
+    onServerChatId,
     cancelPendingAdoption,
   } = useChatSession({
     activeChatId,
@@ -238,7 +239,10 @@ export default function AiChatWindow() {
   // SERVER-sourced (the DB is the single source of truth — #183): the assistant
   // row is persisted upfront + per step, so even a brand-new chat whose first
   // turn is streaming/interrupted has a server row to render. Enable the button
-  // whenever a persisted chat is active (`activeChatId` is set).
+  // whenever a persisted chat is active (`activeChatId` is set). For a BRAND-NEW
+  // chat that id is adopted EARLY — at the stream's `start` chunk via
+  // onServerChatId (#174) — so the Copy button is available during the first
+  // turn's stream, not only after it terminates.
   const activeChat = useMemo(
     () => chats?.items?.find((c) => c.id === activeChatId) ?? null,
     [chats, activeChatId],
@@ -629,6 +633,7 @@ export default function AiChatWindow() {
               onRolePicked={(role) => setSelectedRoleId(role.id)}
               assistantName={currentRole?.name}
               onTurnFinished={onTurnFinished}
+              onServerChatId={onServerChatId}
               onLiveTurnTokens={setLiveTurnTokens}
             />
           )}

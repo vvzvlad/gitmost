@@ -107,7 +107,8 @@ export class AiChatController {
       title: chat.title ?? null,
       chatId: dto.chatId,
       rows,
-      lang: dto.lang ?? 'en',
+      // normalizeLang(undefined) already yields 'en', so no `?? 'en'` is needed.
+      lang: dto.lang,
     });
     return { markdown };
   }

@@ -412,7 +412,10 @@ export class AiChatService implements OnModuleInit {
       });
       assistantId = seeded?.id;
     } catch (err) {
-      this.logger.error('Failed to insert upfront assistant row', err as Error);
+      this.logger.error(
+        `Failed to insert upfront assistant row (chat ${chatId}, workspace ${workspace.id})`,
+        err as Error,
+      );
     }
 
     // Per-step (non-terminal) update: persist the finished steps the moment a
@@ -453,7 +456,8 @@ export class AiChatService implements OnModuleInit {
     ): Promise<void> => {
       if (finalized) return;
       finalized = true;
-      if (!assistantId) {
+      const plan = planFinalizeAssistant(assistantId);
+      if (plan.kind === 'insert') {
         // The upfront insert failed: fall back to inserting the terminal row so
         // the turn is not lost entirely.
         try {
@@ -476,7 +480,7 @@ export class AiChatService implements OnModuleInit {
         return;
       }
       try {
-        await this.aiChatMessageRepo.update(assistantId, workspace.id, flushed);
+        await this.aiChatMessageRepo.update(plan.id, workspace.id, flushed);
       } catch (err) {
         this.logger.error('Failed to finalize assistant message', err as Error);
       }
@@ -552,6 +556,15 @@ export class AiChatService implements OnModuleInit {
           // pre-#183 onFinish record exactly; `inProgressText` is '' here (the last
           // step already finished). Final-step usage (usage.input+output) ≈ the
           // conversation's CURRENT context size, distinct from totalUsage.
+          //
+          // COLUMN-SEMANTICS NOTE (#183): `content` is built by flushAssistant as
+          // the CONCATENATION of every step's text (stepsText), whereas pre-#183
+          // it stored only the FINAL step's text. This is a deliberate, harmless
+          // change: the UI and the Markdown export render from `metadata.parts`
+          // (per-step text + tool parts), not from `content`; `content` is the
+          // plain-text projection (full-text search / fallback). A multi-step
+          // turn's `content` therefore now holds all steps' prose, not just the
+          // last block.
           await finalizeAssistant(
             flushAssistant(steps as StepLike[], '', 'completed', {
               finishReason: finishReason as string,
@@ -1089,6 +1102,21 @@ export interface AssistantFlush {
 }
 
 /**
+ * Pure decision for the terminal finalize (#183): given whether the upfront
+ * assistant row exists (`assistantId`), choose whether the terminal payload is
+ * written by UPDATEing that row or — when the upfront insert failed and there is
+ * no id — by INSERTing a fresh terminal row so the turn is not lost entirely.
+ * Returns `{ kind: 'update', id }` or `{ kind: 'insert' }`. Extracted so the
+ * fallback-insert branch (the only safety against losing a turn whose upfront
+ * insert failed) is unit-testable without seaming streamText.
+ */
+export function planFinalizeAssistant(
+  assistantId: string | undefined,
+): { kind: 'update'; id: string } | { kind: 'insert' } {
+  return assistantId ? { kind: 'update', id: assistantId } : { kind: 'insert' };
+}
+
+/**
  * PURE assistant-row builder (#183 step-granular durability). Given the turn's
  * accumulated steps + the in-progress (not-yet-finished) text + the lifecycle
  * status, it returns the row patch to persist. The SAME path runs for the
@@ -1097,9 +1125,8 @@ export interface AssistantFlush {
  * worker can call it identically, so it must stay a pure function of its inputs
  * (NO `this`, no IO).
  *
- * `metadata.parts` is built by the EXACT same logic the old
- * buildPartialAssistantRecord used (assistantParts over finished steps, then the
- * in-progress text appended as a trailing text part), so rowToUiMessage /
+ * `metadata.parts` is built by assistantParts over the finished steps, then the
+ * in-progress text appended as a trailing text part, so rowToUiMessage /
  * findRecent keep replaying the turn unchanged. `metadata.finishReason`,
  * `metadata.error`, `metadata.usage` and `metadata.contextTokens` are attached
  * only when provided/relevant, matching the pre-#183 onFinish/onError records.
@@ -1149,34 +1176,6 @@ export function flushAssistant(
     toolCalls: serializeSteps(finished),
     metadata,
     status,
-  };
-}
-
-/**
- * Build the assistant-message record persisted on a partial/failed turn (the
- * streamText onError / onAbort paths). Captures the partial answer the user
- * already saw: each finished step's text + tool parts (via assistantParts),
- * then the in-progress step's text appended last. When `errorText` is provided
- * it is recorded in metadata.error so the cause shows in history; an aborted
- * turn passes none. Pure, so the partial-recording shape is unit-testable
- * without seaming streamText.
- *
- * Thin wrapper over {@link flushAssistant} (retained for the existing unit
- * tests and its historical `{ text, toolCalls, metadata }` shape).
- */
-export function buildPartialAssistantRecord(
-  steps: ReadonlyArray<StepLike> | undefined,
-  inProgressText: string,
-  finishReason: 'error' | 'aborted',
-  errorText?: string,
-): { text: string; toolCalls: unknown; metadata: Record<string, unknown> } {
-  const flushed = flushAssistant(steps, inProgressText, finishReason, {
-    error: errorText,
-  });
-  return {
-    text: flushed.content,
-    toolCalls: flushed.toolCalls,
-    metadata: flushed.metadata,
   };
 }
 

@@ -9,6 +9,20 @@ import {
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagination';
 
+// Crash-recovery sweep recency threshold (#183 review): a 'streaming' row is
+// only swept to 'aborted' once it has been UNTOUCHED for this long. A live turn
+// bumps `updatedAt` on every step (well under this window), so its row never
+// matches; only a turn whose process truly died (no step update for >threshold)
+// is swept. Chosen safely ABOVE the longest realistic turn so a fresh replica's
+// boot-sweep can never abort a turn another replica is actively streaming
+// (multi-instance deploy).
+const SWEEP_STREAMING_STALE_MS = 10 * 60 * 1000; // 10 minutes
+
+// Hard upper bound on the rows materialized by `findAllByChat` (export path).
+// A generous cap so a pathologically huge chat cannot load an unbounded result
+// into memory; far above any realistic transcript length.
+const FIND_ALL_BY_CHAT_LIMIT = 5000;
+
 @Injectable()
 export class AiChatMessageRepo {
   constructor(@InjectKysely() private readonly db: KyselyDB) {}
@@ -66,6 +80,10 @@ export class AiChatMessageRepo {
   // (#183), where the DB is the single source of truth and the whole transcript
   // must be rendered in one pass (findByChat is cursor-paginated and would only
   // return the first page).
+  //
+  // Hard-capped at FIND_ALL_BY_CHAT_LIMIT rows (a generous bound, far above any
+  // realistic transcript) so exporting a pathologically huge chat cannot
+  // materialize an unbounded result set in memory.
   async findAllByChat(
     chatId: string,
     workspaceId: string,
@@ -78,6 +96,7 @@ export class AiChatMessageRepo {
       .where('deletedAt', 'is', null)
       .orderBy('createdAt', 'asc')
       .orderBy('id', 'asc')
+      .limit(FIND_ALL_BY_CHAT_LIMIT)
       .execute();
   }
 
@@ -162,13 +181,21 @@ export class AiChatMessageRepo {
    * status) to 'aborted'. Run once on server start. Returns the number of rows
    * swept so the caller can log it. Workspace-wide on purpose — a crash can have
    * dangling streaming rows across any workspace.
+   *
+   * Bounded by recency (#183 review): only rows UNTOUCHED for
+   * SWEEP_STREAMING_STALE_MS are swept. A live turn bumps `updatedAt` on every
+   * step, so an actively-streaming row never matches; this prevents a fresh
+   * replica's boot-sweep from aborting a turn another replica is still streaming
+   * in a multi-instance deploy.
    */
   async sweepStreaming(trx?: KyselyTransaction): Promise<number> {
     const db = dbOrTx(this.db, trx);
+    const staleBefore = new Date(Date.now() - SWEEP_STREAMING_STALE_MS);
     const rows = await db
       .updateTable('aiChatMessages')
       .set({ status: 'aborted', updatedAt: new Date() })
       .where('status', '=', 'streaming')
+      .where('updatedAt', '<', staleBefore)
       .returning('id')
       .execute();
     return rows.length;

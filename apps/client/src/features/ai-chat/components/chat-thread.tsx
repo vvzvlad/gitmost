@@ -61,6 +61,12 @@ interface ChatThreadProps {
    *  authoritative id the server streamed on the assistant message metadata, or
    *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
   onTurnFinished: (serverChatId?: string) => void;
+  /** Called EARLY (at the stream's `start` chunk) with the authoritative server
+   *  chat id streamed on the assistant message metadata, so a brand-new chat
+   *  adopts its real id WHILE the first turn is still streaming (#174 — makes the
+   *  Copy/export button available mid-stream). Distinct from onTurnFinished,
+   *  which fires only at the terminal outcome. */
+  onServerChatId?: (serverChatId?: string) => void;
   /** Reports the live turn-token total (reasoning + output) for the in-flight
    *  turn so the parent can show a header badge that ticks mid-stream. THROTTLED
    *  here (~8 Hz) so the parent re-renders a handful of times a second, not on
@@ -110,6 +116,7 @@ export default function ChatThread({
   onRolePicked,
   assistantName,
   onTurnFinished,
+  onServerChatId,
   onLiveTurnTokens,
 }: ChatThreadProps) {
   const { t } = useTranslation();
@@ -278,6 +285,26 @@ export default function ChatThread({
 
   // Keep the flush helper pointed at the latest sendMessage instance.
   sendMessageRef.current = sendMessage;
+
+  // EARLY chat-id adoption (#174): the server streams the authoritative chat id
+  // on the assistant message metadata at the `start` chunk (message.metadata.
+  // chatId — see adopt-chat-id.ts / chatStreamMetadata). Forward it to the parent
+  // AS SOON AS it appears (mid-stream), so a brand-new chat adopts its real id
+  // WHILE the first turn is still streaming and activeChatId-gated affordances
+  // (the Copy/export button) light up immediately, instead of only at onFinish.
+  // Keyed by the last-seen id so we forward each distinct id exactly once. The
+  // parent's onServerChatId is idempotent and a no-op once the chat has an id.
+  const lastForwardedChatIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!onServerChatId) return;
+    const tail = messages[messages.length - 1];
+    if (tail?.role !== "assistant") return;
+    const serverChatId = extractServerChatId(tail);
+    if (!serverChatId || serverChatId === lastForwardedChatIdRef.current)
+      return;
+    lastForwardedChatIdRef.current = serverChatId;
+    onServerChatId(serverChatId);
+  }, [messages, onServerChatId]);
 
   // Live "turn was interrupted" marker for the CURRENT session. The red error
   // banner (driven by `error`) covers the error case; this covers an aborted

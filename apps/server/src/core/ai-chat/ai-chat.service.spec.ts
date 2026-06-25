@@ -4,7 +4,6 @@ import {
   serializeSteps,
   rowToUiMessage,
   prepareAgentStep,
-  buildPartialAssistantRecord,
   flushAssistant,
   chatStreamMetadata,
   accumulateStepUsage,
@@ -242,100 +241,12 @@ describe('prepareAgentStep', () => {
 });
 
 /**
- * Unit test for buildPartialAssistantRecord: the pure helper that shapes the
- * assistant-message record persisted on a partial/failed turn (the streamText
- * onError / onAbort paths). It captures the PARTIAL answer the user already saw
- * (finished steps' text + tool parts, plus the in-progress step's text) so a
- * provider error / disconnect no longer throws the streamed answer away. Pinning
- * the record shape here covers the persist-partial logic without seaming
- * streamText itself.
- */
-describe('buildPartialAssistantRecord', () => {
-  type AnyPart = Record<string, unknown>;
-
-  it('records an empty turn with the error text (preserves old behavior)', () => {
-    const rec = buildPartialAssistantRecord(
-      [],
-      '',
-      'error',
-      '401: Unauthorized',
-    );
-    expect(rec).toEqual({
-      text: '',
-      toolCalls: null,
-      metadata: {
-        finishReason: 'error',
-        parts: [],
-        error: '401: Unauthorized',
-      },
-    });
-  });
-
-  it('persists in-progress text (no finished steps) as the partial answer', () => {
-    const rec = buildPartialAssistantRecord(
-      [],
-      'partial answer',
-      'error',
-      'boom',
-    );
-    expect(rec.text).toBe('partial answer');
-    expect(rec.metadata.parts).toEqual([
-      { type: 'text', text: 'partial answer' },
-    ]);
-    expect(rec.metadata.error).toBe('boom');
-  });
-
-  it('combines a finished tool step with trailing in-progress text', () => {
-    const steps = [
-      {
-        text: 'looked it up',
-        toolCalls: [
-          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
-        ],
-        toolResults: [
-          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
-        ],
-      },
-    ];
-    const rec = buildPartialAssistantRecord(
-      steps,
-      ' and then',
-      'error',
-      'boom',
-    );
-    const parts = rec.metadata.parts as AnyPart[];
-    // The finished step's text part is present.
-    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
-    // The paired tool call+result becomes an output-available part.
-    const toolPart = parts.find((p) => p.type === 'tool-getPage');
-    expect(toolPart).toBeDefined();
-    expect(toolPart!.state).toBe('output-available');
-    // The in-progress text is appended LAST so the parts match the stream order.
-    expect(parts[parts.length - 1]).toEqual({
-      type: 'text',
-      text: ' and then',
-    });
-    expect(rec.text).toBe('looked it up and then');
-    expect(rec.toolCalls).not.toBeNull();
-    expect(rec.metadata.error).toBe('boom');
-  });
-
-  it('omits the error key on the abort path (no errorText)', () => {
-    const rec = buildPartialAssistantRecord([], 'half', 'aborted');
-    expect(rec.metadata.finishReason).toBe('aborted');
-    expect('error' in rec.metadata).toBe(false);
-    expect(rec.text).toBe('half');
-  });
-});
-
-/**
  * flushAssistant (#183): the PURE row builder behind the step-granular durable
  * write path. It runs identically for the upfront insert (empty steps,
  * 'streaming'), every per-step update, and the terminal finalize — so a future
  * background worker can call the same function. These tests pin the four status
- * shapes and, critically, that `metadata.parts` stays IDENTICAL to the old
- * buildPartialAssistantRecord / assistantParts output (rowToUiMessage/findRecent
- * depend on it).
+ * shapes and the `metadata.parts` shape that rowToUiMessage/findRecent depend on
+ * (per-step text + tool parts via assistantParts, in-progress text appended).
  */
 describe('flushAssistant', () => {
   type AnyPart = Record<string, unknown>;
@@ -411,21 +322,24 @@ describe('flushAssistant', () => {
     });
   });
 
-  it('metadata.parts parity with buildPartialAssistantRecord (error path)', () => {
+  it('combines a finished tool step with trailing in-progress text (error path)', () => {
+    // The error path captures the PARTIAL answer the user already saw: each
+    // finished step's text + tool parts, then the in-progress step's text last.
     const flushed = flushAssistant([toolStep], ' and then', 'error', {
       error: 'boom',
     });
-    const legacy = buildPartialAssistantRecord(
-      [toolStep],
-      ' and then',
-      'error',
-      'boom',
-    );
-    // The whole metadata block (parts + finishReason + error) must match the
-    // legacy partial-record shape so rebuilt history is unchanged.
-    expect(flushed.metadata).toEqual(legacy.metadata);
-    expect(flushed.content).toBe(legacy.text);
-    expect(flushed.toolCalls).toEqual(legacy.toolCalls);
+    const parts = flushed.metadata.parts as AnyPart[];
+    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart!.state).toBe('output-available');
+    // In-progress text appended LAST so the parts match the stream order.
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
+    });
+    expect(flushed.content).toBe('looked it up and then');
+    expect(flushed.toolCalls).not.toBeNull();
+    expect(flushed.metadata.error).toBe('boom');
   });
 });
 
