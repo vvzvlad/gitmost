@@ -81,6 +81,38 @@ describe("applyMoveTreeNode", () => {
     ]);
   });
 
+  it("does NOT create a partial child list when the destination is loaded-but-collapsed (children unloaded) — keeps it lazy-loadable (#159)", () => {
+    // `dstCollapsed` is in the tree but its children were never lazy-loaded
+    // (children === undefined). The OLD behavior inserted `src` as the ONLY
+    // child ([src]), which defeated the lazy-load gate and HID the parent's
+    // other real children. Now the move leaves children unloaded (so expanding
+    // fetches the FULL set, including src) and just flags hasChildren.
+    const tree: SpaceTreeNode[] = [
+      node("dstCollapsed", {
+        position: "a0",
+        hasChildren: false,
+        children: undefined as unknown as SpaceTreeNode[],
+      }),
+      node("src", { position: "a9" }),
+    ];
+    const next = applyMoveTreeNode(tree, {
+      id: "src",
+      parentId: "dstCollapsed",
+      oldParentId: null,
+      index: 0,
+      position: "a4",
+      pageData: {},
+    });
+    const dst = treeModel.find(next, "dstCollapsed");
+    // Children stay unloaded -> the lazy-load gate fetches the FULL set (incl.
+    // src) on expand, rather than showing a misleading partial [src] list.
+    expect(dst?.children).toBeUndefined();
+    expect(dst?.hasChildren).toBe(true);
+    // src moved away from its old root slot (it lives under dstCollapsed
+    // server-side and reappears when the parent is expanded/loaded).
+    expect(next.map((n) => n.id)).not.toContain("src");
+  });
+
   it("flips the OLD parent's hasChildren to false when it is left childless", () => {
     // src is the only child of `old`; moving it to `dst` empties `old`.
     const tree: SpaceTreeNode[] = [
@@ -164,7 +196,9 @@ describe("applyDeleteTreeNode", () => {
             position: "a1",
             parentPageId: "p",
             hasChildren: true,
-            children: [node("grandchild", { position: "a1", parentPageId: "child" })],
+            children: [
+              node("grandchild", { position: "a1", parentPageId: "child" }),
+            ],
           }),
         ],
       }),
