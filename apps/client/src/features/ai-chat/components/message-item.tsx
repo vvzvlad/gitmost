@@ -11,6 +11,7 @@ import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/mess
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import { reasoningTokensForPart } from "@/features/ai-chat/utils/reasoning-tokens.ts";
+import { messageSignature } from "@/features/ai-chat/utils/message-signature.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -201,50 +202,11 @@ function MessageItem({
   );
 }
 
-/** Cheap content signature for one message: changes iff something VISIBLE in the
- *  row changed. Streaming is APPEND-ONLY (text parts only grow, parts are only
- *  appended, a tool/text part flips state once), so a per-part [type, text
- *  length, state, error/output presence] tuple + the persisted metadata
- *  (error/finishReason) is a sufficient change signal without comparing full
- *  strings on every delta. */
-function messageSignature(message: UIMessage): string {
-  const parts = message.parts
-    .map((p) => {
-      const any = p as {
-        type: string;
-        text?: string;
-        state?: string;
-        errorText?: string;
-        output?: unknown;
-      };
-      return [
-        any.type,
-        any.text?.length ?? 0,
-        any.state ?? "",
-        any.errorText ? 1 : 0,
-        any.output !== undefined ? 1 : 0,
-      ].join(":");
-    })
-    .join("|");
-  const meta = message.metadata as
-    | { error?: string; finishReason?: string; usage?: { reasoningTokens?: number } }
-    | undefined;
-  // `usage.reasoningTokens` is neither append-only nor part-bound: the authoritative
-  // turn total arrives on the final `finish-step` AFTER the reasoning text length and
-  // state are already frozen. Without it in the signature the row's signature would be
-  // unchanged at that point and the re-render skipped, so the "Thinking · N tokens"
-  // header (reasoningTokensForPart) would keep the live estimate instead of snapping
-  // to the exact figure.
-  return `${message.id}#${message.role}#${parts}#${meta?.error ?? ""}#${
-    meta?.finishReason ?? ""
-  }#${meta?.usage?.reasoningTokens ?? ""}`;
-}
-
 /** Skip re-rendering a message whose visible content is unchanged. The streaming
  *  TAIL message gets a fresh object whose signature changes each delta, so it
  *  still re-renders and streams in; every FINALIZED message is skipped, turning a
  *  per-token whole-transcript re-render into a tail-only one. */
-function arePropsEqual(
+export function arePropsEqual(
   prev: MessageItemProps,
   next: MessageItemProps,
 ): boolean {
