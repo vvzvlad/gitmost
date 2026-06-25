@@ -1,4 +1,4 @@
-import { parseToolAllowlist } from './ai-mcp-server.repo';
+import { parseToolAllowlist, blankToNull } from './ai-mcp-server.repo';
 
 /**
  * The `tool_allowlist` jsonb column historically round-trips as a JSON STRING
@@ -10,7 +10,10 @@ import { parseToolAllowlist } from './ai-mcp-server.repo';
  */
 describe('parseToolAllowlist', () => {
   it('passes a real string array through unchanged', () => {
-    expect(parseToolAllowlist(['search', 'crawl'])).toEqual(['search', 'crawl']);
+    expect(parseToolAllowlist(['search', 'crawl'])).toEqual([
+      'search',
+      'crawl',
+    ]);
   });
 
   it('parses a JSON-string array (the double-encoded read) into an array', () => {
@@ -44,5 +47,28 @@ describe('parseToolAllowlist', () => {
   it('returns null for a non-string, non-array primitive', () => {
     expect(parseToolAllowlist(42 as unknown)).toBeNull();
     expect(parseToolAllowlist(true as unknown)).toBeNull();
+  });
+});
+
+/**
+ * `blankToNull` normalizes the per-server `instructions` free text before it is
+ * stored (#180): a missing/blank/whitespace-only value becomes null (so an empty
+ * guide is never persisted), any other value is trimmed.
+ */
+describe('blankToNull', () => {
+  it('returns null for null / undefined', () => {
+    expect(blankToNull(null)).toBeNull();
+    expect(blankToNull(undefined)).toBeNull();
+  });
+
+  it('returns null for an empty / whitespace-only string', () => {
+    expect(blankToNull('')).toBeNull();
+    expect(blankToNull('   ')).toBeNull();
+    expect(blankToNull('\n\t ')).toBeNull();
+  });
+
+  it('trims and returns a non-blank string', () => {
+    expect(blankToNull('  use the search tool  ')).toBe('use the search tool');
+    expect(blankToNull('guide')).toBe('guide');
   });
 });

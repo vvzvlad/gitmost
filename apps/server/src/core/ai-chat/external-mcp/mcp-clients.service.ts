@@ -33,6 +33,26 @@ interface ServerOutcome {
   reason?: string;
 }
 
+/**
+ * One server's admin-authored guidance for the agent system prompt (#180).
+ * Built ONLY for a server that actually connected AND contributed ≥1 tool
+ * (after the allowlist filter) AND has non-blank guidance — so a guide never
+ * appears for a server whose tools the agent cannot actually call.
+ */
+export interface McpServerInstruction {
+  /** Display name of the server (for the prompt section header). */
+  serverName: string;
+  /**
+   * The tool-name namespace prefix the server's tools were merged under
+   * (sanitized name, e.g. `tavily`). The prompt renders this as `tavily_*` so
+   * the model can connect the guidance to the actual tool names. Advisory:
+   * individual tools may carry a disambiguating suffix on rare collisions.
+   */
+  toolPrefix: string;
+  /** The trusted, non-blank guidance text. */
+  instructions: string;
+}
+
 export interface ExternalToolset {
   /** Namespaced external tools, merge-ready into the agent toolset. */
   tools: Record<string, Tool>;
@@ -40,6 +60,11 @@ export interface ExternalToolset {
   clients: Closable[];
   /** Per-server connect outcomes so the UI can show unavailable servers. */
   outcomes: ServerOutcome[];
+  /**
+   * Per-server prompt guidance for connected servers that contributed ≥1 tool
+   * and have non-blank instructions. Empty when no server qualifies.
+   */
+  instructions: McpServerInstruction[];
 }
 
 /** Connect+tools() timeout per server — a slow server must not stall the turn. */
@@ -60,6 +85,8 @@ interface CacheEntry {
   tools: Record<string, Tool>;
   clients: McpClient[];
   outcomes: ServerOutcome[];
+  /** Prompt guidance for qualifying servers (see McpServerInstruction). */
+  instructions: McpServerInstruction[];
   expiresAt: number;
   /** Active leases (turns currently using these clients). */
   refCount: number;
@@ -141,6 +168,7 @@ export class McpClientsService {
       tools: entry.tools,
       clients: [release],
       outcomes: entry.outcomes,
+      instructions: entry.instructions,
     };
   }
 
@@ -225,6 +253,7 @@ export class McpClientsService {
     const outcomes: ServerOutcome[] = [];
     // Per-call total wall-clock cap, read once for this build (env-overridable).
     const callTimeoutMs = mcpCallTimeoutMs();
+    const instructions: McpServerInstruction[] = [];
 
     for (const server of servers) {
       try {
@@ -233,17 +262,33 @@ export class McpClientsService {
         clients.push(client);
         const allow = server.toolAllowlist;
         const picked =
-          Array.isArray(allow) && allow.length > 0
-            ? pick(raw, allow)
-            : raw;
+          Array.isArray(allow) && allow.length > 0 ? pick(raw, allow) : raw;
         // Bound each tool's execute with a per-call total-timeout guard before
         // merging, so a single chatty-but-stuck call is aborted after the cap.
         const guarded = wrapToolsWithCallTimeout(picked, callTimeoutMs);
         // Namespace each tool with the sanitized server name AND disambiguate
         // against names already merged from earlier servers, so no external
-        // tool is silently overwritten on collision.
-        this.mergeNamespaced(tools, guarded, server.name, server.id);
+        // tool is silently overwritten on collision. The returned count drives
+        // whether this server's prompt guidance is included (≥1 tool merged).
+        const merged = this.mergeNamespaced(
+          tools,
+          guarded,
+          server.name,
+          server.id,
+        );
         outcomes.push({ name: server.name, ok: true });
+        // Include this server's guidance ONLY when it actually contributed at
+        // least one tool the agent can call (allowlist may have filtered all of
+        // them out) AND the admin authored non-blank instructions. The header
+        // prefix is the sanitized server name (= the tool namespace prefix).
+        const guide = server.instructions?.trim();
+        if (merged.count > 0 && guide) {
+          instructions.push({
+            serverName: server.name,
+            toolPrefix: merged.prefix,
+            instructions: guide,
+          });
+        }
       } catch (err) {
         // A failed server is skipped — the turn proceeds with the rest. Log a
         // short warning (never the URL/headers) so ops can see degradation, and
@@ -260,6 +305,7 @@ export class McpClientsService {
       tools,
       clients,
       outcomes,
+      instructions,
       expiresAt: Date.now() + CACHE_TTL_MS,
       refCount: 0,
       evicted: false,
@@ -276,16 +322,19 @@ export class McpClientsService {
    * renaming any key that would collide with an already-merged tool (different
    * servers with the same sanitized name, or duplicates after truncation), so
    * no external tool is silently dropped via overwrite.
+   *
+   * Returns how many tools this server actually contributed and the namespace
+   * prefix used (the sanitized server name) so the caller can attach the
+   * server's prompt guidance only when ≥1 tool was merged.
    */
   private mergeNamespaced(
     target: Record<string, Tool>,
     picked: Record<string, Tool>,
     serverName: string,
     serverId: string,
-  ): void {
-    for (const [name, tool] of Object.entries(
-      namespace(picked, serverName),
-    )) {
+  ): { count: number; prefix: string } {
+    let count = 0;
+    for (const [name, tool] of Object.entries(namespace(picked, serverName))) {
       let key = name;
       if (key in target) {
         const original = key;
@@ -295,7 +344,9 @@ export class McpClientsService {
         );
       }
       target[key] = tool;
+      count += 1;
     }
+    return { count, prefix: namespacePrefix(serverName) };
   }
 
   /**
@@ -371,9 +422,7 @@ export class McpClientsService {
 
   /** Close clients, swallowing close errors so they never break a response. */
   private async closeClients(clients: McpClient[]): Promise<void> {
-    await Promise.all(
-      clients.map((c) => c.close().catch(() => undefined)),
-    );
+    await Promise.all(clients.map((c) => c.close().catch(() => undefined)));
   }
 }
 
@@ -386,9 +435,10 @@ export class McpClientsService {
  * lookup hands net/tls.connect ONLY a set that passed this check, so the kernel
  * can never connect to an address that did not pass the guard. Pure — no I/O.
  */
-export function validateResolvedAddresses(
-  addrs: readonly LookupAddress[],
-): { ok: boolean; blockedHost?: string } {
+export function validateResolvedAddresses(addrs: readonly LookupAddress[]): {
+  ok: boolean;
+  blockedHost?: string;
+} {
   if (addrs.length === 0) {
     return { ok: false };
   }
@@ -524,7 +574,7 @@ function namespace(
   tools: Record<string, Tool>,
   serverName: string,
 ): Record<string, Tool> {
-  const prefix = sanitizeName(serverName) || 'mcp';
+  const prefix = namespacePrefix(serverName);
   const out: Record<string, Tool> = {};
   for (const [name, t] of Object.entries(tools)) {
     const safe = sanitizeName(name);
@@ -537,6 +587,15 @@ function namespace(
     out[full] = t;
   }
   return out;
+}
+
+/**
+ * The tool-name namespace prefix for a server: its sanitized name, or `mcp`
+ * when the name sanitizes to empty. Tools are merged as `${prefix}_${tool}`, so
+ * the prompt guidance refers to the server's tools as `${prefix}_*`.
+ */
+function namespacePrefix(serverName: string): string {
+  return sanitizeName(serverName) || 'mcp';
 }
 
 /** Reduce an arbitrary string to ^[a-zA-Z0-9_-]+, collapsing runs to '_'. */

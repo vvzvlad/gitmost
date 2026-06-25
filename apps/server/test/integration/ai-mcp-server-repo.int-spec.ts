@@ -92,3 +92,84 @@ describe('AiMcpServerRepo tool_allowlist jsonb round-trip [integration]', () => 
     expect(healed?.toolAllowlist).toEqual(['alpha', 'beta']);
   });
 });
+
+/**
+ * AiMcpServerRepo `instructions` text round-trip (#180). The column is plain
+ * text (no jsonb); blank/whitespace is normalized to null on both insert and
+ * update so an empty guide is never persisted.
+ */
+describe('AiMcpServerRepo instructions round-trip [integration]', () => {
+  let db: Kysely<any>;
+  let repo: AiMcpServerRepo;
+  let ws: string;
+
+  beforeAll(async () => {
+    db = getTestDb();
+    repo = new AiMcpServerRepo(db as any);
+    ws = (await createWorkspace(db)).id;
+  });
+
+  afterAll(async () => {
+    await destroyTestDb();
+  });
+
+  it('insert stores trimmed non-blank instructions and reads them back', async () => {
+    const row = await repo.insert({
+      workspaceId: ws,
+      name: `srv-${randomUUID()}`,
+      transport: 'http',
+      url: 'https://example.com/mcp',
+      instructions: '  Use search for fresh facts.  ',
+    });
+    expect((await repo.findById(row.id, ws))?.instructions).toBe(
+      'Use search for fresh facts.',
+    );
+  });
+
+  it('insert normalizes blank/whitespace instructions to null', async () => {
+    const row = await repo.insert({
+      workspaceId: ws,
+      name: `srv-${randomUUID()}`,
+      transport: 'http',
+      url: 'https://example.com/mcp',
+      instructions: '   ',
+    });
+    expect((await repo.findById(row.id, ws))?.instructions).toBeNull();
+  });
+
+  it('insert with omitted instructions stores null', async () => {
+    const row = await repo.insert({
+      workspaceId: ws,
+      name: `srv-${randomUUID()}`,
+      transport: 'http',
+      url: 'https://example.com/mcp',
+    });
+    expect((await repo.findById(row.id, ws))?.instructions).toBeNull();
+  });
+
+  it('update sets, clears (blank => null), and leaves unchanged when absent', async () => {
+    const row = await repo.insert({
+      workspaceId: ws,
+      name: `srv-${randomUUID()}`,
+      transport: 'http',
+      url: 'https://example.com/mcp',
+      instructions: 'initial guide',
+    });
+
+    // Set a new value.
+    await repo.update(row.id, ws, { instructions: 'updated guide' });
+    expect((await repo.findById(row.id, ws))?.instructions).toBe(
+      'updated guide',
+    );
+
+    // Absent in the patch => unchanged.
+    await repo.update(row.id, ws, { name: 'renamed' });
+    expect((await repo.findById(row.id, ws))?.instructions).toBe(
+      'updated guide',
+    );
+
+    // Blank => cleared to null.
+    await repo.update(row.id, ws, { instructions: '   ' });
+    expect((await repo.findById(row.id, ws))?.instructions).toBeNull();
+  });
+});

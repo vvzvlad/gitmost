@@ -61,6 +61,8 @@ export class AiMcpServerRepo {
       url: string;
       headersEnc?: string | null;
       toolAllowlist?: string[] | null;
+      // Admin-authored prompt guidance; blank/whitespace normalizes to null.
+      instructions?: string | null;
       enabled?: boolean;
     },
     trx?: KyselyTransaction,
@@ -77,6 +79,8 @@ export class AiMcpServerRepo {
         // jsonb column: the postgres driver would otherwise encode a JS array as
         // a Postgres array literal. Bind the JSON text and cast it to jsonb.
         toolAllowlist: jsonbBind(values.toolAllowlist),
+        // Plain text column: blank/whitespace-only guidance is stored as null.
+        instructions: blankToNull(values.instructions),
         enabled: values.enabled ?? true,
       })
       .returningAll()
@@ -94,6 +98,8 @@ export class AiMcpServerRepo {
       headersEnc?: string | null;
       // undefined => leave unchanged; null => clear; string[] => set.
       toolAllowlist?: string[] | null;
+      // undefined => leave unchanged; null/blank => clear; string => set.
+      instructions?: string | null;
       enabled?: boolean;
     },
     trx?: KyselyTransaction,
@@ -106,6 +112,10 @@ export class AiMcpServerRepo {
     if (patch.headersEnc !== undefined) set.headersEnc = patch.headersEnc;
     if (patch.toolAllowlist !== undefined) {
       set.toolAllowlist = jsonbBind(patch.toolAllowlist);
+    }
+    if (patch.instructions !== undefined) {
+      // Blank/whitespace-only guidance clears the column (stored as null).
+      set.instructions = blankToNull(patch.instructions);
     }
     if (patch.enabled !== undefined) set.enabled = patch.enabled;
     await db
@@ -128,6 +138,17 @@ export class AiMcpServerRepo {
       .where('workspaceId', '=', workspaceId)
       .execute();
   }
+}
+
+/**
+ * Normalize an optional free-text field to a stored value: a missing/blank/
+ * whitespace-only string becomes null (so an "empty" guide is never persisted),
+ * any other string is trimmed. Returns null for null/undefined input.
+ */
+export function blankToNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

@@ -10,7 +10,9 @@ import {
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
-import type { AiChatMessage } from '@docmost/db/types/entity.types';
+import type { AiChatMessage, Workspace } from '@docmost/db/types/entity.types';
+import { buildSystemPrompt } from './ai-chat.prompt';
+import type { McpClientsService } from './external-mcp/mcp-clients.service';
 
 /**
  * Unit tests for compactToolOutput: the pure helper that shrinks LARGE tool
@@ -94,8 +96,12 @@ describe('assistantParts', () => {
     const steps = [
       {
         text: '',
-        toolCalls: [{ toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } }],
-        toolResults: [{ toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } }],
+        toolCalls: [
+          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
+        ],
+        toolResults: [
+          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+        ],
       },
     ];
     const parts = assistantParts(steps, '') as AnyPart[];
@@ -109,7 +115,9 @@ describe('assistantParts', () => {
     const steps = [
       {
         text: '',
-        toolCalls: [{ toolCallId: 'c9', toolName: 'insertNode', input: { node: {} } }],
+        toolCalls: [
+          { toolCallId: 'c9', toolName: 'insertNode', input: { node: {} } },
+        ],
         toolResults: [],
       },
     ];
@@ -136,7 +144,8 @@ describe('assistantParts', () => {
     ];
     const parts = assistantParts(steps, '') as AnyPart[];
     const toolParts = parts.filter(
-      (p) => typeof p.type === 'string' && (p.type as string).startsWith('tool-'),
+      (p) =>
+        typeof p.type === 'string' && (p.type as string).startsWith('tool-'),
     );
     expect(toolParts).toHaveLength(0);
   });
@@ -246,16 +255,30 @@ describe('buildPartialAssistantRecord', () => {
   type AnyPart = Record<string, unknown>;
 
   it('records an empty turn with the error text (preserves old behavior)', () => {
-    const rec = buildPartialAssistantRecord([], '', 'error', '401: Unauthorized');
+    const rec = buildPartialAssistantRecord(
+      [],
+      '',
+      'error',
+      '401: Unauthorized',
+    );
     expect(rec).toEqual({
       text: '',
       toolCalls: null,
-      metadata: { finishReason: 'error', parts: [], error: '401: Unauthorized' },
+      metadata: {
+        finishReason: 'error',
+        parts: [],
+        error: '401: Unauthorized',
+      },
     });
   });
 
   it('persists in-progress text (no finished steps) as the partial answer', () => {
-    const rec = buildPartialAssistantRecord([], 'partial answer', 'error', 'boom');
+    const rec = buildPartialAssistantRecord(
+      [],
+      'partial answer',
+      'error',
+      'boom',
+    );
     expect(rec.text).toBe('partial answer');
     expect(rec.metadata.parts).toEqual([
       { type: 'text', text: 'partial answer' },
@@ -275,7 +298,12 @@ describe('buildPartialAssistantRecord', () => {
         ],
       },
     ];
-    const rec = buildPartialAssistantRecord(steps, ' and then', 'error', 'boom');
+    const rec = buildPartialAssistantRecord(
+      steps,
+      ' and then',
+      'error',
+      'boom',
+    );
     const parts = rec.metadata.parts as AnyPart[];
     // The finished step's text part is present.
     expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
@@ -284,7 +312,10 @@ describe('buildPartialAssistantRecord', () => {
     expect(toolPart).toBeDefined();
     expect(toolPart!.state).toBe('output-available');
     // The in-progress text is appended LAST so the parts match the stream order.
-    expect(parts[parts.length - 1]).toEqual({ type: 'text', text: ' and then' });
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
+    });
     expect(rec.text).toBe('looked it up and then');
     expect(rec.toolCalls).not.toBeNull();
     expect(rec.metadata.error).toBe('boom');
@@ -319,10 +350,20 @@ describe('chatStreamMetadata', () => {
       chatStreamMetadata(
         { type: 'finish-step', usage: { outputTokens: 100 } },
         'chat-1',
-        { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+        {
+          inputTokens: 500,
+          outputTokens: 220,
+          totalTokens: 720,
+          reasoningTokens: 30,
+        },
       ),
     ).toEqual({
-      usage: { inputTokens: 500, outputTokens: 220, totalTokens: 720, reasoningTokens: 30 },
+      usage: {
+        inputTokens: 500,
+        outputTokens: 220,
+        totalTokens: 720,
+        reasoningTokens: 30,
+      },
     });
   });
 
@@ -394,8 +435,18 @@ describe('accumulateStepUsage', () => {
   it('sums every field across two steps', () => {
     expect(
       accumulateStepUsage(
-        { inputTokens: 500, outputTokens: 100, totalTokens: 600, reasoningTokens: 30 },
-        { inputTokens: 520, outputTokens: 80, totalTokens: 600, reasoningTokens: 10 },
+        {
+          inputTokens: 500,
+          outputTokens: 100,
+          totalTokens: 600,
+          reasoningTokens: 30,
+        },
+        {
+          inputTokens: 520,
+          outputTokens: 80,
+          totalTokens: 600,
+          reasoningTokens: 10,
+        },
       ),
     ).toEqual({
       inputTokens: 1020,
@@ -429,5 +480,55 @@ describe('accumulateStepUsage', () => {
       totalTokens: undefined,
       reasoningTokens: undefined,
     });
+  });
+});
+
+/**
+ * Contract test for the #180 wiring in AiChatService.handle: the external MCP
+ * toolset must be built BEFORE the system prompt, and its per-server guidance
+ * threaded into buildSystemPrompt({ mcpInstructions }). The full streaming
+ * handle() is not unit-testable, so this reproduces the exact prompt-build call
+ * the service makes with a connected-server toolset and asserts the guidance is
+ * present. The toolsFor->buildSystemPrompt ordering is additionally enforced at
+ * compile time (the prompt input now consumes external.instructions).
+ */
+describe('AiChatService system prompt wiring (#180)', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+
+  it('includes the external MCP server instructions in the built system prompt', () => {
+    // Shape returned by mcpClients.toolsFor (only `instructions` matters here).
+    const external: Pick<
+      Awaited<ReturnType<McpClientsService['toolsFor']>>,
+      'instructions'
+    > = {
+      instructions: [
+        {
+          serverName: 'Tavily',
+          toolPrefix: 'tavily',
+          instructions: 'Prefer tavily_search for current events.',
+        },
+      ],
+    };
+
+    // Exactly the call the service makes after building the external toolset.
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: external.instructions,
+    });
+
+    expect(system).toContain('<mcp_tooling');
+    expect(system).toContain('Tavily');
+    expect(system).toContain('tavily_*');
+    expect(system).toContain('Prefer tavily_search for current events.');
+  });
+
+  it('renders no MCP block when there are no external servers (empty instructions)', () => {
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: [],
+    });
+    expect(system).not.toContain('<mcp_tooling');
   });
 });

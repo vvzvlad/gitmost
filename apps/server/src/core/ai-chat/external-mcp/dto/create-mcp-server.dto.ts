@@ -42,6 +42,15 @@ export class CreateMcpServerDto {
   @IsString({ each: true })
   toolAllowlist?: string[];
 
+  // Admin-authored guidance ("how/when to use this server's tools") injected
+  // into the agent system prompt next to the tool descriptions (#180). Trusted,
+  // NON-secret (so it IS returned). Capped to bound prompt/token size (the
+  // built-in guide is ~1.5KB). Blank => stored as null.
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  instructions?: string;
+
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;

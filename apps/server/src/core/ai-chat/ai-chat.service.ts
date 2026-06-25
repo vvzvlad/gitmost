@@ -60,7 +60,10 @@ export function prepareAgentStep(
   system: string,
 ): { toolChoice: 'none'; system: string } | undefined {
   if (stepNumber >= MAX_AGENT_STEPS - 1) {
-    return { toolChoice: 'none', system: `${system}\n\n${FINAL_STEP_INSTRUCTION}` };
+    return {
+      toolChoice: 'none',
+      system: `${system}\n\n${FINAL_STEP_INSTRUCTION}`,
+    };
   }
   return undefined;
 }
@@ -259,9 +262,7 @@ export class AiChatService {
       content: incomingText,
       // jsonb column: UIMessage parts are JSON-serializable at runtime but not
       // structurally `JsonValue`, so cast through unknown.
-      metadata: (incoming?.parts
-        ? { parts: incoming.parts }
-        : null) as never,
+      metadata: (incoming?.parts ? { parts: incoming.parts } : null) as never,
     });
 
     // Rebuild the conversation from persisted history (not the client payload),
@@ -280,6 +281,33 @@ export class AiChatService {
     // The model is resolved by the controller before hijack (clean 503 path).
     // Here we only need the admin-configured system prompt.
     const resolved = await this.aiSettings.resolve(workspace.id);
+
+    // Build the external MCP toolset FIRST so the system prompt can carry each
+    // connected server's admin-authored guidance (#180). Merge in admin-
+    // configured external MCP tools (web search, etc.; §6.8). A down/slow
+    // external server never crashes the turn — toolsFor skips it and records the
+    // outcome. The returned client handles MUST be closed in the streamText
+    // lifecycle (onFinish/onError/onAbort) — leaking them is a bug. Docmost
+    // tools take precedence on a name clash (external are namespaced, so a clash
+    // is not expected; the spread order makes intent explicit).
+    let external: Awaited<ReturnType<McpClientsService['toolsFor']>> = {
+      tools: {},
+      clients: [],
+      outcomes: [],
+      instructions: [],
+    };
+    try {
+      external = await this.mcpClients.toolsFor(workspace.id);
+    } catch (err) {
+      // Building the external toolset must never break the turn; proceed with
+      // Docmost-only tools. Never log URLs/headers — short message only.
+      this.logger.warn(
+        `External MCP toolset unavailable: ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      );
+    }
+
     const system = buildSystemPrompt({
       workspace,
       adminPrompt: resolved?.systemPrompt,
@@ -287,6 +315,8 @@ export class AiChatService {
       // the safety framework is still appended by buildSystemPrompt.
       roleInstructions: role?.instructions,
       openedPage: body.openPage,
+      // Guidance only for servers that connected and yielded ≥1 callable tool.
+      mcpInstructions: external.instructions,
     });
 
     // Pass the resolved chatId so the write tools can mint provenance tokens
@@ -302,28 +332,6 @@ export class AiChatService {
       body.openPage,
     );
 
-    // Merge in admin-configured external MCP tools (web search, etc.; §6.8).
-    // A down/slow external server never crashes the turn — toolsFor skips it and
-    // records the outcome. The returned client handles MUST be closed in the
-    // streamText lifecycle (onFinish/onError/onAbort) — leaking them is a bug.
-    // Docmost tools take precedence on a name clash (external are namespaced, so
-    // a clash is not expected; the spread order makes intent explicit).
-    let external: Awaited<ReturnType<McpClientsService['toolsFor']>> = {
-      tools: {},
-      clients: [],
-      outcomes: [],
-    };
-    try {
-      external = await this.mcpClients.toolsFor(workspace.id);
-    } catch (err) {
-      // Building the external toolset must never break the turn; proceed with
-      // Docmost-only tools. Never log URLs/headers — short message only.
-      this.logger.warn(
-        `External MCP toolset unavailable: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
-      );
-    }
     const tools = { ...external.tools, ...docmostTools };
 
     // Close every external client EXACTLY ONCE across the turn's terminal
@@ -395,144 +403,150 @@ export class AiChatService {
     let result: ReturnType<typeof streamText>;
     try {
       result = streamText({
-      model,
-      system,
-      messages,
-      tools,
-      // No maxOutputTokens cap on the agent: tool-call arguments (e.g. a full
-      // page body for the write tools) are emitted as OUTPUT tokens, so a fixed
-      // cap would truncate complex tool calls mid-argument. Let the model use its
-      // natural per-step budget. (Cost/credit limits are an account concern, not
-      // something to enforce by silently breaking the agent.)
-      stopWhen: stepCountIs(MAX_AGENT_STEPS),
-      // Forced finalization: reserve the LAST allowed step for a text-only
-      // answer. Without this, a turn that spends all its steps on tool calls
-      // ends with no assistant text (an empty turn). prepareAgentStep forbids
-      // further tool calls and appends a synthesis instruction on that step,
-      // concatenated onto the original `system` so the persona is preserved.
-      prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
-      abortSignal: signal,
-      onChunk: ({ chunk }) => {
-        // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Any model
-        // output chunk means the stream is actively emitting bytes; track first
-        // + most-recent activity timestamps.
-        const now = Date.now();
-        firstModelChunkAt ??= now;
-        lastModelChunkAt = now;
-        // 'text-delta' is the assistant's prose; tool-call args are separate chunk
-        // types — so this mirrors exactly what streams to the client.
-        if (chunk.type === 'text-delta') inProgressText += chunk.text;
-      },
-      onStepFinish: (step) => {
-        // The finished step's full text is now in `step.text`; fold it in and reset
-        // the in-progress accumulator for the next step.
-        capturedSteps.push(step as StepLike);
-        inProgressText = '';
-      },
-      onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
-        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: success
-        // baseline for Safari comparison.
-        const diagNow = Date.now();
-        this.logger.log(
-          `AI chat stream DIAGNOSTIC (finish): elapsed=${diagNow - streamStartedAt}ms ` +
-            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
-            `heartbeatsSent=${heartbeatsSent} steps=${steps.length}`,
-        );
-        await persistAssistant({
-          text,
-          toolCalls: serializeSteps(steps),
-          metadata: {
-            finishReason,
-            // Persist the turn's cumulative usage WITH reasoning tokens resolved
-            // from either the new `outputTokenDetails` or the deprecated top-level
-            // field, so reopened history / the Markdown export show the thinking
-            // token cost too.
-            usage: normalizeStreamUsage(totalUsage as StreamUsage) ?? totalUsage,
-            // Final-step usage = the context actually fed to the model on the last LLM
-            // call (full history + tool results) plus the answer it just generated.
-            // input+output of the FINAL step ≈ the conversation's CURRENT context size,
-            // distinct from totalUsage which sums every step (cumulative tokens spent).
-            contextTokens:
-              (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) || undefined,
-            // Persist the FULL set of UIMessage parts for the turn (text +
-            // tool-call/result), so the rebuilt history replays prior tool
-            // context to the model on later turns.
-            parts: assistantParts(steps, text),
-          },
-        });
-        // Lifecycle: release the external MCP clients leased for this turn.
-        await closeExternalClients();
-
-        // Generate the chat title for a freshly created chat AFTER the stream's
-        // provider call has completed — NOT concurrently with it. The z.ai coding
-        // endpoint stalls one of two concurrent requests to the same plan, which
-        // black-holed the chat stream (~300s headers timeout) when title
-        // generation raced it. Running it here (solo, fire-and-forget) avoids the
-        // race; never block the turn on it, swallow any error.
-        if (isNewChat && incomingText) {
-          void this.generateTitle(chatId, workspace.id, incomingText).catch(
-            (err) => {
-              this.logger.warn(
-                `Title generation failed: ${(err as Error)?.message ?? err}`,
-              );
-            },
+        model,
+        system,
+        messages,
+        tools,
+        // No maxOutputTokens cap on the agent: tool-call arguments (e.g. a full
+        // page body for the write tools) are emitted as OUTPUT tokens, so a fixed
+        // cap would truncate complex tool calls mid-argument. Let the model use its
+        // natural per-step budget. (Cost/credit limits are an account concern, not
+        // something to enforce by silently breaking the agent.)
+        stopWhen: stepCountIs(MAX_AGENT_STEPS),
+        // Forced finalization: reserve the LAST allowed step for a text-only
+        // answer. Without this, a turn that spends all its steps on tool calls
+        // ends with no assistant text (an empty turn). prepareAgentStep forbids
+        // further tool calls and appends a synthesis instruction on that step,
+        // concatenated onto the original `system` so the persona is preserved.
+        prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
+        abortSignal: signal,
+        onChunk: ({ chunk }) => {
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Any model
+          // output chunk means the stream is actively emitting bytes; track first
+          // + most-recent activity timestamps.
+          const now = Date.now();
+          firstModelChunkAt ??= now;
+          lastModelChunkAt = now;
+          // 'text-delta' is the assistant's prose; tool-call args are separate chunk
+          // types — so this mirrors exactly what streams to the client.
+          if (chunk.type === 'text-delta') inProgressText += chunk.text;
+        },
+        onStepFinish: (step) => {
+          // The finished step's full text is now in `step.text`; fold it in and reset
+          // the in-progress accumulator for the next step.
+          capturedSteps.push(step as StepLike);
+          inProgressText = '';
+        },
+        onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: success
+          // baseline for Safari comparison.
+          const diagNow = Date.now();
+          this.logger.log(
+            `AI chat stream DIAGNOSTIC (finish): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `heartbeatsSent=${heartbeatsSent} steps=${steps.length}`,
           );
-        }
-      },
-      onError: async ({ error }) => {
-        // NestJS Logger.error(message, stack?, context?): pass the real message
-        // (with statusCode when present) + the stack string, not the Error
-        // object, so the actual provider cause is clearly logged. Reuse the
-        // shared formatter so provider error formatting stays unified.
-        const e = error as { stack?: string };
-        const errorText = describeProviderError(error, String(error));
-        this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
-        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: timing of
-        // an error-terminated stream.
-        const diagNow = Date.now();
-        this.logger.warn(
-          `AI chat stream DIAGNOSTIC (error): elapsed=${diagNow - streamStartedAt}ms ` +
-            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
-            `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent}`,
-        );
-        // Persist the PARTIAL answer streamed before the failure (text + any
-        // finished tool steps) WITH the error in metadata, so the turn shows what
-        // the user already saw plus the cause — not just a bare error.
-        await persistAssistant(
-          buildPartialAssistantRecord(
-            capturedSteps,
-            inProgressText,
-            'error',
-            errorText,
-          ),
-        );
-        await closeExternalClients();
-      },
-      onAbort: async ({ steps }) => {
-        const partialChars =
-          capturedSteps.reduce((n, s) => n + (s.text?.length ?? 0), 0) +
-          inProgressText.length;
-        // Unlike onError/onFinish, this terminal path otherwise writes nothing, so
-        // an aborted turn (client disconnect / proxy drop / stop()) would be
-        // invisible in the logs. Log it (warn) so the abort is traceable.
-        this.logger.warn(
-          `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
-            `step(s), ${partialChars} chars partial text; persisting partial turn.`,
-        );
-        // DIAGNOSTIC (Safari stream-drop investigation) — temporary: THE key
-        // line — classifies the Safari drop.
-        const diagNow = Date.now();
-        this.logger.warn(
-          `AI chat stream DIAGNOSTIC (abort/disconnect): elapsed=${diagNow - streamStartedAt}ms ` +
-            `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
-            `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent} ` +
-            `steps=${steps.length}`,
-        );
-        await persistAssistant(
-          buildPartialAssistantRecord(capturedSteps, inProgressText, 'aborted'),
-        );
-        await closeExternalClients();
-      },
+          await persistAssistant({
+            text,
+            toolCalls: serializeSteps(steps),
+            metadata: {
+              finishReason,
+              // Persist the turn's cumulative usage WITH reasoning tokens resolved
+              // from either the new `outputTokenDetails` or the deprecated top-level
+              // field, so reopened history / the Markdown export show the thinking
+              // token cost too.
+              usage:
+                normalizeStreamUsage(totalUsage as StreamUsage) ?? totalUsage,
+              // Final-step usage = the context actually fed to the model on the last LLM
+              // call (full history + tool results) plus the answer it just generated.
+              // input+output of the FINAL step ≈ the conversation's CURRENT context size,
+              // distinct from totalUsage which sums every step (cumulative tokens spent).
+              contextTokens:
+                (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) ||
+                undefined,
+              // Persist the FULL set of UIMessage parts for the turn (text +
+              // tool-call/result), so the rebuilt history replays prior tool
+              // context to the model on later turns.
+              parts: assistantParts(steps, text),
+            },
+          });
+          // Lifecycle: release the external MCP clients leased for this turn.
+          await closeExternalClients();
+
+          // Generate the chat title for a freshly created chat AFTER the stream's
+          // provider call has completed — NOT concurrently with it. The z.ai coding
+          // endpoint stalls one of two concurrent requests to the same plan, which
+          // black-holed the chat stream (~300s headers timeout) when title
+          // generation raced it. Running it here (solo, fire-and-forget) avoids the
+          // race; never block the turn on it, swallow any error.
+          if (isNewChat && incomingText) {
+            void this.generateTitle(chatId, workspace.id, incomingText).catch(
+              (err) => {
+                this.logger.warn(
+                  `Title generation failed: ${(err as Error)?.message ?? err}`,
+                );
+              },
+            );
+          }
+        },
+        onError: async ({ error }) => {
+          // NestJS Logger.error(message, stack?, context?): pass the real message
+          // (with statusCode when present) + the stack string, not the Error
+          // object, so the actual provider cause is clearly logged. Reuse the
+          // shared formatter so provider error formatting stays unified.
+          const e = error as { stack?: string };
+          const errorText = describeProviderError(error, String(error));
+          this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: timing of
+          // an error-terminated stream.
+          const diagNow = Date.now();
+          this.logger.warn(
+            `AI chat stream DIAGNOSTIC (error): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent}`,
+          );
+          // Persist the PARTIAL answer streamed before the failure (text + any
+          // finished tool steps) WITH the error in metadata, so the turn shows what
+          // the user already saw plus the cause — not just a bare error.
+          await persistAssistant(
+            buildPartialAssistantRecord(
+              capturedSteps,
+              inProgressText,
+              'error',
+              errorText,
+            ),
+          );
+          await closeExternalClients();
+        },
+        onAbort: async ({ steps }) => {
+          const partialChars =
+            capturedSteps.reduce((n, s) => n + (s.text?.length ?? 0), 0) +
+            inProgressText.length;
+          // Unlike onError/onFinish, this terminal path otherwise writes nothing, so
+          // an aborted turn (client disconnect / proxy drop / stop()) would be
+          // invisible in the logs. Log it (warn) so the abort is traceable.
+          this.logger.warn(
+            `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
+              `step(s), ${partialChars} chars partial text; persisting partial turn.`,
+          );
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: THE key
+          // line — classifies the Safari drop.
+          const diagNow = Date.now();
+          this.logger.warn(
+            `AI chat stream DIAGNOSTIC (abort/disconnect): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent} ` +
+              `steps=${steps.length}`,
+          );
+          await persistAssistant(
+            buildPartialAssistantRecord(
+              capturedSteps,
+              inProgressText,
+              'aborted',
+            ),
+          );
+          await closeExternalClients();
+        },
       });
 
       // Drain the stream independently of the client socket so the turn always
@@ -652,7 +666,10 @@ export class AiChatService {
         'punctuation at the end.',
       prompt: firstMessage.slice(0, 2000),
     });
-    const title = text.trim().replace(/^["']|["']$/g, '').slice(0, 120);
+    const title = text
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .slice(0, 120);
     if (title) {
       await this.aiChatRepo.update(chatId, { title }, workspaceId);
     }

@@ -1,4 +1,4 @@
-import { buildSystemPrompt } from './ai-chat.prompt';
+import { buildSystemPrompt, buildMcpToolingBlock } from './ai-chat.prompt';
 import { Workspace } from '@docmost/db/types/entity.types';
 
 /**
@@ -159,5 +159,120 @@ describe('buildSystemPrompt current-page context', () => {
     const lastSafety = prompt.lastIndexOf(SAFETY_MARKER);
     expect(pageIdx).toBeGreaterThan(firstSafety);
     expect(pageIdx).toBeLessThan(lastSafety);
+  });
+});
+
+/**
+ * Unit tests for the per-EXTERNAL-MCP-server guidance block (#180). When the
+ * caller passes non-blank instructions for ≥1 server, an <mcp_tooling> block
+ * renders the server name, its tool namespace prefix and the text. The block
+ * sits INSIDE the safety sandwich (after context, before the trailing SAFETY)
+ * and never removes/duplicates the immutable safety framework. An empty list or
+ * all-blank text renders nothing.
+ */
+describe('buildSystemPrompt mcp tooling guidance', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+  const SAFETY_MARKER = 'Operating rules (always in effect)';
+
+  it('renders the server name, tool prefix and text when guidance is present', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      mcpInstructions: [
+        {
+          serverName: 'Tavily',
+          toolPrefix: 'tavily',
+          instructions: 'Use tavily_search for fresh web facts; cite sources.',
+        },
+      ],
+    });
+    expect(prompt).toContain('<mcp_tooling');
+    expect(prompt).toContain('Tavily');
+    // The header names the namespace prefix as `<prefix>_*`.
+    expect(prompt).toContain('tavily_*');
+    expect(prompt).toContain(
+      'Use tavily_search for fresh web facts; cite sources.',
+    );
+  });
+
+  it('renders nothing for an empty list', () => {
+    const prompt = buildSystemPrompt({ workspace, mcpInstructions: [] });
+    expect(prompt).not.toContain('<mcp_tooling');
+  });
+
+  it('renders nothing for an undefined list', () => {
+    const prompt = buildSystemPrompt({ workspace });
+    expect(prompt).not.toContain('<mcp_tooling');
+  });
+
+  it('renders nothing when every entry has blank text', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      mcpInstructions: [
+        { serverName: 'A', toolPrefix: 'a', instructions: '   ' },
+        { serverName: 'B', toolPrefix: 'b', instructions: '' },
+      ],
+    });
+    expect(prompt).not.toContain('<mcp_tooling');
+  });
+
+  it('places the block inside the safety sandwich, after context, before the trailing SAFETY', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      openedPage: { id: 'pg-1', title: 'Doc' },
+      mcpInstructions: [
+        { serverName: 'Tavily', toolPrefix: 'tavily', instructions: 'guide' },
+      ],
+    });
+    const ctxIdx = prompt.indexOf('currently viewing the page');
+    const mcpIdx = prompt.indexOf('<mcp_tooling');
+    const firstSafety = prompt.indexOf(SAFETY_MARKER);
+    const lastSafety = prompt.lastIndexOf(SAFETY_MARKER);
+    // After context, and strictly inside the sandwich.
+    expect(mcpIdx).toBeGreaterThan(ctxIdx);
+    expect(mcpIdx).toBeGreaterThan(firstSafety);
+    expect(mcpIdx).toBeLessThan(lastSafety);
+  });
+
+  it('keeps BOTH copies of the safety framework when guidance is present', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      mcpInstructions: [
+        { serverName: 'Tavily', toolPrefix: 'tavily', instructions: 'guide' },
+      ],
+    });
+    const firstSafety = prompt.indexOf(SAFETY_MARKER);
+    const lastSafety = prompt.lastIndexOf(SAFETY_MARKER);
+    expect(firstSafety).toBeGreaterThanOrEqual(0);
+    expect(lastSafety).toBeGreaterThan(firstSafety);
+  });
+});
+
+/**
+ * Unit tests for the pure block builder. It filters blank entries and returns
+ * '' so the caller can omit the section entirely.
+ */
+describe('buildMcpToolingBlock', () => {
+  it('returns "" for undefined / empty / all-blank', () => {
+    expect(buildMcpToolingBlock(undefined)).toBe('');
+    expect(buildMcpToolingBlock([])).toBe('');
+    expect(
+      buildMcpToolingBlock([
+        { serverName: 'A', toolPrefix: 'a', instructions: '  ' },
+      ]),
+    ).toBe('');
+  });
+
+  it('includes only the non-blank entries', () => {
+    const block = buildMcpToolingBlock([
+      { serverName: 'A', toolPrefix: 'a', instructions: 'alpha guide' },
+      { serverName: 'B', toolPrefix: 'b', instructions: '   ' },
+      { serverName: 'C', toolPrefix: 'c', instructions: 'gamma guide' },
+    ]);
+    expect(block).toContain('a_*');
+    expect(block).toContain('alpha guide');
+    expect(block).toContain('c_*');
+    expect(block).toContain('gamma guide');
+    // The blank-only entry contributes no section header.
+    expect(block).not.toContain('b_*');
   });
 });

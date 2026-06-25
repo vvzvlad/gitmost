@@ -24,6 +24,11 @@ export interface AiMcpServers {
   // double-encoded rows; `AiMcpServerRepo` normalizes every read to
   // `string[] | null` via `parseToolAllowlist`.
   toolAllowlist: string[] | null;
+  // Admin-authored guidance ("how/when to use this server's tools") injected
+  // into the agent system prompt (#180). Unlike `headersEnc` this is NON-secret
+  // and IS returned in admin views/forms. Plain text column (no jsonb). Null =
+  // no guidance. Trusted text — it goes inside the prompt safety sandwich.
+  instructions: string | null;
   enabled: Generated<boolean>;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
