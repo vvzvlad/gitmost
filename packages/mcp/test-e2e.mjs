@@ -7,6 +7,7 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
+import { createServer } from "node:http";
 
 const API = process.env.DOCMOST_API_URL;
 if (!API || !process.env.DOCMOST_EMAIL || !process.env.DOCMOST_PASSWORD) {
@@ -149,11 +150,24 @@ async function main() {
     check("update_page_json: paragraph appended", JSON.stringify(pj4.content).includes("добавленный через update_page_json"));
     check("update_page_json: custom node id preserved", lastNode.attrs?.id === "testidjsonpush", lastNode.attrs?.id);
 
-    // 6b. images: upload / insert / replace (clean src, fresh attachment on replace)
-    const pngA = join(tmpdir(), `mcp-e2e-img-a-${Date.now()}.png`);
-    const pngB = join(tmpdir(), `mcp-e2e-img-b-${Date.now()}.png`);
-    writeFileSync(pngA, makePng(255, 0, 0)); // red
-    writeFileSync(pngB, makePng(0, 0, 255)); // blue (a DIFFERENT valid PNG)
+    // 6b. images: upload / insert / replace (clean src, fresh attachment on replace).
+    // insert_image / replace_image take an http(s) URL that the SERVER fetches;
+    // local file paths are intentionally unsupported. The Docmost server runs on
+    // the same host as this test, so serve the PNG bytes over a throwaway
+    // localhost HTTP server it can reach.
+    const bytesA = makePng(255, 0, 0); // red
+    const bytesB = makePng(0, 0, 255); // blue (a DIFFERENT valid PNG)
+    const imgServer = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(req.url === "/b.png" ? bytesB : bytesA);
+    });
+    await new Promise((resolve, reject) => {
+      imgServer.once("error", reject);
+      imgServer.listen(0, "127.0.0.1", resolve);
+    });
+    const imgPort = imgServer.address().port;
+    const urlA = `http://127.0.0.1:${imgPort}/a.png`;
+    const urlB = `http://127.0.0.1:${imgPort}/b.png`;
     try {
       // Independent login to fetch file bytes with the same cookie the editor uses.
       const login = await axios.post(
@@ -173,7 +187,7 @@ async function main() {
         });
 
       // insert_image: append the first PNG, src must be clean (no ?v=) and fetchable.
-      const ins = await client.insertImage(pageId, pngA);
+      const ins = await client.insertImage(pageId, urlA);
       check("insert_image: src has no ?v= cache-buster", !ins.src.includes("?v="), ins.src);
       const fileA = await fetchFile(ins.src);
       check("insert_image: file fetch returns 200", fileA.status === 200, `status=${fileA.status}`);
@@ -199,7 +213,7 @@ async function main() {
 
       // replace_image: must create a NEW attachment with a clean, fetchable URL.
       // The 200 fetch is the assertion that catches the in-place-overwrite HTTP 500 regression.
-      const rep = await client.replaceImage(pageId, oldAttachmentId, pngB);
+      const rep = await client.replaceImage(pageId, oldAttachmentId, urlB);
       check("replace_image: new attachment id differs from old", rep.newAttachmentId !== oldAttachmentId, `${oldAttachmentId} -> ${rep.newAttachmentId}`);
       check("replace_image: src has no ?v= cache-buster", !rep.src.includes("?v="), rep.src);
       const fileB = await fetchFile(rep.src);
@@ -215,8 +229,7 @@ async function main() {
       check("replace_image: page has new attachment id", !!findImage(pjImg2.content.content, rep.newAttachmentId), rep.newAttachmentId);
       check("replace_image: old attachment id repointed away", !findImage(pjImg2.content.content, oldAttachmentId), oldAttachmentId);
     } finally {
-      try { unlinkSync(pngA); } catch {}
-      try { unlinkSync(pngB); } catch {}
+      imgServer.close();
     }
 
     // 6c. rich formatting: callout type, task list, inline marks, table alignment,
