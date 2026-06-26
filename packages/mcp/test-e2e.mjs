@@ -454,7 +454,10 @@ async function main() {
 
     // 9. comments: create / list / reply / update / check_new / delete
     const beforeComments = new Date(Date.now() - 1000).toISOString();
-    const c1 = await client.createComment(pageId, "Первый **комментарий** с [ссылкой](https://example.com).");
+    // A top-level comment requires an inline "selection": exact contiguous text
+    // that exists in the persisted page to anchor on. "Добавленный абзац." is a
+    // plain paragraph re-imported in section 5 and still present here.
+    const c1 = await client.createComment(pageId, "Первый **комментарий** с [ссылкой](https://example.com).", "inline", "Добавленный абзац.");
     check("create_comment: created", !!c1.data.id, c1.data.id);
     check("create_comment: markdown round-trip", c1.data.content.includes("**комментарий**"), c1.data.content);
     const reply = await client.createComment(pageId, "Ответ на комментарий.", "page", undefined, c1.data.id);
