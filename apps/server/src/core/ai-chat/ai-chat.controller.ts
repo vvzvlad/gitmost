@@ -32,6 +32,7 @@ import { AiTranscriptionService } from './ai-transcription.service';
 import {
   ChatIdDto,
   ExportChatDto,
+  GeneratePageTitleDto,
   GetChatMessagesDto,
   RenameChatDto,
 } from './dto/ai-chat.dto';
@@ -314,6 +315,43 @@ export class AiChatController {
       throw new ServiceUnavailableException(describeProviderError(err));
     }
     return { text };
+  }
+
+  /**
+   * Generate a page title from supplied note content (#199). One-shot,
+   * non-streaming. Gated by the workspace AI flag (reusing settings.ai.generative,
+   * the same flag that gates the on-page generative AI menu); returns { title }.
+   * The endpoint NEVER writes the page — the client applies the title via the
+   * existing /pages/update route (which enforces edit permission), so access
+   * checks are not duplicated here. Throttled per user via AI_CHAT_THROTTLER.
+   */
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, UserThrottlerGuard)
+  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 20, ttl: 60000 } })
+  @Post('generate-page-title')
+  async generatePageTitle(
+    @Body() dto: GeneratePageTitleDto,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<{ title: string }> {
+    const settings = (workspace.settings ?? {}) as {
+      ai?: { generative?: boolean };
+    };
+    if (settings.ai?.generative !== true) {
+      throw new ForbiddenException('AI title generation is disabled');
+    }
+    try {
+      const title = await this.aiChatService.generatePageTitle(
+        workspace.id,
+        dto.content,
+      );
+      return { title };
+    } catch (err) {
+      // Preserve meaningful HTTP errors (e.g. AiNotConfiguredException -> 503).
+      if (err instanceof HttpException) throw err;
+      // Surface the real provider/transport reason instead of an opaque 500.
+      this.logger.error('AI title generation failed', err as Error);
+      throw new ServiceUnavailableException(describeProviderError(err));
+    }
   }
 
   /**

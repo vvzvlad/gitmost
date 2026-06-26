@@ -69,6 +69,19 @@ export async function exportAiChat(
 }
 
 /**
+ * Generate a page title from note content (markdown). One-shot, non-streaming
+ * (#199): the server only summarizes the supplied text and returns a suggestion;
+ * it never writes the page. The caller applies the title via /pages/update.
+ */
+export async function generatePageTitle(content: string): Promise<string> {
+  const req = await api.post<{ title: string }>(
+    "/ai-chat/generate-page-title",
+    { content },
+  );
+  return req.data.title;
+}
+
+/**
  * Agent roles API (`/ai-chat/roles`). `list` is available to any workspace
  * member (for the chat-creation picker); create/update/delete are admin-only
  * (the server enforces this). Same `{ data }` unwrap convention as above.

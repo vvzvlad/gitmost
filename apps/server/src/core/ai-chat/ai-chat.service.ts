@@ -75,6 +75,18 @@ export function prepareAgentStep(
 
 export { MAX_AGENT_STEPS, FINAL_STEP_INSTRUCTION };
 
+// Pure, unit-testable post-processing for a model-generated title (#199): trim
+// whitespace, strip a single pair of surrounding quotes the model often adds,
+// drop a trailing period, and hard-cap the length to the page-title column.
+export function cleanGeneratedTitle(text: string): string {
+  return text
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\.+$/, '')
+    .trim()
+    .slice(0, 255);
+}
+
 /**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
  * DTO (the global ValidationPipe whitelist would strip the useChat-specific
@@ -791,6 +803,27 @@ export class AiChatService implements OnModuleInit {
       await closeExternalClients();
       throw err;
     }
+  }
+
+  /**
+   * One-shot page-title generation from a note's content (#199). No tools, no
+   * streaming — mirrors generateTitle() but for an arbitrary note body supplied
+   * by the client, and RETURNS the title instead of writing it (the client
+   * applies it via the existing /pages/update route, which enforces edit
+   * permission). The content is truncated to keep the prompt cheap and within
+   * context limits. Throws AiNotConfiguredException (503) if AI is unconfigured.
+   */
+  async generatePageTitle(workspaceId: string, content: string): Promise<string> {
+    const model = await this.ai.getChatModel(workspaceId);
+    const { text } = await generateText({
+      model,
+      system:
+        'You generate a single concise, descriptive title for a note based on ' +
+        'its content. Reply with the title only — at most 8 words, no quotes, ' +
+        'no trailing punctuation, written in the same language as the note.',
+      prompt: content.slice(0, 8000),
+    });
+    return cleanGeneratedTitle(text);
   }
 
   /**
