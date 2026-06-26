@@ -618,7 +618,13 @@ export class PageService {
       slugIdMap.set(entry.oldSlugId, entry);
     }
 
-    const attachmentMap = new Map<string, ICopyPageAttachment>();
+    // Keyed by old attachmentId. A single attachment can be referenced by more
+    // than one page in the copied subtree (e.g. a block copy-pasted into a child
+    // page keeps the same attachmentId). Each referencing page needs its own
+    // fresh attachment id / row / blob copy, so the value is a LIST of copy
+    // entries rather than a single one — otherwise the last page's entry would
+    // clobber the others and their images would 404 in the copies (#206 attach-1).
+    const attachmentMap = new Map<string, ICopyPageAttachment[]>();
 
     const insertablePages: InsertablePage[] = await Promise.all(
       pages.map(async (page) => {
@@ -634,12 +640,14 @@ export class PageService {
           attachmentIds.forEach((attachmentId: string) => {
             const newPageId = pageFromMap.newPageId;
             const newAttachmentId = uuid7();
-            attachmentMap.set(attachmentId, {
+            const existingEntries = attachmentMap.get(attachmentId) ?? [];
+            existingEntries.push({
               newPageId: newPageId,
               oldPageId: page.id,
               oldAttachmentId: attachmentId,
               newAttachmentId: newAttachmentId,
             });
+            attachmentMap.set(attachmentId, existingEntries);
 
             prosemirrorDoc.descendants((node: PMNode) => {
               if (isAttachmentNode(node.type.name)) {
@@ -836,51 +844,53 @@ export class PageService {
         .execute();
 
       for (const attachment of attachments) {
-        try {
-          const pageAttachment = attachmentMap.get(attachment.id);
-
-          // make sure the copied attachment belongs to the page it was copied from
-          if (attachment.pageId !== pageAttachment.oldPageId) {
-            continue;
-          }
-
-          const newAttachmentId = pageAttachment.newAttachmentId;
-
-          const newPageId = pageAttachment.newPageId;
-
-          const newPathFile = attachment.filePath.replace(
-            attachment.id,
-            newAttachmentId,
-          );
-
+        // One source attachment may need to be copied for several destination
+        // pages (it is referenced by more than one page in the subtree). Copy a
+        // distinct blob + row for every referencing page so each copy resolves
+        // (#206 attach-1). The old per-page ownership guard is gone: when the
+        // same attachmentId is shared, only one page would ever match the row's
+        // pageId, silently dropping the other copies.
+        const pageAttachments = attachmentMap.get(attachment.id) ?? [];
+        for (const pageAttachment of pageAttachments) {
           try {
-            await this.storageService.copy(attachment.filePath, newPathFile);
+            const newAttachmentId = pageAttachment.newAttachmentId;
 
-            await this.db
-              .insertInto('attachments')
-              .values({
-                id: newAttachmentId,
-                type: attachment.type,
-                filePath: newPathFile,
-                fileName: attachment.fileName,
-                fileSize: attachment.fileSize,
-                mimeType: attachment.mimeType,
-                fileExt: attachment.fileExt,
-                creatorId: attachment.creatorId,
-                workspaceId: attachment.workspaceId,
-                pageId: newPageId,
-                spaceId: spaceId,
-              })
-              .execute();
-          } catch (err) {
-            this.logger.error(
-              `Duplicate page: failed to copy attachment ${attachment.id}`,
-              err,
+            const newPageId = pageAttachment.newPageId;
+
+            const newPathFile = attachment.filePath.replace(
+              attachment.id,
+              newAttachmentId,
             );
-            // Continue with other attachments even if one fails
+
+            try {
+              await this.storageService.copy(attachment.filePath, newPathFile);
+
+              await this.db
+                .insertInto('attachments')
+                .values({
+                  id: newAttachmentId,
+                  type: attachment.type,
+                  filePath: newPathFile,
+                  fileName: attachment.fileName,
+                  fileSize: attachment.fileSize,
+                  mimeType: attachment.mimeType,
+                  fileExt: attachment.fileExt,
+                  creatorId: attachment.creatorId,
+                  workspaceId: attachment.workspaceId,
+                  pageId: newPageId,
+                  spaceId: spaceId,
+                })
+                .execute();
+            } catch (err) {
+              this.logger.error(
+                `Duplicate page: failed to copy attachment ${attachment.id}`,
+                err,
+              );
+              // Continue with other attachments even if one fails
+            }
+          } catch (err) {
+            this.logger.error(err);
           }
-        } catch (err) {
-          this.logger.error(err);
         }
       }
     }
