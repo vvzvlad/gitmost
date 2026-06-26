@@ -10,16 +10,21 @@ import type { KyselyDB } from '../../types/kysely.types';
 describe('ShareAliasRepo', () => {
   function makeSelectRepo(result: unknown) {
     const where = jest.fn();
+    const orderBy = jest.fn();
     const builder: any = {
       select: jest.fn(() => builder),
       where: jest.fn((...args: unknown[]) => {
         where(...args);
         return builder;
       }),
+      orderBy: jest.fn((...args: unknown[]) => {
+        orderBy(...args);
+        return builder;
+      }),
       executeTakeFirst: jest.fn().mockResolvedValue(result),
     };
     const db = { selectFrom: jest.fn(() => builder) } as unknown as KyselyDB;
-    return { repo: new ShareAliasRepo(db), db, where, builder };
+    return { repo: new ShareAliasRepo(db), db, where, orderBy, builder };
   }
 
   it('findByAliasAndWorkspace scopes by alias AND workspace', async () => {
@@ -34,11 +39,15 @@ describe('ShareAliasRepo', () => {
     expect(where).toHaveBeenCalledWith('workspaceId', '=', 'ws-1');
   });
 
-  it('findByPageId scopes by page AND workspace', async () => {
-    const { repo, where } = makeSelectRepo(undefined);
+  it('findByPageId scopes by page AND workspace, deterministically ordered', async () => {
+    const { repo, where, orderBy } = makeSelectRepo(undefined);
     await repo.findByPageId('p-1', 'ws-1');
     expect(where).toHaveBeenCalledWith('pageId', '=', 'p-1');
     expect(where).toHaveBeenCalledWith('workspaceId', '=', 'ws-1');
+    // Explicit ORDER BY removes the nondeterministic heap order for any legacy
+    // duplicate rows (newest createdAt wins, id as a stable tiebreak).
+    expect(orderBy).toHaveBeenCalledWith('createdAt', 'desc');
+    expect(orderBy).toHaveBeenCalledWith('id', 'desc');
   });
 
   it('insert writes the provided columns and returns the row', async () => {
@@ -97,6 +106,56 @@ describe('ShareAliasRepo', () => {
     expect(set.mock.calls[0][0].updatedAt).toBeInstanceOf(Date);
     expect(where).toHaveBeenCalledWith('id', '=', 'a-1');
     expect(where).toHaveBeenCalledWith('workspaceId', '=', 'ws-1');
+  });
+
+  it('updateAlias renames a single row scoped by id + workspace', async () => {
+    const set = jest.fn();
+    const where = jest.fn();
+    const builder: any = {
+      set: jest.fn((s: unknown) => {
+        set(s);
+        return builder;
+      }),
+      where: jest.fn((...args: unknown[]) => {
+        where(...args);
+        return builder;
+      }),
+      returning: jest.fn(() => builder),
+      executeTakeFirst: jest.fn().mockResolvedValue({ id: 'a-1', alias: 'ted' }),
+    };
+    const db = { updateTable: jest.fn(() => builder) } as unknown as KyselyDB;
+    const repo = new ShareAliasRepo(db);
+
+    const res = await repo.updateAlias('a-1', 'ted', 'ws-1');
+
+    expect(db.updateTable).toHaveBeenCalledWith('shareAliases');
+    expect(set.mock.calls[0][0].alias).toBe('ted');
+    expect(set.mock.calls[0][0].updatedAt).toBeInstanceOf(Date);
+    // a rename must NOT touch page_id (the page's pointer is preserved)
+    expect(set.mock.calls[0][0]).not.toHaveProperty('pageId');
+    expect(where).toHaveBeenCalledWith('id', '=', 'a-1');
+    expect(where).toHaveBeenCalledWith('workspaceId', '=', 'ws-1');
+    expect(res).toMatchObject({ alias: 'ted' });
+  });
+
+  it('deleteOthersForPage reaps every row for the page except keepId', async () => {
+    const where = jest.fn();
+    const builder: any = {
+      where: jest.fn((...args: unknown[]) => {
+        where(...args);
+        return builder;
+      }),
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+    const db = { deleteFrom: jest.fn(() => builder) } as unknown as KyselyDB;
+    const repo = new ShareAliasRepo(db);
+
+    await repo.deleteOthersForPage('p-1', 'a-keep', 'ws-1');
+
+    expect(db.deleteFrom).toHaveBeenCalledWith('shareAliases');
+    expect(where).toHaveBeenCalledWith('pageId', '=', 'p-1');
+    expect(where).toHaveBeenCalledWith('workspaceId', '=', 'ws-1');
+    expect(where).toHaveBeenCalledWith('id', '!=', 'a-keep');
   });
 
   it('delete scopes by id + workspace', async () => {

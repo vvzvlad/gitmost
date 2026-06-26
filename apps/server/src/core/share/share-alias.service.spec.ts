@@ -7,13 +7,18 @@ import { ShareAliasService } from './share-alias.service';
  * request-time readable-target resolution (which re-runs the share boundary).
  */
 describe('ShareAliasService', () => {
+  // Sentinel handed to repo calls so tests can assert they ran inside the tx.
+  const trx = { __trx: true };
+
   function makeService() {
     const shareAliasRepo = {
       findByAliasAndWorkspace: jest.fn(),
       findByPageId: jest.fn(),
       findById: jest.fn(),
       insert: jest.fn(),
+      updateAlias: jest.fn(),
       updatePageId: jest.fn(),
+      deleteOthersForPage: jest.fn(),
       delete: jest.fn(),
     };
     const pageRepo = { findById: jest.fn() };
@@ -21,12 +26,19 @@ describe('ShareAliasService', () => {
       resolveReadableSharePage: jest.fn(),
       isSharingAllowed: jest.fn(),
     };
+    // Fake kysely db: only .transaction().execute(cb) is used by setAlias.
+    const db = {
+      transaction: jest.fn(() => ({
+        execute: jest.fn(async (cb: any) => cb(trx)),
+      })),
+    };
     const service = new ShareAliasService(
       shareAliasRepo as any,
       pageRepo as any,
       shareService as any,
+      db as any,
     );
-    return { service, shareAliasRepo, pageRepo, shareService };
+    return { service, shareAliasRepo, pageRepo, shareService, db };
   }
 
   describe('setAlias', () => {
@@ -43,9 +55,10 @@ describe('ShareAliasService', () => {
       expect(shareAliasRepo.findByAliasAndWorkspace).not.toHaveBeenCalled();
     });
 
-    it('normalizes then inserts a brand-new alias', async () => {
+    it('normalizes then inserts a brand-new alias (page has none yet)', async () => {
       const { service, shareAliasRepo } = makeService();
       shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      shareAliasRepo.findByPageId.mockResolvedValue(undefined);
       shareAliasRepo.insert.mockResolvedValue({ id: 'a-1', alias: 'my-page' });
 
       const res = await service.setAlias({
@@ -58,17 +71,70 @@ describe('ShareAliasService', () => {
       expect(shareAliasRepo.findByAliasAndWorkspace).toHaveBeenCalledWith(
         'my-page',
         'ws-1',
+        trx,
       );
-      expect(shareAliasRepo.insert).toHaveBeenCalledWith({
-        workspaceId: 'ws-1',
-        alias: 'my-page',
-        pageId: 'p-1',
-        creatorId: 'u-1',
-      });
+      expect(shareAliasRepo.insert).toHaveBeenCalledWith(
+        {
+          workspaceId: 'ws-1',
+          alias: 'my-page',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+        },
+        trx,
+      );
+      expect(shareAliasRepo.updateAlias).not.toHaveBeenCalled();
+      // self-heal still runs, keeping just the inserted row
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
+        'p-1',
+        'a-1',
+        'ws-1',
+        trx,
+      );
       expect(res).toMatchObject({ id: 'a-1' });
     });
 
-    it('is a no-op when the alias already points at the same page', async () => {
+    it('renames the existing row in place when editing to a free name (te -> ted)', async () => {
+      const { service, shareAliasRepo } = makeService();
+      // The new slug is free...
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      // ...but the page already owns an alias named `te`.
+      shareAliasRepo.findByPageId.mockResolvedValue({
+        id: 'a-1',
+        alias: 'te',
+        pageId: 'p-1',
+      });
+      shareAliasRepo.updateAlias.mockResolvedValue({
+        id: 'a-1',
+        alias: 'ted',
+        pageId: 'p-1',
+      });
+
+      const res = await service.setAlias({
+        workspaceId: 'ws-1',
+        pageId: 'p-1',
+        creatorId: 'u-1',
+        alias: 'ted',
+      });
+
+      // RENAME, not INSERT a second row.
+      expect(shareAliasRepo.insert).not.toHaveBeenCalled();
+      expect(shareAliasRepo.updateAlias).toHaveBeenCalledWith(
+        'a-1',
+        'ted',
+        'ws-1',
+        trx,
+      );
+      // ...and any other row for the page is reaped, so `te` cannot survive.
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
+        'p-1',
+        'a-1',
+        'ws-1',
+        trx,
+      );
+      expect(res).toMatchObject({ id: 'a-1', alias: 'ted' });
+    });
+
+    it('is a no-op when the alias already points at the same page (and self-heals)', async () => {
       const { service, shareAliasRepo } = makeService();
       const existing = { id: 'a-1', alias: 'foo', pageId: 'p-1' };
       shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(existing);
@@ -82,7 +148,45 @@ describe('ShareAliasService', () => {
 
       expect(res).toBe(existing);
       expect(shareAliasRepo.insert).not.toHaveBeenCalled();
+      expect(shareAliasRepo.updateAlias).not.toHaveBeenCalled();
       expect(shareAliasRepo.updatePageId).not.toHaveBeenCalled();
+      // self-heal reaps any legacy duplicate rows for the page
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
+        'p-1',
+        'a-1',
+        'ws-1',
+        trx,
+      );
+    });
+
+    it('self-heals a page with pre-existing duplicate rows down to one', async () => {
+      const { service, shareAliasRepo } = makeService();
+      // Name free; the page already has a (legacy) alias row we rename.
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      shareAliasRepo.findByPageId.mockResolvedValue({
+        id: 'a-keep',
+        alias: 'old',
+        pageId: 'p-1',
+      });
+      shareAliasRepo.updateAlias.mockResolvedValue({
+        id: 'a-keep',
+        alias: 'new',
+        pageId: 'p-1',
+      });
+
+      await service.setAlias({
+        workspaceId: 'ws-1',
+        pageId: 'p-1',
+        creatorId: 'u-1',
+        alias: 'new',
+      });
+
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
+        'p-1',
+        'a-keep',
+        'ws-1',
+        trx,
+      );
     });
 
     it('throws 409 with current target when name is taken and not confirmed', async () => {
@@ -134,6 +238,14 @@ describe('ShareAliasService', () => {
         'a-1',
         'p-1',
         'ws-1',
+        trx,
+      );
+      // the page's previous alias row(s) are reaped after the swap
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
+        'p-1',
+        'a-1',
+        'ws-1',
+        trx,
       );
       expect(res).toMatchObject({ pageId: 'p-1' });
     });
