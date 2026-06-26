@@ -145,7 +145,7 @@ export class WorkspaceService {
           status = WorkspaceStatus.Active;
           plan = 'standard';
           billingEmail = user.email;
-          settings = { ai: { generative: true, chat: true } };
+          settings = { ai: { chat: true } };
         }
 
         // create workspace
@@ -439,20 +439,6 @@ export class WorkspaceService {
         );
       }
 
-      if (typeof updateWorkspaceDto.generativeAi !== 'undefined') {
-        const prev = settingsBefore?.ai?.generative ?? false;
-        if (prev !== updateWorkspaceDto.generativeAi) {
-          before.generativeAi = prev;
-          after.generativeAi = updateWorkspaceDto.generativeAi;
-        }
-        await this.workspaceRepo.updateAiSettings(
-          workspaceId,
-          'generative',
-          updateWorkspaceDto.generativeAi,
-          trx,
-        );
-      }
-
       if (typeof updateWorkspaceDto.disablePublicSharing !== 'undefined') {
         const prev = settingsBefore?.sharing?.disabled ?? false;
         if (prev !== updateWorkspaceDto.disablePublicSharing) {
@@ -587,7 +573,6 @@ export class WorkspaceService {
 
       delete updateWorkspaceDto.restrictApiToAdmins;
       delete updateWorkspaceDto.aiSearch;
-      delete updateWorkspaceDto.generativeAi;
       delete updateWorkspaceDto.disablePublicSharing;
       delete updateWorkspaceDto.mcpEnabled;
       delete updateWorkspaceDto.allowMemberTemplates;

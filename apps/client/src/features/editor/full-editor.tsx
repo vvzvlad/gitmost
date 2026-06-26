@@ -77,9 +77,9 @@ export function FullEditor({
   const [user] = useAtom(userAtom);
   const workspace = useAtomValue(workspaceAtom);
   const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
-  // AI title generation reuses the generative AI flag (same gate as the on-page
-  // generative menu); the server enforces it too (#199).
-  const isTitleGenEnabled = workspace?.settings?.ai?.generative === true;
+  // AI title generation is gated by the general AI chat flag (the same toggle
+  // that enables the chat agent); the server enforces it too (#199).
+  const isTitleGenEnabled = workspace?.settings?.ai?.chat === true;
   const fullPageWidth = user.settings?.preferences?.fullPageWidth;
   const editorToolbarEnabled =
     user.settings?.preferences?.editorToolbar ?? false;
@@ -254,7 +254,7 @@ function PageByline({
         {showDictation && editor && (
           <DictationGroup editor={editor} color="gray" iconSize={20} />
         )}
-        {/* Shown only in edit mode when the workspace's generative AI flag is on,
+        {/* Shown only in edit mode when the workspace's AI chat flag is on,
             so AI title generation stays reachable from the byline (#199). */}
         {showTitleGen && (
           <GenerateTitleGroup pageId={pageId} color="gray" iconSize={20} />

@@ -10,8 +10,6 @@ export const readOnlyEditorAtom = atom<Editor | null>(null);
 
 export const yjsConnectionStatusAtom = atom<string>("");
 
-export const showAiMenuAtom = atom(false);
-
 export const showLinkMenuAtom = atom(false);
 
 // Current page's edit mode — initialized from the user's saved preference on

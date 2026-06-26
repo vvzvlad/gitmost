@@ -20,7 +20,6 @@ export interface IWorkspace {
   plan?: string;
   enforceMfa?: boolean;
   aiSearch?: boolean;
-  generativeAi?: boolean;
   disablePublicSharing?: boolean;
   mcpEnabled?: boolean;
   aiChat?: boolean;
@@ -61,7 +60,6 @@ export interface IWorkspaceApiSettings {
 
 export interface IWorkspaceAiSettings {
   search?: boolean;
-  generative?: boolean;
   mcp?: boolean;
   chat?: boolean;
   dictation?: boolean;

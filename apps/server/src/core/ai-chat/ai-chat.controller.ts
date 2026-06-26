@@ -319,8 +319,8 @@ export class AiChatController {
 
   /**
    * Generate a page title from supplied note content (#199). One-shot,
-   * non-streaming. Gated by the workspace AI flag (reusing settings.ai.generative,
-   * the same flag that gates the on-page generative AI menu); returns { title }.
+   * non-streaming. Gated by the AI chat flag (settings.ai.chat, the same toggle
+   * that enables the chat agent); returns { title }.
    * The endpoint NEVER writes the page — the client applies the title via the
    * existing /pages/update route (which enforces edit permission), so access
    * checks are not duplicated here. Throttled per user via AI_CHAT_THROTTLER.
@@ -334,9 +334,9 @@ export class AiChatController {
     @AuthWorkspace() workspace: Workspace,
   ): Promise<{ title: string }> {
     const settings = (workspace.settings ?? {}) as {
-      ai?: { generative?: boolean };
+      ai?: { chat?: boolean };
     };
-    if (settings.ai?.generative !== true) {
+    if (settings.ai?.chat !== true) {
       throw new ForbiddenException('AI title generation is disabled');
     }
     try {

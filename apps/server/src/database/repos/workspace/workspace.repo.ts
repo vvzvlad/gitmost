@@ -246,7 +246,7 @@ export class WorkspaceRepo {
    * otherwise re-serialize a `JSON.stringify`'d string, yielding a jsonb string
    * that `||` turns into an array). A `jsonb_typeof = 'object'` CASE self-heals
    * workspaces whose `settings.ai.provider` was previously corrupted into an
-   * array/string. Sibling `settings.ai.*` keys (search / generative / chat / mcp
+   * array/string. Sibling `settings.ai.*` keys (search / chat / mcp
    * / systemPrompt) and provider fields absent from the partial are preserved via
    * jsonb `||` merge.
    */

@@ -13,7 +13,7 @@ interface Props {
 /**
  * AI "generate title" button (#199). Reads the live editor content and applies a
  * model-suggested title immediately. Rendered in the page byline, only in edit
- * mode and when the workspace's generative AI flag is on.
+ * mode and when the workspace's AI chat flag is on.
  */
 export const GenerateTitleGroup: FC<Props> = ({
   pageId,

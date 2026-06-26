@@ -42,7 +42,7 @@ describe('cleanGeneratedTitle', () => {
 
 /**
  * Wiring spec for the #199 `POST /ai-chat/generate-page-title` endpoint. It must:
- * gate on settings.ai.generative (403 when off), delegate to the service when on,
+ * gate on settings.ai.chat (403 when off), delegate to the service when on,
  * rethrow HttpExceptions verbatim (e.g. AiNotConfiguredException -> 503), and map
  * any other provider/transport fault to a 503. Exercised by instantiating the
  * controller with hand-rolled mocks — no Nest graph, no DB.
@@ -50,7 +50,7 @@ describe('cleanGeneratedTitle', () => {
 describe('AiChatController.generatePageTitle', () => {
   const enabledWorkspace = {
     id: 'ws1',
-    settings: { ai: { generative: true } },
+    settings: { ai: { chat: true } },
   } as unknown as Workspace;
 
   function makeController(generate: jest.Mock) {
@@ -64,7 +64,7 @@ describe('AiChatController.generatePageTitle', () => {
     return { controller, aiChatService };
   }
 
-  it('forbids when the generative AI flag is off', async () => {
+  it('forbids when the AI chat flag is off', async () => {
     const generate = jest.fn();
     const { controller } = makeController(generate);
     const disabled = { id: 'ws1', settings: {} } as unknown as Workspace;
@@ -74,12 +74,12 @@ describe('AiChatController.generatePageTitle', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it('forbids when settings.ai.generative is anything but exactly true', async () => {
+  it('forbids when settings.ai.chat is anything but exactly true', async () => {
     const generate = jest.fn();
     const { controller } = makeController(generate);
     const ws = {
       id: 'ws1',
-      settings: { ai: { generative: 'yes' } },
+      settings: { ai: { chat: 'yes' } },
     } as unknown as Workspace;
     await expect(
       controller.generatePageTitle({ content: 'body' }, ws),
