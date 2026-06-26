@@ -72,8 +72,6 @@ const INTERRUPT_NOTE =
   'assume your previous response was complete, and do not silently restart the ' +
   'partial work — build on it or follow the new instruction.';
 
-export { INTERRUPT_NOTE };
-
 export interface BuildSystemPromptInput {
   workspace: Workspace;
   /**

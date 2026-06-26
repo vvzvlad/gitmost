@@ -1180,6 +1180,8 @@
   "Send when the agent finishes": "Send when the agent finishes",
   "Queue message": "Queue message",
   "Remove queued message": "Remove queued message",
+  "Send now": "Send now",
+  "Interrupt and send now": "Interrupt and send now",
   "Stop": "Stop",
   "Response stopped.": "Response stopped.",
   "Connection lost — the answer was interrupted.": "Connection lost — the answer was interrupted.",

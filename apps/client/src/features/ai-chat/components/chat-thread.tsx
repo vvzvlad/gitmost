@@ -217,11 +217,14 @@ export default function ChatThread({
   const interruptNextSendRef = useRef(false);
 
   // FIFO dequeue + send the next queued message (no-op when the queue is empty).
+  // Returns whether a message was actually sent, so callers can tell an empty
+  // dequeue (nothing to flush) from a real send.
   const flushNext = useCallback(() => {
     const { head, rest } = dequeue(queuedRef.current);
-    if (!head) return;
+    if (!head) return false;
     setQueue(rest);
     sendMessageRef.current?.({ text: head.text });
+    return true;
   }, [setQueue]);
 
   const enqueue = useCallback(
@@ -309,7 +312,11 @@ export default function ChatThread({
         flushOnAbortRef.current = false;
         // Suppress the "Response stopped." flash for an intentional interrupt.
         setStopNotice(null);
-        flushNext();
+        // If the promoted head vanished (e.g. the user removed it before the
+        // abort landed) flushNext sends nothing — clear the one-shot interrupt
+        // tag so it can't leak onto the next unrelated send. On a real send the
+        // tag is consumed by prepareSendMessagesRequest and stays untouched.
+        if (!flushNext()) interruptNextSendRef.current = false;
         return;
       }
       if (isAbort || isDisconnect || isError) return;
