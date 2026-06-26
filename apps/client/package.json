@@ -1,7 +1,7 @@
 {
   "name": "client",
   "private": true,
-  "version": "0.94.0",
+  "version": "0.94.1",
   "scripts": {
     "dev": "node scripts/copy-vad-assets.mjs && vite",
     "build": "node scripts/copy-vad-assets.mjs && tsc && vite build",
