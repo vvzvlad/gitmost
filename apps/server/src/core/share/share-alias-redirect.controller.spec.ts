@@ -124,6 +124,28 @@ describe('ShareAliasRedirectController.resolve', () => {
     expect(res.redirect).toHaveBeenCalledWith('/share/K/p/untitled-sid', 302);
   });
 
+  it('clamps the title-slug to the first 70 characters of the page title', async () => {
+    // 119-char title; only the first 70 chars must reach the slug. The 70-char
+    // boundary deliberately falls mid-word ("Entire" -> "entir") so the clamp is
+    // unambiguous: anything past char 70 ("...e Fiscal Year...") must be dropped.
+    const longTitle =
+      'The Comprehensive Quarterly Financial Performance Report For The Entire Fiscal Year Two Thousand Twenty Five And Beyond';
+    const { controller } = makeController({
+      resolved: {
+        share: { key: 'K' },
+        page: { slugId: 'sid', title: longTitle },
+      },
+    });
+    const res = makeRes();
+
+    await controller.resolve('promo', selfReq, res);
+
+    expect(res.redirect).toHaveBeenCalledWith(
+      '/share/K/p/the-comprehensive-quarterly-financial-performance-report-for-the-entir-sid',
+      302,
+    );
+  });
+
   it('streams the SPA index WITHOUT a 302 for an unknown/dangling/unreadable alias (no leak)', async () => {
     const { controller, shareAliasService } = makeController({ resolved: null });
     const res = makeRes();
