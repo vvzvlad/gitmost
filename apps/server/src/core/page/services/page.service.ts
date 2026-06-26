@@ -62,6 +62,16 @@ import {
   agentSourceFields,
 } from '../../../common/decorators/auth-provenance.decorator';
 
+// Hard upper bound on how deep the recursive page-tree CTEs (ancestor /
+// descendant traversals) may walk. Real page trees are only a handful of levels
+// deep, so this cap never truncates a legitimate result; it purely defends the
+// recursive CTEs against runaway iteration if a parent/child cycle ever exists
+// in the data (e.g. one slipped in before the move guard, #207 #8). Without it a
+// cycle makes `withRecursive` loop forever (hang / statement timeout), and the
+// move guard itself calls one of these CTEs — so a cycle would disable the very
+// guard meant to prevent it. Each CTE carries a depth counter and stops here.
+const MAX_PAGE_TREE_DEPTH = 10_000;
+
 // Advisory-lock namespace (the first key of pg_advisory_xact_lock) used to
 // serialize concurrent page moves within a single space so the cycle check and
 // the move UPDATE stay atomic (see movePage, #207 #7). A dedicated namespace
@@ -1030,6 +1040,9 @@ export class PageService {
             'spaceId',
             'deletedAt',
           ])
+          // Depth counter: bounds the walk so a parent/child cycle in the data
+          // can't make this recursive CTE loop forever (#207 #8).
+          .select(sql<number>`0`.as('depth'))
           .where('id', '=', childPageId)
           .where('deletedAt', 'is', null)
           .unionAll((exp) =>
@@ -1045,12 +1058,25 @@ export class PageService {
                 'p.spaceId',
                 'p.deletedAt',
               ])
+              .select(sql<number>`pa.depth + 1`.as('depth'))
               .innerJoin('page_ancestors as pa', 'pa.parentPageId', 'p.id')
-              .where('p.deletedAt', 'is', null),
+              .where('p.deletedAt', 'is', null)
+              .where(sql<number>`pa.depth`, '<', MAX_PAGE_TREE_DEPTH),
           ),
       )
       .selectFrom('page_ancestors')
-      .selectAll('page_ancestors')
+      // Explicit column list (not selectAll) so the internal `depth` counter
+      // never leaks into the breadcrumb result shape.
+      .select([
+        'id',
+        'slugId',
+        'title',
+        'icon',
+        'position',
+        'parentPageId',
+        'spaceId',
+        'deletedAt',
+      ])
       .select((eb) =>
         eb
           .exists(
@@ -1171,16 +1197,21 @@ export class PageService {
         db
           .selectFrom('pages')
           .select(['id'])
+          // Depth counter: bounds the walk so a parent/child cycle in the data
+          // can't make this recursive CTE loop forever (#207 #8).
+          .select(sql<number>`0`.as('depth'))
           .where('id', '=', pageId)
           .unionAll((exp) =>
             exp
               .selectFrom('pages as p')
               .select(['p.id'])
-              .innerJoin('page_descendants as pd', 'pd.id', 'p.parentPageId'),
+              .select(sql<number>`pd.depth + 1`.as('depth'))
+              .innerJoin('page_descendants as pd', 'pd.id', 'p.parentPageId')
+              .where(sql<number>`pd.depth`, '<', MAX_PAGE_TREE_DEPTH),
           ),
       )
       .selectFrom('page_descendants')
-      .selectAll()
+      .select(['id'])
       .execute();
 
     const pageIds = descendants.map((d) => d.id);
