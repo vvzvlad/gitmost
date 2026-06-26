@@ -283,37 +283,46 @@ Vite SPA. Code is organized by feature under `apps/client/src/features/*` (mirro
 
 ### Cutting a release
 
-The git tag is the source of truth for the displayed version (UI reads `git describe --tags`); the `package.json` bump is metadata only. Steps:
+The git tag is the source of truth for the displayed version (the client UI reads `git describe --tags` via `vite.config.ts`); the `package.json` bump is metadata that backs the server `/version` endpoint (`version.service.ts`).
 
-1. Make sure `main` is clean and pushed (`git status`, `git push`).
+**Golden rule — tag on `develop` first, merge to `main` afterwards.** Cut the version-bump commit on `develop`, put the tag on *that* commit, and push it. Merge `develop` into `main` later (it does not block the tag or the release). Because the tag is in `develop`'s ancestry from the moment it is created, `git describe` on `develop` — and the `ghcr.io/vvzvlad/gitmost:develop` image — reports the new version immediately, with **no back-merge dance**. Do **not** tag `main`'s merge commit; that is the mistake described in the pitfall below (we hit it twice).
+
+Steps:
+
+1. Make sure `develop` is up to date, clean, and pushed to **both** remotes (`git status`; `git push gitea develop && git push github develop`).
 2. Pick `vX.Y.Z` (SemVer): **minor** bump for a batch of features, **patch** for fixes only. Review what landed with `git log <last-tag>..HEAD --no-merges`.
-3. Bump `"version"` to `X.Y.Z` in the **root** `package.json`, `apps/client/package.json`, and `apps/server/package.json` (keep all three in sync). Leave `packages/mcp` alone — it is versioned independently. Commit with the bare version as the subject, e.g. `0.91.0` (matches past bump commits).
-4. Update `CHANGELOG.md` (Keep a Changelog format): add a `## [X.Y.Z] - YYYY-MM-DD` section summarising `git log vPREV..HEAD --no-merges` grouped by type (Breaking / Added / Changed / Fixed / Removed), and add the `compare/vPREV...vX.Y.Z` link at the bottom. Fold the bump + changelog into the release commit.
-5. Tag the release commit with a **lightweight** tag (existing release tags are lightweight): `git tag vX.Y.Z`.
-6. Push commit and tag: `git push origin main && git push origin vX.Y.Z`. Pushing the `v*` tag triggers `release.yml` (multi-arch GHCR images + a draft GitHub Release).
-7. **Back-merge the release into `develop`** so develop builds report the new version: `git checkout develop && git merge --no-ff main && git push origin develop` (push to Gitea as well if that is the canonical remote).
+3. Bump `"version"` to `X.Y.Z` in the **root** `package.json`, `apps/client/package.json`, and `apps/server/package.json` (keep all three in sync). Leave `packages/mcp` alone — it is versioned independently. Commit **on `develop`** with the bare version as the subject, e.g. `0.94.1` (matches past bump commits).
+4. For a real release (skip for a bare hotfix tag), update `CHANGELOG.md` (Keep a Changelog format): add a `## [X.Y.Z] - YYYY-MM-DD` section summarising `git log vPREV..HEAD --no-merges` grouped by type (Breaking / Added / Changed / Fixed / Removed), and the `compare/vPREV...vX.Y.Z` link at the bottom. Fold it into the bump commit.
+5. Tag that develop commit with a **lightweight** tag (existing release tags are lightweight): `git tag vX.Y.Z`.
+6. Push the branch **and** the tag to **both** writable remotes — `git push <branch>` does **not** push tags, and tags are per-remote:
+   ```bash
+   git push gitea develop && git push gitea vX.Y.Z
+   git push github develop && git push github vX.Y.Z
+   ```
+   Pushing the `v*` tag to `github` triggers `release.yml` (multi-arch GHCR images + a draft GitHub Release). The tag *must* exist on `github`, because the `:develop` and release images are built there by GitHub Actions and `git describe` on the runner only sees the tags present on `github` (not your local clone or `gitea`).
+7. Merge `develop` into `main` when ready (commonly later — this does not gate the release):
+   ```bash
+   git checkout main
+   git merge --ff-only develop   # or a merge commit if fast-forward is not possible
+   git push gitea main && git push github main
+   ```
+   The tag is already reachable from `main` (it lives in the `develop` history that `main` now contains), so `main` reports `vX.Y.Z` too — no extra tagging needed.
 
-#### Why develop keeps showing the *previous* version (and why step 7 matters)
+#### Pitfall: tagging `main` instead of `develop` (the mistake to avoid)
 
-The UI version is `git describe --tags --always` (see `vite.config.ts`), which walks **backwards from the current commit** and picks the **nearest tag reachable in that commit's ancestry**, then appends `-<commits-since-tag>-g<short-hash>`.
+`git describe --tags --always` (see `vite.config.ts`) walks **backwards from the current commit** and picks the **nearest tag reachable in that commit's ancestry**, then appends `-<commits-since-tag>-g<short-hash>`.
 
-The release tag (`vX.Y.Z`) is created on **`main`'s release merge commit**, and that commit is **not** in `develop`'s history. So until the release is back-merged, `git describe` on `develop` cannot see the new tag and falls back to the *previous* reachable tag. Result: every develop build — and the `ghcr.io/vvzvlad/gitmost:develop` image — keeps reporting e.g. `v0.91.0-NNN-g<hash>` even though `main` is already tagged `v0.93.0`. This is the classic git-flow pitfall: the version on `develop` does **not** advance just because a release was tagged on `main`.
+The wrong flow we fell into twice: merge `develop` into `main` *first*, then tag `main`'s **release merge commit**. That merge commit is **not** in `develop`'s history, so `git describe` on `develop` cannot see the new tag and falls back to the *previous* reachable one. Result: every develop build — and the `ghcr.io/vvzvlad/gitmost:develop` image — keeps reporting e.g. `v0.93.0-NNN-g<hash>` even though a release was "cut". Tagging on `develop` (the golden rule above) avoids this entirely: the tag is in `develop`'s ancestry from the start, and `main` still gets it once `develop` is merged in.
 
-Back-merging `main → develop` (step 7) pulls the tagged release commit into `develop`'s ancestry, after which develop builds correctly show `vX.Y.Z-NNN-g<hash>`. If `develop` already drifted (release tagged but never back-merged), just run step 7 now — no new tag is needed.
+Second gotcha — the tag must exist on the remote CI builds from. `git describe` names a tag **ref**, not just a commit. The `:develop` and release images are built by GitHub Actions (`develop.yml` / `release.yml`, `actions/checkout` with `fetch-depth: 0`), so the version they print depends on which tags exist **on the `github` remote** — not on your local clone or on `gitea`. `git push <branch>` does **not** push tags; push them explicitly to **each** remote (`gitea` and `github`). A tag that only lives on `gitea` is invisible to the GitHub build.
 
-##### The tag must also exist on the remote that CI builds from (multi-remote gotcha)
+If you already tagged `main` (or `develop` still shows the old version), recover without re-tagging:
 
-`git describe` names a tag **ref**, not just a commit — so the back-merge is *necessary but not sufficient*. The develop image is built by GitHub Actions (`develop.yml`, `actions/checkout` with `fetch-depth: 0`, then `git describe --tags --always`), so the version it prints depends on which tags exist **on the `github` remote**, not on your local clone or on `gitea`.
+1. Make the tagged commit reachable from `develop` — either back-merge `main → develop` (`git checkout develop && git merge --no-ff main`), or confirm the tagged commit is already an ancestor of `develop`.
+2. Make sure the tag exists on `github`: compare `git ls-remote --tags github` with `gitea`, and push the missing one (`git push github vX.Y.Z` / `git push gitea vX.Y.Z`). Pushing a `v*` tag to `github` also fires `release.yml` — expected, just be aware.
+3. Re-run the develop build (`gh workflow run Develop`, or push any commit to `develop`) so `git describe` re-resolves with the tag now in scope.
 
-This repo has two writable remotes — `gitea` (canonical, where commits land) and `github` (where the `:develop` and release images are built) — plus `upstream` (docmost, never push). **`git push <branch>` does NOT push tags**; tags must be pushed explicitly and *to each remote separately*. A release tag that only lives on `gitea` is invisible to the GitHub Actions build: even with the tagged commit fully in `develop`'s history (step 7 done), `git describe` on the GitHub runner falls back to the previous tag it *does* have, so the develop image keeps showing e.g. `v0.91.0-NNN` while `git describe` locally already says `v0.93.0-NN`.
-
-Fix / checklist when develop still shows the old version after a back-merge:
-
-1. Confirm the tag is missing on github: `git ls-remote --tags github` (compare with `gitea`).
-2. Push it there: `git push github vX.Y.Z` (and `git push gitea vX.Y.Z` if it is missing on gitea too). Note: pushing a `v*` tag to `github` also triggers `release.yml` (multi-arch GHCR images + draft Release) — expected, but be aware.
-3. Re-run the develop build (`gh workflow run Develop`, or push any commit to `develop`) so `git describe` re-resolves with the tag now present.
-
-(The `git push origin ...` in steps 6–7 above is shorthand — there is no `origin` remote here; substitute `gitea` **and** `github` as appropriate, and always push release tags to both.)
+(There is no `origin` remote here — push to `gitea` **and** `github` explicitly, and always push release tags to both.)
 
 ## Planning docs
 
