@@ -181,83 +181,113 @@ export class PersistenceExtension implements Extension {
       context?.actor,
     );
 
-    try {
-      await executeTx(this.db, async (trx) => {
-        page = await this.pageRepo.findById(pageId, {
-          withLock: true,
-          includeContent: true,
-          trx,
-        });
+    // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
+    // of the latest edit until this hook returns: hocuspocus destroys/unloads the
+    // doc right after onStoreDocument resolves (see storeDocumentHooks' finally
+    // -> unloadDocument). If a transient DB error (deadlock, serialization
+    // failure, dropped connection) is merely logged and swallowed, the function
+    // resolves "successfully", the doc is unloaded, and the edit is lost silently
+    // (#206 persist-1). Retrying here re-attempts the write while we still hold
+    // the doc; on total failure we clear `page` so the post-store side effects
+    // (badge broadcast, history snapshot) never report a save that didn't happen.
+    const MAX_STORE_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt++) {
+      try {
+        await executeTx(this.db, async (trx) => {
+          page = await this.pageRepo.findById(pageId, {
+            withLock: true,
+            includeContent: true,
+            trx,
+          });
 
-        if (!page) {
-          this.logger.error(`Page with id ${pageId} not found`);
-          return;
-        }
-
-        if (isDeepStrictEqual(tiptapJson, page.content)) {
-          page = null;
-          return;
-        }
-
-        let contributorIds = undefined;
-        try {
-          const existingContributors = page.contributorIds || [];
-          contributorIds = Array.from(
-            new Set([
-              ...existingContributors,
-              ...editingUserIds,
-              page.creatorId,
-            ]),
-          );
-        } catch (err) {
-          //this.logger.debug('Contributors error:' + err?.['message']);
-        }
-
-        // Approach A — boundary snapshot before the agent's first edit.
-        // When this store is the agent's and the page's currently persisted
-        // state was authored by a human, pin that human state as its own
-        // history version BEFORE the agent overwrites it. `page` still holds the
-        // OLD content/provenance here, so saveHistory(page) captures the
-        // pre-agent state tagged 'user'. The agent's new content is snapshotted
-        // later by the debounced PAGE_HISTORY job ('agent'). Skip if the prior
-        // state is already agent-authored (boundary already pinned on the
-        // user->agent transition), if the page is effectively empty, or if the
-        // latest existing snapshot already equals this human state (avoid
-        // duplicates).
-        if (lastUpdatedSource === 'agent' && page.lastUpdatedSource !== 'agent') {
-          const lastHistory = await this.pageHistoryRepo.findPageLastHistory(
-            pageId,
-            { includeContent: true, trx },
-          );
-          const humanBaselineMissing =
-            !lastHistory || !isDeepStrictEqual(lastHistory.content, page.content);
-          if (!isEmptyParagraphDoc(page.content as any) && humanBaselineMissing) {
-            await this.pageHistoryRepo.saveHistory(page, {
-              contributorIds: page.contributorIds ?? undefined,
-              trx,
-            });
+          if (!page) {
+            this.logger.error(`Page with id ${pageId} not found`);
+            return;
           }
-        }
 
-        await this.pageRepo.updatePage(
-          {
-            content: tiptapJson,
-            textContent: textContent,
-            ydoc: ydocState,
-            lastUpdatedById: context.user.id,
-            // Human stays the responsible author; these annotate the source.
-            lastUpdatedSource,
-            lastUpdatedAiChatId: context?.aiChatId ?? null,
-            contributorIds: contributorIds,
-          },
-          pageId,
-          trx,
+          if (isDeepStrictEqual(tiptapJson, page.content)) {
+            page = null;
+            return;
+          }
+
+          let contributorIds = undefined;
+          try {
+            const existingContributors = page.contributorIds || [];
+            contributorIds = Array.from(
+              new Set([
+                ...existingContributors,
+                ...editingUserIds,
+                page.creatorId,
+              ]),
+            );
+          } catch (err) {
+            //this.logger.debug('Contributors error:' + err?.['message']);
+          }
+
+          // Approach A — boundary snapshot before the agent's first edit.
+          // When this store is the agent's and the page's currently persisted
+          // state was authored by a human, pin that human state as its own
+          // history version BEFORE the agent overwrites it. `page` still holds
+          // the OLD content/provenance here, so saveHistory(page) captures the
+          // pre-agent state tagged 'user'. The agent's new content is
+          // snapshotted later by the debounced PAGE_HISTORY job ('agent'). Skip
+          // if the prior state is already agent-authored (boundary already
+          // pinned on the user->agent transition), if the page is effectively
+          // empty, or if the latest existing snapshot already equals this human
+          // state (avoid duplicates).
+          if (
+            lastUpdatedSource === 'agent' &&
+            page.lastUpdatedSource !== 'agent'
+          ) {
+            const lastHistory = await this.pageHistoryRepo.findPageLastHistory(
+              pageId,
+              { includeContent: true, trx },
+            );
+            const humanBaselineMissing =
+              !lastHistory ||
+              !isDeepStrictEqual(lastHistory.content, page.content);
+            if (
+              !isEmptyParagraphDoc(page.content as any) &&
+              humanBaselineMissing
+            ) {
+              await this.pageHistoryRepo.saveHistory(page, {
+                contributorIds: page.contributorIds ?? undefined,
+                trx,
+              });
+            }
+          }
+
+          await this.pageRepo.updatePage(
+            {
+              content: tiptapJson,
+              textContent: textContent,
+              ydoc: ydocState,
+              lastUpdatedById: context.user.id,
+              // Human stays the responsible author; these annotate the source.
+              lastUpdatedSource,
+              lastUpdatedAiChatId: context?.aiChatId ?? null,
+              contributorIds: contributorIds,
+            },
+            pageId,
+            trx,
+          );
+
+          this.logger.debug(`Page updated: ${pageId} - SlugId: ${page.slugId}`);
+        });
+        break;
+      } catch (err) {
+        this.logger.error(
+          `Failed to update page ${pageId} (attempt ${attempt}/${MAX_STORE_ATTEMPTS})`,
+          err,
         );
-
-        this.logger.debug(`Page updated: ${pageId} - SlugId: ${page.slugId}`);
-      });
-    } catch (err) {
-      this.logger.error(`Failed to update page ${pageId}`, err);
+        // The write failed and rolled back; clear the partially-assigned `page`
+        // so the post-store success branch below is skipped (no false "saved"
+        // broadcast / history snapshot for content that was never persisted).
+        page = null;
+        if (attempt < MAX_STORE_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+        }
+      }
     }
 
     if (page) {

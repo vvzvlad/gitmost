@@ -59,18 +59,44 @@ export function addUniqueIdsToDoc(
   ]);
   const contentNode = Node.fromJSON(schema, doc);
 
-  // Find nodes that don't have a unique ID
-  const nodesWithoutId = findChildren(contentNode, (node) => {
-    return !node.attrs[attributeName] && types.includes(node.type.name);
+  // All nodes of the configured types, in document order, so that the FIRST
+  // occurrence of any given id keeps it and later duplicates get reassigned.
+  const idNodes = findChildren(contentNode, (node) => {
+    return types.includes(node.type.name);
   });
 
-  // Edit the document to add unique IDs to the nodes that don't have a unique ID
+  // `transclusionSource` ids are cross-reference keys (a transclusionReference /
+  // the page_transclusions table resolves a source by this id), so rewriting one
+  // would orphan its references. We only fill a MISSING id for those, never
+  // reassign an existing one; plain block anchors (heading/paragraph) are safe to
+  // dedupe.
+  const NO_REASSIGN = new Set(["transclusionSource"]);
+
+  // Edit the document to (a) add ids where missing and (b) dedupe collisions. A
+  // duplicate id otherwise lets copy/paste/import produce two nodes sharing an
+  // id, so MCP addressed edits (patch_node / delete_node "before/after id") hit
+  // the wrong node or both (#206 editor-pm-7). This previously only filled
+  // missing ids and never deduplicated existing ones.
+  const seenIds = new Set<string>();
   let tr = EditorState.create({
     doc: contentNode,
   }).tr;
   // eslint-disable-next-line no-restricted-syntax
-  for (const { node, pos } of nodesWithoutId) {
-    tr = tr.setNodeAttribute(pos, attributeName, generateID({ node, pos }));
+  for (const { node, pos } of idNodes) {
+    const currentId = node.attrs[attributeName];
+    const isDuplicate = currentId != null && seenIds.has(currentId);
+    const needsNewId =
+      currentId == null || (isDuplicate && !NO_REASSIGN.has(node.type.name));
+
+    if (needsNewId) {
+      // setNodeAttribute only changes attributes (no size change), so positions
+      // from the original node stay valid across the whole loop.
+      const newId = generateID({ node, pos });
+      tr = tr.setNodeAttribute(pos, attributeName, newId);
+      seenIds.add(newId);
+    } else if (currentId != null) {
+      seenIds.add(currentId);
+    }
   }
 
   // Return the updated document

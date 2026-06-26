@@ -76,6 +76,19 @@ export function applyMoveTreeNode(
   const oldParentId = (sourceBefore as SpaceTreeNode).parentPageId ?? null;
   const newParentId = payload.parentId as string | null;
 
+  // Cyclic / out-of-order move guard (#206 ui-state-races-1): if the
+  // authoritative new parent is currently INSIDE the moved node's own subtree on
+  // this client (e.g. server moved X under Y then Y under X and the events
+  // arrived such that Y is still nested in X here), re-parenting is impossible to
+  // represent locally. `placeByPosition` returns `prev` for this, but the
+  // `placed === prev` fallback below would then `remove` the source — dropping
+  // the node AND every descendant (incl. the would-be parent) silently. Leave the
+  // tree untouched instead; a later corrective event or a reconnect refetch
+  // reconciles it. Never delete a subtree we cannot safely re-place.
+  if (newParentId && treeModel.isDescendant(prev, payload.id, newParentId)) {
+    return prev;
+  }
+
   // Place the node by its fractional `position` among the new siblings — NOT by
   // the sender's absolute `index` (the sender computed that against its own
   // loaded set, which differs from this receiver's). Using the position keeps

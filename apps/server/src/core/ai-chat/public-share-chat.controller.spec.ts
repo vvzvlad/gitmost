@@ -34,6 +34,7 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
     resolveShareRole?: jest.Mock;
     getShareChatModel?: jest.Mock;
     tryConsumeWorkspaceQuota?: jest.Mock;
+    withinShareTokenBudget?: jest.Mock;
   } = {}) {
     const aiSettings = {
       isPublicShareAssistantEnabled: jest
@@ -65,6 +66,8 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
         over.getShareChatModel ?? jest.fn().mockResolvedValue('MODEL'),
       tryConsumeWorkspaceQuota:
         over.tryConsumeWorkspaceQuota ?? jest.fn().mockResolvedValue(true),
+      withinShareTokenBudget:
+        over.withinShareTokenBudget ?? jest.fn().mockResolvedValue(true),
     };
     const deps: ShareAssistantDeps = {
       aiSettings: aiSettings as never,
@@ -189,6 +192,39 @@ describe('resolveShareAssistantRequest (extracted controller funnel)', () => {
     // The quota gate ran AFTER the model resolved (provider configured) but the
     // function returns/throws before producing a streamable request.
     expect(publicShareChat.tryConsumeWorkspaceQuota).toHaveBeenCalledWith('ws-1');
+  });
+
+  it('withinShareTokenBudget false => 429 thrown BEFORE any stream (cost cap, #159 #5)', async () => {
+    const { deps, publicShareChat } = makeDeps({
+      withinShareTokenBudget: jest.fn().mockResolvedValue(false),
+    });
+    expect(await statusOf(deps, body())).toBe(429);
+    expect(publicShareChat.withinShareTokenBudget).toHaveBeenCalledWith('ws-1');
+    // The token budget is the COST backstop: an over-budget workspace must be
+    // rejected WITHOUT consuming a request slot, so the request cap never runs.
+    expect(publicShareChat.tryConsumeWorkspaceQuota).not.toHaveBeenCalled();
+  });
+
+  it('the token budget is checked BEFORE the request cap (over-budget wins, no slot spent)', async () => {
+    // Over budget AND the request cap would also reject: the read-only budget
+    // gate must win so the (mutating) request-slot consume is never reached.
+    const { deps, publicShareChat } = makeDeps({
+      withinShareTokenBudget: jest.fn().mockResolvedValue(false),
+      tryConsumeWorkspaceQuota: jest.fn().mockResolvedValue(false),
+    });
+    expect(await statusOf(deps, body())).toBe(429);
+    expect(publicShareChat.tryConsumeWorkspaceQuota).not.toHaveBeenCalled();
+  });
+
+  it('the token-budget gate is checked BEFORE the payload caps (429 wins over 413)', async () => {
+    const { deps } = makeDeps({
+      withinShareTokenBudget: jest.fn().mockResolvedValue(false),
+    });
+    const huge = {
+      role: 'user',
+      parts: [{ type: 'text', text: 'x'.repeat(MAX_SHARE_MESSAGE_CHARS + 1) }],
+    };
+    expect(await statusOf(deps, body({ messages: [huge] }))).toBe(429);
   });
 
   it('messages over MAX_SHARE_MESSAGES => 413', async () => {

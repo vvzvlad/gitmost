@@ -120,18 +120,25 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
     const tools = await buildTools();
     const deletePage = tools.deletePage;
 
-    // The Zod input schema only allows `pageId`; parsing strips/ignores extra
-    // keys, so a permanent/force flag is never part of the validated input.
+    // The wrapped input schema (modelFriendlyInput) only allows `pageId`;
+    // validation strips/ignores extra keys, so a permanent/force flag is never
+    // part of the validated input handed to execute.
     const schema = (deletePage as unknown as { inputSchema: unknown })
       .inputSchema as {
-      parse: (v: unknown) => Record<string, unknown>;
+      validate: (
+        v: unknown,
+      ) =>
+        | { success: boolean; value?: Record<string, unknown> }
+        | Promise<{ success: boolean; value?: Record<string, unknown> }>;
     };
-    const parsed = schema.parse({
+    const result = await schema.validate({
       pageId: 'page-789',
       permanentlyDelete: true,
       forceDelete: true,
     });
 
+    expect(result.success).toBe(true);
+    const parsed = result.value as Record<string, unknown>;
     expect(parsed).toHaveProperty('pageId', 'page-789');
     expect(parsed).not.toHaveProperty('permanentlyDelete');
     expect(parsed).not.toHaveProperty('forceDelete');
@@ -207,19 +214,26 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
     const tools = await buildTools();
     const transformPage = tools.transformPage;
 
-    // The Zod input schema only allows pageId/transformJs/dryRun; parsing
-    // strips unknown keys, so deleteComments can never reach the client.
+    // The wrapped input schema only allows pageId/transformJs/dryRun;
+    // validation strips unknown keys, so deleteComments can never reach the
+    // client.
     const schema = (transformPage as unknown as { inputSchema: unknown })
       .inputSchema as {
-      parse: (v: unknown) => Record<string, unknown>;
+      validate: (
+        v: unknown,
+      ) =>
+        | { success: boolean; value?: Record<string, unknown> }
+        | Promise<{ success: boolean; value?: Record<string, unknown> }>;
     };
-    const parsed = schema.parse({
+    const result = await schema.validate({
       pageId: 'p',
       transformJs: '(d)=>d',
       dryRun: true,
       deleteComments: true,
     });
 
+    expect(result.success).toBe(true);
+    const parsed = result.value as Record<string, unknown>;
     expect(parsed).toHaveProperty('pageId', 'p');
     expect(parsed).not.toHaveProperty('deleteComments');
   });
@@ -393,5 +407,97 @@ describe('AiChatToolsService node-arg JSON-string coercion', () => {
       ),
     ).rejects.toThrow('content was a string but not valid JSON');
     expect(updatePageJsonCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * Model-friendly tool-call validation (#190): when the model drops a required
+ * `pageId` in a parallel/batch tool call, the built-in input schema must return
+ * a CLEAR, actionable message (naming the parameter, reminding it not to drop
+ * ids in batches) instead of zod's raw "expected string, received undefined" —
+ * while a valid call still validates. This is wired centrally via
+ * modelFriendlyInput, so it applies to every in-app tool; createComment (the
+ * tool from the bug report) and a sharedTool-built tool (getPage's sibling
+ * getOutline) are exercised here end-to-end through forUser().
+ */
+describe('AiChatToolsService model-friendly input validation (#190)', () => {
+  const fakeClient: Partial<DocmostClientLike> = {};
+  const tokenServiceStub = {
+    generateAccessToken: jest.fn().mockResolvedValue('access-token'),
+    generateCollabToken: jest.fn().mockResolvedValue('collab-token'),
+  };
+  let service: AiChatToolsService;
+
+  beforeEach(() => {
+    jest.spyOn(loader, 'loadDocmostMcp').mockResolvedValue(
+      mockLoaded(function () {
+        return fakeClient as DocmostClientLike;
+      } as unknown as loader.DocmostClientCtor),
+    );
+    service = new AiChatToolsService(
+      tokenServiceStub as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  function buildTools() {
+    return service.forUser(
+      { id: 'user-1', email: 'u@example.com', workspaceId: 'ws-1' } as never,
+      'session-1',
+      'ws-1',
+      'chat-1',
+    );
+  }
+
+  // The AI SDK Schema produced by modelFriendlyInput exposes `validate`.
+  type ValidatableSchema = {
+    validate: (
+      v: unknown,
+    ) =>
+      | { success: boolean; value?: unknown; error?: Error }
+      | Promise<{ success: boolean; value?: unknown; error?: Error }>;
+  };
+  const inputSchemaOf = (t: unknown) =>
+    (t as { inputSchema: unknown }).inputSchema as ValidatableSchema;
+
+  it('createComment: a dropped pageId yields a clear, model-actionable message', async () => {
+    const tools = await buildTools();
+    // The exact failing shape from the bug report's second parallel batch:
+    // content + selection, but pageId silently dropped.
+    const result = await inputSchemaOf(tools.createComment).validate({
+      content: 'A remark',
+      selection: 'титановый проводник',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('parameter "pageId": missing (required)');
+    expect(result.error?.message).toContain('parallel/batch tool calls');
+    // Not the raw zod text the model previously received.
+    expect(result.error?.message).not.toContain('received undefined');
+  });
+
+  it('createComment: a valid call with pageId validates successfully', async () => {
+    const tools = await buildTools();
+    const result = await inputSchemaOf(tools.createComment).validate({
+      pageId: '019efe44-0000-0000-0000-000000000000',
+      content: 'A remark',
+      selection: 'титановый проводник',
+    });
+    expect(result.success).toBe(true);
+    expect(result.value).toMatchObject({
+      pageId: '019efe44-0000-0000-0000-000000000000',
+      content: 'A remark',
+    });
+  });
+
+  it('sharedTool-built tools (getOutline) also get the friendly message on a dropped pageId', async () => {
+    const tools = await buildTools();
+    const result = await inputSchemaOf(tools.getOutline).validate({});
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('parameter "pageId": missing (required)');
   });
 });

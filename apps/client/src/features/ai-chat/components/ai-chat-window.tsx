@@ -193,6 +193,7 @@ export default function AiChatWindow() {
   const {
     threadKey,
     waitingForHistory,
+    startFreshThread,
     onTurnFinished,
     onServerChatId,
     cancelPendingAdoption,
@@ -215,12 +216,25 @@ export default function AiChatWindow() {
   // just-failed chat after they chose a fresh one.
   const startNewChat = useCallback((): void => {
     cancelPendingAdoption();
+    // Force a fresh, empty thread UNCONDITIONALLY (#161). Pressing "New chat"
+    // while a brand-new chat's first turn is still streaming leaves activeChatId
+    // null (the real id is adopted only at turn end), so setActiveChatId(null)
+    // alone is a no-op and the reconciler never remounts — the chat/stream/history
+    // would persist and only the role badge would drop. This always remounts the
+    // thread into a clean new chat.
+    startFreshThread();
     setActiveChatId(null);
     setHistoryOpen(false);
     setDraft("");
     // Default the picker back to "Universal assistant" for the fresh chat.
     setSelectedRoleId(null);
-  }, [cancelPendingAdoption, setActiveChatId, setDraft, setSelectedRoleId]);
+  }, [
+    cancelPendingAdoption,
+    startFreshThread,
+    setActiveChatId,
+    setDraft,
+    setSelectedRoleId,
+  ]);
 
   const selectChat = useCallback(
     (chatId: string): void => {
@@ -622,6 +636,7 @@ export default function AiChatWindow() {
           ) : (
             <ChatThread
               key={threadKey}
+              threadKey={threadKey}
               chatId={activeChatId}
               initialRows={activeChatId ? messageRows : []}
               openPage={openPage}

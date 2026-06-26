@@ -11,8 +11,11 @@ import {
 import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
 import {
   PublicShareWorkspaceLimiter,
+  PublicShareWorkspaceTokenBudget,
   resolveShareAiWorkspaceMax,
+  resolveShareAiWorkspaceTokenBudget,
   SHARE_AI_WORKSPACE_MAX_PER_WINDOW,
+  SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT,
 } from './public-share-workspace-limiter';
 
 /**
@@ -543,6 +546,228 @@ describe('PublicShareWorkspaceLimiter (cluster-wide sliding-window per-workspace
     expect(await limiter.tryConsume('ws-1')).toBe(false);
     expect(errSpy).toHaveBeenCalled(); // the failure MUST be logged, not swallowed
     errSpy.mockRestore();
+  });
+});
+
+/**
+ * In-memory fake of the ioredis slice the TOKEN budget uses. Unlike the request
+ * limiter (one Lua), the budget runs TWO scripts over the same sorted set:
+ *  - the read-only CHECK (sums the token counts encoded as each member's leading
+ *    integer, admits while the sum is under budget, never mutates), and
+ *  - the RECORD (ZADDs a finished turn's `<tokens>:<unique>` member).
+ * The fake faithfully reproduces both (branching on the script body) so the spec
+ * exercises the REAL budget math, not a re-implementation.
+ */
+class FakeTokenRedis {
+  private sets = new Map<string, Array<{ score: number; member: string }>>();
+
+  async eval(
+    script: string,
+    _numKeys: number,
+    key: string,
+    nowStr: string,
+    windowMsStr: string,
+    arg3: string,
+  ): Promise<number> {
+    const now = Number(nowStr);
+    const windowMs = Number(windowMsStr);
+    const cutoff = now - windowMs;
+    const arr = (this.sets.get(key) ?? []).filter((e) => e.score > cutoff);
+    if (script.includes('ZADD')) {
+      // RECORD: arg3 is the `<tokens>:<unique>` member; append at score=now.
+      arr.push({ score: now, member: arg3 });
+      this.sets.set(key, arr);
+      return 1;
+    }
+    // CHECK: arg3 is the budget; sum the leading integer of each survivor.
+    const budget = Number(arg3);
+    this.sets.set(key, arr);
+    const total = arr.reduce((sum, e) => {
+      const m = /^(\d+)/.exec(e.member);
+      return sum + (m ? Number(m[1]) : 0);
+    }, 0);
+    return total >= budget ? 0 : 1;
+  }
+}
+
+function makeTokenBudget(budget: number, windowMs: number, clock: () => number) {
+  const redis = new FakeTokenRedis() as unknown as import('ioredis').Redis;
+  return new PublicShareWorkspaceTokenBudget(redis, budget, windowMs, clock);
+}
+
+describe('resolveShareAiWorkspaceTokenBudget (env-overridable per-day token budget)', () => {
+  const KEY = 'SHARE_AI_WORKSPACE_TOKEN_BUDGET_PER_DAY';
+  const saved = process.env[KEY];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  it('falls back to the default when unset', () => {
+    delete process.env[KEY];
+    expect(resolveShareAiWorkspaceTokenBudget()).toBe(
+      SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT,
+    );
+  });
+
+  it('honors a positive override', () => {
+    process.env[KEY] = '250000';
+    expect(resolveShareAiWorkspaceTokenBudget()).toBe(250000);
+  });
+
+  it('ignores a non-positive / unparseable value (uses the default)', () => {
+    for (const bad of ['0', '-5', 'nope', '']) {
+      process.env[KEY] = bad;
+      expect(resolveShareAiWorkspaceTokenBudget()).toBe(
+        SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT,
+      );
+    }
+  });
+});
+
+describe('PublicShareWorkspaceTokenBudget (cluster-wide rolling-day token cap)', () => {
+  it('admits while under budget and rejects once the recorded spend reaches it', async () => {
+    const budget = makeTokenBudget(1000, 60_000, () => 1_000);
+    expect(await budget.withinBudget('ws-1')).toBe(true); // nothing spent yet
+    await budget.record('ws-1', 600);
+    expect(await budget.withinBudget('ws-1')).toBe(true); // 600 < 1000
+    await budget.record('ws-1', 400);
+    // 1000 >= 1000: the budget is exhausted, so the next turn is rejected up front.
+    expect(await budget.withinBudget('ws-1')).toBe(false);
+  });
+
+  it('counts TOKENS, not requests: one fat turn can exhaust the budget alone', async () => {
+    const budget = makeTokenBudget(1000, 60_000, () => 1_000);
+    // A single accepted turn re-sends the whole transcript across 5 steps; here
+    // it lands as 1200 tokens — already over the day budget on its own.
+    await budget.record('ws-1', 1200);
+    expect(await budget.withinBudget('ws-1')).toBe(false);
+  });
+
+  it('ages out spend older than the window so the budget recovers', async () => {
+    let now = 0;
+    const budget = makeTokenBudget(1000, 60_000, () => now);
+    await budget.record('ws-1', 1000); // at budget
+    now += 59_999; // still inside the day window
+    expect(await budget.withinBudget('ws-1')).toBe(false);
+    now += 2; // the spend is now strictly older than windowMs
+    expect(await budget.withinBudget('ws-1')).toBe(true);
+  });
+
+  it('ignores non-positive / non-finite usage (never records phantom spend)', async () => {
+    const budget = makeTokenBudget(1000, 60_000, () => 1_000);
+    await budget.record('ws-1', 0);
+    await budget.record('ws-1', -50);
+    await budget.record('ws-1', Number.NaN);
+    await budget.record('ws-1', Infinity);
+    expect(await budget.withinBudget('ws-1')).toBe(true); // nothing accumulated
+  });
+
+  it('keeps separate budgets per workspace', async () => {
+    const budget = makeTokenBudget(500, 60_000, () => 1_000);
+    await budget.record('ws-a', 500); // ws-a exhausted
+    expect(await budget.withinBudget('ws-a')).toBe(false);
+    expect(await budget.withinBudget('ws-b')).toBe(true); // ws-b untouched
+  });
+
+  it('FAILS CLOSED on the read-only check when Redis rejects', async () => {
+    const failingRedis = {
+      eval: () => Promise.reject(new Error('redis down')),
+    } as unknown as import('ioredis').Redis;
+    const budget = new PublicShareWorkspaceTokenBudget(
+      failingRedis,
+      1000,
+      60_000,
+      () => 1_000,
+    );
+    const errSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    expect(await budget.withinBudget('ws-1')).toBe(false);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('SWALLOWS a record failure (best-effort post-accounting, never throws)', async () => {
+    // The turn already streamed; a record failure must not surface to the caller.
+    const failingRedis = {
+      eval: () => Promise.reject(new Error('redis down')),
+    } as unknown as import('ioredis').Redis;
+    const budget = new PublicShareWorkspaceTokenBudget(
+      failingRedis,
+      1000,
+      60_000,
+      () => 1_000,
+    );
+    const errSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    await expect(budget.record('ws-1', 100)).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+});
+
+describe('PublicShareChatService.withinShareTokenBudget / recordShareTokens', () => {
+  it('delegates the cost gate + accounting to the redis-backed token budget', async () => {
+    const redis = new FakeTokenRedis();
+    const redisService = { getOrThrow: () => redis } as never;
+    const service = new PublicShareChatService(
+      {} as never,
+      {} as never,
+      {} as never,
+      redisService,
+      {} as never,
+    );
+    // Default budget is large, so a fresh workspace is under budget; recording a
+    // modest spend keeps it under budget (asserts the wiring the controller +
+    // onFinish rely on).
+    expect(await service.withinShareTokenBudget('ws-1')).toBe(true);
+    await service.recordShareTokens('ws-1', 1234);
+    expect(await service.withinShareTokenBudget('ws-1')).toBe(true);
+  });
+});
+
+describe('PublicShareChatService.recordTurnUsage (streamText onFinish accounting)', () => {
+  function makeService() {
+    const redisService = { getOrThrow: () => new FakeTokenRedis() } as never;
+    const service = new PublicShareChatService(
+      {} as never,
+      {} as never,
+      {} as never,
+      redisService,
+      {} as never,
+    );
+    const recordSpy = jest
+      .spyOn(service, 'recordShareTokens')
+      .mockResolvedValue(undefined);
+    return { service, recordSpy };
+  }
+
+  it('sums input+output when the provider omits totalTokens', () => {
+    const { service, recordSpy } = makeService();
+    // The onFinish payload shape: a totalUsage with per-component counts but no
+    // authoritative total (provider omitted it).
+    service.recordTurnUsage('ws-1', { inputTokens: 1200, outputTokens: 300 });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 1500);
+  });
+
+  it('treats missing input/output components as 0 in the fallback sum', () => {
+    const { service, recordSpy } = makeService();
+    service.recordTurnUsage('ws-1', { outputTokens: 42 });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 42);
+  });
+
+  it('prefers the authoritative totalTokens when present (not the sum)', () => {
+    const { service, recordSpy } = makeService();
+    // totalTokens is the provider's authoritative figure and may differ from a
+    // naive input+output sum (e.g. cached/ reasoning tokens); it must win.
+    service.recordTurnUsage('ws-1', {
+      totalTokens: 5000,
+      inputTokens: 1200,
+      outputTokens: 300,
+    });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 5000);
   });
 });
 
