@@ -728,6 +728,49 @@ describe('PublicShareChatService.withinShareTokenBudget / recordShareTokens', ()
   });
 });
 
+describe('PublicShareChatService.recordTurnUsage (streamText onFinish accounting)', () => {
+  function makeService() {
+    const redisService = { getOrThrow: () => new FakeTokenRedis() } as never;
+    const service = new PublicShareChatService(
+      {} as never,
+      {} as never,
+      {} as never,
+      redisService,
+      {} as never,
+    );
+    const recordSpy = jest
+      .spyOn(service, 'recordShareTokens')
+      .mockResolvedValue(undefined);
+    return { service, recordSpy };
+  }
+
+  it('sums input+output when the provider omits totalTokens', () => {
+    const { service, recordSpy } = makeService();
+    // The onFinish payload shape: a totalUsage with per-component counts but no
+    // authoritative total (provider omitted it).
+    service.recordTurnUsage('ws-1', { inputTokens: 1200, outputTokens: 300 });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 1500);
+  });
+
+  it('treats missing input/output components as 0 in the fallback sum', () => {
+    const { service, recordSpy } = makeService();
+    service.recordTurnUsage('ws-1', { outputTokens: 42 });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 42);
+  });
+
+  it('prefers the authoritative totalTokens when present (not the sum)', () => {
+    const { service, recordSpy } = makeService();
+    // totalTokens is the provider's authoritative figure and may differ from a
+    // naive input+output sum (e.g. cached/ reasoning tokens); it must win.
+    service.recordTurnUsage('ws-1', {
+      totalTokens: 5000,
+      inputTokens: 1200,
+      outputTokens: 300,
+    });
+    expect(recordSpy).toHaveBeenCalledWith('ws-1', 5000);
+  });
+});
+
 describe('PublicShareChatService.tryConsumeWorkspaceQuota', () => {
   it('delegates to the redis-backed per-workspace limiter', async () => {
     const redis = new FakeRedis();

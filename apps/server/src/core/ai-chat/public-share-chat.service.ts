@@ -177,6 +177,29 @@ export class PublicShareChatService {
   }
 
   /**
+   * `streamText` onFinish hook body: account a finished turn's REAL token spend
+   * (input re-sent per step + output, summed across all steps) against the
+   * per-workspace rolling-day budget, so a future turn over budget is rejected up
+   * front (issue #159, finding #5). `totalUsage` fields are `number | undefined`;
+   * fall back to the sum of input+output when the provider omits `totalTokens`.
+   * Fire-and-forget: the turn already streamed, so a record failure must not
+   * break it.
+   */
+  recordTurnUsage(
+    workspaceId: string,
+    totalUsage: {
+      totalTokens?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    },
+  ): void {
+    const tokens =
+      totalUsage.totalTokens ??
+      (totalUsage.inputTokens ?? 0) + (totalUsage.outputTokens ?? 0);
+    void this.recordShareTokens(workspaceId, tokens);
+  }
+
+  /**
    * Resolve the admin-selected agent role for the anonymous public-share
    * assistant, scoped to the workspace and soft-delete aware. Returns null when
    * no role is configured, or when the referenced role is missing or disabled —
@@ -263,18 +286,8 @@ export class PublicShareChatService {
         // bill even if the per-IP throttle is evaded; worst case = steps × this.
         maxOutputTokens: resolveShareAiMaxOutputTokens(),
         abortSignal: signal,
-        onFinish: ({ totalUsage }) => {
-          // Account the turn's REAL token spend (input re-sent per step + output,
-          // summed across all steps) against the per-workspace rolling-day budget
-          // so a future turn over budget is rejected up front (issue #159 #5).
-          // totalUsage fields are `number | undefined`; fall back to the sum of
-          // input+output when the provider omits totalTokens. Fire-and-forget:
-          // the turn already streamed, so a record failure must not break it.
-          const u = totalUsage ?? ({} as typeof totalUsage);
-          const tokens =
-            u?.totalTokens ?? (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
-          void this.recordShareTokens(workspaceId, tokens);
-        },
+        onFinish: ({ totalUsage }) =>
+          this.recordTurnUsage(workspaceId, totalUsage),
         onError: ({ error }) => {
           // Reuse the shared formatter so provider error formatting stays
           // unified (statusCode + body) with the authenticated path.
