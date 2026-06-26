@@ -123,6 +123,26 @@ describe('TemporaryNoteCleanupService.sweepExpiredTemporaryNotes', () => {
     expect(pageRepo.removePage).not.toHaveBeenCalled();
   });
 
+  it('does NOT trash a note re-armed to a future deadline in the race window', async () => {
+    // The batch SELECT saw the note as expired, but before its turn in the loop
+    // the user disarmed it and re-armed it to a fresh, still-future deadline
+    // (temporary_expires_at -> now + 1h). The deadline re-read must catch that
+    // the note is no longer expired and skip the delete so the keep wins.
+    const expired = [{ id: 'p1', creatorId: 'u1', workspaceId: 'w1' }];
+    const { builder, reReadFirst } = makeDbStub(expired);
+    reReadFirst.mockResolvedValueOnce({
+      temporaryExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      deletedAt: null,
+    });
+    const pageRepo = { removePage: jest.fn() } as any;
+    const service = new TemporaryNoteCleanupService(builder, pageRepo);
+
+    await service.sweepExpiredTemporaryNotes();
+
+    expect(reReadFirst).toHaveBeenCalledTimes(1);
+    expect(pageRepo.removePage).not.toHaveBeenCalled();
+  });
+
   it('does nothing when no notes are expired', async () => {
     const { builder } = makeDbStub([]);
     const pageRepo = { removePage: jest.fn() } as any;
