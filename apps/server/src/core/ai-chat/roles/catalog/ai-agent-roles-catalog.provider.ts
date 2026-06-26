@@ -1,0 +1,266 @@
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+} from '@nestjs/common';
+import { EnvironmentService } from '../../../../integrations/environment/environment.service';
+import {
+  CatalogBundleFile,
+  CatalogBundleMeta,
+  CatalogIndex,
+  CatalogRole,
+} from './catalog-types';
+
+/** Identifier shape allowed in any path/URL segment (bundleId, language). The
+ *  ONLY characters that can appear in a fetched path — the path-traversal and
+ *  SSRF guard. Anything else is rejected before a path/URL is built. */
+const SEGMENT_RE = /^[a-z0-9-]+$/;
+
+/** Remote fetch timeout and response-size cap. A curated catalog file is tiny;
+ *  the cap stops a hostile/misconfigured source from streaming unbounded data. */
+const FETCH_TIMEOUT_MS = 10_000;
+const MAX_BYTES = 1_000_000;
+
+/**
+ * Fetches + validates the agent-roles catalog from its configured source. The
+ * source location (EnvironmentService.getAiAgentRolesCatalogSource()) is either
+ * an http(s):// base URL (REMOTE) or a local filesystem directory (LOCAL; the
+ * empty default resolves to the in-repo `agent-roles-catalog/` folder).
+ *
+ * The catalog is UNTRUSTED input: every file is JSON-parsed and run through a
+ * hand-written type guard before any field is exposed, and every dynamic path
+ * segment is validated against SEGMENT_RE up front (path-traversal + SSRF).
+ */
+@Injectable()
+export class AiAgentRolesCatalogProvider {
+  constructor(private readonly environmentService: EnvironmentService) {}
+
+  /** Read + validate the top-level index (`index.json`). */
+  async fetchIndex(): Promise<CatalogIndex> {
+    const raw = await this.readRelative('index.json');
+    const parsed = this.parseJson(raw, 'index.json');
+    if (!isCatalogIndex(parsed)) {
+      throw new BadGatewayException(
+        'Agent roles catalog index is malformed (index.json)',
+      );
+    }
+    return parsed;
+  }
+
+  /** Read + validate one language file (`bundles/<bundleId>/<language>.json`). */
+  async fetchBundle(
+    bundleId: string,
+    language: string,
+  ): Promise<CatalogBundleFile> {
+    // SECURITY: validate BEFORE building any path/URL (path-traversal + SSRF).
+    this.assertSegment(bundleId, 'bundleId');
+    this.assertSegment(language, 'language');
+    const rel = `bundles/${bundleId}/${language}.json`;
+    const raw = await this.readRelative(rel);
+    const parsed = this.parseJson(raw, rel);
+    if (!isCatalogBundleFile(parsed)) {
+      throw new BadGatewayException(
+        `Agent roles catalog bundle is malformed (${rel})`,
+      );
+    }
+    return parsed;
+  }
+
+  /** Reject a segment that is not a safe `[a-z0-9-]+` identifier. */
+  private assertSegment(value: string, field: string): void {
+    if (typeof value !== 'string' || !SEGMENT_RE.test(value)) {
+      throw new BadRequestException(`Invalid ${field}`);
+    }
+  }
+
+  /** JSON.parse with a clear BadGateway on malformed content. */
+  private parseJson(raw: string, rel: string): unknown {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new BadGatewayException(
+        `Agent roles catalog file is not valid JSON (${rel})`,
+      );
+    }
+  }
+
+  /** Read a relative catalog path as text from the configured source. */
+  private async readRelative(rel: string): Promise<string> {
+    const source = this.environmentService
+      .getAiAgentRolesCatalogSource()
+      .trim();
+    if (/^https?:\/\//i.test(source)) {
+      return this.fetchRemote(source, rel);
+    }
+    const dir = source || path.join(process.cwd(), 'agent-roles-catalog');
+    return this.readLocal(dir, rel);
+  }
+
+  /** Read a local catalog file. Missing => the catalog is unavailable. */
+  private async readLocal(dir: string, rel: string): Promise<string> {
+    try {
+      return await fs.readFile(path.join(dir, rel), 'utf8');
+    } catch {
+      throw new BadGatewayException('Agent roles catalog is unavailable');
+    }
+  }
+
+  /**
+   * Fetch a remote catalog file with a timeout + a STREAMING size cap. The body
+   * is never buffered in full before the check: we reject on a too-large
+   * Content-Length up front, then read the stream chunk-by-chunk and abort the
+   * moment the running total exceeds MAX_BYTES, so a hostile/misconfigured
+   * source cannot make us hold an unbounded body in memory.
+   */
+  private async fetchRemote(base: string, rel: string): Promise<string> {
+    const url = `${base.replace(/\/+$/, '')}/${rel}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      let response: Response;
+      try {
+        response = await fetch(url, { signal: controller.signal });
+      } catch {
+        throw new BadGatewayException('Agent roles catalog is unavailable');
+      }
+      if (!response.ok) {
+        throw new BadGatewayException(
+          `Agent roles catalog returned ${response.status}`,
+        );
+      }
+      // Reject a too-large declared size before reading any body bytes.
+      const declared = Number(response.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > MAX_BYTES) {
+        throw new BadGatewayException('Agent roles catalog file is too large');
+      }
+      // Bound the actual read: a missing/lying Content-Length is caught here.
+      if (response.body) {
+        return await readStreamCapped(response.body, MAX_BYTES);
+      }
+      // Edge: no readable stream — fall back to a buffered read + length check.
+      const text = await response.text();
+      if (text.length > MAX_BYTES) {
+        throw new BadGatewayException('Agent roles catalog file is too large');
+      }
+      return text;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Read a web ReadableStream into a UTF-8 string, throwing as soon as the
+ * accumulated byte count exceeds `maxBytes` (the reader is cancelled so the
+ * underlying connection is released). Never buffers more than the cap + the
+ * final chunk before bailing out.
+ */
+async function readStreamCapped(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<string> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.length;
+      if (total > maxBytes) {
+        throw new BadGatewayException('Agent roles catalog file is too large');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    // Release the stream on both the normal and the too-large/abort paths.
+    await reader.cancel().catch(() => undefined);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder('utf-8').decode(merged);
+}
+
+// ---------------------------------------------------------------------------
+// Hand-written type guards (no zod / new deps). Each validates the exact wire
+// shape declared in catalog-types.ts; anything else is rejected by the caller.
+// ---------------------------------------------------------------------------
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function isStringMap(v: unknown): v is Record<string, string> {
+  if (!isObject(v)) return false;
+  return Object.values(v).every((x) => typeof x === 'string');
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+export function isCatalogRole(v: unknown): v is CatalogRole {
+  if (!isObject(v)) return false;
+  if (typeof v.slug !== 'string') return false;
+  if (typeof v.name !== 'string') return false;
+  if (typeof v.instructions !== 'string') return false;
+  if (v.emoji !== undefined && typeof v.emoji !== 'string') return false;
+  if (v.description !== undefined && typeof v.description !== 'string') {
+    return false;
+  }
+  if (v.autoStart !== undefined && typeof v.autoStart !== 'boolean') {
+    return false;
+  }
+  if (
+    v.launchMessage !== undefined &&
+    v.launchMessage !== null &&
+    typeof v.launchMessage !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    v.modelConfig !== undefined &&
+    v.modelConfig !== null &&
+    !isObject(v.modelConfig)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function isCatalogBundleFile(v: unknown): v is CatalogBundleFile {
+  if (!isObject(v)) return false;
+  if (typeof v.schemaVersion !== 'number') return false;
+  if (typeof v.language !== 'string') return false;
+  if (!Array.isArray(v.roles)) return false;
+  return v.roles.every(isCatalogRole);
+}
+
+function isCatalogBundleMeta(v: unknown): v is CatalogBundleMeta {
+  if (!isObject(v)) return false;
+  if (typeof v.id !== 'string') return false;
+  if (!isStringMap(v.name)) return false;
+  if (v.description !== undefined && !isStringMap(v.description)) return false;
+  if (!isStringArray(v.languages)) return false;
+  if (!Array.isArray(v.roles)) return false;
+  return v.roles.every(
+    (r) =>
+      isObject(r) &&
+      typeof r.slug === 'string' &&
+      typeof r.version === 'number',
+  );
+}
+
+export function isCatalogIndex(v: unknown): v is CatalogIndex {
+  if (!isObject(v)) return false;
+  if (typeof v.schemaVersion !== 'number') return false;
+  if (!Array.isArray(v.bundles)) return false;
+  return v.bundles.every(isCatalogBundleMeta);
+}

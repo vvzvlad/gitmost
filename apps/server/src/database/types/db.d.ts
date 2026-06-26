@@ -618,6 +618,8 @@ export interface AiAgentRoles {
   autoStart: Generated<boolean>;
   // Optional custom auto-start text. null/empty => client default launch message.
   launchMessage: string | null;
+  // Catalog origin of an imported role: { slug, language, version } | null. null => manually created.
+  source: Json | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;

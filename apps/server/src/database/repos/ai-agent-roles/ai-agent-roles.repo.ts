@@ -81,6 +81,8 @@ export class AiAgentRoleRepo {
       autoStart?: boolean;
       // null/'' => stored as null (client default launch message).
       launchMessage?: string | null;
+      // Catalog origin { slug, language, version } | null. null => manual role.
+      source?: Record<string, unknown> | null;
     },
     trx?: KyselyTransaction,
   ): Promise<AiAgentRole> {
@@ -103,6 +105,9 @@ export class AiAgentRoleRepo {
         autoStart: values.autoStart ?? true,
         // Empty string is treated as "no custom text" => null.
         launchMessage: values.launchMessage || null,
+        // Same cast reason as modelConfig (see above).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        source: jsonbBind(values.source) as any,
       })
       .returningAll()
       .executeTakeFirst();
@@ -124,6 +129,8 @@ export class AiAgentRoleRepo {
       autoStart?: boolean;
       // undefined => unchanged; null/'' => clear to null; string => set.
       launchMessage?: string | null;
+      // undefined => unchanged; null => clear; object => set.
+      source?: Record<string, unknown> | null;
     },
     trx?: KyselyTransaction,
   ): Promise<void> {
@@ -141,6 +148,9 @@ export class AiAgentRoleRepo {
     if (patch.launchMessage !== undefined) {
       // Empty string clears to null (client default launch message).
       set.launchMessage = patch.launchMessage || null;
+    }
+    if (patch.source !== undefined) {
+      set.source = jsonbBind(patch.source);
     }
     await db
       .updateTable('aiAgentRoles')
@@ -192,8 +202,23 @@ export function parseModelConfig(
   );
 }
 
-/** Normalize a DB row so `modelConfig` is always an object or null. The cast
- *  bridges parseModelConfig's concrete `Record | null` to the column's broad
+/**
+ * Parse the `source` jsonb value read from the DB into an object or null,
+ * analogous to {@link parseModelConfig}. Same legacy double-encoding self-heal
+ * (a JSON string is parsed once) and the same shape guard: not null, an object,
+ * and not an array. A corrupt / wrong-shaped value degrades to null (= manually
+ * created), so a bad row never breaks the read path.
+ */
+export function parseSource(value: unknown): Record<string, unknown> | null {
+  return parseJsonbValue(
+    value,
+    (v): v is Record<string, unknown> =>
+      v !== null && typeof v === 'object' && !Array.isArray(v),
+  );
+}
+
+/** Normalize a DB row so `modelConfig` and `source` are always an object or
+ *  null. The casts bridge the concrete `Record | null` to the column's broad
  *  generated `JsonValue` type (an object is a valid JsonValue at runtime). */
 function normalizeRow(row: AiAgentRole): AiAgentRole {
   return {
@@ -201,5 +226,6 @@ function normalizeRow(row: AiAgentRole): AiAgentRole {
     modelConfig: parseModelConfig(
       row.modelConfig,
     ) as AiAgentRole['modelConfig'],
+    source: parseSource(row.source) as AiAgentRole['source'],
   };
 }

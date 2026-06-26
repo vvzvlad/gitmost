@@ -289,6 +289,15 @@ export class EnvironmentService {
   // provider/model/key config now lives solely in workspace settings +
   // ai_provider_credentials, with no env fallback. APP_SECRET stays (getAppSecret).
 
+  getAiAgentRolesCatalogSource(): string {
+    // Catalog location. http(s):// URL => fetched remotely; anything else => a
+    // local filesystem directory. Defaults to the in-repo folder (dev). In prod
+    // set this to the raw GitHub base URL of the catalog repo. Unlike the AI_*
+    // getters above this is INFRA config (where the catalog lives), not
+    // provider/model config — so an env var here is appropriate.
+    return this.configService.get<string>('AI_AGENT_ROLES_CATALOG_URL', '');
+  }
+
   getEventStoreDriver(): string {
     return this.configService
       .get<string>('EVENT_STORE_DRIVER', 'postgres')

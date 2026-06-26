@@ -1346,5 +1346,22 @@
   "Could not generate a title": "Could not generate a title",
   "AI title generation is disabled": "AI title generation is disabled",
   "AI is not configured": "AI is not configured",
-  "Too many requests, please try again later": "Too many requests, please try again later"
+  "Too many requests, please try again later": "Too many requests, please try again later",
+  "Import from catalog": "Import from catalog",
+  "Browse the catalog": "Browse the catalog",
+  "Role catalog": "Role catalog",
+  "On name conflict": "On name conflict",
+  "Skip": "Skip",
+  "Import": "Import",
+  "Installed": "Installed",
+  "v{{from}} → v{{to}}": "v{{from}} → v{{to}}",
+  "Imported {{created}}, renamed {{renamed}}, skipped {{skipped}}": "Imported {{created}}, renamed {{renamed}}, skipped {{skipped}}",
+  "Failed to import {{count}} role(s)": "Failed to import {{count}} role(s)",
+  "The role catalog is unavailable": "The role catalog is unavailable",
+  "Please try again later.": "Please try again later.",
+  "No bundles available": "No bundles available",
+  "Already up to date": "Already up to date",
+  "Updated to the latest version": "Updated to the latest version",
+  "This role is no longer in the catalog": "This role is no longer in the catalog",
+  "This language is no longer available in the catalog": "This language is no longer available in the catalog"
 }

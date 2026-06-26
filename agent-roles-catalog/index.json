@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "id": "editorial",
+      "name": { "ru": "Редакторский набор", "en": "Editorial suite" },
+      "description": {
+        "ru": "Полный цикл редактуры статьи: структура, стиль, грамматика, факты, корректура и нарратив.",
+        "en": "The full article-editing cycle: structure, style, grammar, facts, proofreading, and narrative."
+      },
+      "languages": ["ru", "en"],
+      "roles": [
+        { "slug": "structural-editor", "version": 1 },
+        { "slug": "line-editor", "version": 1 },
+        { "slug": "copy-editor", "version": 1 },
+        { "slug": "fact-checker", "version": 1 },
+        { "slug": "proofreader", "version": 1 },
+        { "slug": "narrator", "version": 1 }
+      ]
+    },
+    {
+      "id": "research",
+      "name": { "ru": "Исследование", "en": "Research" },
+      "description": {
+        "ru": "Глубокое исследование темы с подготовкой отчёта.",
+        "en": "Deep research on a topic with a prepared report."
+      },
+      "languages": ["ru", "en"],
+      "roles": [ { "slug": "researcher", "version": 1 } ]
+    }
+  ]
+}

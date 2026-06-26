@@ -1,4 +1,4 @@
-import { AiAgentRoleRepo } from './ai-agent-roles.repo';
+import { AiAgentRoleRepo, parseSource } from './ai-agent-roles.repo';
 import type { KyselyDB } from '../../types/kysely.types';
 
 /**
@@ -131,5 +131,51 @@ describe('AiAgentRoleRepo insert/update auto-start columns', () => {
     await repo2.update('r-1', 'ws-1', { launchMessage: '' });
     expect(set2.mock.calls[0][0].launchMessage).toBeNull();
     expect('autoStart' in set2.mock.calls[0][0]).toBe(false);
+  });
+
+  it('insert binds `source` (jsonb); update sets it only when present', async () => {
+    const { repo, values } = makeInsertRepo();
+    await repo.insert({
+      workspaceId: 'ws-1',
+      name: 'R',
+      instructions: 'do',
+      source: { slug: 'researcher', language: 'en', version: 1 },
+    });
+    // jsonbBind returns a RawBuilder for a non-empty object (not null).
+    expect(values.mock.calls[0][0].source).not.toBeNull();
+
+    const { repo: repo2, set } = makeUpdateRepo();
+    await repo2.update('r-1', 'ws-1', { name: 'X' });
+    expect('source' in set.mock.calls[0][0]).toBe(false);
+
+    const { repo: repo3, set: set3 } = makeUpdateRepo();
+    await repo3.update('r-1', 'ws-1', {
+      source: { slug: 's', language: 'en', version: 2 },
+    });
+    expect('source' in set3.mock.calls[0][0]).toBe(true);
+  });
+});
+
+/**
+ * parseSource: a JSON-string (legacy double-encoded) is parsed; a real object
+ * passes through; null / a non-object / an array degrade to null (= manual role).
+ */
+describe('parseSource', () => {
+  it('parses a legacy double-encoded JSON string into the object', () => {
+    expect(
+      parseSource('{"slug":"researcher","language":"en","version":1}'),
+    ).toEqual({ slug: 'researcher', language: 'en', version: 1 });
+  });
+
+  it('passes an already-parsed object through', () => {
+    const obj = { slug: 's', language: 'en', version: 2 };
+    expect(parseSource(obj)).toEqual(obj);
+  });
+
+  it('null / array / non-object / unparseable string => null', () => {
+    expect(parseSource(null)).toBeNull();
+    expect(parseSource([1, 2])).toBeNull();
+    expect(parseSource(42)).toBeNull();
+    expect(parseSource('not json')).toBeNull();
   });
 });

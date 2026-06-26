@@ -27,10 +27,20 @@ describe('AiAgentRolesService guards', () => {
       enabled: true,
       autoStart: true,
       launchMessage: null,
+      source: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...over,
     } as AiAgentRole;
+  }
+
+  // A stubbed catalog provider; the CRUD tests never reach it (they exercise
+  // create/update/remove/list only), so the methods just reject if hit.
+  function makeCatalog() {
+    return {
+      fetchIndex: jest.fn(),
+      fetchBundle: jest.fn(),
+    };
   }
 
   function makeService(opts: { existing?: AiAgentRole | undefined } = {}) {
@@ -41,8 +51,9 @@ describe('AiAgentRolesService guards', () => {
       softDelete: jest.fn().mockResolvedValue(undefined),
       listByWorkspace: jest.fn().mockResolvedValue([]),
     };
-    const service = new AiAgentRolesService(repo as never);
-    return { service, repo };
+    const catalog = makeCatalog();
+    const service = new AiAgentRolesService(repo as never, catalog as never);
+    return { service, repo, catalog };
   }
 
   describe('update', () => {
@@ -163,6 +174,7 @@ describe('AiAgentRolesService guards', () => {
         enabled: false,
         autoStart: true,
         launchMessage: null,
+        source: null,
         createdAt,
         updatedAt,
       });
@@ -397,7 +409,7 @@ describe('AiAgentRolesService guards', () => {
         softDelete: jest.fn(),
         listByWorkspace: jest.fn().mockResolvedValue(rows),
       };
-      const service = new AiAgentRolesService(repo as never);
+      const service = new AiAgentRolesService(repo as never, makeCatalog() as never);
       return { service, repo };
     }
 
@@ -459,6 +471,319 @@ describe('AiAgentRolesService guards', () => {
           name: 'Taken',
         } as UpdateAgentRoleDto),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Catalog: import (skip / rename / already-installed) and update reconciliation
+  // against a MOCKED catalog provider + mocked repo (mirrors the CRUD style).
+  // ---------------------------------------------------------------------------
+  describe('importFromCatalog', () => {
+    function catalogRole(over: Record<string, unknown> = {}) {
+      return {
+        slug: 'researcher',
+        name: 'Researcher',
+        instructions: 'be a researcher',
+        ...over,
+      };
+    }
+
+    function makeImportService(opts: {
+      indexRoles?: { slug: string; version: number }[];
+      bundleRoles?: Record<string, unknown>[];
+      existing?: AiAgentRole[];
+    }) {
+      const index = {
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'general',
+            name: { en: 'General' },
+            languages: ['en'],
+            roles: opts.indexRoles ?? [{ slug: 'researcher', version: 3 }],
+          },
+        ],
+      };
+      const bundle = {
+        schemaVersion: 1,
+        language: 'en',
+        roles: opts.bundleRoles ?? [catalogRole()],
+      };
+      const repo = {
+        findById: jest.fn(),
+        insert: jest.fn().mockImplementation((v) => Promise.resolve(makeRow(v))),
+        update: jest.fn().mockResolvedValue(undefined),
+        softDelete: jest.fn(),
+        listByWorkspace: jest.fn().mockResolvedValue(opts.existing ?? []),
+      };
+      const catalog = {
+        fetchIndex: jest.fn().mockResolvedValue(index),
+        fetchBundle: jest.fn().mockResolvedValue(bundle),
+      };
+      const service = new AiAgentRolesService(repo as never, catalog as never);
+      return { service, repo, catalog };
+    }
+
+    const dto = (over: Record<string, unknown> = {}) =>
+      ({
+        bundleId: 'general',
+        language: 'en',
+        conflict: 'skip',
+        ...over,
+      }) as never;
+
+    it('inserts a new role with source { slug, language, version } from the index', async () => {
+      const { service, repo } = makeImportService({});
+      const res = await service.importFromCatalog('ws-1', 'u1', dto());
+      expect(res).toMatchObject({ created: 1, skipped: 0, renamed: 0 });
+      expect(res.errors).toEqual([]);
+      const values = repo.insert.mock.calls[0][0];
+      expect(values.source).toEqual({
+        slug: 'researcher',
+        language: 'en',
+        version: 3,
+      });
+      expect(values.enabled).toBe(true);
+    });
+
+    it('already-installed catalog slug => skipped (no insert)', async () => {
+      const existing = [
+        makeRow({
+          id: 'r-existing',
+          name: 'Old researcher',
+          source: { slug: 'researcher', language: 'en', version: 1 } as never,
+        }),
+      ];
+      const { service, repo } = makeImportService({ existing });
+      const res = await service.importFromCatalog('ws-1', 'u1', dto());
+      expect(res).toMatchObject({ created: 0, skipped: 1, renamed: 0 });
+      expect(repo.insert).not.toHaveBeenCalled();
+    });
+
+    it('same slug installed in a DIFFERENT language => NOT skipped (separate install)', async () => {
+      // Installed as `ru`; importing the `en` variant of the same slug must
+      // still import (dedup key is slug+language, matching the client UI).
+      const existing = [
+        makeRow({
+          id: 'r-ru',
+          name: 'Исследователь',
+          source: { slug: 'researcher', language: 'ru', version: 1 } as never,
+        }),
+      ];
+      const { service, repo } = makeImportService({ existing });
+      const res = await service.importFromCatalog('ws-1', 'u1', dto());
+      expect(res).toMatchObject({ created: 1, skipped: 0, renamed: 0 });
+      expect(repo.insert).toHaveBeenCalledTimes(1);
+      expect(repo.insert.mock.calls[0][0].source).toEqual({
+        slug: 'researcher',
+        language: 'en',
+        version: 3,
+      });
+    });
+
+    it('name collision + conflict:skip => skipped (no insert)', async () => {
+      const existing = [makeRow({ id: 'r-x', name: 'Researcher' })];
+      const { service, repo } = makeImportService({ existing });
+      const res = await service.importFromCatalog(
+        'ws-1',
+        'u1',
+        dto({ conflict: 'skip' }),
+      );
+      expect(res).toMatchObject({ created: 0, skipped: 1, renamed: 0 });
+      expect(repo.insert).not.toHaveBeenCalled();
+    });
+
+    it('name collision + conflict:rename => inserts under " (2)"', async () => {
+      const existing = [makeRow({ id: 'r-x', name: 'Researcher' })];
+      const { service, repo } = makeImportService({ existing });
+      const res = await service.importFromCatalog(
+        'ws-1',
+        'u1',
+        dto({ conflict: 'rename' }),
+      );
+      expect(res).toMatchObject({ created: 1, skipped: 0, renamed: 1 });
+      expect(repo.insert.mock.calls[0][0].name).toBe('Researcher (2)');
+    });
+
+    it('dto.slugs filters; an unknown slug becomes an error entry', async () => {
+      const { service, repo } = makeImportService({
+        bundleRoles: [catalogRole()],
+      });
+      const res = await service.importFromCatalog(
+        'ws-1',
+        'u1',
+        dto({ slugs: ['researcher', 'ghost'] }),
+      );
+      expect(res.created).toBe(1);
+      expect(res.errors).toEqual([
+        { slug: 'ghost', message: 'Role not found in catalog bundle' },
+      ]);
+      expect(repo.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('insert unique-violation (23505) is recorded as an error, import continues', async () => {
+      const { service, repo } = makeImportService({
+        bundleRoles: [
+          catalogRole({ slug: 'a', name: 'A' }),
+          catalogRole({ slug: 'b', name: 'B' }),
+        ],
+        indexRoles: [
+          { slug: 'a', version: 1 },
+          { slug: 'b', version: 1 },
+        ],
+      });
+      repo.insert
+        .mockRejectedValueOnce({ code: '23505' })
+        .mockImplementationOnce((v) => Promise.resolve(makeRow(v)));
+      const res = await service.importFromCatalog('ws-1', 'u1', dto());
+      expect(res.created).toBe(1);
+      expect(res.errors).toEqual([
+        { slug: 'a', message: 'A role with this name already exists' },
+      ]);
+    });
+  });
+
+  describe('updateFromCatalog', () => {
+    function makeUpdateService(opts: {
+      role?: AiAgentRole;
+      indexBundles?: unknown[];
+      bundleRoles?: Record<string, unknown>[];
+      others?: AiAgentRole[];
+    }) {
+      const index = {
+        schemaVersion: 1,
+        bundles: opts.indexBundles ?? [
+          {
+            id: 'general',
+            name: { en: 'General' },
+            languages: ['en'],
+            roles: [{ slug: 'researcher', version: 5 }],
+          },
+        ],
+      };
+      const bundle = {
+        schemaVersion: 1,
+        language: 'en',
+        roles: opts.bundleRoles ?? [
+          { slug: 'researcher', name: 'Researcher v5', instructions: 'new' },
+        ],
+      };
+      const repo = {
+        findById: jest.fn().mockResolvedValue(opts.role),
+        insert: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
+        softDelete: jest.fn(),
+        listByWorkspace: jest.fn().mockResolvedValue(opts.others ?? []),
+      };
+      const catalog = {
+        fetchIndex: jest.fn().mockResolvedValue(index),
+        fetchBundle: jest.fn().mockResolvedValue(bundle),
+      };
+      const service = new AiAgentRolesService(repo as never, catalog as never);
+      return { service, repo, catalog };
+    }
+
+    const imported = (version: number, over: Partial<AiAgentRole> = {}) =>
+      makeRow({
+        id: 'r1',
+        name: 'Researcher',
+        source: { slug: 'researcher', language: 'en', version } as never,
+        ...over,
+      });
+
+    it('role not imported from catalog (source null) => BadRequest', async () => {
+      const { service } = makeUpdateService({ role: makeRow({ source: null }) });
+      await expect(
+        service.updateFromCatalog('ws-1', { id: 'r1' } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('role not found => BadRequest', async () => {
+      const { service } = makeUpdateService({ role: undefined });
+      await expect(
+        service.updateFromCatalog('ws-1', { id: 'r1' } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('catalog version <= source.version => up-to-date (no update)', async () => {
+      const { service, repo } = makeUpdateService({ role: imported(5) });
+      const res = await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      expect(res).toEqual({ updated: false, reason: 'up-to-date' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('slug no longer listed in any bundle => not-in-catalog', async () => {
+      const { service, repo } = makeUpdateService({
+        role: imported(1),
+        indexBundles: [
+          {
+            id: 'general',
+            name: { en: 'General' },
+            languages: ['en'],
+            roles: [{ slug: 'other', version: 9 }],
+          },
+        ],
+      });
+      const res = await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      expect(res).toEqual({ updated: false, reason: 'not-in-catalog' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('source.language no longer offered by the bundle => language-unavailable', async () => {
+      const { service, repo } = makeUpdateService({
+        role: imported(1, {
+          source: { slug: 'researcher', language: 'ru', version: 1 } as never,
+        }),
+        indexBundles: [
+          {
+            id: 'general',
+            name: { en: 'General' },
+            languages: ['en'],
+            roles: [{ slug: 'researcher', version: 5 }],
+          },
+        ],
+      });
+      const res = await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      expect(res).toEqual({ updated: false, reason: 'language-unavailable' });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('newer version => updates content + bumps source.version, returns versions', async () => {
+      const role = imported(1);
+      const { service, repo } = makeUpdateService({ role });
+      // The post-update re-fetch returns the bumped row.
+      repo.findById
+        .mockResolvedValueOnce(role)
+        .mockResolvedValueOnce(
+          imported(5, { name: 'Researcher v5', instructions: 'new' }),
+        );
+      const res = await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      expect(res).toMatchObject({
+        updated: true,
+        fromVersion: 1,
+        toVersion: 5,
+      });
+      const patch = repo.update.mock.calls[0][2];
+      expect(patch.source).toEqual({
+        slug: 'researcher',
+        language: 'en',
+        version: 5,
+      });
+      expect(patch.name).toBe('Researcher v5');
+      // enabled is never touched by an update-from-catalog.
+      expect('enabled' in patch).toBe(false);
+    });
+
+    it('new catalog name collides with another live role => keeps current name', async () => {
+      const role = imported(1);
+      const other = makeRow({ id: 'r2', name: 'Researcher v5' });
+      const { service, repo } = makeUpdateService({ role, others: [role, other] });
+      repo.findById
+        .mockResolvedValueOnce(role)
+        .mockResolvedValueOnce(imported(5));
+      await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      // The colliding catalog name is dropped; the current name is kept.
+      expect(repo.update.mock.calls[0][2].name).toBe('Researcher');
     });
   });
 });
