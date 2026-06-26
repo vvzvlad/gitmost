@@ -80,6 +80,32 @@ export class AiChatRepo {
     });
   }
 
+  /**
+   * The "bound chat" for a document: the requesting user's most recently
+   * created, non-deleted chat whose origin page is `pageId`. Auto-opened when
+   * the AI chat window is opened on that page. Newest-by-createdAt wins, so a
+   * chat created later on the same page supersedes earlier ones — exactly how
+   * "new chat -> becomes the bound one" falls out for free. Scoped to the user +
+   * workspace, so a foreign pageId can only ever match the caller's own chats.
+   */
+  async findLatestByPage(
+    creatorId: string,
+    workspaceId: string,
+    pageId: string,
+  ): Promise<AiChat | undefined> {
+    return this.db
+      .selectFrom('aiChats')
+      .selectAll('aiChats')
+      .where('creatorId', '=', creatorId)
+      .where('workspaceId', '=', workspaceId)
+      .where('pageId', '=', pageId)
+      .where('deletedAt', 'is', null)
+      .orderBy('createdAt', 'desc')
+      .orderBy('id', 'desc') // stable tiebreaker, mirrors findByCreator's cursor
+      .limit(1)
+      .executeTakeFirst();
+  }
+
   async insert(
     insertable: InsertableAiChat,
     trx?: KyselyTransaction,
