@@ -209,6 +209,68 @@ describe("useGeneratePageTitle", () => {
     expect(emitMock).toHaveBeenCalled();
   });
 
+  it("does NOT write the visible title field when the title editor is focused", async () => {
+    const store = createStore();
+    const titleEditor = makeTitleEditor();
+    store.set(pageEditorAtom as never, makePageEditor("pageA"));
+    store.set(titleEditorAtom as never, titleEditor);
+
+    // Resolve generation under our control so we can mark the live title editor
+    // as focused before the post-generation write runs.
+    let resolveTitle!: (t: string) => void;
+    generatePageTitleMock.mockReturnValue(
+      new Promise<string>((res) => {
+        resolveTitle = res;
+      }),
+    );
+    updateTitleMock.mockResolvedValue(PAGE_A);
+    const { result } = setup("pageA", store);
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.mutateAsync();
+    });
+
+    // The user clicked into the title field while the model ran — overwriting it
+    // now would clobber what they are actively typing.
+    act(() => {
+      (titleEditor as { isFocused: boolean }).isFocused = true;
+    });
+
+    await act(async () => {
+      resolveTitle("Generated Title");
+      await pending;
+    });
+
+    // The DB write still persists the value...
+    expect(updateTitleMock).toHaveBeenCalledWith({
+      pageId: "pageA",
+      title: "Generated Title",
+    });
+    expect(updatePageDataMock).toHaveBeenCalledWith(PAGE_A);
+    // ...but the visible field is left alone while it is focused.
+    expect(titleEditor.commands.setContent).not.toHaveBeenCalled();
+    // The change is still broadcast to other clients.
+    expect(localEmitMock).toHaveBeenCalled();
+    expect(emitMock).toHaveBeenCalled();
+  });
+
+  it("bails before calling the model when the page editor is destroyed", async () => {
+    const store = createStore();
+    const pageEditor = makePageEditor("pageA");
+    (pageEditor as { isDestroyed: boolean }).isDestroyed = true;
+    store.set(pageEditorAtom as never, pageEditor);
+    store.set(titleEditorAtom as never, makeTitleEditor());
+    const { result } = setup("pageA", store);
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    expect(generatePageTitleMock).not.toHaveBeenCalled();
+    expect(updateTitleMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [403, "AI title generation is disabled"],
     [503, "AI is not configured"],
