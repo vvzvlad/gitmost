@@ -38,6 +38,10 @@ export class WsTreeService {
           spaceId: page.spaceId,
           parentPageId: page.parentPageId,
           hasChildren: false,
+          // Carry the death-timer deadline so receivers (and the author, if this
+          // broadcast wins the race against the optimistic insert) render the
+          // temporary-note clock marker immediately. null => permanent.
+          temporaryExpiresAt: page.temporaryExpiresAt ?? null,
           children: [],
         },
       },

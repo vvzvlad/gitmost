@@ -323,4 +323,18 @@ describe("applyAddTreeNode", () => {
       "child",
     ]);
   });
+
+  it("carries temporaryExpiresAt onto the inserted node so the clock marker shows on create (no reload)", () => {
+    // A note created as temporary broadcasts addTreeNode with the death-timer
+    // deadline in its payload; the receiver's inserted node must keep it so
+    // space-tree-row renders the orange clock marker immediately.
+    const tree = roots();
+    const expiresAt = "2026-06-27T21:00:00.000Z";
+    const next = applyAddTreeNode(tree, {
+      parentId: null as unknown as string,
+      index: 0,
+      data: node("temp", { position: "a3", temporaryExpiresAt: expiresAt }),
+    });
+    expect(treeModel.find(next, "temp")?.temporaryExpiresAt).toBe(expiresAt);
+  });
 });

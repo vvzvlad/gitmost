@@ -21,6 +21,11 @@ export interface TreeNodeSnapshot {
   position: string;
   spaceId: string;
   parentPageId: string | null;
+  // Death-timer deadline carried so the `addTreeNode` broadcast shows the
+  // temporary-note clock marker immediately on every client (incl. the author,
+  // whose optimistic insert can lose the race to this broadcast). null/absent =>
+  // permanent.
+  temporaryExpiresAt?: Date | string | null;
 }
 
 export class PageEvent {

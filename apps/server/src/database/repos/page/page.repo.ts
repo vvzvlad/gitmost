@@ -209,6 +209,9 @@ export class PageRepo {
           position: result.position,
           spaceId: result.spaceId,
           parentPageId: result.parentPageId,
+          // Carry the death-timer deadline so a note created as temporary shows
+          // its sidebar clock marker on every client without a reload.
+          temporaryExpiresAt: result.temporaryExpiresAt,
         },
       ],
     });

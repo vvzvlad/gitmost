@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { notifications } from "@mantine/notifications";
+import { getDefaultStore } from "jotai";
 import {
   toggleTemplate,
   toggleTemporary,
@@ -9,6 +10,9 @@ import type {
   ToggleTemporaryResponse,
 } from "@/features/page-embed/types/page-embed.types";
 import { queryClient } from "@/main.tsx";
+import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
+import { treeModel } from "@/features/page/tree/model/tree-model";
+import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 
 /**
  * After toggling a note's temporary state, mirror the new deadline into the
@@ -30,6 +34,19 @@ export function syncTemporaryExpiresInCache(
       });
     }
   }
+  // Patch the in-memory sidebar tree node so its temporary clock marker
+  // appears/disappears immediately — WITHOUT a reload. The page cache update
+  // above only drives the in-page banner/menu; the sidebar reads
+  // `temporaryExpiresAt` straight off the `treeDataAtom` node. The app uses
+  // jotai's default store (no <Provider>), so `getDefaultStore()` is the same
+  // store the sidebar's hooks read from. `treeModel.update` returns the same
+  // reference (a no-op) when the page isn't in the currently loaded tree.
+  const store = getDefaultStore();
+  const prevTree = store.get(treeDataAtom);
+  const nextTree = treeModel.update(prevTree, page.id, {
+    temporaryExpiresAt,
+  } as Partial<SpaceTreeNode>);
+  if (nextTree !== prevTree) store.set(treeDataAtom, nextTree);
   queryClient.invalidateQueries({
     predicate: (item) =>
       ["sidebar-pages"].includes(item.queryKey[0] as string),

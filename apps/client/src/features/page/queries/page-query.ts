@@ -410,6 +410,11 @@ export function invalidateOnCreatePage(data: Partial<IPage>) {
     slugId: data.slugId,
     spaceId: data.spaceId,
     title: data.title,
+    // Carry the death-timer deadline so a note created as temporary keeps its
+    // sidebar clock marker when the tree is rebuilt from this cached entry
+    // (buildTree → mergeRootTrees). Omitting it overwrote the optimistic/socket
+    // node's marker with `undefined`, hiding it until a reload.
+    temporaryExpiresAt: data.temporaryExpiresAt,
   };
 
   let queryKey: QueryKey = null;

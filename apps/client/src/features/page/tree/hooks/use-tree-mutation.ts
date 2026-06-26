@@ -173,7 +173,22 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
       // optimistic node's id IS the real created page id (createdPage.id), so
       // the ids match exactly regardless of which path runs first.
       setData((prev) => {
-        if (treeModel.find(prev, newNode.id)) return prev;
+        const existing = treeModel.find(prev, newNode.id);
+        if (existing) {
+          // The server `addTreeNode` broadcast won the race and already inserted
+          // this node. Older broadcasts could omit `temporaryExpiresAt`, leaving
+          // a temporary note WITHOUT its clock marker until reload; patch it on
+          // from the authoritative create response so the marker shows now.
+          if (
+            newNode.temporaryExpiresAt &&
+            !(existing as SpaceTreeNode).temporaryExpiresAt
+          ) {
+            return treeModel.update(prev, newNode.id, {
+              temporaryExpiresAt: newNode.temporaryExpiresAt,
+            } as Partial<SpaceTreeNode>);
+          }
+          return prev;
+        }
         return treeModel.insert(prev, parentId, newNode, lastIndex);
       });
 

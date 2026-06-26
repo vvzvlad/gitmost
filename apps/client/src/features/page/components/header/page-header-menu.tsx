@@ -176,8 +176,8 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
         pageId: page.id,
         temporary: next,
       });
-      // Reflect the new deadline in the page cache so the menu label flips and
-      // any banner updates. The sidebar icon refreshes via its own query.
+      // Reflect the new deadline in the page cache (menu label + banner) AND in
+      // the sidebar tree node so its clock marker updates immediately, no reload.
       syncTemporaryExpiresInCache(page, res.temporaryExpiresAt);
       notifications.show({
         message: next
