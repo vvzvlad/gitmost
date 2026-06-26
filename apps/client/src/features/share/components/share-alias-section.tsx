@@ -185,7 +185,6 @@ export default function ShareAliasSection({
               fontSize: "var(--mantine-font-size-xs)",
               color: "var(--mantine-color-dimmed)",
               backgroundColor: "var(--mantine-color-default-hover)",
-              borderRight: "1px solid var(--mantine-color-default-border)",
               borderTopLeftRadius: "var(--input-radius)",
               borderBottomLeftRadius: "var(--input-radius)",
             }}
