@@ -294,6 +294,20 @@ export const treeModel = {
     const source = treeModel.find(tree, sourceId);
     if (!source) return tree;
     if (to.parentId !== null && !treeModel.find(tree, to.parentId)) return tree;
+    // Cycle guard, mirroring `move`'s `isDescendant` check (#206 ui-state-races-1).
+    // If the destination parent is INSIDE the moved node's own subtree (reachable
+    // when server-authoritative move events arrive out of order — e.g. X moved
+    // under Y, then Y under X, but on this receiver Y is still inside X), then
+    // `remove(sourceId)` would drop the future parent along with the whole subtree
+    // and `insertByPosition` could not find it again — the node and ALL its
+    // descendants would silently vanish. Refuse the move and return the same
+    // reference so callers can detect the no-op and reconcile (refetch) instead.
+    if (
+      to.parentId !== null &&
+      treeModel.isDescendant(tree, sourceId, to.parentId)
+    ) {
+      return tree;
+    }
     const removed = treeModel.remove(tree, sourceId);
     // Reuse the same position-ordered insertion as `insertByPosition` by
     // stamping the authoritative position onto the moved node first.

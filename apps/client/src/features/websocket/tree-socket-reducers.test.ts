@@ -183,6 +183,34 @@ describe("applyMoveTreeNode", () => {
     expect(moved?.hasChildren).toBe(true);
     expect(moved?.position).toBe("a4");
   });
+
+  it("does NOT drop a subtree on a cyclic/out-of-order move (parent inside source) (#206 ui-state-races-1)", () => {
+    // Locally `b` is still nested inside `a` (an earlier "a under b" echo hasn't
+    // applied yet). An out-of-order "move a under b" event now arrives — b is a
+    // descendant of a, so re-parenting would make placeByPosition remove a (and
+    // its whole subtree, incl. b) and fail to re-insert. Before the fix BOTH a
+    // and b silently vanished; now the reducer leaves the tree untouched.
+    const tree: SpaceTreeNode[] = [
+      node("a", {
+        position: "a0",
+        hasChildren: true,
+        children: [node("b", { position: "a1", parentPageId: "a" })],
+      }),
+    ];
+    const next = applyMoveTreeNode(tree, {
+      id: "a",
+      parentId: "b",
+      oldParentId: null,
+      index: 0,
+      position: "a4",
+      pageData: {},
+    });
+    // No silent data loss: both nodes survive.
+    expect(treeModel.find(next, "a")).not.toBeNull();
+    expect(treeModel.find(next, "b")).not.toBeNull();
+    // The cyclic move is refused as a no-op (same reference) pending reconcile.
+    expect(next).toBe(tree);
+  });
 });
 
 describe("applyDeleteTreeNode", () => {
