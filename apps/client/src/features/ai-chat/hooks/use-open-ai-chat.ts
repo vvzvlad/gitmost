@@ -32,11 +32,13 @@ export function useOpenAiChatForCurrentPage() {
   return useCallback(async () => {
     // Re-clicks while the window is already open (incl. minimized) must NOT
     // re-resolve and yank the user to another chat: resolve only on a genuine
-    // closed -> open transition.
-    if (windowOpen) {
-      setWindowOpen(true);
-      return;
-    }
+    // closed -> open transition. (`windowOpen` is already true here, so there
+    // is nothing to set — just bail.)
+    if (windowOpen) return;
+    // Open the window FIRST so the control feels instant: the bound-chat
+    // round-trip below must never gate the window appearing, or on a slow
+    // connection the first click reads as a hung control until the POST returns.
+    setWindowOpen(true);
     let resolved: string | null = activeChatId; // off-a-page: keep current
     if (pageId) {
       try {
@@ -46,13 +48,13 @@ export function useOpenAiChatForCurrentPage() {
       }
     }
     // Clear the composer draft / picked role ONLY on an actual switch, so
-    // reopening the same chat does not wipe an in-progress draft.
+    // reopening the same chat does not wipe an in-progress draft. Applied after
+    // the resolve so the window is already visible while the switch settles.
     if (resolved !== activeChatId) {
       setActiveChatId(resolved);
       setDraft("");
       setSelectedRoleId(null);
     }
-    setWindowOpen(true);
   }, [
     windowOpen,
     activeChatId,
