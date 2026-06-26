@@ -104,6 +104,19 @@
   min-width: 0;
 }
 
+/* The inner editable paragraph inherits `.ProseMirror p { margin: 0.5em 0 }`,
+   which pushes the first text line ~0.5em below the "N." marker (aligned to
+   flex-start), making the number float above the text. Drop the outer margins
+   so the marker and the first line share the same top edge — same approach
+   used for callouts in core.css. */
+.definitionContent > :first-child {
+  margin-top: 0;
+}
+
+.definitionContent > :last-child {
+  margin-bottom: 0;
+}
+
 .backLink {
   flex: 0 0 auto;
   cursor: pointer;

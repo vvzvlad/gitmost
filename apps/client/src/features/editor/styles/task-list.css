@@ -10,9 +10,15 @@ ul[data-type="taskList"] {
         display: flex;
 
         > label {
-            padding-top: 0.2rem;
+            /* Box exactly one text-line tall and center the checkbox in it, so the
+               checkbox lines up with the first line of the item's text. This tracks
+               the editor line-height (--mantine-line-height-xl) instead of a magic
+               padding-top that drifts from the real line box. */
             flex: 0 0 auto;
             margin-right: 0.5rem;
+            height: calc(var(--mantine-line-height-xl, 1.65) * 1em);
+            display: inline-flex;
+            align-items: center;
             user-select: none;
         }
 
