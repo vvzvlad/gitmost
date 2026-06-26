@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { renderHook, act } from "@testing-library/react";
 import { useChatSession } from "./use-chat-session";
 import type { UseChatSessionOptions } from "./use-chat-session";
 
@@ -225,6 +225,50 @@ describe("useChatSession", () => {
     // key becomes the chat id.
     rerender({ activeChatId: "C", chats });
     expect(result.current.threadKey).toBe("C");
+  });
+
+  it("#161: New chat during a streaming first turn forces a fresh thread (remount), not just a no-op", () => {
+    // Brand-new chat whose first turn is still streaming: the id is adopted only
+    // at turn end, so activeChatId AND thread.chatId are both null. Pressing "New
+    // chat" must still remount to a clean thread even though the atom is unchanged
+    // — the render-phase reconciler (null === null) would otherwise do nothing,
+    // leaving the old chat/stream/history in place (the bug: only the role badge
+    // dropped).
+    const { result } = setup({ activeChatId: null, chats: { items: [] } });
+    const keyBefore = result.current.threadKey;
+    act(() => result.current.startFreshThread());
+    expect(result.current.threadKey).not.toBe(keyBefore);
+  });
+
+  it("#161: an abandoned thread's late onTurnFinished does NOT adopt its chat (thread-aware guard)", () => {
+    // New chat mid-stream remounts to a fresh thread, but @ai-sdk/react does not
+    // abort the abandoned stream on unmount: its onFinish still fires later with
+    // the real server id, tagged with the OLD (abandoned) mount key. That must not
+    // adopt — it would yank the user back into the chat they just left.
+    const { result, setActiveChatId, onInvalidateChatList } = setup({
+      activeChatId: null,
+      chats: { items: [] },
+    });
+    const abandonedKey = result.current.threadKey;
+    act(() => result.current.startFreshThread());
+    expect(result.current.threadKey).not.toBe(abandonedKey);
+    // The abandoned turn finishes in the background, streaming its real id "A".
+    result.current.onTurnFinished("A", abandonedKey);
+    expect(setActiveChatId).not.toHaveBeenCalledWith("A");
+    // It still refreshes the chat list so the left-behind chat shows in history.
+    expect(onInvalidateChatList).toHaveBeenCalled();
+  });
+
+  it("#161: a turn finishing on the CURRENT thread still adopts (guard is key-scoped, not blanket)", () => {
+    // The happy path must keep working: onTurnFinished tagged with the mounted
+    // thread's own key adopts in place as before.
+    const { result, setActiveChatId } = setup({
+      activeChatId: null,
+      chats: { items: [] },
+    });
+    const currentKey = result.current.threadKey;
+    result.current.onTurnFinished("A", currentKey);
+    expect(setActiveChatId).toHaveBeenCalledWith("A");
   });
 
   it("waitingForHistory gates the loader only while opening an unloaded existing chat", () => {

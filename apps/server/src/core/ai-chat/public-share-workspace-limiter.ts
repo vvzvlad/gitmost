@@ -137,6 +137,177 @@ export class PublicShareWorkspaceLimiter {
 }
 
 /**
+ * SECOND cost contour: a per-workspace TOKEN budget over a rolling DAY.
+ *
+ * The request-count cap above bounds how MANY anonymous calls a workspace
+ * admits, but NOT how expensive each one is: one accepted call runs the agent
+ * loop up to `stepCountIs(5)`, and every step re-sends the WHOLE client-held
+ * transcript (~hundreds of KB) as input, so the provider input alone can be tens
+ * of thousands of tokens PER step while `maxOutputTokens` only caps the output.
+ * The request cap is also hourly with no daily ceiling, so a steady stream at
+ * the hourly cap sustains ~24x its count per day. Counting requests therefore
+ * does not bound the owner's actual LLM bill (issue #159, finding #5).
+ *
+ * This contour caps the SPEND directly: the actual tokens consumed (input +
+ * output, summed across all steps of every accepted turn) over the trailing
+ * `windowMs` (one rolling day) must stay under `budget`. It is checked BEFORE a
+ * turn streams (read-only) and the turn's real usage is recorded AFTER it
+ * finishes (`streamText` onFinish). Like the request cap it is cluster-wide
+ * (shared Redis) and uses a sliding-window LOG so the day boundary cannot be
+ * gamed for a 2x burst.
+ *
+ * Pre-check is read-only, so a turn already over budget is rejected, but the
+ * tokens of an in-flight turn are not yet known and are accounted only once it
+ * finishes. The worst-case overshoot past the budget is therefore one turn
+ * (bounded by steps x (maxOutputTokens + transcript size)) — acceptable for a
+ * cost backstop on an optional anonymous assistant.
+ */
+
+/** Default per-workspace token budget over the rolling day. */
+export const SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT = 1_000_000;
+/** Default token-budget window length: one rolling day. */
+export const SHARE_AI_WORKSPACE_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Redis key namespace for the per-workspace token-spend sliding-window log. */
+const TOKEN_KEY_PREFIX = 'share-ai:ws-tokens:';
+
+/**
+ * Read-only sliding-window token-budget check.
+ *
+ * KEYS[1] = the per-workspace token sorted-set key
+ * ARGV[1] = now (epoch ms)
+ * ARGV[2] = windowMs
+ * ARGV[3] = budget (max tokens in the trailing window)
+ *
+ * Drops entries older than the window, then sums the token counts encoded as the
+ * leading integer of each surviving member. Returns 1 if the running total is
+ * still UNDER budget (admit), 0 once it has reached/exceeded the budget. Does NOT
+ * add anything — the turn's real usage is recorded separately once it finishes.
+ */
+const TOKEN_BUDGET_CHECK_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local budget = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, 0, now - windowMs)
+local members = redis.call('ZRANGE', key, 0, -1)
+local total = 0
+for i = 1, #members do
+  local t = tonumber(string.match(members[i], '^(%d+)'))
+  if t then total = total + t end
+end
+if total >= budget then
+  return 0
+end
+return 1
+`;
+
+/**
+ * Record one finished turn's token spend in the sliding-window log.
+ *
+ * KEYS[1] = the per-workspace token sorted-set key
+ * ARGV[1] = now (epoch ms) — the entry score
+ * ARGV[2] = windowMs
+ * ARGV[3] = member (`<tokens>:<unique>`; the leading integer is the token count)
+ *
+ * Always ZADDs (the turn already ran and spent the tokens) and refreshes the
+ * key TTL so idle workspaces cost no memory. Trims expired entries first so the
+ * set never grows unbounded for a busy workspace.
+ */
+const TOKEN_RECORD_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local member = ARGV[3]
+redis.call('ZREMRANGEBYSCORE', key, 0, now - windowMs)
+redis.call('ZADD', key, now, member)
+redis.call('PEXPIRE', key, windowMs)
+return 1
+`;
+
+/**
+ * Cluster-wide, sliding-window per-workspace TOKEN budget backed by Redis.
+ * `withinBudget(key)` is a read-only pre-stream gate; `record(key, tokens)`
+ * accounts a finished turn's real usage. Decoupled from NestJS so it is testable
+ * against a mocked/real ioredis client, mirroring the request-count limiter.
+ */
+export class PublicShareWorkspaceTokenBudget {
+  private readonly logger = new Logger(PublicShareWorkspaceTokenBudget.name);
+  private counter = 0;
+
+  constructor(
+    private readonly redis: Redis,
+    private readonly budget: number = SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT,
+    private readonly windowMs: number = SHARE_AI_WORKSPACE_TOKEN_WINDOW_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /**
+   * Read-only pre-stream check. Returns true while the workspace is under its
+   * rolling-day token budget, false once the trailing-window spend has reached
+   * it (caller must then 429 BEFORE streaming any tokens).
+   *
+   * FAILS CLOSED (false) on a Redis error: identical reasoning to the request
+   * limiter — when we cannot prove the workspace is under budget we DENY rather
+   * than admit an unmetered billable call. The assistant is optional, so a
+   * transient Redis blip briefly disabling it beats an unbounded provider bill.
+   */
+  async withinBudget(key: string): Promise<boolean> {
+    const t = this.now();
+    try {
+      const admitted = await this.redis.eval(
+        TOKEN_BUDGET_CHECK_LUA,
+        1,
+        TOKEN_KEY_PREFIX + key,
+        String(t),
+        String(this.windowMs),
+        String(this.budget),
+      );
+      return admitted === 1;
+    } catch (err) {
+      this.logger.error(
+        `share-ai token budget Redis failure for key "${key}"; failing closed`,
+        err as Error,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Record a finished turn's token spend. Best-effort: the turn already ran, so
+   * a Redis failure here is logged but not propagated — it would only cause a
+   * slight under-count of the running budget, never a wrong answer to the
+   * caller. Non-positive / non-finite usage is ignored.
+   */
+  async record(key: string, tokens: number): Promise<void> {
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
+    const spend = Math.floor(tokens);
+    const t = this.now();
+    // Member: `<tokens>:<unique>` — the check Lua sums the leading integer, and
+    // the unique suffix keeps distinct turns in the same ms from colliding on
+    // the sorted-set member (which would drop one entry and under-count).
+    const member = `${spend}:${t}-${this.counter++}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    try {
+      await this.redis.eval(
+        TOKEN_RECORD_LUA,
+        1,
+        TOKEN_KEY_PREFIX + key,
+        String(t),
+        String(this.windowMs),
+        member,
+      );
+    } catch (err) {
+      this.logger.error(
+        `share-ai token budget record failure for key "${key}" (${spend} tokens); ignoring`,
+        err as Error,
+      );
+    }
+  }
+}
+
+/**
  * Read the per-workspace cap from the environment (overridable seam), falling
  * back to the sane default. A non-positive / unparseable value uses the default.
  */
@@ -160,5 +331,33 @@ export function createPublicShareWorkspaceLimiter(
     redisService.getOrThrow(),
     resolveShareAiWorkspaceMax(),
     SHARE_AI_WORKSPACE_WINDOW_MS,
+  );
+}
+
+/**
+ * Read the per-workspace rolling-day token budget from the environment
+ * (overridable seam), falling back to the sane default. A non-positive /
+ * unparseable value uses the default.
+ */
+export function resolveShareAiWorkspaceTokenBudget(): number {
+  const raw = Number(process.env.SHARE_AI_WORKSPACE_TOKEN_BUDGET_PER_DAY);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : SHARE_AI_WORKSPACE_TOKEN_BUDGET_DEFAULT;
+}
+
+/**
+ * Build the per-workspace token budget from the injected RedisService (the same
+ * global ioredis client used by the request-count limiter). Tiny factory so the
+ * service constructor stays declarative and the budget stays unit-testable with
+ * a hand-rolled fake redis.
+ */
+export function createPublicShareWorkspaceTokenBudget(
+  redisService: RedisService,
+): PublicShareWorkspaceTokenBudget {
+  return new PublicShareWorkspaceTokenBudget(
+    redisService.getOrThrow(),
+    resolveShareAiWorkspaceTokenBudget(),
+    SHARE_AI_WORKSPACE_TOKEN_WINDOW_MS,
   );
 }

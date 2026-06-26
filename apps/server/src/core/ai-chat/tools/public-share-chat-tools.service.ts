@@ -5,6 +5,7 @@ import { ShareService } from '../../share/share.service';
 import { SearchService } from '../../search/search.service';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { jsonToMarkdown } from '../../../collaboration/collaboration.util';
+import { modelFriendlyInput } from './model-friendly-input';
 
 /**
  * Isolated, READ-ONLY toolset for the ANONYMOUS public-share assistant.
@@ -52,7 +53,7 @@ export class PublicShareChatToolsService {
           '(key terms and entities), not a full sentence. If the first ' +
           'results look weak, search again with different wording before ' +
           'answering. Only pages inside this share are ever returned.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           query: z.string().describe('The search query.'),
           limit: z
             .number()
@@ -87,7 +88,7 @@ export class PublicShareChatToolsService {
           'Markdown, by its page id. Returns the page title and its Markdown ' +
           'content. Only pages inside this share can be read; reading any ' +
           'other page fails.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z
             .string()
             .describe('The id (or slugId) of a page within this share.'),
@@ -142,7 +143,7 @@ export class PublicShareChatToolsService {
           'List the pages (titles + ids) that make up THIS published ' +
           'documentation share, so you can orient yourself before reading or ' +
           'searching. Only pages inside this share are listed.',
-        inputSchema: z.object({}),
+        inputSchema: modelFriendlyInput({}),
         execute: async () => {
           // Reuse the same share-tree logic the public /shares/tree route uses:
           // it validates the share + workspace, excludes restricted subtrees,

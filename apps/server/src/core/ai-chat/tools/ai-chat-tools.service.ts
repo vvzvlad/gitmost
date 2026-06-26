@@ -15,6 +15,7 @@ import {
 } from './docmost-client.loader';
 import { resolveCurrentPageResult } from './current-page.util';
 import { parseNodeArg } from './parse-node-arg';
+import { modelFriendlyInput } from './model-friendly-input';
 
 /**
  * Per-user, per-request adapter that exposes Docmost READ operations to the
@@ -102,9 +103,13 @@ export class AiChatToolsService {
     ): Tool =>
       tool({
         description: spec.description,
-        inputSchema: spec.buildShape
-          ? z.object(spec.buildShape(z) as z.ZodRawShape)
-          : z.object({}),
+        // Wrap via modelFriendlyInput so a dropped/invalid parameter (e.g. a
+        // pageId omitted in a parallel batch, #190) yields a clear, actionable
+        // tool error instead of zod's raw text. No-arg specs still get an empty
+        // object schema.
+        inputSchema: modelFriendlyInput(
+          spec.buildShape ? (spec.buildShape(z) as z.ZodRawShape) : {},
+        ),
         execute,
       });
 
@@ -118,7 +123,7 @@ export class AiChatToolsService {
           'and entities), not a full sentence. If the first results look weak ' +
           'or incomplete, search again with different wording or synonyms ' +
           'before answering.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           query: z.string().describe('The search query.'),
           limit: z
             .number()
@@ -227,7 +232,7 @@ export class AiChatToolsService {
           '"the current page", or "here" refers to. Returns the page id and title, ' +
           'or null if the user is not currently on a page. Call this first whenever ' +
           'the user refers to the current page without giving an explicit id.',
-        inputSchema: z.object({}),
+        inputSchema: modelFriendlyInput({}),
         execute: async () => resolveCurrentPageResult(openedPage),
       }),
 
@@ -235,7 +240,7 @@ export class AiChatToolsService {
         description:
           'Fetch a single page as Markdown by its page id. Returns the page ' +
           'title and its Markdown content.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id (or slugId) of the page.'),
         }),
         execute: async ({ pageId }) => {
@@ -259,7 +264,7 @@ export class AiChatToolsService {
           'Create a new page with a Markdown body in a space, optionally under ' +
           'a parent page. Returns the new page id and title. Reversible: a page ' +
           'can be moved to trash later.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           title: z.string().describe('The title of the new page.'),
           content: z
             .string()
@@ -294,7 +299,7 @@ export class AiChatToolsService {
         description:
           "Replace a page's body with new Markdown content (and optionally its " +
           'title). Reversible: the previous version is kept in page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to update.'),
           content: z.string().describe('The new page body as Markdown.'),
           title: z
@@ -316,7 +321,7 @@ export class AiChatToolsService {
         description:
           "Rename a page (change its title only; the body is untouched). " +
           'Reversible: rename back at any time.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to rename.'),
           title: z.string().describe('The new title.'),
         }),
@@ -331,7 +336,7 @@ export class AiChatToolsService {
         description:
           'Move a page under a new parent page, or to the space root when no ' +
           'parent is given. Reversible: move it back at any time.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to move.'),
           parentPageId: z
             .string()
@@ -353,7 +358,7 @@ export class AiChatToolsService {
         description:
           'Move a page to the trash (SOFT delete only — fully reversible; the ' +
           'page can be restored from trash). This NEVER permanently deletes.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to move to trash.'),
         }),
         // GUARDRAIL (§14 H4): the only field ever passed to the client is
@@ -379,7 +384,7 @@ export class AiChatToolsService {
           '"selection not found" error, retry with a corrected EXACT selection ' +
           'copied verbatim from a single paragraph/block. Reversible via the ' +
           'comment UI.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to comment on.'),
           content: z.string().describe('The comment body as Markdown.'),
           selection: z
@@ -428,7 +433,7 @@ export class AiChatToolsService {
         description:
           'Resolve or reopen a top-level comment thread (reversible — toggle ' +
           'the resolved flag). Only top-level comments can be resolved.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           commentId: z
             .string()
             .describe('The id of the top-level comment to resolve/reopen.'),
@@ -460,7 +465,7 @@ export class AiChatToolsService {
           'List the most recent pages, optionally scoped to a single space. ' +
           'Returns a bounded list (default 50, max 100). Pass tree:true (with ' +
           "spaceId) to instead get the space's full page hierarchy as a nested tree.",
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           spaceId: z
             .string()
             .optional()
@@ -488,7 +493,7 @@ export class AiChatToolsService {
           'List sidebar pages for a space. With no pageId, returns the ' +
           "space's ROOT pages; with a pageId, returns that page's direct " +
           'CHILDREN.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           spaceId: z.string().describe('The id of the space.'),
           pageId: z
             .string()
@@ -520,7 +525,7 @@ export class AiChatToolsService {
         description:
           'Read a table as a matrix of cell texts (plus a parallel cellIds ' +
           'matrix so cells can be addressed for rich edits).',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           tableRef: z
             .string()
@@ -536,7 +541,7 @@ export class AiChatToolsService {
       listComments: tool({
         description:
           'List all comments on a page (content as Markdown).',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
         }),
         execute: async ({ pageId }) => await client.listComments(pageId),
@@ -544,7 +549,7 @@ export class AiChatToolsService {
 
       getComment: tool({
         description: 'Fetch a single comment by id (content as Markdown).',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           commentId: z.string().describe('The id of the comment.'),
         }),
         execute: async ({ commentId }) => await client.getComment(commentId),
@@ -554,7 +559,7 @@ export class AiChatToolsService {
         description:
           'Find new comments across a space (optionally scoped to a subtree) ' +
           'created after a given timestamp.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           spaceId: z.string().describe('The id of the space to scan.'),
           since: z
             .string()
@@ -586,7 +591,7 @@ export class AiChatToolsService {
         description:
           'Fetch a single page-history version including its lossless ' +
           'ProseMirror content.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           historyId: z.string().describe('The id of the history version.'),
         }),
         execute: async ({ historyId }) =>
@@ -604,7 +609,7 @@ export class AiChatToolsService {
           'Export a page to a single self-contained Docmost-flavoured ' +
           'Markdown file (meta + body + comment threads). Lossless round-trip ' +
           'with importPageMarkdown.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to export.'),
         }),
         execute: async ({ pageId }) => {
@@ -630,7 +635,7 @@ export class AiChatToolsService {
           '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node arg ' +
           'may be a JSON object or a JSON string (both accepted). Reversible: ' +
           'the previous version is kept in page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           nodeId: z
             .string()
@@ -663,7 +668,7 @@ export class AiChatToolsService {
           '{"type":"text","text":"x","marks":[{"type":"bold"}]}. The node arg ' +
           'may be a JSON object or a JSON string (both accepted). Reversible ' +
           'via page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           node: z
             .any()
@@ -722,7 +727,7 @@ export class AiChatToolsService {
           'object or a JSON string (both accepted). Omit content for a ' +
           'title-only update. Reversible: the previous version is kept in page ' +
           'history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to update.'),
           content: z
             .any()
@@ -753,7 +758,7 @@ export class AiChatToolsService {
         description:
           'Insert a row of plain-text cells into a table. Reversible via ' +
           'page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           tableRef: z
             .string()
@@ -772,7 +777,7 @@ export class AiChatToolsService {
       tableDeleteRow: tool({
         description:
           'Delete a table row at a 0-based index. Reversible via page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           tableRef: z
             .string()
@@ -787,7 +792,7 @@ export class AiChatToolsService {
         description:
           'Set the plain-text content of a table cell at [row, col] (0-based). ' +
           'Reversible via page history.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page.'),
           tableRef: z
             .string()
@@ -817,7 +822,7 @@ export class AiChatToolsService {
           'Make a page PUBLICLY accessible and return its public URL. ' +
           'Reversible via unsharePage. Only share when the user explicitly ' +
           'asked, since this exposes the page to anyone with the link.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to share.'),
           searchIndexing: z
             .boolean()
@@ -844,7 +849,7 @@ export class AiChatToolsService {
           "page's ProseMirror document for complex/scripted rewrites. dryRun " +
           '(default true) previews a diff WITHOUT writing; set dryRun:false to ' +
           'apply. Reversible: applying creates a new page-history snapshot.',
-        inputSchema: z.object({
+        inputSchema: modelFriendlyInput({
           pageId: z.string().describe('The id of the page to transform.'),
           transformJs: z
             .string()

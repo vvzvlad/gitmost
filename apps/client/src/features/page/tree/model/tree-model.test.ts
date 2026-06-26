@@ -752,6 +752,27 @@ describe("treeModel.placeByPosition", () => {
     });
     expect(t.map((n) => n.id)).toEqual(["r1", "child", "r2", "rp"]);
   });
+
+  it("returns same reference (no-op) when the destination parent is inside the source's own subtree (#206 ui-state-races-1)", () => {
+    // Moving `a` under its own descendant `b` is a cycle. Without the guard,
+    // remove(a) drops b too and insertByPosition can't re-place a -> the whole
+    // subtree silently vanishes. The guard refuses the move (same reference).
+    const cyclic: P[] = [
+      {
+        id: "a",
+        name: "A",
+        position: "a0",
+        children: [{ id: "b", name: "B", position: "a1" }],
+      },
+    ];
+    const t = treeModel.placeByPosition(cyclic, "a", {
+      parentId: "b",
+      position: "a5",
+    });
+    expect(t).toBe(cyclic);
+    expect(treeModel.find(t, "a")).not.toBeNull();
+    expect(treeModel.find(t, "b")).not.toBeNull();
+  });
 });
 
 describe("treeModel.move", () => {

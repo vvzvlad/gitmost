@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Box, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
@@ -10,6 +11,7 @@ import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/mess
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import { reasoningTokensForPart } from "@/features/ai-chat/utils/reasoning-tokens.ts";
+import { messageSignature } from "@/features/ai-chat/utils/message-signature.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
@@ -35,18 +37,52 @@ interface MessageItemProps {
 }
 
 /**
+ * One assistant text part rendered as sanitized markdown. Memoized on its inputs
+ * so a finalized text part is NOT re-parsed on every streamed delta: during a
+ * turn only the actively-growing tail part changes its `text`, so every earlier
+ * part hits the memo and skips the expensive marked + DOMPurify pass. Props are
+ * primitives, so React.memo's default shallow compare is exactly right (the
+ * `text` string is compared by value).
+ */
+const MarkdownPart = memo(function MarkdownPart({
+  text,
+  neutralizeInternalLinks,
+}: {
+  text: string;
+  neutralizeInternalLinks: boolean;
+}) {
+  const html = renderChatMarkdown(text, { neutralizeInternalLinks });
+  if (html) {
+    return (
+      <div
+        className={classes.markdown}
+        // Sanitized by renderChatMarkdown (DOMPurify) before insertion.
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  // Fallback when markdown could not render synchronously: raw text.
+  return (
+    <Text className={classes.markdown} style={{ whiteSpace: "pre-wrap" }}>
+      {text}
+    </Text>
+  );
+});
+
+/**
  * Render a single UIMessage by iterating its `parts`:
  *  - `text` parts -> sanitized markdown.
  *  - `tool-*` / `dynamic-tool` parts -> an action-log card (with citations).
  * Other part kinds (reasoning, sources, files, step-start) are ignored for v1.
  * User messages render their text as a right-aligned plain bubble.
  *
- * This component is intentionally NOT memoized: `useChat` replaces the streaming
- * assistant message with a freshly cloned object on every streamed delta, so the
- * `message` prop identity (and its `parts`) changes each tick. Re-rendering the
- * text parts on each delta is what makes the answer stream in progressively.
+ * This component is memoized (see `arePropsEqual` at the bottom) on a cheap
+ * per-message content signature: the streaming TAIL message's signature changes
+ * on each delta so it still re-renders and streams in, while finalized rows are
+ * skipped. Each text part's markdown is itself memoized via `MarkdownPart`, so a
+ * long turn no longer re-parses the whole transcript on every token.
  */
-export default function MessageItem({
+function MessageItem({
   message,
   showCitations = true,
   neutralizeInternalLinks = false,
@@ -109,24 +145,12 @@ export default function MessageItem({
           // starts with an empty text part before the first token arrives); the
           // typing indicator covers that gap until real content streams in.
           if (!part.text.trim()) return null;
-          const html = renderChatMarkdown(part.text, {
-            neutralizeInternalLinks,
-          });
-          if (html) {
-            return (
-              <div
-                key={index}
-                className={classes.markdown}
-                // Sanitized by renderChatMarkdown (DOMPurify) before insertion.
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
-            );
-          }
-          // Fallback when markdown could not render synchronously: raw text.
           return (
-            <Text key={index} className={classes.markdown} style={{ whiteSpace: "pre-wrap" }}>
-              {part.text}
-            </Text>
+            <MarkdownPart
+              key={index}
+              text={part.text}
+              neutralizeInternalLinks={neutralizeInternalLinks}
+            />
           );
         }
 
@@ -177,3 +201,26 @@ export default function MessageItem({
     </Box>
   );
 }
+
+/** Skip re-rendering a message whose visible content is unchanged. The streaming
+ *  TAIL message gets a fresh object whose signature changes each delta, so it
+ *  still re-renders and streams in; every FINALIZED message is skipped, turning a
+ *  per-token whole-transcript re-render into a tail-only one. */
+export function arePropsEqual(
+  prev: MessageItemProps,
+  next: MessageItemProps,
+): boolean {
+  if (
+    prev.showCitations !== next.showCitations ||
+    prev.neutralizeInternalLinks !== next.neutralizeInternalLinks ||
+    prev.assistantName !== next.assistantName
+  ) {
+    return false;
+  }
+  // Fast path: identical message object (finalized rows keep their identity
+  // across deltas) — skip without building signatures.
+  if (prev.message === next.message) return true;
+  return messageSignature(prev.message) === messageSignature(next.message);
+}
+
+export default memo(MessageItem, arePropsEqual);

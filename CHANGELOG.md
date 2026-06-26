@@ -78,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AI chat: the desktop app no longer freezes at 100% CPU on long agent runs.**
+  `useChat` re-rendered on every streamed token and `MessageItem`/`ReasoningBlock`
+  re-parsed the whole transcript markdown (marked + DOMPurify) on every delta, so
+  per-turn work grew quadratically and saturated the main thread. The stream is now
+  throttled (`experimental_throttle`) to ~20 Hz and each finalized message row /
+  markdown part / reasoning block is memoized, so a long turn no longer re-parses
+  already-finished content. (#182)
 - **Editor: caret/selection landed on the wrong line when clicking inside code
   blocks and footnotes.** The affected NodeViews rendered their non-editable
   chrome (language menu, footnotes heading, footnote number marker) before the
@@ -92,6 +99,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer froze on the previous step's authoritative usage; the current step's
   estimate is combined per-component with `max`, so the count rises smoothly and
   never jumps backwards. (#163)
+- **AI chat: "New chat" during a streaming first turn now resets the whole
+  chat, not just the role badge.** Starting a new chat mid-stream cleared the
+  header but left the in-flight turn's messages behind, so the fresh chat opened
+  pre-populated with the previous conversation; it now fully resets. (#161)
+- **AI chat: a dropped tool argument now yields an actionable error.** When the
+  model omitted a required parameter (typically `pageId`) in a parallel/batch
+  tool call, the assistant forwarded zod's raw "expected string, received
+  undefined" text; tool inputs now return a message naming each missing/invalid
+  parameter (the JSON Schema contract is unchanged and nothing is backfilled).
+  (#190)
+- **Page move: cycle checks are now atomic and depth-bounded.** Moving a page
+  under one of its own descendants is rejected in the same transaction as the
+  update (closing a TOCTOU window where two concurrent A→B / B→A moves could
+  form a cycle), and the recursive tree-traversal CTEs carry a cycle/depth guard
+  so a pre-existing cycle can no longer spin a query. (#207)
+- **Page/editor robustness batch.** Duplicating a page now copies shared
+  attachments for every referencing page (not just the first); colliding block
+  ids are de-duplicated on import/normalize so MCP addressed edits can't hit the
+  wrong node; transient collab store failures are retried so autosave edits
+  aren't lost; and an out-of-order tree move no longer drops the moved subtree.
+  (#206)
+
+### Security
+
+- **Public share AI: per-workspace rolling-day token budget.** The anonymous
+  share assistant now caps a workspace's actual token spend (input + output,
+  summed across every accepted turn) over a trailing day, on top of the hourly
+  request cap — so a caller who evades the per-IP throttle still cannot run up
+  the owner's provider bill without bound. Cluster-wide via Redis and FAILS
+  CLOSED if Redis is down; default 1,000,000 tokens/day, overridable via
+  `SHARE_AI_WORKSPACE_TOKEN_BUDGET_PER_DAY`. (#159)
 
 ## [0.93.0] - 2026-06-21
 
