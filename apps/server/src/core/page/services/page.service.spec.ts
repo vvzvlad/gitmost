@@ -57,11 +57,28 @@ describe('PageService', () => {
 
       const eventEmitter = { emit: jest.fn() };
 
+      // movePage now runs the cycle-check + UPDATE inside executeTx(this.db),
+      // i.e. this.db.transaction().execute(fn => fn(trx)). A permissive chainable
+      // Proxy stands in for the Kysely trx so the per-space advisory-lock
+      // `sql``.execute(trx)` resolves; a thrown BadRequestException still
+      // propagates out of the transaction unchanged.
+      const trxStub: any = new Proxy(function () {}, {
+        get: (_t, p) =>
+          p === 'then'
+            ? undefined
+            : p === 'execute' || p === 'executeTakeFirst'
+              ? () => Promise.resolve([])
+              : () => trxStub,
+      });
+      const db = {
+        transaction: () => ({ execute: (fn: any) => fn(trxStub) }),
+      };
+
       const svc = new PageService(
         pageRepo as any, // pageRepo
         {} as any, // pagePermissionRepo
         {} as any, // attachmentRepo
-        {} as any, // db
+        db as any, // db
         {} as any, // storageService
         {} as any, // attachmentQueue
         {} as any, // aiQueue
@@ -268,9 +285,23 @@ describe('PageService', () => {
           }),
           updatePage: jest.fn().mockResolvedValue({ numUpdatedRows: 1n }),
         };
+        // movePage now runs the cycle-check + UPDATE inside executeTx(this.db),
+        // which calls this.db.transaction().execute(fn => fn(trx)). A permissive
+        // chainable Proxy stands in for the Kysely trx so the per-space
+        // advisory-lock `sql``.execute(trx)` resolves and updatePage receives it.
+        const trxStub: any = new Proxy(function () {}, {
+          get: (_t, p) =>
+            p === 'then'
+              ? undefined
+              : p === 'execute' || p === 'executeTakeFirst'
+                ? () => Promise.resolve([])
+                : () => trxStub,
+        });
         const svc = makeSvc({
           pageRepo,
-          db: {} as any,
+          db: {
+            transaction: () => ({ execute: (fn: any) => fn(trxStub) }),
+          } as any,
         });
         // Legitimate move: destination ancestors do NOT include the moved page.
         jest

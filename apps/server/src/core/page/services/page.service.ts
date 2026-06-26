@@ -15,13 +15,13 @@ import {
   executeWithCursorPagination,
 } from '@docmost/db/pagination/cursor-pagination';
 import { InjectKysely } from 'nestjs-kysely';
-import { KyselyDB } from '@docmost/db/types/kysely.types';
+import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { MovePageDto } from '../dto/move-page.dto';
 import { shapeSidebarPagesTree } from './sidebar-pages-tree.util';
 import { generateSlugId } from '../../../common/helpers';
 import { getPageTitle } from '../../../common/helpers';
-import { executeTx } from '@docmost/db/utils';
+import { dbOrTx, executeTx } from '@docmost/db/utils';
 import { AttachmentRepo } from '@docmost/db/repos/attachment/attachment.repo';
 import { v7 as uuid7 } from 'uuid';
 import {
@@ -61,6 +61,13 @@ import {
   AuthProvenanceData,
   agentSourceFields,
 } from '../../../common/decorators/auth-provenance.decorator';
+
+// Advisory-lock namespace (the first key of pg_advisory_xact_lock) used to
+// serialize concurrent page moves within a single space so the cycle check and
+// the move UPDATE stay atomic (see movePage, #207 #7). A dedicated namespace
+// constant keeps these locks from colliding with any other advisory lock; the
+// second key is hashtext(spaceId). Fits a signed int4 ('page' in ASCII).
+const PAGE_MOVE_LOCK_NAMESPACE = 0x70616765;
 
 @Injectable()
 export class PageService {
@@ -915,34 +922,61 @@ export class PageService {
       }
     }
 
-    // Server-side cycle guard: a page may not be moved into itself or into any
-    // page within its own subtree. Without this, an MCP/REST/agent caller (or a
-    // fast drag racing the client check) could persist a cycle and broadcast it.
-    // Only relevant when re-parenting under a concrete parent; moving to root
-    // (parentPageId null/undefined) can never create a cycle.
-    if (dto.parentPageId) {
-      if (dto.parentPageId === dto.pageId) {
-        throw new BadRequestException('Cannot move a page into its own subtree');
-      }
-      // Walk the destination parent's ancestor chain (reusing the breadcrumb
-      // ancestor CTE). If the page being moved appears among those ancestors,
-      // the destination lives inside the moved page's subtree -> cycle.
-      const destAncestors = await this.getPageBreadCrumbs(dto.parentPageId);
-      if (destAncestors.some((ancestor) => ancestor.id === dto.pageId)) {
-        throw new BadRequestException('Cannot move a page into its own subtree');
-      }
-    }
+    // Server-side cycle guard + the move UPDATE run in ONE transaction. A page
+    // may not be moved into itself or into any page within its own subtree;
+    // without this an MCP/REST/agent caller (or a fast drag racing the client
+    // check) could persist a cycle and broadcast it. Crucially, doing the guard
+    // and the write as two separate, unlocked statements is a TOCTOU race: two
+    // concurrent moves ("A under B" and "B under A") can each read the same
+    // pre-write acyclic snapshot, both pass the guard, then persist
+    // A.parentPageId=B AND B.parentPageId=A — a parent/child cycle (#207 #7). A
+    // per-space advisory lock (held until COMMIT) serializes all moves within a
+    // space: the second mover blocks until the first commits and then sees the
+    // freshly written parent, so its guard rejects the cycle.
+    const updateResult = await executeTx(this.db, async (trx) => {
+      await sql`select pg_advisory_xact_lock(${sql.lit(
+        PAGE_MOVE_LOCK_NAMESPACE,
+      )}, hashtext(${movedPage.spaceId}))`.execute(trx);
 
-    const updateResult = await this.pageRepo.updatePage(
-      {
-        position: dto.position,
-        parentPageId: parentPageId,
-        // Agent-edit provenance: annotate the source on an agent move. A normal
-        // user request leaves the existing source value unchanged.
-        ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
-      },
-      dto.pageId,
-    );
+      // Only relevant when re-parenting under a concrete parent; moving to root
+      // (parentPageId null/undefined) can never create a cycle.
+      if (dto.parentPageId) {
+        if (dto.parentPageId === dto.pageId) {
+          throw new BadRequestException(
+            'Cannot move a page into its own subtree',
+          );
+        }
+        // Walk the destination parent's ancestor chain (reusing the breadcrumb
+        // ancestor CTE) inside the lock. If the page being moved appears among
+        // those ancestors, the destination lives inside the moved page's
+        // subtree -> cycle.
+        const destAncestors = await this.getPageBreadCrumbs(
+          dto.parentPageId,
+          trx,
+        );
+        if (destAncestors.some((ancestor) => ancestor.id === dto.pageId)) {
+          throw new BadRequestException(
+            'Cannot move a page into its own subtree',
+          );
+        }
+      }
+
+      return this.pageRepo.updatePage(
+        {
+          position: dto.position,
+          parentPageId: parentPageId,
+          // Agent-edit provenance: annotate the source on an agent move. A
+          // normal user request leaves the existing source value unchanged.
+          ...agentSourceFields(
+            provenance,
+            'lastUpdatedSource',
+            'lastUpdatedAiChatId',
+          ),
+        },
+        dto.pageId,
+        trx,
+      );
+    });
 
     // Guard against a phantom broadcast: if the row was concurrently deleted or
     // otherwise not updated, skip the PAGE_MOVED event so we don't replay a move
@@ -981,8 +1015,8 @@ export class PageService {
     });
   }
 
-  async getPageBreadCrumbs(childPageId: string) {
-    const ancestors = await this.db
+  async getPageBreadCrumbs(childPageId: string, trx?: KyselyTransaction) {
+    const ancestors = await dbOrTx(this.db, trx)
       .withRecursive('page_ancestors', (db) =>
         db
           .selectFrom('pages')
