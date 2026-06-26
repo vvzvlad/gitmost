@@ -26,6 +26,25 @@ Currently shipped bundles:
   copy-editor, fact-checker, proofreader, narrator), languages `ru`, `en`.
 - `research` — a single `researcher` role, languages `ru`, `en`.
 
+## How it's served
+
+The server does not bundle this data; it reads it at request time from a single
+configured location, the `AI_AGENT_ROLES_CATALOG_URL` env var
+(`EnvironmentService.getAiAgentRolesCatalogSource()`). The value selects one of
+three sources:
+
+- **`http(s)://…`** — a REMOTE base URL. The server fetches `<base>/index.json`
+  for the manifest and `<base>/bundles/<bundle-id>/<lang>.json` for each opened
+  bundle file (e.g. the raw GitHub base of the catalog repo in production).
+- **any other non-empty value** — a LOCAL filesystem directory; the same
+  `index.json` / `bundles/<id>/<lang>.json` paths are read from disk.
+- **empty / unset** (the default) — the in-repo `agent-roles-catalog/` folder
+  (this directory), i.e. local dev reads these files directly.
+
+In every case the layout below is what the server expects, and the fetched JSON
+is re-validated server-side (the catalog is treated as untrusted input). See
+`.env.example` for the variable and the CHANGELOG for the rollout.
+
 ## `index.json` schema
 
 ```jsonc

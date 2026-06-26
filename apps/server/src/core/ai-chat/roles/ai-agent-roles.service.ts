@@ -14,7 +14,11 @@ import { CreateAgentRoleDto, UpdateAgentRoleDto } from './dto/agent-role.dto';
 import { ImportFromCatalogDto, UpdateFromCatalogDto } from './dto/agent-role-catalog.dto';
 import { RoleModelConfig } from './role-model-config';
 import { AiAgentRolesCatalogProvider } from './catalog/ai-agent-roles-catalog.provider';
-import { CatalogBundleMeta } from './catalog/catalog-types';
+import {
+  CatalogBundleFile,
+  CatalogBundleMeta,
+  CatalogRole,
+} from './catalog/catalog-types';
 
 /**
  * Full (admin) view of an agent role. There are no secret columns on this table
@@ -218,6 +222,30 @@ export class AiAgentRolesService {
   }
 
   /**
+   * Shared read prefix for the two bundle-by-id catalog paths (getCatalogBundle /
+   * importFromCatalog): fetch the index, resolve the requested bundle's meta
+   * (502 if the index does not list it), fetch its per-language file, and build
+   * the slug->version map from the meta. The callers keep their own response /
+   * write logic; only this duplicated read is factored out here.
+   */
+  private async loadBundleById(
+    bundleId: string,
+    language: string,
+  ): Promise<{
+    meta: CatalogBundleMeta;
+    file: CatalogBundleFile;
+    versions: Map<string, number>;
+  }> {
+    const index = await this.catalog.fetchIndex();
+    const meta = index.bundles.find((b) => b.id === bundleId);
+    if (!meta) {
+      throw new BadGatewayException('Catalog bundle not found');
+    }
+    const file = await this.catalog.fetchBundle(bundleId, language);
+    return { meta, file, versions: versionMap(meta) };
+  }
+
+  /**
    * Open one bundle in a language: returns each role's content plus the version
    * taken from the index (so the client can compare against an imported role's
    * source.version). A missing bundle/language => BadGateway (catalog issue).
@@ -239,13 +267,7 @@ export class AiAgentRolesService {
       version: number;
     }[];
   }> {
-    const index = await this.catalog.fetchIndex();
-    const meta = index.bundles.find((b) => b.id === bundleId);
-    if (!meta) {
-      throw new BadGatewayException('Catalog bundle not found');
-    }
-    const file = await this.catalog.fetchBundle(bundleId, language);
-    const versions = versionMap(meta);
+    const { file, versions } = await this.loadBundleById(bundleId, language);
     return {
       bundleId,
       language,
@@ -284,13 +306,10 @@ export class AiAgentRolesService {
     renamed: number;
     errors: { slug: string; message: string }[];
   }> {
-    const index = await this.catalog.fetchIndex();
-    const meta = index.bundles.find((b) => b.id === dto.bundleId);
-    if (!meta) {
-      throw new BadGatewayException('Catalog bundle not found');
-    }
-    const file = await this.catalog.fetchBundle(dto.bundleId, dto.language);
-    const versions = versionMap(meta);
+    const { file, versions } = await this.loadBundleById(
+      dto.bundleId,
+      dto.language,
+    );
 
     const errors: { slug: string; message: string }[] = [];
 
@@ -355,15 +374,8 @@ export class AiAgentRolesService {
           workspaceId,
           creatorId,
           name,
-          emoji: emptyToNull(role.emoji),
-          description: emptyToNull(role.description),
-          instructions: role.instructions,
-          modelConfig: normalizeModelConfig(role.modelConfig) as
-            | Record<string, unknown>
-            | null,
+          ...catalogRoleContentFields(role),
           enabled: true,
-          autoStart: role.autoStart ?? true,
-          launchMessage: emptyToNull(role.launchMessage ?? undefined),
           source: { slug: role.slug, language: dto.language, version },
         });
         created++;
@@ -465,14 +477,7 @@ export class AiAgentRolesService {
 
     await this.repo.update(dto.id, workspaceId, {
       name,
-      emoji: emptyToNull(fresh.emoji),
-      description: emptyToNull(fresh.description),
-      instructions: fresh.instructions,
-      modelConfig: normalizeModelConfig(fresh.modelConfig) as
-        | Record<string, unknown>
-        | null,
-      autoStart: fresh.autoStart ?? true,
-      launchMessage: emptyToNull(fresh.launchMessage ?? undefined),
+      ...catalogRoleContentFields(fresh),
       // enabled is deliberately NOT changed.
       source: {
         slug: source.slug,
@@ -562,17 +567,47 @@ const SOURCE_UNIQUE_CONSTRAINT = 'ai_agent_roles_workspace_source_unique';
 
 /**
  * Whether `err` is the 23505 raised by the SOURCE-uniqueness index specifically
- * (vs the name-uniqueness index). Postgres sets `constraint` to the violated
- * index name on a unique violation; we key off that so a source race is skipped
- * while a name race still surfaces as a friendly per-role error. A 23505 with no
- * constraint name (e.g. a wrapped/test error) is NOT treated as a source
- * collision, preserving the existing name-race behavior.
+ * (vs the name-uniqueness index). The active driver (`kysely-postgres-js` over
+ * `postgres@3.4.8`) exposes the violated constraint name on `constraint_name`,
+ * so we key off that (accepting the node-postgres-style `.constraint` as a
+ * fallback for other drivers) — that way a source race is skipped while a name
+ * race still surfaces as a friendly per-role error. A 23505 with no constraint
+ * name (e.g. a wrapped/test error) is NOT treated as a source collision,
+ * preserving the existing name-race behavior.
  */
 function isSourceUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { constraint_name?: unknown; constraint?: unknown };
   return (
-    isUniqueViolation(err) &&
-    (err as { constraint?: unknown }).constraint === SOURCE_UNIQUE_CONSTRAINT
+    e.constraint_name === SOURCE_UNIQUE_CONSTRAINT ||
+    e.constraint === SOURCE_UNIQUE_CONSTRAINT
   );
+}
+
+/**
+ * The role-content fields shared by import (insert) and update (patch) of a
+ * catalog role: emoji/description/launchMessage normalized to null, model config
+ * normalized, autoStart defaulted. The caller adds the write-specific fields
+ * (`name`, `source`, and on insert `workspaceId`/`creatorId`/`enabled`).
+ */
+function catalogRoleContentFields(role: CatalogRole): {
+  emoji: string | null;
+  description: string | null;
+  instructions: string;
+  modelConfig: Record<string, unknown> | null;
+  autoStart: boolean;
+  launchMessage: string | null;
+} {
+  return {
+    emoji: emptyToNull(role.emoji),
+    description: emptyToNull(role.description),
+    instructions: role.instructions,
+    modelConfig: normalizeModelConfig(role.modelConfig) as
+      | Record<string, unknown>
+      | null,
+    autoStart: role.autoStart ?? true,
+    launchMessage: emptyToNull(role.launchMessage ?? undefined),
+  };
 }
 
 /** '' / whitespace-only / undefined / null => null; otherwise the trimmed value. */

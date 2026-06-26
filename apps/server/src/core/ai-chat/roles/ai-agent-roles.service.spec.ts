@@ -664,9 +664,11 @@ describe('AiAgentRolesService guards', () => {
           { slug: 'b', version: 1 },
         ],
       });
+      // The kysely-postgres-js driver surfaces the violated constraint on
+      // `constraint_name` (not node-postgres' `.constraint`), matching prod.
       const sourceRace = Object.assign(new Error('duplicate key'), {
         code: '23505',
-        constraint: 'ai_agent_roles_workspace_source_unique',
+        constraint_name: 'ai_agent_roles_workspace_source_unique',
       });
       repo.insert
         .mockRejectedValueOnce(sourceRace)
@@ -713,6 +715,17 @@ describe('AiAgentRolesService guards', () => {
       } finally {
         logSpy.mockRestore();
       }
+    });
+
+    it('bundleId absent from the index => BadGateway (no insert)', async () => {
+      // The requested bundle is not listed in the fetched index (a stale client
+      // or an index/bundle drift); the import must surface a 502 rather than
+      // silently doing nothing or dereferencing a missing meta.
+      const { service, repo } = makeImportService({});
+      await expect(
+        service.importFromCatalog('ws-1', 'u1', dto({ bundleId: 'missing' })),
+      ).rejects.toBeInstanceOf(BadGatewayException);
+      expect(repo.insert).not.toHaveBeenCalled();
     });
   });
 
@@ -845,6 +858,22 @@ describe('AiAgentRolesService guards', () => {
       expect(patch.name).toBe('Researcher v5');
       // enabled is never touched by an update-from-catalog.
       expect('enabled' in patch).toBe(false);
+    });
+
+    it('slug listed in the index but missing from the bundle file => not-in-catalog', async () => {
+      // Index/bundle drift: the index still advertises a newer `researcher`
+      // (v5 > installed v1) in an offered language, but the fetched bundle file
+      // no longer contains that slug. The update must no-op as not-in-catalog,
+      // not throw or write a half-resolved role.
+      const { service, repo } = makeUpdateService({
+        role: imported(1),
+        bundleRoles: [
+          { slug: 'someone-else', name: 'Other', instructions: 'x' },
+        ],
+      });
+      const res = await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
+      expect(res).toEqual({ updated: false, reason: 'not-in-catalog' });
+      expect(repo.update).not.toHaveBeenCalled();
     });
 
     it('new catalog name collides with another live role => keeps current name', async () => {

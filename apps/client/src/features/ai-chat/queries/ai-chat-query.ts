@@ -319,15 +319,19 @@ export function useUpdateAiRoleFromCatalogMutation() {
       // The server returns updated:false with a reason for a no-op (already
       // up to date / removed from catalog / language no longer offered). Map
       // each reason to a specific message instead of a generic "up to date".
+      // Narrow the discriminated union via `"reason" in result` (the `updated`
+      // boolean discriminant does not narrow under this project's
+      // strictNullChecks:false). Inside the branch, `reason` is the typed literal
+      // union, so the comparisons below are compiler-checked.
       let message: string;
-      if (result.updated) {
+      if (!("reason" in result)) {
         message = t("Updated to the latest version");
       } else if (result.reason === "not-in-catalog") {
         message = t("This role is no longer in the catalog");
       } else if (result.reason === "language-unavailable") {
         message = t("This language is no longer available in the catalog");
       } else {
-        // "up-to-date" and any unexpected reason.
+        // "up-to-date" (the only remaining reason).
         message = t("Already up to date");
       }
       notifications.show({ message });

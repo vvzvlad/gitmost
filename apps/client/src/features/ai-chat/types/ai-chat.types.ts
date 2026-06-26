@@ -116,14 +116,19 @@ export interface IAiRoleImportResult {
   errors: { slug: string; message: string }[];
 }
 
-/** Update-from-catalog result (mirrors `updateFromCatalog()`). */
-export interface IAiRoleUpdateFromCatalogResult {
-  updated: boolean;
-  fromVersion?: number;
-  toVersion?: number;
-  reason?: string;
-  role?: IAiRole;
-}
+/**
+ * Update-from-catalog result (mirrors the server `updateFromCatalog()`). A
+ * discriminated union on `updated`: a no-op carries a typed `reason` the UI maps
+ * to a specific message; a successful update carries the version bump + new role.
+ * Keeping the union (not a widened `reason?: string`) lets the consumer's literal
+ * comparisons be compiler-checked.
+ */
+export type IAiRoleUpdateFromCatalogResult =
+  | {
+      updated: false;
+      reason: "not-in-catalog" | "up-to-date" | "language-unavailable";
+    }
+  | { updated: true; fromVersion: number; toVersion: number; role: IAiRole };
 
 /** Admin create payload for a role. */
 export interface IAiRoleCreate {

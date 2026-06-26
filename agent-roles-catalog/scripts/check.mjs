@@ -106,9 +106,8 @@ for (const bundle of bundles) {
       const where = `${bundleId}/${lang}`;
       // Only flag duplicates across DIFFERENT bundles or files; the same slug
       // is expected to appear once per language file of the same bundle.
-      const key = slug;
-      if (slugSeen.has(key)) {
-        const prev = slugSeen.get(key);
+      if (slugSeen.has(slug)) {
+        const prev = slugSeen.get(slug);
         const prevBundle = prev.split("/")[0];
         if (prevBundle !== bundleId) {
           errors.push(
@@ -116,7 +115,7 @@ for (const bundle of bundles) {
           );
         }
       } else {
-        slugSeen.set(key, where);
+        slugSeen.set(slug, where);
       }
     }
   }

@@ -27,6 +27,7 @@ import {
   IAiRoleCatalogBundleSummary,
   IAiRoleCatalogRole,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
+import { catalogRoleInstallState } from "@/features/ai-chat/utils/catalog-role-install-state.ts";
 
 interface AiAgentRolesCatalogModalProps {
   opened: boolean;
@@ -230,19 +231,14 @@ function BundlePanel({
   const updateMutation = useUpdateAiRoleFromCatalogMutation();
 
   // Compute each catalog role's install state against the current workspace
-  // roles: an importable role matched by source.slug + source.language.
+  // roles (matched by source.slug + source.language). The decision lives in the
+  // pure `catalogRoleInstallState` helper so it is unit-tested directly.
   const computed = useMemo(() => {
     const list = bundleQuery.data?.roles ?? [];
-    return list.map((role) => {
-      const installed = roles.find(
-        (r) => r.source?.slug === role.slug && r.source?.language === language,
-      );
-      if (!installed) return { role, state: "import" as const };
-      if ((installed.source?.version ?? 0) >= role.version) {
-        return { role, state: "installed" as const, installed };
-      }
-      return { role, state: "update" as const, installed };
-    });
+    return list.map((role) => ({
+      role,
+      ...catalogRoleInstallState(role, roles, language),
+    }));
   }, [bundleQuery.data, roles, language]);
 
   // Default-check every importable role once the bundle content arrives (unless
@@ -300,17 +296,23 @@ function BundlePanel({
 
         {bundleQuery.data && (
           <Stack gap="xs">
-            {computed.map(({ role, state, installed }) => (
+            {computed.map((entry) => (
               <CatalogRoleRow
-                key={role.slug}
-                role={role}
-                state={state}
-                checked={state === "import" ? !!selected?.has(role.slug) : false}
-                onToggle={(checked) => onToggleSlug(role.slug, checked)}
-                fromVersion={installed?.source?.version}
+                key={entry.role.slug}
+                role={entry.role}
+                state={entry.state}
+                checked={
+                  entry.state === "import"
+                    ? !!selected?.has(entry.role.slug)
+                    : false
+                }
+                onToggle={(checked) => onToggleSlug(entry.role.slug, checked)}
+                fromVersion={
+                  entry.state === "update" ? entry.fromVersion : undefined
+                }
                 onUpdate={
-                  state === "update" && installed
-                    ? () => updateMutation.mutate(installed.id)
+                  entry.state === "update"
+                    ? () => updateMutation.mutate(entry.installed.id)
                     : undefined
                 }
                 updating={updateMutation.isPending}
