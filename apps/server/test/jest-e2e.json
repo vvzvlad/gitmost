@@ -4,7 +4,7 @@
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
   "transform": {
-    "^.+\\.(t|j)sx?$": "ts-jest"
+    "^.+\\.(t|j)sx?$": ["ts-jest", { "tsconfig": { "allowJs": true } }]
   },
   "transformIgnorePatterns": [
     "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0|@sindresorhus[+/][a-z0-9-]+|escape-string-regexp|p-limit|yocto-queue)(@|/))"
