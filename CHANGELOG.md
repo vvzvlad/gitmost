@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Quick-create regular and temporary notes from the Home and Space screens.**
+  The Home screen now shows a second action next to "New note" that creates a
+  *temporary* note (one that auto-moves to Trash after the workspace lifetime),
+  resolving the target space the same way the regular button does — created
+  directly when you can write to a single space, or via a space picker when
+  several. Each space overview screen gains two buttons — "New note" and "New
+  temporary note" — that create the page directly in that space and open it,
+  mirroring the existing space-sidebar actions and shown only to members who can
+  manage pages.
 - **Interrupt the AI agent and send a queued message now.** A queued AI-chat
   message gains a "send now" action that interrupts the streaming turn and
   immediately sends that message, keeping the agent's partial output. The

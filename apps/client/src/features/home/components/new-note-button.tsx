@@ -1,5 +1,6 @@
-import { Button, Menu, Text } from "@mantine/core";
-import { IconPlus } from "@tabler/icons-react";
+import { Button, Group, Menu, Text } from "@mantine/core";
+import { IconHourglass, IconPlus } from "@tabler/icons-react";
+import { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useGetSpacesQuery } from "@/features/space/queries/space-query.ts";
@@ -10,24 +11,34 @@ import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import { canCreatePage } from "./can-create-page.ts";
 
-// Prominent home-screen action to create a new note (page). Because the home
-// screen has no active space, the target space is resolved from the user's
-// writable spaces: created directly when there is one, picked from a dropdown
-// when there are several.
-export default function NewNoteButton() {
+// A single create-note action, parametrized by `temporary`. Self-contained: it
+// owns its own create mutation so the regular and temporary buttons show
+// independent loading state, while the list of writable spaces is resolved once
+// by the parent and passed in. With exactly one writable space it creates
+// directly; with several it shows a target-space picker.
+function CreateNoteButton({
+  writableSpaces,
+  temporary,
+  label,
+  icon,
+}: {
+  writableSpaces: ISpace[];
+  temporary: boolean;
+  label: string;
+  icon: ReactNode;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const createPageMutation = useCreatePageMutation();
-  const { data } = useGetSpacesQuery({ limit: 100 });
-
-  const writableSpaces = (data?.items ?? []).filter(canCreatePage);
 
   const createNote = async (space: ISpace) => {
     try {
-      // `spaceId` is accepted by the create-page endpoint but is not part of
-      // the shared `IPageInput` type; cast to satisfy the mutation signature.
+      // `spaceId`/`temporary` are accepted by the create-page endpoint but are
+      // not part of the shared `IPageInput` type; cast to satisfy the mutation
+      // signature.
       const createdPage = await createPageMutation.mutateAsync({
         spaceId: space.id,
+        ...(temporary ? { temporary: true } : {}),
       } as any);
       navigate(buildPageUrl(space.slug, createdPage.slugId, createdPage.title));
     } catch {
@@ -35,24 +46,20 @@ export default function NewNoteButton() {
     }
   };
 
-  // No writable space → nothing to create in; render nothing.
-  if (writableSpaces.length === 0) return null;
-
   const isPending = createPageMutation.isPending;
 
   // Exactly one writable space → create directly, no picker needed.
   if (writableSpaces.length === 1) {
     return (
       <Button
-        fullWidth
         size="md"
         variant="light"
         color="gray"
-        leftSection={<IconPlus size={18} />}
+        leftSection={icon}
         loading={isPending}
         onClick={() => createNote(writableSpaces[0])}
       >
-        {t("New note")}
+        {label}
       </Button>
     );
   }
@@ -62,14 +69,13 @@ export default function NewNoteButton() {
     <Menu shadow="md" width="target" position="bottom-start">
       <Menu.Target>
         <Button
-          fullWidth
           size="md"
           variant="light"
           color="gray"
-          leftSection={<IconPlus size={18} />}
+          leftSection={icon}
           loading={isPending}
         >
-          {t("New note")}
+          {label}
         </Button>
       </Menu.Target>
       <Menu.Dropdown>
@@ -97,5 +103,37 @@ export default function NewNoteButton() {
         ))}
       </Menu.Dropdown>
     </Menu>
+  );
+}
+
+// Prominent home-screen actions to create a new note (page). Because the home
+// screen has no active space, the target space is resolved from the user's
+// writable spaces: created directly when there is one, picked from a dropdown
+// when there are several. Renders two equal-width buttons: a regular note and a
+// temporary note (which auto-moves to Trash after the workspace lifetime).
+export default function NewNoteButton() {
+  const { t } = useTranslation();
+  const { data } = useGetSpacesQuery({ limit: 100 });
+
+  const writableSpaces = (data?.items ?? []).filter(canCreatePage);
+
+  // No writable space → nothing to create in; render nothing.
+  if (writableSpaces.length === 0) return null;
+
+  return (
+    <Group grow gap="sm">
+      <CreateNoteButton
+        writableSpaces={writableSpaces}
+        temporary={false}
+        label={t("New note")}
+        icon={<IconPlus size={18} />}
+      />
+      <CreateNoteButton
+        writableSpaces={writableSpaces}
+        temporary={true}
+        label={t("New temporary note")}
+        icon={<IconHourglass size={18} />}
+      />
+    </Group>
   );
 }
