@@ -42,6 +42,7 @@ lerna-debug.log*
 .nx/installation
 .nx/cache
 .claude/worktrees/
+.claude/tmp/
 
 # TypeScript incremental build artifacts
 *.tsbuildinfo
