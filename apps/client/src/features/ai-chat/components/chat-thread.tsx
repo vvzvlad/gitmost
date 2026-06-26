@@ -340,6 +340,13 @@ export default function ChatThread({
   // Keep the flush helper pointed at the latest sendMessage instance.
   sendMessageRef.current = sendMessage;
 
+  // Mirror the live turn status in a ref so event handlers (sendNow) branch on the
+  // CURRENT status rather than a value captured in a stale render closure — a turn
+  // can finish between render and click, and arming the interrupt refs against a
+  // no-op stop() would leave them set to leak into a later, unrelated Stop.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   // EARLY chat-id adoption (#174): the server streams the authoritative chat id
   // on the assistant message metadata at the `start` chunk (message.metadata.
   // chatId — see adopt-chat-id.ts / chatStreamMetadata). Forward it to the parent
@@ -379,7 +386,13 @@ export default function ChatThread({
   // interrupt so the server notes the previous answer was cut off.
   const sendNow = useCallback(
     (id: string) => {
-      if (isStreaming) {
+      // Branch on the LIVE status (statusRef), NOT the closure-captured isStreaming:
+      // the turn may have finished between this render and the click, in which case
+      // stop() is a no-op and arming the interrupt refs would strand them for a
+      // later, unrelated Stop. Reading the ref always sees the current status.
+      const liveStreaming =
+        statusRef.current === "submitted" || statusRef.current === "streaming";
+      if (liveStreaming) {
         // Promote to head so the onFinish -> flushNext path sends exactly it.
         setQueue(promoteToHead(queuedRef.current, id));
         flushOnAbortRef.current = true;
@@ -393,12 +406,21 @@ export default function ChatThread({
         sendMessageRef.current?.({ text: msg.text });
       }
     },
-    [isStreaming, setQueue, stop],
+    [setQueue, stop],
   );
 
-  // Clear the stopped marker as soon as a new turn begins streaming.
+  // Clear the stopped marker as soon as a new turn begins streaming, and drop any
+  // stale "Send now" interrupt flags. On the legit interrupt path both refs are
+  // already consumed synchronously (onFinish + prepareSendMessagesRequest) before
+  // this effect runs, so clearing here is a no-op for it; its purpose is to defuse
+  // the race where a flag was armed but the expected abort never fired (the turn
+  // finished in the same tick as the click), so it cannot leak into a later turn.
   useEffect(() => {
-    if (isStreaming) setStopNotice(null);
+    if (isStreaming) {
+      setStopNotice(null);
+      flushOnAbortRef.current = false;
+      interruptNextSendRef.current = false;
+    }
   }, [isStreaming]);
 
   // Classify the turn error into a heading + detail so the banner names the cause
