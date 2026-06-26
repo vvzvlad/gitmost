@@ -9,6 +9,7 @@ import {
   flushAssistant,
   chatStreamMetadata,
   accumulateStepUsage,
+  isInterruptResume,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -647,5 +648,59 @@ describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', 
       canView: true,
     });
     expect(await call(svc, { id: 'p-1' })).toEqual({ id: 'p-1', title: '' });
+  });
+});
+
+/**
+ * isInterruptResume (#198): the pure guard that decides whether the interrupt
+ * note is injected for a turn. The client "send now" flag is only a hint; it is
+ * honoured ONLY when the preceding assistant turn (history[len-2], since the new
+ * user row is the tail) really ended unfinished ('aborted', or still 'streaming'
+ * during the abort/resend race). A spoofed flag on an ordinary turn is ignored.
+ */
+describe('isInterruptResume', () => {
+  // history tail is the just-inserted user row; [len-2] is the previous turn.
+  const withPrev = (
+    prev: { role: string; status?: string | null } | null,
+  ): Array<{ role: string; status?: string | null }> =>
+    prev
+      ? [prev, { role: 'user', status: null }]
+      : [{ role: 'user', status: null }];
+
+  it('false when the client flag is not set', () => {
+    expect(
+      isInterruptResume(withPrev({ role: 'assistant', status: 'aborted' }), undefined),
+    ).toBe(false);
+    expect(
+      isInterruptResume(withPrev({ role: 'assistant', status: 'aborted' }), false),
+    ).toBe(false);
+  });
+
+  it('true when flagged AND the previous assistant turn is aborted', () => {
+    expect(
+      isInterruptResume(withPrev({ role: 'assistant', status: 'aborted' }), true),
+    ).toBe(true);
+  });
+
+  it('true when flagged AND the previous assistant turn is still streaming (race)', () => {
+    expect(
+      isInterruptResume(withPrev({ role: 'assistant', status: 'streaming' }), true),
+    ).toBe(true);
+  });
+
+  it('false when flagged but the previous assistant turn completed normally', () => {
+    expect(
+      isInterruptResume(withPrev({ role: 'assistant', status: 'completed' }), true),
+    ).toBe(false);
+  });
+
+  it('false when flagged but the previous turn is not an assistant turn', () => {
+    expect(
+      isInterruptResume(withPrev({ role: 'user', status: 'aborted' }), true),
+    ).toBe(false);
+  });
+
+  it('false when there is no preceding turn (only the new user row)', () => {
+    expect(isInterruptResume(withPrev(null), true)).toBe(false);
   });
 });
