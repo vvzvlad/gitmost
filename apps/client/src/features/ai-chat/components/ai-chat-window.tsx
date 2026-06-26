@@ -45,6 +45,7 @@ import {
   shouldCollapseOnOutsidePointer,
   isHeaderClick,
 } from "@/features/ai-chat/utils/collapse-helpers.ts";
+import { selectContextBadge } from "@/features/ai-chat/utils/context-badge.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { notifications } from "@mantine/notifications";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
@@ -281,43 +282,19 @@ export default function AiChatWindow() {
   // shipped; older rows fall back to that turn's `usage` total. NOTE: reflects
   // PERSISTED rows (updates on chat open/switch); it does not tick live
   // mid-stream — acceptable for v1.
-  const contextTokens = useMemo(() => {
-    if (!activeChatId || !messageRows) return 0;
-    for (let i = messageRows.length - 1; i >= 0; i--) {
-      const meta = messageRows[i].metadata;
-      if (!meta) continue;
-      if (typeof meta.contextTokens === "number" && meta.contextTokens > 0) {
-        return meta.contextTokens;
-      }
-      const usage = meta.usage;
-      if (usage) {
-        const fallback =
-          usage.totalTokens ??
-          (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-        if (fallback > 0) return fallback;
-      }
-    }
-    return 0;
-  }, [activeChatId, messageRows]);
-
-  // The model's max context window (badge denominator). Read the most recent row
-  // carrying `maxContextTokens` (set alongside contextTokens on a completed
-  // turn); 0 when no row has it (older rows, or no admin-configured limit) — the
-  // badge then shows just the current size with no denominator.
-  const maxContextTokens = useMemo(() => {
-    if (!activeChatId || !messageRows) return 0;
-    for (let i = messageRows.length - 1; i >= 0; i--) {
-      const meta = messageRows[i].metadata;
-      if (!meta) continue;
-      if (
-        typeof meta.maxContextTokens === "number" &&
-        meta.maxContextTokens > 0
-      ) {
-        return meta.maxContextTokens;
-      }
-    }
-    return 0;
-  }, [activeChatId, messageRows]);
+  //
+  // The denominator `maxContextTokens` (the model's configured max window) is
+  // derived in the SAME backward scan: it is stamped alongside `contextTokens`
+  // on a completed turn, but the numerator and denominator are taken from the
+  // most recent row carrying EACH value independently — they may land on
+  // different rows (e.g. a fresh error row can carry contextTokens but not
+  // maxContextTokens), so we keep scanning for whichever is still unset. 0 when
+  // no row has it (older rows, or no admin-configured limit) — the badge then
+  // shows just the current size with no denominator.
+  const { contextTokens, maxContextTokens } = useMemo(
+    () => selectContextBadge(activeChatId ? messageRows : undefined),
+    [activeChatId, messageRows],
+  );
 
   // On (re)open, settle the geometry before paint (useLayoutEffect → no
   // first-frame jump): compute an initial top-right placement the first time,

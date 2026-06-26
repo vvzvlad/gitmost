@@ -31,6 +31,7 @@ import {
   useUpdateAiMcpServerMutation,
 } from "@/features/workspace/queries/ai-mcp-server-query.ts";
 import { IAiMcpServer } from "@/features/workspace/services/ai-mcp-server-service.ts";
+import { mcpTestButtonView } from "@/features/workspace/components/settings/components/ai-mcp-server-test-view.ts";
 import AiMcpServerForm from "./ai-mcp-server-form.tsx";
 
 /**
@@ -182,34 +183,22 @@ function AiMcpServerRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server.url, server.transport, server.hasHeaders]);
 
-  // Tooltip text describes the cause/details; disabled while there is no result.
-  let tooltipLabel = "";
-  if (result?.ok) {
-    tooltipLabel =
-      result.tools.length > 0
-        ? result.tools.join(", ")
-        : t("No tools available");
-  } else if (result && result.ok === false) {
-    tooltipLabel = result.error;
-  }
-
-  // Pick the button presentation from the current test state. Color is never the
-  // only signal — the label changes too (a11y / colorblind-friendly).
-  let buttonColor: string | undefined;
-  let buttonVariant = "default";
-  let buttonIcon = <IconPlugConnected size={16} />;
-  let buttonLabel = t("Test");
-  if (result?.ok) {
-    buttonColor = "green";
-    buttonVariant = "light";
-    buttonIcon = <IconCheck size={16} />;
-    buttonLabel = t("OK · {{n}}", { n: result.tools.length });
-  } else if (result && result.ok === false) {
-    buttonColor = "red";
-    buttonVariant = "light";
-    buttonIcon = <IconX size={16} />;
-    buttonLabel = t("Failed");
-  }
+  // Single derivation of the button/tooltip presentation from the test tristate
+  // (idle / ok / failed), so the two can never drift apart. Tooltip is "" while
+  // there is no result; the icon is mapped from `view.state` below.
+  const view = mcpTestButtonView(result, t);
+  const tooltipLabel = view.tooltip;
+  const buttonColor = view.color;
+  const buttonVariant = view.variant;
+  const buttonLabel = view.label;
+  const buttonIcon =
+    view.state === "ok" ? (
+      <IconCheck size={16} />
+    ) : view.state === "failed" ? (
+      <IconX size={16} />
+    ) : (
+      <IconPlugConnected size={16} />
+    );
 
   return (
     <Group justify="space-between" wrap="nowrap">
