@@ -78,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AI chat: the desktop app no longer freezes at 100% CPU on long agent runs.**
+  `useChat` re-rendered on every streamed token and `MessageItem`/`ReasoningBlock`
+  re-parsed the whole transcript markdown (marked + DOMPurify) on every delta, so
+  per-turn work grew quadratically and saturated the main thread. The stream is now
+  throttled (`experimental_throttle`) to ~20 Hz and each finalized message row /
+  markdown part / reasoning block is memoized, so a long turn no longer re-parses
+  already-finished content. (#182)
 - **Editor: caret/selection landed on the wrong line when clicking inside code
   blocks and footnotes.** The affected NodeViews rendered their non-editable
   chrome (language menu, footnotes heading, footnote number marker) before the
