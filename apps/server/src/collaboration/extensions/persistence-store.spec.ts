@@ -182,4 +182,46 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(pageHistoryRepo.saveHistory).not.toHaveBeenCalled();
     expect(historyQueue.add).not.toHaveBeenCalled();
   });
+
+  // persist-1 — a transient DB failure during store must not silently lose the
+  // edit. hocuspocus unloads (destroys) the in-memory Y.Doc right after this
+  // hook resolves, so the store has to retry while it still holds the only copy.
+  it('retries a transient DB failure and still persists the edit (persist-1)', async () => {
+    const document = ydocFor(doc('NEW HUMAN CONTENT'));
+    pageRepo.findById.mockResolvedValue(persistedHumanPage('NEW HUMAN CONTENT'));
+    let attempts = 0;
+    pageRepo.updatePage.mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('deadlock detected'); // transient
+      callOrder.push('updatePage');
+    });
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    // First attempt failed and rolled back; the retry persisted the edit.
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(2);
+    // The edit WAS saved, so the post-store success path runs as normal.
+    expect((document as any).broadcastStateless).toHaveBeenCalledTimes(1);
+    expect(historyQueue.add).toHaveBeenCalledTimes(1);
+  });
+
+  // persist-1 — when every attempt fails the hook must NOT report a phantom
+  // success: no "page.updated" badge broadcast and no history snapshot for
+  // content that was never written.
+  it('does not run post-store side effects when every store attempt fails (persist-1)', async () => {
+    const document = ydocFor(doc('NEW HUMAN CONTENT'));
+    pageRepo.findById.mockResolvedValue(persistedHumanPage('NEW HUMAN CONTENT'));
+    pageRepo.updatePage.mockRejectedValue(new Error('connection reset'));
+
+    await expect(
+      ext.onStoreDocument(buildData(document, 'user') as any),
+    ).resolves.toBeUndefined();
+
+    // Bounded retry exhausted (MAX_STORE_ATTEMPTS).
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(3);
+    // No false-success: nothing downstream fires for the unsaved content.
+    expect((document as any).broadcastStateless).not.toHaveBeenCalled();
+    expect(historyQueue.add).not.toHaveBeenCalled();
+    expect(aiQueue.add).not.toHaveBeenCalled();
+  });
 });
