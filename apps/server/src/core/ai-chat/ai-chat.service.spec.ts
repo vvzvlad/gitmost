@@ -275,11 +275,12 @@ describe('flushAssistant', () => {
     expect(f.toolCalls).not.toBeNull();
   });
 
-  it('completed: attaches finishReason + normalized usage + contextTokens', () => {
+  it('completed: attaches finishReason + normalized usage + contextTokens + maxContextTokens', () => {
     const f = flushAssistant([toolStep], '', 'completed', {
       finishReason: 'stop',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
       contextTokens: 15,
+      maxContextTokens: 200000,
     });
     expect(f.status).toBe('completed');
     expect(f.metadata.finishReason).toBe('stop');
@@ -290,6 +291,23 @@ describe('flushAssistant', () => {
       reasoningTokens: undefined,
     });
     expect(f.metadata.contextTokens).toBe(15);
+    expect(f.metadata.maxContextTokens).toBe(200000);
+  });
+
+  it('completed: omits maxContextTokens when unset or 0', () => {
+    // No maxContextTokens in the extra (admin set no context window).
+    const f = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      contextTokens: 15,
+    });
+    expect('maxContextTokens' in f.metadata).toBe(false);
+    // Explicit 0 is treated the same as unset (no limit -> key omitted).
+    const f0 = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      contextTokens: 15,
+      maxContextTokens: 0,
+    });
+    expect('maxContextTokens' in f0.metadata).toBe(false);
   });
 
   it('error: records the error and a derived finishReason', () => {

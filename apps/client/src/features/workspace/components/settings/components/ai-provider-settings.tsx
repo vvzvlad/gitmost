@@ -7,6 +7,7 @@ import {
   Button,
   Group,
   Modal,
+  NumberInput,
   Paper,
   PasswordInput,
   Select,
@@ -83,6 +84,9 @@ const STT_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 // (empty means "leave unchanged" unless explicitly cleared).
 const formSchema = z.object({
   chatModel: z.string(),
+  // Max context window in tokens shown in the chat header badge. A number, or ""
+  // when the NumberInput is empty (no limit).
+  chatContextWindow: z.union([z.number(), z.literal("")]),
   // Chat provider implementation (reasoning surfacing). Default openai-compatible.
   chatApiStyle: z.enum(["openai-compatible", "openai"]),
   // Cheap model id for the anonymous public-share assistant; empty = use chatModel.
@@ -311,6 +315,7 @@ export default function AiProviderSettings() {
     validate: zod4Resolver(formSchema),
     initialValues: {
       chatModel: "",
+      chatContextWindow: "",
       chatApiStyle: "openai-compatible" as ChatApiStyle,
       publicShareChatModel: "",
       publicShareAssistantRoleId: "",
@@ -334,6 +339,7 @@ export default function AiProviderSettings() {
     if (!settings) return;
     form.setValues({
       chatModel: settings.chatModel ?? "",
+      chatContextWindow: settings.chatContextWindow ?? "",
       chatApiStyle: settings.chatApiStyle ?? "openai-compatible",
       publicShareChatModel: settings.publicShareChatModel ?? "",
       publicShareAssistantRoleId: settings.publicShareAssistantRoleId ?? "",
@@ -364,6 +370,12 @@ export default function AiProviderSettings() {
       // Everything is OpenAI-compatible.
       driver: "openai",
       chatModel: values.chatModel,
+      // Max context window for the chat header badge; empty NumberInput ("") →
+      // 0, which clears the limit server-side (no denominator shown).
+      chatContextWindow:
+        typeof values.chatContextWindow === "number"
+          ? values.chatContextWindow
+          : 0,
       chatApiStyle: values.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; empty falls
       // back to chatModel server-side.
@@ -766,6 +778,18 @@ export default function AiProviderSettings() {
         <Text size="xs" c="dimmed" mt={4} style={{ fontFamily: monoFont }} truncate>
           {t("Resolves to {{url}}", { url: chatResolved })}
         </Text>
+
+        <NumberInput
+          mt="sm"
+          label={t("Context window (tokens)")}
+          description={t(
+            "Shown as used / total in the chat header. Leave empty to hide the limit.",
+          )}
+          min={0}
+          allowDecimal={false}
+          disabled={isLoading}
+          {...form.getInputProps("chatContextWindow")}
+        />
 
         <Select
           mt="sm"

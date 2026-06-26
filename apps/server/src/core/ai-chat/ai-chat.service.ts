@@ -616,6 +616,10 @@ export class AiChatService implements OnModuleInit {
               contextTokens:
                 (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) ||
                 undefined,
+              // Max context window for the chat header badge denominator;
+              // resolved from the admin-configured provider settings (in
+              // closure scope here). Omitted/0 = no limit.
+              maxContextTokens: resolved?.chatContextWindow,
             }),
           );
           // Lifecycle: release the external MCP clients leased for this turn.
@@ -1212,8 +1216,9 @@ export async function applyFinalize(
  * `metadata.parts` is built by assistantParts over the finished steps, then the
  * in-progress text appended as a trailing text part, so rowToUiMessage /
  * findRecent keep replaying the turn unchanged. `metadata.finishReason`,
- * `metadata.error`, `metadata.usage` and `metadata.contextTokens` are attached
- * only when provided/relevant, matching the pre-#183 onFinish/onError records.
+ * `metadata.error`, `metadata.usage`, `metadata.contextTokens` and
+ * `metadata.maxContextTokens` are attached only when provided/relevant, matching
+ * the pre-#183 onFinish/onError records.
  */
 export function flushAssistant(
   capturedSteps: ReadonlyArray<StepLike> | undefined,
@@ -1223,6 +1228,7 @@ export function flushAssistant(
     finishReason?: string;
     usage?: ChatStreamUsage | StreamUsage | undefined;
     contextTokens?: number;
+    maxContextTokens?: number;
     error?: string;
   },
 ): AssistantFlush {
@@ -1253,6 +1259,8 @@ export function flushAssistant(
       normalizeStreamUsage(extra.usage as StreamUsage) ?? extra.usage;
   }
   if (extra?.contextTokens) metadata.contextTokens = extra.contextTokens;
+  if (extra?.maxContextTokens)
+    metadata.maxContextTokens = extra.maxContextTokens;
   if (extra?.error) metadata.error = extra.error;
 
   return {

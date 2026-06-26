@@ -20,6 +20,7 @@ import { DB, Workspaces } from '@docmost/db/types/db';
 export const AI_PROVIDER_SETTINGS_ALLOWED: readonly string[] = [
   'driver',
   'chatModel',
+  'chatContextWindow',
   'chatApiStyle',
   'embeddingModel',
   'baseUrl',

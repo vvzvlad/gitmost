@@ -19,6 +19,18 @@ import {
 } from './ai.types';
 
 /**
+ * Coerce a raw provider value (stored as `::text`, so it arrives as a string —
+ * see workspace.repo.ts) into a positive integer, or `undefined` when it is not
+ * a finite number greater than zero. Used for numeric `::text` settings such as
+ * `chatContextWindow`. Fractions are floored: `"1.9" → 1`, `"0"`/`"-5"`/`""`/
+ * `"abc"`/`undefined` → `undefined`.
+ */
+export function parsePositiveInt(raw: unknown): number | undefined {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+/**
  * Shape of the partial update accepted by `update`. Mirrors the validated
  * controller DTO. `apiKey` / `embeddingApiKey` are write-only: undefined =
  * leave, '' = clear, non-empty = encrypt + store (§6.4/§8).
@@ -26,6 +38,8 @@ import {
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens for the chat header badge. 0/empty = no limit.
+  chatContextWindow?: number;
   chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
@@ -160,6 +174,9 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Max context window for the chat header badge denominator. Stored as
+      // ::text; 0/unset/invalid = no limit (undefined).
+      chatContextWindow: parsePositiveInt(provider.chatContextWindow),
       // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
       chatApiStyle: provider.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; reuses the chat
@@ -219,6 +236,10 @@ export class AiSettingsService {
   async getMasked(workspaceId: string): Promise<MaskedAiSettings> {
     const provider = await this.readProvider(workspaceId);
 
+    // Stored as ::text; coerce to a positive integer (or undefined) so the
+    // client receives a real number.
+    const chatContextWindow = parsePositiveInt(provider.chatContextWindow);
+
     let hasApiKey = false;
     let hasEmbeddingApiKey = false;
     let hasSttApiKey = false;
@@ -243,6 +264,7 @@ export class AiSettingsService {
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      chatContextWindow,
       chatApiStyle: provider.chatApiStyle,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,

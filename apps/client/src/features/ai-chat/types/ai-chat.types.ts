@@ -116,6 +116,9 @@ export interface IAiChatMessageRow {
     // turn. Distinct from `usage` (legacy cumulative totalUsage). Shown in the
     // floating window's header badge.
     contextTokens?: number;
+    // The model's max context window (denominator for the header badge); set
+    // alongside contextTokens on a completed turn; absent on older rows.
+    maxContextTokens?: number;
     // Set on an assistant row whose turn ended in a provider/stream error; the
     // raw provider error text (e.g. "402: ...") for inline display in the thread.
     error?: string;
