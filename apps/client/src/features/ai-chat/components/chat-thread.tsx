@@ -38,6 +38,11 @@ export interface OpenPageContext {
 interface ChatThreadProps {
   /** The open chat id, or null for a brand-new (not-yet-created) chat. */
   chatId: string | null;
+  /** This thread's mount key (the same value the parent uses as React `key`).
+   *  Forwarded to onTurnFinished so the session can tell a turn finishing on the
+   *  CURRENT thread from one ABANDONED by New chat mid-stream — whose onFinish/
+   *  onError still fire after unmount and must not adopt the abandoned chat (#161). */
+  threadKey?: string;
   /** Persisted rows to seed initial messages (existing chats only). */
   initialRows?: IAiChatMessageRow[];
   /** The page currently open in the workspace, or null on a non-page route.
@@ -59,8 +64,10 @@ interface ChatThreadProps {
   /** Called when a turn finishes; the parent refreshes the chat list and, for a
    *  new chat, adopts the freshly created chat id. `serverChatId` is the
    *  authoritative id the server streamed on the assistant message metadata, or
-   *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design. */
-  onTurnFinished: (serverChatId?: string) => void;
+   *  undefined on a failed turn — see adopt-chat-id.ts for the full #137 design.
+   *  `finishingThreadKey` (this thread's mount key) lets the session ignore a turn
+   *  finishing on a thread already abandoned by New chat mid-stream (#161). */
+  onTurnFinished: (serverChatId?: string, finishingThreadKey?: string) => void;
   /** Called EARLY (at the stream's `start` chunk) with the authoritative server
    *  chat id streamed on the assistant message metadata, so a brand-new chat
    *  adopts its real id WHILE the first turn is still streaming (#174 — makes the
@@ -109,6 +116,7 @@ function rowToUiMessage(row: IAiChatMessageRow): UIMessage {
  */
 export default function ChatThread({
   chatId,
+  threadKey,
   initialRows,
   openPage,
   roleId,
@@ -257,8 +265,10 @@ export default function ChatThread({
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
       // Forward the authoritative server chatId (streamed on the assistant
       // message metadata) so the parent adopts the REAL created chat id for a new
-      // chat — see adopt-chat-id.ts for the full #137 design.
-      onTurnFinished(extractServerChatId(message));
+      // chat — see adopt-chat-id.ts for the full #137 design. `threadKey` lets the
+      // session ignore this finish if it belongs to a thread abandoned by New chat
+      // mid-stream (#161).
+      onTurnFinished(extractServerChatId(message), threadKey);
       // Show a neutral "stopped" marker for an aborted turn; the red error banner
       // (via `error`) already covers isError, and a clean finish clears any marker.
       if (isError) setStopNotice(null);
@@ -279,7 +289,7 @@ export default function ChatThread({
       // Surface the raw failure in the browser console (devtools) for debugging;
       // the UI separately shows a friendly classified banner (see errorView).
       console.error("AI chat stream error:", streamError);
-      onTurnFinished();
+      onTurnFinished(undefined, threadKey);
     },
   });
 
