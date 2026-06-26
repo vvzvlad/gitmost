@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-06-26
+
+This release makes AI chat durable and fast: assistant turns are persisted to
+the database step by step and exported server-side, the desktop app no longer
+freezes at 100% CPU on long agent runs, and MCP writes are badged with
+unspoofable AI attribution. It also reworks footnotes (Pandoc-style reuse and
+per-reference back-links), hardens page moves and duplication against cycles
+and lost edits, and caps the anonymous public-share assistant with a
+per-workspace rolling-day token budget.
+
 ### Added
 
 - **Persistent AI-chat history as the source of truth + server-side export.**
