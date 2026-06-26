@@ -12,6 +12,13 @@ import { type Kysely, sql } from 'kysely';
  * `(workspace_id, page_id)`. It is partial (`WHERE page_id IS NOT NULL`) so that
  * multiple DANGLING aliases (target page deleted -> `page_id` SET NULL) can
  * still coexist without colliding.
+ *
+ * ⚠️ IRREVERSIBLE DATA LOSS (intended): the dedup DELETE below permanently drops
+ * every alias row but the newest per page. Those duplicates were live `/l/<old>`
+ * pointers (resolved by name via `findByAliasAndWorkspace`, not by page), so
+ * after this upgrade any such OLD vanity link starts returning the SPA 404. This
+ * is the point — it kills the orphan rows the pre-invariant bug accumulated —
+ * but `down()` only drops the unique index; it CANNOT restore the deleted rows.
  */
 export async function up(db: Kysely<any>): Promise<void> {
   // Reap legacy duplicates: for each (workspace_id, page_id) keep only the row

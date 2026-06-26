@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remotely; otherwise a local directory; empty defaults to the in-repo
   `agent-roles-catalog/` folder — see `.env.example`). (#222)
 
+### Fixed
+
+- **A shared page now keeps EXACTLY ONE custom address (`/l/:alias`).** Editing a
+  page's vanity slug previously inserted a second `share_aliases` row instead of
+  renaming the existing one, leaving the old `/l/<old>` link live forever and
+  making the share modal's lookup nondeterministic. Slug edits and confirmed
+  reassigns now rename/retarget the single row, and a new partial unique index on
+  `(workspace_id, page_id)` enforces the invariant in the database. **Upgrade
+  note:** the accompanying migration `20260627T120000` IRREVERSIBLY deletes the
+  orphaned duplicate alias rows the old bug created (keeping the newest per
+  page), so any previously-live duplicate `/l/<old>` link begins returning the
+  generic 404 after upgrade — intended, but not undoable by `down()`. (#226,
+  #227)
+
 ## [0.94.0] - 2026-06-26
 
 This release makes AI chat durable and fast: assistant turns are persisted to

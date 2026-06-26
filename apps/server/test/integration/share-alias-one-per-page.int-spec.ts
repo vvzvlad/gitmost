@@ -1,8 +1,9 @@
 import { Kysely, sql } from 'kysely';
 import { randomUUID } from 'node:crypto';
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ShareAliasRepo } from '@docmost/db/repos/share-alias/share-alias.repo';
 import { ShareAliasService } from 'src/core/share/share-alias.service';
+import * as onePerPageMigration from 'src/database/migrations/20260627T120000-share-aliases-one-per-page';
 import {
   getTestDb,
   destroyTestDb,
@@ -53,14 +54,16 @@ describe('share_aliases one-per-page invariant [integration]', () => {
   const newPage = async (): Promise<string> =>
     (await createPage(db, { workspaceId: wsId, spaceId })).id;
 
-  const aliasRowsFor = (pageId: string) =>
+  const aliasRowsForWs = (pageId: string, workspaceId: string) =>
     db
       .selectFrom('shareAliases')
       .select(['id', 'alias'])
       .where('pageId', '=', pageId)
-      .where('workspaceId', '=', wsId)
+      .where('workspaceId', '=', workspaceId)
       .orderBy('alias')
       .execute();
+
+  const aliasRowsFor = (pageId: string) => aliasRowsForWs(pageId, wsId);
 
   it('partial unique index rejects a second alias for the same page (23505)', async () => {
     const pageId = await newPage();
@@ -130,6 +133,54 @@ describe('share_aliases one-per-page invariant [integration]', () => {
     }
   });
 
+  it('migration up() dedups per page and leaves OTHER pages and workspaces untouched', async () => {
+    // Seed legacy duplicates for two pages in this workspace AND a page in a
+    // SECOND workspace, then run the real migration up() (not an inlined copy of
+    // its SQL) and assert it scopes the DELETE to (workspace_id, page_id).
+    const ws2 = (await createWorkspace(db)).id;
+    const space2 = (await createSpace(db, ws2)).id;
+    const pageA = await newPage();
+    const pageB = await newPage();
+    const pageC = (await createPage(db, { workspaceId: ws2, spaceId: space2 }))
+      .id;
+
+    // Drop the guard so we can seed the pre-invariant duplicate shape.
+    await sql`DROP INDEX share_aliases_workspace_id_page_id_unique`.execute(db);
+    const seed = async (
+      workspaceId: string,
+      pageId: string,
+      alias: string,
+      createdAt: string,
+    ): Promise<string> => {
+      const id = randomUUID();
+      await db
+        .insertInto('shareAliases')
+        .values({ id, workspaceId, alias, pageId, createdAt })
+        .execute();
+      return id;
+    };
+    await seed(wsId, pageA, 'a-old', '2026-01-01T00:00:00Z');
+    const aNew = await seed(wsId, pageA, 'a-new', '2026-03-01T00:00:00Z');
+    await seed(wsId, pageB, 'b-old', '2026-01-01T00:00:00Z');
+    const bNew = await seed(wsId, pageB, 'b-new', '2026-03-01T00:00:00Z');
+    await seed(ws2, pageC, 'c-old', '2026-01-01T00:00:00Z');
+    const cNew = await seed(ws2, pageC, 'c-new', '2026-03-01T00:00:00Z');
+
+    // Run the migration. It dedups AND recreates the unique index.
+    await onePerPageMigration.up(db as any);
+
+    const aliasesOf = async (pageId: string) =>
+      (await aliasRowsForWs(pageId, wsId)).map((r) => r.alias);
+    const aRows = await aliasRowsForWs(pageA, wsId);
+    expect(aRows).toEqual([{ id: aNew, alias: 'a-new' }]);
+    const bRows = await aliasRowsForWs(pageB, wsId);
+    expect(bRows).toEqual([{ id: bNew, alias: 'b-new' }]);
+    // The other workspace's page keeps only ITS newest row, untouched by wsId.
+    const cRows = await aliasRowsForWs(pageC, ws2);
+    expect(cRows).toEqual([{ id: cNew, alias: 'c-new' }]);
+    expect(await aliasesOf(pageA)).toEqual(['a-new']);
+  });
+
   it('setAlias renames te -> ted in place: page ends with ONE row named ted', async () => {
     const pageId = await newPage();
     const creatorId = null as any;
@@ -178,6 +229,45 @@ describe('share_aliases one-per-page invariant [integration]', () => {
     expect(await aliasRowsFor(pageId)).toHaveLength(1);
   });
 
+  it('a mid-transaction error becomes BadRequestException and rolls back cleanly', async () => {
+    // A non-23505 failure inside the tx must surface as BadRequest AND leave NO
+    // partial alias state behind (the whole executeTx unit rolls back).
+    const pageId = await newPage();
+    const boom = new Error('disk on fire'); // not a unique-violation
+    // Wrap the real repo so the INSERT succeeds but the trailing self-heal
+    // throws — the row inserted earlier in the tx must not survive.
+    const flakyRepo = Object.create(repo);
+    flakyRepo.deleteOthersForPage = async () => {
+      throw boom;
+    };
+    const flakyService = new ShareAliasService(
+      flakyRepo as any,
+      pageRepo as any,
+      {} as any,
+      db as any,
+    );
+
+    await expect(
+      flakyService.setAlias({
+        workspaceId: wsId,
+        pageId,
+        creatorId: null as any,
+        alias: 'rollback-me',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Rolled back: neither the page nor the name has any row.
+    expect(await aliasRowsFor(pageId)).toHaveLength(0);
+    expect(
+      await db
+        .selectFrom('shareAliases')
+        .select('id')
+        .where('alias', '=', 'rollback-me')
+        .where('workspaceId', '=', wsId)
+        .execute(),
+    ).toHaveLength(0);
+  });
+
   it('cross-page collision throws 409, and confirmReassign moves the single row', async () => {
     const pageA = await newPage();
     const pageB = await newPage();
@@ -211,5 +301,44 @@ describe('share_aliases one-per-page invariant [integration]', () => {
     const bRows = await aliasRowsFor(pageB);
     expect(bRows).toHaveLength(1);
     expect(bRows[0].alias).toBe('shared');
+  });
+
+  it('confirmReassign onto a page that ALREADY has its own alias: target ends with ONE row', async () => {
+    // Regression guard for the operation-order bug: A has `shared`, B has its
+    // OWN alias `bee`. Moving `shared` onto B must FIRST drop B's `bee` row,
+    // THEN retarget, or the NON-deferrable (workspace_id, page_id) index fires a
+    // 23505 mid-transaction (two rows momentarily carry page_id = B) and the tx
+    // rolls back into a misleading "Alias already taken".
+    // Distinct names: the workspace is shared across tests, so reuse of an
+    // earlier test's `shared` would trip the 409 guard before we get here.
+    const pageA = await newPage();
+    const pageB = await newPage();
+    await service.setAlias({
+      workspaceId: wsId,
+      pageId: pageA,
+      creatorId: null as any,
+      alias: 'shared-target',
+    });
+    await service.setAlias({
+      workspaceId: wsId,
+      pageId: pageB,
+      creatorId: null as any,
+      alias: 'bee',
+    });
+
+    const moved = await service.setAlias({
+      workspaceId: wsId,
+      pageId: pageB,
+      creatorId: null as any,
+      alias: 'shared-target',
+      confirmReassign: true,
+    });
+    expect(moved.alias).toBe('shared-target');
+
+    // B now carries exactly `shared-target` (its old `bee` is gone); A has none.
+    const bRows = await aliasRowsFor(pageB);
+    expect(bRows).toHaveLength(1);
+    expect(bRows[0].alias).toBe('shared-target');
+    expect(await aliasRowsFor(pageA)).toHaveLength(0);
   });
 });

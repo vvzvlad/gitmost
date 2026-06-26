@@ -13,8 +13,20 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { executeTx } from '@docmost/db/utils';
 
-/** Postgres unique_violation; the (workspace_id, alias) constraint races here. */
+/** Postgres unique_violation. Two unique indexes can raise it on this table. */
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Unique index names from the share_aliases migrations. The `postgres@3.x`
+ * driver (kysely-postgres-js) surfaces the violated constraint as
+ * `err.constraint_name` (NOT `.constraint`); we keep `.constraint` only as a
+ * defensive fallback for other drivers.
+ *   - ALIAS:  `(workspace_id, alias)`  -> the vanity NAME is taken.
+ *   - PAGE_ID: partial `(workspace_id, page_id) WHERE page_id IS NOT NULL`
+ *             -> a concurrent writer already gave THIS page an alias.
+ */
+const UNIQUE_ALIAS_INDEX = 'share_aliases_workspace_id_alias_unique';
+const UNIQUE_PAGE_ID_INDEX = 'share_aliases_workspace_id_page_id_unique';
 
 export interface ResolvedAliasTarget {
   share: NonNullable<
@@ -47,10 +59,14 @@ export class ShareAliasService {
    *     with it we UPDATE the single row's page_id (every /l/<alias> link
    *     follows the 302 to the new page instantly — no stale cache).
    *
-   * After ANY successful write we DELETE every other alias row still pointing
-   * at this page (the previous name after a rename/retarget, plus any legacy
-   * duplicates) so the invariant self-heals. The whole thing runs in one
-   * transaction so the page never transiently has zero or duplicate rows.
+   * To keep the invariant self-healing we DELETE every other alias row still
+   * pointing at this page (a legacy duplicate, or the target page's own former
+   * alias during a swap). The whole thing runs in one transaction. Because the
+   * `(workspace_id, page_id)` unique index is NON-deferrable (checked at the end
+   * of each statement), the swap branch DELETEs the target page's existing row
+   * BEFORE retargeting, so the page is never transiently carried by two rows;
+   * the other branches self-heal AFTER their write. Either way the page never
+   * ends a statement with duplicate rows.
    *
    * Caller is responsible for authorizing the page (edit rights + public
    * readability); this method owns only the alias-name semantics.
@@ -91,21 +107,28 @@ export class ShareAliasService {
               currentPageTitle: currentPage?.title ?? null,
             });
           }
-          // Confirmed: claim the existing name row for this page, then drop the
-          // page's previous alias row(s) so it ends with exactly this one.
-          const retargeted = await this.shareAliasRepo.updatePageId(
+          // Confirmed swap. ORDER MATTERS: the partial unique index on
+          // `(workspace_id, page_id)` is NON-deferrable, so it is checked at the
+          // end of EVERY statement. If we retargeted `byName` onto `pageId`
+          // first while `pageId` still had its OWN alias row, there would
+          // momentarily be two rows with this page_id -> immediate 23505 and a
+          // rolled-back tx (a misleading "Alias already taken"). So we FIRST drop
+          // the target page's existing alias row(s), THEN retarget. `byName.id`
+          // still points at its old page here, so excluding it via `keepId` is
+          // harmless; after the retarget it is the page's only row, so no
+          // trailing self-heal is needed.
+          await this.shareAliasRepo.deleteOthersForPage(
+            pageId,
+            byName.id,
+            workspaceId,
+            trx,
+          );
+          return await this.shareAliasRepo.updatePageId(
             byName.id,
             pageId,
             workspaceId,
             trx,
           );
-          await this.shareAliasRepo.deleteOthersForPage(
-            pageId,
-            retargeted.id,
-            workspaceId,
-            trx,
-          );
-          return retargeted;
         }
 
         // The name is FREE, or already points at THIS page. Ensure the page has
@@ -148,8 +171,31 @@ export class ShareAliasService {
       ) {
         throw err;
       }
-      // Lost a uniqueness race: another request claimed the name first.
+      // A unique index fired. Which one decides the message — always log the
+      // constraint so the race is diagnosable.
       if (err?.code === PG_UNIQUE_VIOLATION) {
+        const constraint: string | undefined =
+          err?.constraint_name ?? err?.constraint;
+        this.logger.warn(
+          `share alias unique violation on ${constraint ?? '<unknown>'}`,
+        );
+        // `(workspace_id, page_id)`: a concurrent request already gave this page
+        // an alias. The page still has exactly one custom address (the racing
+        // writer's), so this is not a user-facing name clash — surface a
+        // distinct, non-misleading message instead of "Alias already taken".
+        if (constraint === UNIQUE_PAGE_ID_INDEX) {
+          throw new ConflictException({
+            message: 'This page is being given an address by another request',
+            code: 'ALIAS_PAGE_RACE',
+          });
+        }
+        // `(workspace_id, alias)` (UNIQUE_ALIAS_INDEX) or any other/unknown
+        // unique index: treat as the vanity name being claimed first.
+        if (constraint && constraint !== UNIQUE_ALIAS_INDEX) {
+          this.logger.warn(
+            `unexpected unique index ${constraint} mapped to "Alias already taken"`,
+          );
+        }
         throw new ConflictException({ message: 'Alias already taken' });
       }
       this.logger.error(err);

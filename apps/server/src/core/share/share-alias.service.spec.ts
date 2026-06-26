@@ -240,20 +240,125 @@ describe('ShareAliasService', () => {
         'ws-1',
         trx,
       );
-      // the page's previous alias row(s) are reaped after the swap
+      // ORDER MATTERS: the target page's existing alias row(s) are reaped BEFORE
+      // the retarget, so the non-deferrable (workspace_id, page_id) index never
+      // sees two rows for the page mid-statement. There is no trailing self-heal.
       expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledWith(
         'p-1',
         'a-1',
         'ws-1',
         trx,
       );
+      expect(shareAliasRepo.deleteOthersForPage).toHaveBeenCalledTimes(1);
+      const deleteOrder =
+        shareAliasRepo.deleteOthersForPage.mock.invocationCallOrder[0];
+      const updateOrder =
+        shareAliasRepo.updatePageId.mock.invocationCallOrder[0];
+      expect(deleteOrder).toBeLessThan(updateOrder);
       expect(res).toMatchObject({ pageId: 'p-1' });
     });
 
-    it('maps a unique-violation race to 409', async () => {
+    it('maps a unique-violation race (no constraint info) to 409 "Alias already taken"', async () => {
       const { service, shareAliasRepo } = makeService();
       shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
       shareAliasRepo.insert.mockRejectedValue({ code: '23505' });
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'foo',
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConflictException);
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          message: 'Alias already taken',
+        });
+      }
+    });
+
+    it('maps the (workspace_id, alias) index violation to "Alias already taken"', async () => {
+      const { service, shareAliasRepo } = makeService();
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      // postgres@3.x driver exposes the index name as `constraint_name`.
+      shareAliasRepo.insert.mockRejectedValue({
+        code: '23505',
+        constraint_name: 'share_aliases_workspace_id_alias_unique',
+      });
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'foo',
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          message: 'Alias already taken',
+        });
+      }
+    });
+
+    it('maps the (workspace_id, page_id) index violation to a DISTINCT page-race outcome', async () => {
+      const { service, shareAliasRepo } = makeService();
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      shareAliasRepo.insert.mockRejectedValue({
+        code: '23505',
+        constraint_name: 'share_aliases_workspace_id_page_id_unique',
+      });
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'foo',
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConflictException);
+        // NOT the misleading "Alias already taken" — a separate, page-scoped code.
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          code: 'ALIAS_PAGE_RACE',
+        });
+        expect((err as ConflictException).getResponse()).not.toMatchObject({
+          message: 'Alias already taken',
+        });
+      }
+    });
+
+    it('reads the index name from `.constraint` when `.constraint_name` is absent', async () => {
+      const { service, shareAliasRepo } = makeService();
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      // Fallback path for non-postgres@3.x drivers.
+      shareAliasRepo.insert.mockRejectedValue({
+        code: '23505',
+        constraint: 'share_aliases_workspace_id_page_id_unique',
+      });
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'foo',
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          code: 'ALIAS_PAGE_RACE',
+        });
+      }
+    });
+
+    it('maps a non-unique-violation db error to BadRequest (Failed to set alias)', async () => {
+      const { service, shareAliasRepo } = makeService();
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      shareAliasRepo.insert.mockRejectedValue({ code: '08006' }); // connection error
 
       await expect(
         service.setAlias({
@@ -262,7 +367,7 @@ describe('ShareAliasService', () => {
           creatorId: 'u-1',
           alias: 'foo',
         }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
