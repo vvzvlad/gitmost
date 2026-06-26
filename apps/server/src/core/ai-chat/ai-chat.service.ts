@@ -365,12 +365,14 @@ export class AiChatService implements OnModuleInit {
 
     // Rebuild the conversation from persisted history (not the client payload),
     // so the model always sees the authoritative server-side transcript. Load
-    // the most RECENT tail (oldest -> newest) so chats longer than one page do
-    // not drop recent turns (incl. the user message just inserted above).
-    const history = await this.aiChatMessageRepo.findRecent(
+    // the FULL history in chronological order (oldest -> newest, incl. the user
+    // message just inserted above) so NO turns are dropped — there is no
+    // recent-tail window anymore. `findAllByChat` keeps a 5000-row memory-safety
+    // backstop (on overflow it keeps the NEWEST rows and logs a warning); that
+    // is a safety net far above any realistic chat, not a conversational limit.
+    const history = await this.aiChatMessageRepo.findAllByChat(
       chatId,
       workspace.id,
-      50,
     );
     const uiMessages = history.map(rowToUiMessage);
     // convertToModelMessages is async in ai@6.0.134 (returns Promise<ModelMessage[]>).
@@ -1289,7 +1291,7 @@ export async function applyFinalize(
  *
  * `metadata.parts` is built by assistantParts over the finished steps, then the
  * in-progress text appended as a trailing text part, so rowToUiMessage /
- * findRecent keep replaying the turn unchanged. `metadata.finishReason`,
+ * findAllByChat keep replaying the turn unchanged. `metadata.finishReason`,
  * `metadata.error`, `metadata.usage`, `metadata.contextTokens` and
  * `metadata.maxContextTokens` are attached only when provided/relevant, matching
  * the pre-#183 onFinish/onError records.

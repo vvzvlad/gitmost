@@ -100,6 +100,15 @@ per-workspace rolling-day token budget.
 
 ### Changed
 
+- **AI chat now feeds the model the full stored transcript.** The per-turn model
+  conversation was rebuilt from a sliding window of the 50 most recent stored
+  rows, which silently dropped the beginning of any longer chat. It is now
+  rebuilt from the complete non-deleted transcript in chronological order, so
+  the model sees every turn (a 5000-row backstop guards process memory — a
+  safety net far above any realistic chat, not a conversational limit). On a
+  very long chat this can eventually reach the model's context window; the
+  client already surfaces that as "start a new chat". (#202)
+
 - **AI chat default provider is now `openai-compatible` (reasoning surfaced).**
   For the `openai` driver the chat provider defaults to the openai-compatible
   implementation, so a workspace pointing at z.ai/GLM/DeepSeek now streams the
