@@ -185,8 +185,15 @@ function AiMcpServerRow({
 
   // Single derivation of the button/tooltip presentation from the test tristate
   // (idle / ok / failed), so the two can never drift apart. Tooltip is "" while
-  // there is no result; the icon is mapped from `view.state` below.
-  const view = mcpTestButtonView(result, t);
+  // there is no result; the icon is mapped from `view.state` below. When the
+  // request itself rejects (401/403/500/network) there is no `data` payload, so
+  // we feed the mutation error in too — otherwise the row would silently revert
+  // to "Test" instead of showing a red "Failed".
+  const view = mcpTestButtonView(
+    result,
+    t,
+    testMutation.isError ? testMutation.error : undefined,
+  );
   const tooltipLabel = view.tooltip;
   const buttonColor = view.color;
   const buttonVariant = view.variant;
@@ -225,7 +232,7 @@ function AiMcpServerRow({
         {/* Always clickable: testing a disabled server before enabling it is useful. */}
         <Tooltip
           label={tooltipLabel}
-          disabled={!result}
+          disabled={view.state === "idle"}
           multiline
           maw={320}
           withinPortal

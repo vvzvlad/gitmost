@@ -56,4 +56,32 @@ describe("mcpTestButtonView", () => {
       tooltip: "402: nope",
     });
   });
+
+  it("failed when the request itself rejects (no result payload)", () => {
+    // 401/403/500/network: there is no { ok } body, only a thrown error. The
+    // row must still show a red "Failed" rather than reverting to idle "Test".
+    expect(
+      mcpTestButtonView(undefined, t, {
+        response: { data: { message: "Unauthorized" } },
+      }),
+    ).toEqual({
+      state: "failed",
+      color: "red",
+      variant: "light",
+      label: "Failed",
+      tooltip: "Unauthorized",
+    });
+  });
+
+  it("reject without a server message falls back to the generic label", () => {
+    // A bare network error (no response body) still surfaces as failed, using
+    // the i18n fallback for the tooltip.
+    expect(mcpTestButtonView(undefined, t, new Error("network down"))).toEqual({
+      state: "failed",
+      color: "red",
+      variant: "light",
+      label: "Failed",
+      tooltip: "Failed to update data",
+    });
+  });
 });

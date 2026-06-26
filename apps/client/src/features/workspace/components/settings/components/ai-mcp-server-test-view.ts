@@ -3,6 +3,23 @@ import type { IAiMcpServerTestResult } from "@/features/workspace/services/ai-mc
 /** Minimal translator shape (i18next `t`): key + optional interpolation. */
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+/** Subset of an axios-style rejection we read for the reject tooltip. */
+type McpTestRequestError = {
+  response?: { data?: { message?: string } };
+};
+
+/**
+ * Best-effort extraction of a server-sent message from a rejected test request
+ * (axios stores it at `error.response.data.message`). Returns undefined for a
+ * bare/network error so the caller can fall back to a generic label.
+ */
+function readRequestErrorMessage(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "response" in error) {
+    return (error as McpTestRequestError).response?.data?.message;
+  }
+  return undefined;
+}
+
 /**
  * Presentation for the inline "Test" button, derived from the current test
  * result tristate (no result yet / ok / failed). Color is never the only signal
@@ -27,6 +44,7 @@ export interface McpTestButtonView {
 export function mcpTestButtonView(
   result: IAiMcpServerTestResult | undefined,
   t: Translate,
+  error?: unknown,
 ): McpTestButtonView {
   if (result?.ok) {
     return {
@@ -47,6 +65,19 @@ export function mcpTestButtonView(
       variant: "light",
       label: t("Failed"),
       tooltip: result.error,
+    };
+  }
+  if (error) {
+    // The test request itself rejected (401/403/500/network) — there is no
+    // `{ ok }` payload, so without this branch the row would silently revert to
+    // the idle "Test" instead of reporting the failure. Tooltip prefers the
+    // server-sent message, else the generic i18n fallback.
+    return {
+      state: "failed",
+      color: "red",
+      variant: "light",
+      label: t("Failed"),
+      tooltip: readRequestErrorMessage(error) ?? t("Failed to update data"),
     };
   }
   return {
