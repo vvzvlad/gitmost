@@ -37,6 +37,12 @@ export class GetChatMessagesDto {
   cursor?: string;
 }
 
+/** Resolve the chat bound to a document (the page's most-recent owned chat). */
+export class BoundChatDto {
+  @IsString()
+  pageId: string;
+}
+
 /** Export a chat to Markdown (#183). `lang` localizes the few fixed
  *  role/tool-action labels; defaults to English server-side. */
 export class ExportChatDto {

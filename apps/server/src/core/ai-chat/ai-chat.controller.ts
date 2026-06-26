@@ -30,6 +30,7 @@ import { FileInterceptor } from '../../common/interceptors/file.interceptor';
 import { AiChatService, AiChatStreamBody } from './ai-chat.service';
 import { AiTranscriptionService } from './ai-transcription.service';
 import {
+  BoundChatDto,
   ChatIdDto,
   ExportChatDto,
   GeneratePageTitleDto,
@@ -65,6 +66,28 @@ export class AiChatController {
     @AuthWorkspace() workspace: Workspace,
   ) {
     return this.aiChatRepo.findByCreator(user.id, workspace.id, pagination);
+  }
+
+  /**
+   * Resolve the chat bound to a document for the requesting user: the most-recent
+   * non-deleted chat created on that page (ai_chats.page_id). Returns
+   * { chatId: null } when the page has no owned chat (-> a fresh chat). No page
+   * access check needed: only the caller's OWN chats are matched, so a foreign
+   * pageId reveals nothing.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post('bound-chat')
+  async boundChat(
+    @Body() dto: BoundChatDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<{ chatId: string | null }> {
+    const chat = await this.aiChatRepo.findLatestByPage(
+      user.id,
+      workspace.id,
+      dto.pageId,
+    );
+    return { chatId: chat?.id ?? null };
   }
 
   /** Fetch the messages of a chat (oldest first, paginated). */

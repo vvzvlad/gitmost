@@ -37,6 +37,17 @@ export async function getAiChatMessages(
   return req.data;
 }
 
+/**
+ * Resolve the chat bound to a document (the current user's most-recent chat
+ * created on that page), or null when there is none. Drives auto-open-on-page.
+ */
+export async function getBoundChat(pageId: string): Promise<string | null> {
+  const req = await api.post<{ chatId: string | null }>("/ai-chat/bound-chat", {
+    pageId,
+  });
+  return req.data.chatId;
+}
+
 /** Rename a chat. */
 export async function renameAiChat(data: {
   chatId: string;
