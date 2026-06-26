@@ -25,6 +25,7 @@ import CopyTextButton from "@/components/common/copy.tsx";
 import { getAppUrl } from "@/lib/config.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import classes from "@/features/share/components/share.module.css";
+import ShareAliasSection from "@/features/share/components/share-alias-section.tsx";
 import { useAtom } from "jotai";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { useSpaceQuery } from "@/features/space/queries/space-query.ts";
@@ -253,6 +254,9 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
                     disabled={readOnly}
                   />
                 </Group>
+                {pageId && (
+                  <ShareAliasSection pageId={pageId} readOnly={readOnly} />
+                )}
               </>
             )}
           </>

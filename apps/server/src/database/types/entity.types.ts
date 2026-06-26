@@ -30,6 +30,7 @@ import {
   AuthProviders,
   AuthAccounts,
   Shares,
+  ShareAliases,
   Favorites,
   FileTasks,
   UserMfa as _UserMFA,
@@ -171,6 +172,11 @@ export type UpdatableAuthAccount = Updateable<Omit<AuthAccounts, 'id'>>;
 export type Share = Selectable<Shares>;
 export type InsertableShare = Insertable<Shares>;
 export type UpdatableShare = Updateable<Omit<Shares, 'id'>>;
+
+// Share alias (vanity /l/:alias pointer)
+export type ShareAlias = Selectable<ShareAliases>;
+export type InsertableShareAlias = Insertable<ShareAliases>;
+export type UpdatableShareAlias = Updateable<Omit<ShareAliases, 'id'>>;
 
 // Favorite
 export type Favorite = Selectable<Favorites>;
