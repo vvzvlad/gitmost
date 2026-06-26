@@ -127,3 +127,115 @@ describe("messageSignature", () => {
     expect(messageSignature(a)).toBe(messageSignature(b));
   });
 });
+
+/**
+ * Per-part-kind coupling guard for the load-bearing invariant documented at the
+ * top of message-signature.ts: the signature MUST sample every VISIBLE field the
+ * MessageItem render body draws, or the memo freezes a stale row. This is an
+ * executable lock for the part kinds rendered TODAY — read alongside
+ * `MessageItem` (message-item.tsx) and the `assistantMessageHasVisibleContent`
+ * helper (message-content.ts), which "mirrors MessageItem's render decisions
+ * EXACTLY". For each kind, mutating a field the render body DRAWS must flip the
+ * signature. If a new visible field is rendered without being added here AND to
+ * the signature, the corresponding assertion below should fail — that is the
+ * guard. (This intentionally stops short of the render-descriptor refactor:
+ * adding a part kind or a visible field still requires a human to extend both
+ * the signature and this block.)
+ */
+describe("messageSignature ↔ render coupling (per visible part kind)", () => {
+  describe("text part — render draws part.text (MarkdownPart text={part.text})", () => {
+    it("flips when the visible text changes", () => {
+      // Streaming is append-only, so the visible text only grows; the signature
+      // samples its length, so the growth is the change signal.
+      const before = msg([{ type: "text", text: "answer" }]);
+      const after = msg([{ type: "text", text: "answer extended" }]);
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+  });
+
+  describe("reasoning part — render draws text + tokens (ReasoningBlock)", () => {
+    it("flips when the visible reasoning text changes", () => {
+      const before = msg([
+        { type: "reasoning", text: "think", state: "streaming" } as never,
+      ]);
+      const after = msg([
+        { type: "reasoning", text: "think harder", state: "streaming" } as never,
+      ]);
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+
+    it("flips when the visible token count (metadata.usage.reasoningTokens) lands", () => {
+      // The header's "Thinking · N tokens" reads reasoningTokensForPart, fed by
+      // metadata.usage.reasoningTokens — a VISIBLE field that arrives on the final
+      // finish-step after text length and state are frozen.
+      const before = msg([
+        { type: "reasoning", text: "think", state: "done" } as never,
+      ]);
+      const after = msg(
+        [{ type: "reasoning", text: "think", state: "done" } as never],
+        { usage: { reasoningTokens: 99 } },
+      );
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+  });
+
+  describe("tool-* part — render draws state/errorText/citations (ToolCallCard)", () => {
+    it("flips when the run state changes (running ↔ done icon + label)", () => {
+      // toolRunState(part.state) selects the spinner/check/error icon.
+      const before = msg([
+        { type: "tool-getPage", state: "input-available" } as never,
+      ]);
+      const after = msg([
+        { type: "tool-getPage", state: "output-available" } as never,
+      ]);
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+
+    it("flips when output arrives (drives the rendered citation links)", () => {
+      // toolCitations reads part.output to render the "/p/{id}" anchors.
+      const before = msg([
+        { type: "tool-getPage", state: "output-available" } as never,
+      ]);
+      const after = msg([
+        {
+          type: "tool-getPage",
+          state: "output-available",
+          output: { id: "page-1", title: "Doc" },
+        } as never,
+      ]);
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+
+    it("flips when errorText appears (the visible red error detail line)", () => {
+      const before = msg([
+        { type: "tool-getPage", state: "output-error" } as never,
+      ]);
+      const after = msg([
+        {
+          type: "tool-getPage",
+          state: "output-error",
+          errorText: "permission denied",
+        } as never,
+      ]);
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+  });
+
+  describe("metadata banners — render draws error / aborted notices", () => {
+    it("flips when metadata.error appears (ChatErrorAlert banner)", () => {
+      const before = msg([{ type: "text", text: "answer" }]);
+      const after = msg([{ type: "text", text: "answer" }], { error: "boom" });
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+
+    it("flips when metadata.finishReason becomes 'aborted' (ChatStoppedNotice)", () => {
+      const before = msg([{ type: "text", text: "answer" }], {
+        finishReason: "stop",
+      });
+      const after = msg([{ type: "text", text: "answer" }], {
+        finishReason: "aborted",
+      });
+      expect(messageSignature(before)).not.toBe(messageSignature(after));
+    });
+  });
+});

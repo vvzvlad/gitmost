@@ -17,16 +17,8 @@ import { arePropsEqual } from "./message-item";
  * true when nothing visible changed (so a finalized row is skipped). A FIXED
  * message id is used so a content-identical clone yields an equal signature.
  */
-const msg = (
-  parts: UIMessage["parts"],
-  metadata?: unknown,
-): UIMessage =>
-  ({
-    id: "m1",
-    role: "assistant",
-    parts,
-    metadata,
-  }) as UIMessage;
+const msg = (parts: UIMessage["parts"]): UIMessage =>
+  ({ id: "m1", role: "assistant", parts }) as UIMessage;
 
 const props = (
   message: UIMessage,
