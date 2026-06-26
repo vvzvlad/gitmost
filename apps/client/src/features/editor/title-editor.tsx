@@ -152,7 +152,17 @@ export function TitleEditor({
   const debounceUpdate = useDebouncedCallback(saveTitle, 500);
 
   useEffect(() => {
-    if (titleEditor && title !== titleEditor.getText()) {
+    // Do not overwrite the title while the user is actively editing it. The
+    // server rebroadcasts PAGE_UPDATED to the author too, and that echo can
+    // carry a title that lags behind what the user has just typed; resetting
+    // content from it here would drop in-progress characters and jump the
+    // cursor. Apply external title changes only when the field is not focused.
+    if (
+      titleEditor &&
+      !titleEditor.isDestroyed &&
+      !titleEditor.isFocused &&
+      title !== titleEditor.getText()
+    ) {
       titleEditor.commands.setContent(title);
     }
   }, [pageId, title, titleEditor]);

@@ -21,6 +21,7 @@ import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { executeTx } from '@docmost/db/utils';
 import { InjectQueue } from '@nestjs/bullmq';
 import { QueueJob, QueueName } from '../../integrations/queue/constants';
+import { ProvenanceSource } from '../../core/auth/dto/jwt-payload';
 import { Queue } from 'bullmq';
 import {
   extractMentions,
@@ -39,6 +40,52 @@ import {
   HISTORY_INTERVAL,
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
+
+/**
+ * Resolve the provenance source for a coalesced snapshot.
+ *
+ * The snapshot is tagged 'agent' if any agent edit landed in the coalescing
+ * window (sticky marker) OR if the current writer is the agent; otherwise
+ * 'user'. Pure so the §15 H2 marker logic is unit-testable in isolation.
+ */
+export function resolveSource(
+  stickyTouched: boolean,
+  contextActor?: string,
+): ProvenanceSource {
+  return stickyTouched || contextActor === 'agent' ? 'agent' : 'user';
+}
+
+/**
+ * Compute the BullMQ job id + delay for a page-history snapshot job. Pure so
+ * the data-loss-sensitive timing arithmetic is unit-testable; `now` is injected
+ * (caller passes `Date.now()`) for determinism.
+ *
+ * - Agent edits: delay 0 and a source-keyed job id `${page.id}-agent`. The
+ *   delay MUST stay 0 — the worker re-reads the page row at run time, so any
+ *   delay risks reading content a later human edit has already overwritten
+ *   (mis-tagged snapshot). 0 minimizes that window. The `-agent` suffix keeps
+ *   the job from coalescing with the bare-page.id human job.
+ * - Human edits: age-based debounce so rapid human edits coalesce into one
+ *   snapshot; job id is the bare `page.id`.
+ *
+ * BullMQ forbids ':' in custom job ids (Redis key separator), so '-' is used;
+ * page.id is a UUID, so `${page.id}-agent` cannot collide with a human job.
+ */
+export function computeHistoryJob(
+  page: Pick<Page, 'id' | 'createdAt'>,
+  source: string,
+  now: number,
+): { jobId: string; delay: number } {
+  const isAgent = source === 'agent';
+  const pageAge = now - new Date(page.createdAt).getTime();
+  const delay = isAgent
+    ? 0
+    : pageAge < HISTORY_FAST_THRESHOLD
+      ? HISTORY_FAST_INTERVAL
+      : HISTORY_INTERVAL;
+  const jobId = isAgent ? `${page.id}-agent` : page.id;
+  return { jobId, delay };
+}
 
 @Injectable()
 export class PersistenceExtension implements Extension {
@@ -113,6 +160,7 @@ export class PersistenceExtension implements Extension {
     const pageId = getPageId(documentName);
 
     const tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
+
     const ydocState = Buffer.from(Y.encodeStateAsUpdate(document));
 
     let textContent = null;
@@ -128,87 +176,118 @@ export class PersistenceExtension implements Extension {
     // Sticky agent marker: 'agent' if any agent edit landed in this window, OR
     // if the current writer is the agent (covers a store with no prior onChange
     // agent event in the same window). §15 H2.
-    const agentTouched =
-      this.consumeAgentTouched(documentName) || context?.actor === 'agent';
-    const lastUpdatedSource = agentTouched ? 'agent' : 'user';
+    const lastUpdatedSource = resolveSource(
+      this.consumeAgentTouched(documentName),
+      context?.actor,
+    );
 
-    try {
-      await executeTx(this.db, async (trx) => {
-        page = await this.pageRepo.findById(pageId, {
-          withLock: true,
-          includeContent: true,
-          trx,
-        });
+    // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
+    // of the latest edit until this hook returns: hocuspocus destroys/unloads the
+    // doc right after onStoreDocument resolves (see storeDocumentHooks' finally
+    // -> unloadDocument). If a transient DB error (deadlock, serialization
+    // failure, dropped connection) is merely logged and swallowed, the function
+    // resolves "successfully", the doc is unloaded, and the edit is lost silently
+    // (#206 persist-1). Retrying here re-attempts the write while we still hold
+    // the doc; on total failure we clear `page` so the post-store side effects
+    // (badge broadcast, history snapshot) never report a save that didn't happen.
+    const MAX_STORE_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt++) {
+      try {
+        await executeTx(this.db, async (trx) => {
+          page = await this.pageRepo.findById(pageId, {
+            withLock: true,
+            includeContent: true,
+            trx,
+          });
 
-        if (!page) {
-          this.logger.error(`Page with id ${pageId} not found`);
-          return;
-        }
-
-        if (isDeepStrictEqual(tiptapJson, page.content)) {
-          page = null;
-          return;
-        }
-
-        let contributorIds = undefined;
-        try {
-          const existingContributors = page.contributorIds || [];
-          contributorIds = Array.from(
-            new Set([
-              ...existingContributors,
-              ...editingUserIds,
-              page.creatorId,
-            ]),
-          );
-        } catch (err) {
-          //this.logger.debug('Contributors error:' + err?.['message']);
-        }
-
-        // Approach A — boundary snapshot before the agent's first edit.
-        // When this store is the agent's and the page's currently persisted
-        // state was authored by a human, pin that human state as its own
-        // history version BEFORE the agent overwrites it. `page` still holds the
-        // OLD content/provenance here, so saveHistory(page) captures the
-        // pre-agent state tagged 'user'. The agent's new content is snapshotted
-        // later by the debounced PAGE_HISTORY job ('agent'). Skip if the prior
-        // state is already agent-authored (boundary already pinned on the
-        // user->agent transition), if the page is effectively empty, or if the
-        // latest existing snapshot already equals this human state (avoid
-        // duplicates).
-        if (lastUpdatedSource === 'agent' && page.lastUpdatedSource !== 'agent') {
-          const lastHistory = await this.pageHistoryRepo.findPageLastHistory(
-            pageId,
-            { includeContent: true, trx },
-          );
-          const humanBaselineMissing =
-            !lastHistory || !isDeepStrictEqual(lastHistory.content, page.content);
-          if (!isEmptyParagraphDoc(page.content as any) && humanBaselineMissing) {
-            await this.pageHistoryRepo.saveHistory(page, {
-              contributorIds: page.contributorIds ?? undefined,
-              trx,
-            });
+          if (!page) {
+            this.logger.error(`Page with id ${pageId} not found`);
+            return;
           }
-        }
 
-        await this.pageRepo.updatePage(
-          {
-            content: tiptapJson,
-            textContent: textContent,
-            ydoc: ydocState,
-            lastUpdatedById: context.user.id,
-            // Human stays the responsible author; these annotate the source.
-            lastUpdatedSource,
-            lastUpdatedAiChatId: context?.aiChatId ?? null,
-            contributorIds: contributorIds,
-          },
-          pageId,
-          trx,
+          if (isDeepStrictEqual(tiptapJson, page.content)) {
+            page = null;
+            return;
+          }
+
+          let contributorIds = undefined;
+          try {
+            const existingContributors = page.contributorIds || [];
+            contributorIds = Array.from(
+              new Set([
+                ...existingContributors,
+                ...editingUserIds,
+                page.creatorId,
+              ]),
+            );
+          } catch (err) {
+            //this.logger.debug('Contributors error:' + err?.['message']);
+          }
+
+          // Approach A — boundary snapshot before the agent's first edit.
+          // When this store is the agent's and the page's currently persisted
+          // state was authored by a human, pin that human state as its own
+          // history version BEFORE the agent overwrites it. `page` still holds
+          // the OLD content/provenance here, so saveHistory(page) captures the
+          // pre-agent state tagged 'user'. The agent's new content is
+          // snapshotted later by the debounced PAGE_HISTORY job ('agent'). Skip
+          // if the prior state is already agent-authored (boundary already
+          // pinned on the user->agent transition), if the page is effectively
+          // empty, or if the latest existing snapshot already equals this human
+          // state (avoid duplicates).
+          if (
+            lastUpdatedSource === 'agent' &&
+            page.lastUpdatedSource !== 'agent'
+          ) {
+            const lastHistory = await this.pageHistoryRepo.findPageLastHistory(
+              pageId,
+              { includeContent: true, trx },
+            );
+            const humanBaselineMissing =
+              !lastHistory ||
+              !isDeepStrictEqual(lastHistory.content, page.content);
+            if (
+              !isEmptyParagraphDoc(page.content as any) &&
+              humanBaselineMissing
+            ) {
+              await this.pageHistoryRepo.saveHistory(page, {
+                contributorIds: page.contributorIds ?? undefined,
+                trx,
+              });
+            }
+          }
+
+          await this.pageRepo.updatePage(
+            {
+              content: tiptapJson,
+              textContent: textContent,
+              ydoc: ydocState,
+              lastUpdatedById: context.user.id,
+              // Human stays the responsible author; these annotate the source.
+              lastUpdatedSource,
+              lastUpdatedAiChatId: context?.aiChatId ?? null,
+              contributorIds: contributorIds,
+            },
+            pageId,
+            trx,
+          );
+
+          this.logger.debug(`Page updated: ${pageId} - SlugId: ${page.slugId}`);
+        });
+        break;
+      } catch (err) {
+        this.logger.error(
+          `Failed to update page ${pageId} (attempt ${attempt}/${MAX_STORE_ATTEMPTS})`,
+          err,
         );
-
-        this.logger.debug(`Page updated: ${pageId} - SlugId: ${page.slugId}`);
-      });
-    } catch (err) {
-      this.logger.error(`Failed to update page ${pageId}`, err);
+        // The write failed and rolled back; clear the partially-assigned `page`
+        // so the post-store success branch below is skipped (no false "saved"
+        // broadcast / history snapshot for content that was never persisted).
+        page = null;
+        if (attempt < MAX_STORE_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+        }
+      }
     }
 
     if (page) {
@@ -310,24 +389,13 @@ export class PersistenceExtension implements Extension {
     page: Page,
     lastUpdatedSource: string,
   ): Promise<void> {
-    // Agent edits get an immediate, source-keyed history job: they snapshot
-    // deterministically as 'agent' and a later human edit (jobId = page.id)
-    // cannot coalesce/retag them. Human edits keep the age-based debounce so
-    // rapid human edits still coalesce into one snapshot.
-    // NOTE: the agent delay MUST stay 0 — the worker re-reads the page row at
-    // run time, so any delay would risk reading content a later human edit has
-    // already overwritten (mis-tagged snapshot). 0 minimizes that window.
-    const isAgent = lastUpdatedSource === 'agent';
-    const pageAge = Date.now() - new Date(page.createdAt).getTime();
-    const delay = isAgent
-      ? 0
-      : pageAge < HISTORY_FAST_THRESHOLD
-        ? HISTORY_FAST_INTERVAL
-        : HISTORY_INTERVAL;
-    // BullMQ forbids ':' in custom job IDs (it is the Redis key separator), so
-    // use '-' here. page.id is a UUID, so `${page.id}-agent` cannot collide with
-    // any human job whose id is a bare page.id.
-    const jobId = isAgent ? `${page.id}-agent` : page.id;
+    // Job id + delay arithmetic lives in the pure `computeHistoryJob` (see its
+    // doc comment for the agent-delay-0 / age-based-debounce invariants).
+    const { jobId, delay } = computeHistoryJob(
+      page,
+      lastUpdatedSource,
+      Date.now(),
+    );
 
     await this.historyQueue.add(
       QueueJob.PAGE_HISTORY,
@@ -369,6 +437,18 @@ export class PersistenceExtension implements Extension {
       this.logger.error(
         { err, pageId },
         'Failed to sync transclusion references for page',
+      );
+    }
+    try {
+      await this.transclusionService.syncPageTemplateReferences(
+        pageId,
+        workspaceId,
+        tiptapJson,
+      );
+    } catch (err) {
+      this.logger.error(
+        { err, pageId },
+        'Failed to sync page template references for page',
       );
     }
   }

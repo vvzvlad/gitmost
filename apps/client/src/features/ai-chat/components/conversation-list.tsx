@@ -18,7 +18,30 @@ import {
   useRenameAiChatMutation,
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import { IAiChat } from "@/features/ai-chat/types/ai-chat.types.ts";
+import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
+
+/**
+ * The dimmed second line of a chat row: how long ago the chat was created and
+ * the document it was created in. Its own component so the self-updating
+ * `useTimeAgo` hook is called per row legally (hooks cannot run inside `.map()`).
+ */
+function ChatMetaLine({
+  createdAt,
+  pageTitle,
+}: {
+  createdAt: string;
+  pageTitle?: string | null;
+}) {
+  const { t } = useTranslation();
+  const ago = useTimeAgo(createdAt);
+  // e.g. "2 hours ago · Onboarding guide" / "2 hours ago · No document"
+  return (
+    <Text size="xs" c="dimmed" lineClamp={1}>
+      {ago} · {pageTitle || t("No document")}
+    </Text>
+  );
+}
 
 interface ConversationListProps {
   activeChatId: string | null;
@@ -115,11 +138,36 @@ export default function ConversationList({
               classes.conversationItem,
               isActive && classes.conversationItemActive,
             )}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(chat.id)}
+            onKeyDown={(e) => {
+              // Activate on Enter/Space like a native button; the inner menu
+              // button stops propagation so its own keys never reach this row.
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(chat.id);
+              }
+            }}
           >
-            <Text size="sm" lineClamp={1} style={{ flex: 1 }}>
-              {chat.title || t("Untitled chat")}
-            </Text>
+            <Box style={{ flex: 1, minWidth: 0 }}>
+              <Group gap={4} wrap="nowrap" style={{ minWidth: 0 }}>
+                {chat.roleName && (
+                  <Text
+                    size="sm"
+                    span
+                    title={chat.roleName}
+                    style={{ flex: "none" }}
+                  >
+                    {chat.roleEmoji || "🤖"}
+                  </Text>
+                )}
+                <Text size="sm" lineClamp={1} style={{ flex: 1, minWidth: 0 }}>
+                  {chat.title || t("Untitled chat")}
+                </Text>
+              </Group>
+              <ChatMetaLine createdAt={chat.createdAt} pageTitle={chat.pageTitle} />
+            </Box>
             <Menu shadow="md" width={180} position="bottom-end">
               <Menu.Target>
                 <ActionIcon

@@ -20,7 +20,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
 import { SkipTransform } from '../../common/decorators/skip-transform.decorator';
-import { User, Workspace } from '@docmost/db/types/entity.types';
+import { AiChat, User, Workspace } from '@docmost/db/types/entity.types';
 import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
@@ -31,10 +31,12 @@ import { AiChatService, AiChatStreamBody } from './ai-chat.service';
 import { AiTranscriptionService } from './ai-transcription.service';
 import {
   ChatIdDto,
+  ExportChatDto,
   GetChatMessagesDto,
   RenameChatDto,
 } from './dto/ai-chat.dto';
 import { describeProviderError } from '../../integrations/ai/ai-error.util';
+import { buildChatMarkdown } from './chat-markdown.util';
 
 /**
  * Per-user AI chat API (§6.1). Routes are POST to match this codebase's
@@ -81,6 +83,36 @@ export class AiChatController {
     );
   }
 
+  /**
+   * Export a chat to Markdown (#183). The DB is the single source of truth: the
+   * whole transcript is loaded (oldest -> newest) and rendered server-side. Now
+   * that the assistant row is persisted upfront and per step, an interrupted
+   * turn is included up to its last finished step. Workspace-scoped and owner-
+   * gated via assertOwnedChat (same as the other read endpoints). Returns
+   * `{ markdown }`. `lang` localizes the few fixed labels (default English).
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post('export')
+  async export(
+    @Body() dto: ExportChatDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<{ markdown: string }> {
+    const chat = await this.assertOwnedChat(dto.chatId, user, workspace);
+    const rows = await this.aiChatMessageRepo.findAllByChat(
+      dto.chatId,
+      workspace.id,
+    );
+    const markdown = buildChatMarkdown({
+      title: chat.title ?? null,
+      chatId: dto.chatId,
+      rows,
+      // normalizeLang(undefined) already yields 'en', so no `?? 'en'` is needed.
+      lang: dto.lang,
+    });
+    return { markdown };
+  }
+
   /** Rename a chat. */
   @HttpCode(HttpStatus.OK)
   @Post('rename')
@@ -90,7 +122,11 @@ export class AiChatController {
     @AuthWorkspace() workspace: Workspace,
   ) {
     await this.assertOwnedChat(dto.chatId, user, workspace);
-    await this.aiChatRepo.update(dto.chatId, { title: dto.title }, workspace.id);
+    await this.aiChatRepo.update(
+      dto.chatId,
+      { title: dto.title },
+      workspace.id,
+    );
     return { success: true };
   }
 
@@ -142,10 +178,19 @@ export class AiChatController {
 
     const body = (req.body ?? {}) as AiChatStreamBody;
 
-    // Resolve the model BEFORE hijack so an unconfigured provider returns a
-    // clean JSON 503 (AiNotConfiguredException is a 503 HttpException; letting
-    // it propagate here yields a normal response, not a broken stream).
-    const model = await this.aiChatService.getChatModel(workspace.id);
+    // Resolve the agent role for this turn BEFORE hijack: existing chats read it
+    // from ai_chats.role_id (authoritative), a new chat from body.roleId. The
+    // role drives both the persona and the optional model override below.
+    const role = await this.aiChatService.resolveRoleForRequest(
+      workspace,
+      body,
+    );
+
+    // Resolve the model (applying the role's optional override) BEFORE hijack so
+    // an unconfigured provider — including a role pointing at an unconfigured
+    // driver — returns a clean JSON 503 (AiNotConfiguredException is a 503
+    // HttpException) instead of breaking mid-stream.
+    const model = await this.aiChatService.getChatModel(workspace.id, role);
 
     // Abort the agent loop when the client disconnects. `close` also fires on
     // normal completion, so only abort when the response has not finished
@@ -153,9 +198,22 @@ export class AiChatController {
     // we also drop it on response `finish` so it never lingers after the stream
     // completes normally (the AI SDK pipes the response fire-and-forget, so we
     // cannot simply remove it once `stream()` returns).
+    // DIAGNOSTIC (Safari stream-drop investigation) — temporary: wall-clock at
+    // which a Safari disconnect is observed, measured from request receipt.
+    const reqStartedAt = Date.now();
     const controller = new AbortController();
     const onClose = (): void => {
-      if (!res.raw.writableEnded) controller.abort();
+      // A genuine disconnect leaves the response unfinished (unlike a normal
+      // completion, which also fires `close`). Such a drop — e.g. a reverse
+      // proxy cutting the SSE mid-answer — is otherwise invisible server-side,
+      // so log it here before aborting the agent loop.
+      if (!res.raw.writableEnded) {
+        this.logger.warn(
+          `AI chat stream: client disconnected before completion; aborting turn ` +
+            `(elapsed=${Date.now() - reqStartedAt}ms since request received)`,
+        );
+        controller.abort();
+      }
     };
     req.raw.once('close', onClose);
     res.raw.once('finish', () => req.raw.off('close', onClose));
@@ -173,6 +231,7 @@ export class AiChatController {
         res,
         signal: controller.signal,
         model,
+        role,
       });
     } catch (err) {
       // Any failure AFTER hijack can no longer send a clean JSON error, so emit
@@ -212,7 +271,9 @@ export class AiChatController {
     let file = null;
     try {
       // Whisper hard-caps uploads at 25MB; allow a single file.
-      file = await req.file({ limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+      file = await req.file({
+        limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+      });
     } catch (err: any) {
       if (err?.statusCode === 413) {
         throw new BadRequestException('Audio file too large (max 25MB)');
@@ -221,25 +282,14 @@ export class AiChatController {
     }
     if (!file) throw new BadRequestException('No audio uploaded');
 
-    // Whitelist audio container types produced by browser MediaRecorder
-    // (Chrome/FF: webm/opus, Safari: mp4) plus common STT-accepted formats.
-    const allowedMime = new Set([
-      'audio/webm',
-      'audio/ogg',
-      'audio/mp4',
-      'audio/mpeg',
-      'audio/wav',
-      'audio/x-wav',
-      'audio/wave',
-      'audio/m4a',
-      'audio/x-m4a',
-    ]);
-    // MediaRecorder mimetypes carry parameters (e.g. "audio/webm;codecs=opus");
-    // compare only the base type.
-    const baseMime = file.mimetype.split(';')[0].trim().toLowerCase();
-    if (!allowedMime.has(baseMime)) {
+    // Resolve + whitelist the upload's container type (MediaRecorder mimetypes
+    // carry parameters, e.g. "audio/webm;codecs=opus"). A non-whitelisted type
+    // is rejected; an allowed one yields the STT container-format hint.
+    const resolved = resolveAudioFormat(file.mimetype);
+    if (!resolved.ok) {
       throw new BadRequestException('Unsupported audio format');
     }
+    const { format } = resolved;
 
     let buf: Buffer;
     try {
@@ -252,20 +302,6 @@ export class AiChatController {
       }
       throw err;
     }
-    // Container hint for JSON-style STT providers (e.g. OpenRouter); multipart
-    // endpoints ignore it.
-    const formatMap: Record<string, string> = {
-      'audio/webm': 'webm',
-      'audio/ogg': 'ogg',
-      'audio/mp4': 'mp4',
-      'audio/mpeg': 'mp3',
-      'audio/wav': 'wav',
-      'audio/x-wav': 'wav',
-      'audio/wave': 'wav',
-      'audio/m4a': 'm4a',
-      'audio/x-m4a': 'm4a',
-    };
-    const format = formatMap[baseMime] ?? 'webm';
     let text: string;
     try {
       text = await this.aiTranscription.transcribe(workspace.id, buf, format);
@@ -288,10 +324,47 @@ export class AiChatController {
     chatId: string,
     user: User,
     workspace: Workspace,
-  ): Promise<void> {
+  ): Promise<AiChat> {
     const chat = await this.aiChatRepo.findById(chatId, workspace.id);
     if (!chat || chat.creatorId !== user.id) {
       throw new ForbiddenException();
     }
+    return chat;
   }
+}
+
+/**
+ * Whitelist audio container types produced by browser MediaRecorder (Chrome/FF:
+ * webm/opus, Safari: mp4) plus common STT-accepted formats. The value maps each
+ * allowed base mime to the container-format hint passed to JSON-style STT
+ * providers (e.g. OpenRouter); multipart endpoints ignore the hint.
+ */
+const AUDIO_FORMAT_MAP: Record<string, string> = {
+  'audio/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'audio/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/m4a': 'm4a',
+  'audio/x-m4a': 'm4a',
+};
+
+/**
+ * Resolve and whitelist an uploaded clip's mimetype. MediaRecorder mimetypes
+ * carry parameters (e.g. "audio/webm;codecs=opus"), so the base type is split
+ * out (lowercased, trimmed) before the whitelist check. Returns ok=false for a
+ * non-whitelisted container; otherwise the base mime and its STT format hint.
+ * Pure — the caller throws BadRequestException on !ok.
+ */
+export function resolveAudioFormat(
+  mimetype: string,
+): { ok: true; baseMime: string; format: string } | { ok: false } {
+  const baseMime = mimetype.split(';')[0].trim().toLowerCase();
+  const format = AUDIO_FORMAT_MAP[baseMime];
+  if (format === undefined) {
+    return { ok: false };
+  }
+  return { ok: true, baseMime, format };
 }

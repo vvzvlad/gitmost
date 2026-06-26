@@ -27,7 +27,7 @@ export default function Aside() {
 
   switch (tab) {
     case "comments":
-      component = <CommentListWithTabs />;
+      component = <CommentListWithTabs onClose={closeAside} />;
       title = "Comments";
       break;
     case "toc":
@@ -44,26 +44,27 @@ export default function Aside() {
   }
 
   return (
-    <Box p="md" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {component && (
-        <>
-          <Group justify="space-between" wrap="nowrap" mb="md">
-            <Title order={2} size="h6" fw={500}>{t(title)}</Title>
-            <Tooltip label={t("Close")} withArrow>
-              <ActionIcon
-                variant="subtle"
-                color="gray"
-                onClick={closeAside}
-                aria-label={t("Close")}
-              >
-                <IconX size={18} />
-              </ActionIcon>
-            </Tooltip>
-          </Group>
-
-          {tab === "comments" ? (
-            component
-          ) : (
+    <Box p={0} style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      {component &&
+        (tab === "comments" ? (
+          component
+        ) : (
+          <>
+            <Group justify="space-between" wrap="nowrap" mb="sm">
+              <Title order={2} size="h6" fw={500}>
+                {t(title)}
+              </Title>
+              <Tooltip label={t("Close")} withArrow>
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  onClick={closeAside}
+                  aria-label={t("Close")}
+                >
+                  <IconX size={18} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
             <ScrollArea
               style={{ height: "85vh" }}
               scrollbarSize={5}
@@ -71,9 +72,8 @@ export default function Aside() {
             >
               <div style={{ paddingBottom: "200px" }}>{component}</div>
             </ScrollArea>
-          )}
-        </>
-      )}
+          </>
+        ))}
     </Box>
   );
 }

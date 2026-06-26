@@ -22,6 +22,7 @@ export interface SearchSuggestionParams {
   includeUsers?: boolean;
   includeGroups?: boolean;
   includePages?: boolean;
+  onlyTemplates?: boolean;
   spaceId?: string;
   limit?: number;
 }

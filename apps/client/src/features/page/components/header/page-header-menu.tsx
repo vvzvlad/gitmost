@@ -1,4 +1,4 @@
-import { ActionIcon, Group, Menu, Text, ThemeIcon, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Group, Menu, Text, ThemeIcon, Tooltip } from "@mantine/core";
 import {
   IconArrowRight,
   IconArrowsHorizontal,
@@ -10,7 +10,6 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
-  IconMessage,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -30,7 +29,6 @@ import { notifications } from "@mantine/notifications";
 import { getAppUrl } from "@/lib/config.ts";
 import { extractPageSlugId } from "@/lib";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
-import { useDeletePageModal } from "@/features/page/hooks/use-delete-page-modal.tsx";
 import { PageWidthToggle } from "@/features/user/components/page-width-pref.tsx";
 import { Trans, useTranslation } from "react-i18next";
 import ExportModal from "@/components/common/export-modal";
@@ -103,18 +101,21 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
 
       {!readOnly && <PageEditModeToggle size="xs" />}
 
-      {!workspaceSharingDisabled && <ShareModal readOnly={readOnly ?? false} />}
+      {/* Hide the Share entry point for readers; the toggle inside is inert
+          without edit permission, so gate it like other edit-only actions
+          (issue #133) */}
+      {!readOnly && !workspaceSharingDisabled && (
+        <ShareModal readOnly={false} />
+      )}
 
-      <Tooltip label={t("Comments")} openDelay={250} withArrow>
-        <ActionIcon
-          variant="subtle"
-          color="dark"
-          aria-label={t("Comments")}
-          {...commentsTriggerProps}
-        >
-          <IconMessage size={20} stroke={2} />
-        </ActionIcon>
-      </Tooltip>
+      <Button
+        variant="subtle"
+        color="dark"
+        size="compact-sm"
+        {...commentsTriggerProps}
+      >
+        {t("Comments")}
+      </Button>
 
       <Tooltip label={t("Table of contents")} openDelay={250} withArrow>
         <ActionIcon
@@ -143,7 +144,6 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
   const { data: page, isLoading } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
   });
-  const { openDeleteModal } = useDeletePageModal();
   const { handleDelete } = useTreeMutation(page?.spaceId ?? "");
   const [exportOpened, { open: openExportModal, close: closeExportModal }] =
     useDisclosure(false);
@@ -189,7 +189,7 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
   };
 
   const handleDeletePage = () => {
-    openDeleteModal({ onConfirm: () => handleDelete(page.id) });
+    handleDelete(page.id);
   };
 
   const handleToggleFavorite = () => {
@@ -288,7 +288,7 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
               leftSection={<IconArrowRight size={16} />}
               onClick={openMovePageModal}
             >
-              {t("Move")}
+              {t("Move to space")}
             </Menu.Item>
           )}
 

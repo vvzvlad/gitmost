@@ -8,6 +8,8 @@ import { ServiceUnavailableException } from '@nestjs/common';
  */
 export class AiSttNotConfiguredException extends ServiceUnavailableException {
   constructor() {
-    super('AI STT model not configured');
+    // User-facing copy: the client surfaces this 503 message verbatim in the
+    // dictation toast, so keep it consistent with the client's fallback copy.
+    super('Voice dictation is not configured');
   }
 }

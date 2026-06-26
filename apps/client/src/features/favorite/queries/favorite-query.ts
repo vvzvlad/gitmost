@@ -13,6 +13,8 @@ import {
   ToggleFavoriteParams,
 } from "../services/favorite-service";
 import { FavoriteType } from "../types/favorite.types";
+import { notifications } from "@mantine/notifications";
+import { useTranslation } from "react-i18next";
 
 export function useFavoritesQuery(type?: FavoriteType, spaceId?: string) {
   return useInfiniteQuery({
@@ -46,6 +48,7 @@ function getEntityId(variables: ToggleFavoriteParams): string | undefined {
 
 export function useAddFavoriteMutation() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation<void, Error, ToggleFavoriteParams>({
     mutationFn: (data) => addFavorite(data),
@@ -64,12 +67,15 @@ export function useAddFavoriteMutation() {
       queryClient.invalidateQueries({
         queryKey: ["favorites", variables.type],
       });
+      // Notify on success so the action gives visible feedback (issue #128)
+      notifications.show({ message: t("Added to favorites") });
     },
   });
 }
 
 export function useRemoveFavoriteMutation() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation<void, Error, ToggleFavoriteParams>({
     mutationFn: (data) => removeFavorite(data),
@@ -87,6 +93,8 @@ export function useRemoveFavoriteMutation() {
       queryClient.invalidateQueries({
         queryKey: ["favorites", variables.type],
       });
+      // Notify on success so the action gives visible feedback (issue #128)
+      notifications.show({ message: t("Removed from favorites") });
     },
   });
 }

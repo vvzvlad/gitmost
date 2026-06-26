@@ -29,20 +29,49 @@ export class AiChatRepo {
     workspaceId: string,
     pagination: PaginationOptions,
   ) {
+    // Left-join the bound role for the badge (emoji + name). Joined, not
+    // denormalized — the chat list is not a hot path. A soft-deleted role
+    // resolves to NULL so the badge disappears, matching the stream's behavior.
+    // A DISABLED role (enabled=false) is likewise excluded: resolveRoleForRequest
+    // downgrades such a chat to the universal assistant, so the badge must not
+    // advertise a role that is not actually applied.
     const query = this.db
       .selectFrom('aiChats')
+      .leftJoin('aiAgentRoles', (join) =>
+        join
+          .onRef('aiAgentRoles.id', '=', 'aiChats.roleId')
+          .on('aiAgentRoles.deletedAt', 'is', null)
+          .on('aiAgentRoles.enabled', '=', true),
+      )
+      // Left-join the origin page for its title (provenance shown in the list).
+      // Scoped to the chat's workspace as defense-in-depth so a page id can only
+      // ever surface a same-workspace title. No deletedAt filter: a soft-deleted
+      // page keeps showing its historical title; a hard-deleted page already
+      // nulls aiChats.pageId via the FK.
+      .leftJoin('pages', (join) =>
+        join
+          .onRef('pages.id', '=', 'aiChats.pageId')
+          .onRef('pages.workspaceId', '=', 'aiChats.workspaceId'),
+      )
       .selectAll('aiChats')
-      .where('creatorId', '=', creatorId)
-      .where('workspaceId', '=', workspaceId)
-      .where('deletedAt', 'is', null);
+      .select([
+        'aiAgentRoles.name as roleName',
+        'aiAgentRoles.emoji as roleEmoji',
+        'pages.title as pageTitle',
+      ])
+      .where('aiChats.creatorId', '=', creatorId)
+      .where('aiChats.workspaceId', '=', workspaceId)
+      .where('aiChats.deletedAt', 'is', null);
 
     return executeWithCursorPagination(query, {
       perPage: pagination.limit,
       cursor: pagination.cursor,
       beforeCursor: pagination.beforeCursor,
       fields: [
-        { expression: 'createdAt', direction: 'desc' },
-        { expression: 'id', direction: 'desc' },
+        // Qualify to aiChats — the join introduces an aiAgentRoles.createdAt/id
+        // that would otherwise make the ORDER BY / cursor comparison ambiguous.
+        { expression: 'aiChats.createdAt', direction: 'desc' },
+        { expression: 'aiChats.id', direction: 'desc' },
       ],
       parseCursor: (cursor) => ({
         createdAt: new Date(cursor.createdAt),

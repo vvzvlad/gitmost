@@ -55,6 +55,45 @@
     padding-inline-start: 1.4em;
 }
 
+/* GFM tables in assistant markdown. The chat lives in a NARROW side panel, so a
+   wide LLM table must scroll horizontally instead of collapsing its columns:
+   `.markdown` sets `word-break: break-word`, which (with the default table
+   layout) shrinks columns to a single glyph and wraps headers mid-word
+   ("Секция" -> "Секци / я"). Make the table a horizontally scrollable block,
+   give cells a readable minimum width, and restore word-boundary wrapping. */
+.markdown table {
+    display: block;
+    /* lets the table scroll horizontally on its own */
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin-block-end: 0.5em;
+}
+
+.markdown th,
+.markdown td {
+    border: 1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+    padding: 3px 8px;
+    /* readable floor; the block scrolls when the row exceeds the panel */
+    min-width: 6em;
+    text-align: left;
+    vertical-align: top;
+    /* cancel the inherited break-word so words don't split mid-glyph */
+    word-break: normal;
+    /* still wrap genuinely long words / URLs at the cell edge */
+    overflow-wrap: break-word;
+}
+
+.markdown th {
+    background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+    font-weight: 600;
+}
+
+/* GFM wraps cell text in <p>; drop its default block margin inside cells. */
+.markdown table p {
+    margin: 0;
+}
+
 /* Animated three-dot "typing" indicator shown while the agent is thinking but
    has not yet produced any visible text/tool parts. */
 .typingDots {
@@ -88,16 +127,18 @@
         opacity: 0.4;
     }
     40% {
-        transform: translateY(-3px);
+        /* Bounce height is driven by --bounce so reduced-motion can dampen it
+           (below) without disabling the animation outright. */
+        transform: translateY(var(--bounce, -6px));
         opacity: 1;
     }
 }
 
-/* Respect reduced-motion preferences: fall back to a static dimmed state. */
+/* Respect reduced-motion preferences: keep a smaller bounce instead of a full
+   stop, so the "thinking" indicator still reads as active rather than frozen. */
 @media (prefers-reduced-motion: reduce) {
     .typingDots span {
-        animation: none;
-        opacity: 0.6;
+        --bounce: -3px;
     }
 }
 
@@ -107,6 +148,28 @@
     padding: 6px 10px;
     margin-bottom: 6px;
     background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+/* Collapsible "Thinking" (reasoning) block: a subtle left rule, dimmer than the
+   answer so it reads as secondary thinking context above the real answer. */
+.reasoningBlock {
+    border-left: 2px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+    padding-left: 8px;
+}
+
+.reasoningText {
+    margin-top: 4px;
+    font-size: var(--mantine-font-size-xs);
+    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
+    /* NOTE: `white-space: pre-wrap` is intentionally NOT set here. On the
+       rendered markdown <div> it would turn the newlines between block tags
+       (</li>\n<li>, </p>\n<ol>) into visible blank lines/indents on top of the
+       margins. The plain-text fallback <Text> that needs pre-wrap sets it
+       inline itself (see reasoning-block.tsx). */
+}
+
+.reasoningText p {
+    margin: 0 0 4px;
 }
 
 .inputWrapper {
@@ -125,4 +188,30 @@
 
 .conversationItemActive {
     background: var(--mantine-color-gray-light);
+}
+
+/* Pending messages queued by the user while a turn is still streaming. They
+   are sent automatically, FIFO, once the current turn finishes. */
+.queuedList {
+    padding-bottom: var(--mantine-spacing-xs);
+}
+
+.queuedItem {
+    background: var(--mantine-color-gray-light);
+    border-radius: var(--mantine-radius-sm);
+    padding: 4px 8px;
+}
+
+.queuedIcon {
+    flex: none;
+    color: var(--mantine-color-dimmed);
+}
+
+.queuedText {
+    flex: 1;
+    min-width: 0;
+    color: var(--mantine-color-dimmed);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }

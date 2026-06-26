@@ -6,7 +6,9 @@ export interface SubpagesOptions {
   view: any;
 }
 
-export interface SubpagesAttributes {}
+export interface SubpagesAttributes {
+  recursive?: boolean;
+}
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -30,6 +32,18 @@ export const Subpages = Node.create<SubpagesOptions>({
   atom: true,
   draggable: true,
   isolating: true,
+
+  addAttributes() {
+    return {
+      recursive: {
+        // Existing nodes stay flat -> backward compatible.
+        default: false,
+        parseHTML: (el) => el.getAttribute("data-recursive") === "true",
+        renderHTML: (attrs) =>
+          attrs.recursive ? { "data-recursive": "true" } : {},
+      },
+    };
+  },
 
   parseHTML() {
     return [

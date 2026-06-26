@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import {
   streamText,
@@ -10,12 +15,65 @@ import {
 } from 'ai';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
+import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
-import { User, Workspace, AiChatMessage } from '@docmost/db/types/entity.types';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import { PageRepo } from '@docmost/db/repos/page/page.repo';
+import { PageAccessService } from '../page/page-access/page-access.service';
+import {
+  User,
+  Workspace,
+  AiChatMessage,
+  AiAgentRole,
+} from '@docmost/db/types/entity.types';
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
+import { roleModelOverride } from './roles/role-model-config';
+import {
+  startSseHeartbeat,
+  stripStreamingHopByHopHeaders,
+} from './sse-resilience';
+
+// Max agent steps per turn. One step = one model generation; a step that calls
+// tools is followed by another step carrying the tool results. Raised from 8 so
+// multi-search research questions are not cut off mid-investigation.
+const MAX_AGENT_STEPS = 20;
+
+// System-prompt addendum injected ONLY on the final step (see prepareAgentStep).
+// It forbids further tool calls and tells the model to synthesize the best
+// answer it can from what it already gathered, so a tool-heavy turn never ends
+// empty.
+const FINAL_STEP_INSTRUCTION =
+  'You have reached the maximum number of tool-use steps for this turn. ' +
+  'Do NOT call any more tools. Using only the information already gathered, ' +
+  "write the most complete, useful final answer you can now, in the user's " +
+  'language. If the information is incomplete, say so explicitly: summarize ' +
+  'what you found, what is still missing, and give your best partial conclusion.';
+
+// Pure, unit-testable: decide per-step overrides. Returns undefined for normal
+// steps; on the final allowed step forces a text-only synthesis answer.
+// `system` is the in-scope system prompt; we CONCATENATE so the original
+// persona/context is preserved — a bare `system` override would REPLACE the
+// whole system prompt for the step.
+//
+// NOTE: at AI SDK v7 the per-step `system` field is renamed to `instructions`.
+// On v6 (`^6.0.134`) `system` is the correct field — adjust when bumping.
+export function prepareAgentStep(
+  stepNumber: number,
+  system: string,
+): { toolChoice: 'none'; system: string } | undefined {
+  if (stepNumber >= MAX_AGENT_STEPS - 1) {
+    return {
+      toolChoice: 'none',
+      system: `${system}\n\n${FINAL_STEP_INSTRUCTION}`,
+    };
+  }
+  return undefined;
+}
+
+export { MAX_AGENT_STEPS, FINAL_STEP_INSTRUCTION };
 
 /**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
@@ -24,6 +82,11 @@ import { buildSystemPrompt } from './ai-chat.prompt';
  */
 export interface AiChatStreamBody {
   chatId?: string;
+  // The agent role selected by the client. Honoured ONLY when creating a new
+  // chat (no valid chatId) — it is persisted to ai_chats.role_id and is
+  // immutable afterwards. For existing chats the role is read from the chat row,
+  // never from this field, so it cannot be swapped per-turn.
+  roleId?: string | null;
   // The page the user is currently viewing (client-supplied), or null on a
   // non-page route. Used ONLY as prompt context so the agent knows what "this
   // page" refers to; the page itself is never fetched server-side here. The id
@@ -43,7 +106,13 @@ export interface AiChatStreamArgs {
   signal: AbortSignal;
   // Resolved by the controller BEFORE res.hijack(), so an unconfigured provider
   // (AiNotConfiguredException -> 503) surfaces as clean JSON before streaming.
+  // For a role with a model override this already carries the override-resolved
+  // model (or the controller threw a 503 if the override driver was unconfigured).
   model: LanguageModel;
+  // The agent role to apply this turn, pre-resolved by the controller from the
+  // chat row (existing chat) or the request body (new chat). null => universal
+  // assistant. Carried here so the turn never re-loads it.
+  role: AiAgentRole | null;
 }
 
 /**
@@ -60,7 +129,7 @@ export interface AiChatStreamArgs {
  *                    can be rebuilt for `convertToModelMessages`.
  */
 @Injectable()
-export class AiChatService {
+export class AiChatService implements OnModuleInit {
   private readonly logger = new Logger(AiChatService.name);
 
   constructor(
@@ -70,15 +139,116 @@ export class AiChatService {
     private readonly aiSettings: AiSettingsService,
     private readonly tools: AiChatToolsService,
     private readonly mcpClients: McpClientsService,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
+    private readonly pageRepo: PageRepo,
+    private readonly pageAccess: PageAccessService,
   ) {}
 
   /**
-   * Resolve the chat language model for the workspace. Exposed so the
-   * controller can resolve it BEFORE res.hijack(): an unconfigured provider
-   * throws AiNotConfiguredException there and returns a clean 503.
+   * Crash-recovery sweep on server start (#183): any assistant row left in the
+   * 'streaming' state is the relic of a turn whose process died before it
+   * reached a terminal status. Flip those to 'aborted' so history/export show
+   * them settled (with whatever finished steps were already persisted) instead
+   * of perpetually "streaming". Best-effort: a sweep failure is logged but must
+   * never block server startup.
    */
-  getChatModel(workspaceId: string): Promise<LanguageModel> {
-    return this.ai.getChatModel(workspaceId);
+  async onModuleInit(): Promise<void> {
+    try {
+      const swept = await this.aiChatMessageRepo.sweepStreaming();
+      if (swept > 0) {
+        this.logger.log(
+          `Startup sweep: marked ${swept} dangling 'streaming' assistant ` +
+            `message(s) as 'aborted'.`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Startup sweep of dangling 'streaming' messages failed: ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Resolve the agent role that applies to this stream request, scoped to the
+   * workspace and soft-delete aware. For an EXISTING chat the role is read from
+   * `ai_chats.role_id` (authoritative — never from the body). For a NEW chat
+   * (no valid chatId) the role comes from the request body's `roleId`. Returns
+   * null for the universal assistant or when the referenced role is missing /
+   * soft-deleted.
+   */
+  async resolveRoleForRequest(
+    workspace: Workspace,
+    body: AiChatStreamBody,
+  ): Promise<AiAgentRole | null> {
+    let roleId: string | null | undefined;
+    if (body.chatId) {
+      const chat = await this.aiChatRepo.findById(body.chatId, workspace.id);
+      // A valid existing chat fixes the role from its own row.
+      if (chat) roleId = chat.roleId;
+      else roleId = body.roleId; // stale chatId => treated as a new chat
+    } else {
+      roleId = body.roleId;
+    }
+    if (!roleId) return null;
+    // A disabled or soft-deleted role falls back to the universal assistant: it
+    // must not apply its persona/model override even to a chat that was bound to
+    // it earlier. findLiveEnabled enforces this (live + enabled + workspace
+    // scope), server-authoritatively, for both the new-chat (body.roleId) and
+    // existing-chat (chat.role_id) paths — the single shared invariant.
+    return (
+      (await this.aiAgentRoleRepo.findLiveEnabled(roleId, workspace.id)) ?? null
+    );
+  }
+
+  /**
+   * Resolve the chat language model for the workspace, applying the role's
+   * optional model override. Exposed so the controller can resolve it BEFORE
+   * res.hijack(): an unconfigured provider (incl. a role pointing at an
+   * unconfigured driver) throws AiNotConfiguredException there and returns a
+   * clean 503 instead of breaking mid-stream.
+   */
+  getChatModel(
+    workspaceId: string,
+    role?: AiAgentRole | null,
+  ): Promise<LanguageModel> {
+    return this.ai.getChatModel(workspaceId, roleModelOverride(role));
+  }
+
+  /**
+   * Validate the client-supplied open page and return its AUTHORITATIVE identity
+   * ({ id, title }) or null. The client controls BOTH the id and the title in the
+   * request body, so neither is trusted: the id must resolve to a real page in
+   * THIS workspace that the user may read, and the title is taken from the DB row
+   * (never the client) so the model can't be told it is "on Page A" while the id
+   * points at page B (#159). Fail-closed — any missing / foreign / inaccessible
+   * page, or any non-Forbidden access-check fault, returns null.
+   */
+  private async resolveOpenPageContext(
+    openPage: { id?: string; title?: string } | null | undefined,
+    workspace: Workspace,
+    user: User,
+  ): Promise<{ id: string; title: string } | null> {
+    const candidatePageId = openPage?.id;
+    if (!candidatePageId) return null;
+    const page = await this.pageRepo.findById(candidatePageId);
+    if (!page || page.workspaceId !== workspace.id) return null;
+    try {
+      await this.pageAccess.validateCanView(page, user);
+    } catch (e) {
+      // A ForbiddenException is the expected "user cannot read this page" case;
+      // log anything else (e.g. a DB error) so a real fault is not masked.
+      if (!(e instanceof ForbiddenException)) {
+        this.logger.warn(
+          `open page access check failed: ${
+            e instanceof Error ? e.message : 'unknown error'
+          }`,
+        );
+      }
+      return null;
+    }
+    return { id: page.id, title: page.title ?? '' };
   }
 
   async stream({
@@ -89,6 +259,7 @@ export class AiChatService {
     res,
     signal,
     model,
+    role,
   }: AiChatStreamArgs): Promise<void> {
     // Resolve / create the chat. A new chat is created when no valid chatId is
     // supplied or the supplied one does not belong to this workspace.
@@ -100,10 +271,34 @@ export class AiChatService {
         chatId = undefined;
       }
     }
+    // The open page the client sent is attacker-controllable — BOTH its id and
+    // its title. Resolve it ONCE against the DB (workspace-scoped + access-
+    // checked) and use the AUTHORITATIVE identity everywhere below: the system
+    // prompt context, the getCurrentPage tool, and the new-chat history origin.
+    // Previously the client title was echoed verbatim, so a navigation / two-tab
+    // desync (openPage.id -> page B, title -> "Page A") made the model report
+    // "updated Page A" while it edited page B (#159). Null when no page is open
+    // or the page is foreign / inaccessible / missing.
+    const openPageContext = await this.resolveOpenPageContext(
+      body.openPage,
+      workspace,
+      user,
+    );
+
     if (!chatId) {
+      // The history-list origin is the validated open page (see above):
+      // persisting an unvalidated id would leak a title via the chat-list join,
+      // or violate the page_id FK on insert (this runs after res.hijack(), so a
+      // DB error would break the stream).
+      const originPageId: string | null = openPageContext?.id ?? null;
       const chat = await this.aiChatRepo.insert({
         creatorId: user.id,
         workspaceId: workspace.id,
+        // Bind the chat to the resolved role (if any) at creation time. The role
+        // is immutable afterwards (later turns read it from this column).
+        roleId: role?.id ?? null,
+        // Validated above: a real, readable page in this workspace, else null.
+        pageId: originPageId,
       });
       chatId = chat.id;
       isNewChat = true;
@@ -122,9 +317,7 @@ export class AiChatService {
       content: incomingText,
       // jsonb column: UIMessage parts are JSON-serializable at runtime but not
       // structurally `JsonValue`, so cast through unknown.
-      metadata: (incoming?.parts
-        ? { parts: incoming.parts }
-        : null) as never,
+      metadata: (incoming?.parts ? { parts: incoming.parts } : null) as never,
     });
 
     // Rebuild the conversation from persisted history (not the client payload),
@@ -143,32 +336,20 @@ export class AiChatService {
     // The model is resolved by the controller before hijack (clean 503 path).
     // Here we only need the admin-configured system prompt.
     const resolved = await this.aiSettings.resolve(workspace.id);
-    const system = buildSystemPrompt({
-      workspace,
-      adminPrompt: resolved?.systemPrompt,
-      openedPage: body.openPage,
-    });
 
-    // Pass the resolved chatId so the write tools can mint provenance tokens
-    // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
-    // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
-    const docmostTools = await this.tools.forUser(
-      user,
-      sessionId,
-      workspace.id,
-      chatId,
-    );
-
-    // Merge in admin-configured external MCP tools (web search, etc.; §6.8).
-    // A down/slow external server never crashes the turn — toolsFor skips it and
-    // records the outcome. The returned client handles MUST be closed in the
-    // streamText lifecycle (onFinish/onError/onAbort) — leaking them is a bug.
-    // Docmost tools take precedence on a name clash (external are namespaced, so
-    // a clash is not expected; the spread order makes intent explicit).
+    // Build the external MCP toolset FIRST so the system prompt can carry each
+    // connected server's admin-authored guidance (#180). Merge in admin-
+    // configured external MCP tools (web search, etc.; §6.8). A down/slow
+    // external server never crashes the turn — toolsFor skips it and records the
+    // outcome. The returned client handles MUST be closed in the streamText
+    // lifecycle (onFinish/onError/onAbort) — leaking them is a bug. Docmost
+    // tools take precedence on a name clash (external are namespaced, so a clash
+    // is not expected; the spread order makes intent explicit).
     let external: Awaited<ReturnType<McpClientsService['toolsFor']>> = {
       tools: {},
       clients: [],
       outcomes: [],
+      instructions: [],
     };
     try {
       external = await this.mcpClients.toolsFor(workspace.id);
@@ -181,12 +362,15 @@ export class AiChatService {
         }`,
       );
     }
-    const tools = { ...external.tools, ...docmostTools };
 
     // Close every external client EXACTLY ONCE across the turn's terminal
     // callbacks (onFinish/onError/onAbort all fire at most once collectively,
-    // but guard anyway). Close errors are swallowed so they never break the
-    // response.
+    // but guard anyway). DEFINED HERE — before the prompt/toolset are built — so
+    // that if buildSystemPrompt or forUser throws AFTER the external lease was
+    // taken (toolsFor above), the lease is still released. Otherwise its refCount
+    // stays >= 1 forever and the external undici sockets leak until restart
+    // (#180 reorder moved toolsFor ahead of these; #185 review). Close errors are
+    // swallowed so they never break the response.
     let clientsClosed = false;
     const closeExternalClients = async (): Promise<void> => {
       if (clientsClosed) return;
@@ -204,30 +388,155 @@ export class AiChatService {
       );
     };
 
-    // Persist the assistant message. Used by onFinish (full result) and the
-    // abort/error paths (partial result). Guarded so we persist at most once.
-    let persisted = false;
-    const persistAssistant = async (data: {
-      text: string;
-      toolCalls: unknown;
-      metadata: Record<string, unknown>;
-    }): Promise<void> => {
-      if (persisted) return;
-      persisted = true;
+    // Build the system prompt + Docmost toolset. If either throws after the
+    // external MCP lease was taken above, release the lease before rethrowing so
+    // the leased transports are not leaked (#185 review).
+    let system: string;
+    let docmostTools: Awaited<ReturnType<AiChatToolsService['forUser']>>;
+    try {
+      system = buildSystemPrompt({
+        workspace,
+        adminPrompt: resolved?.systemPrompt,
+        // The role (pre-resolved by the controller) REPLACES the persona layer;
+        // the safety framework is still appended by buildSystemPrompt.
+        roleInstructions: role?.instructions,
+        // Server-validated open page (authoritative title), not the client value.
+        openedPage: openPageContext,
+        // Guidance only for servers that connected and yielded ≥1 callable tool.
+        mcpInstructions: external.instructions,
+      });
+
+      // Pass the resolved chatId so the write tools can mint provenance tokens
+      // (access + collab) carrying { actor:'agent', aiChatId: chatId }, making
+      // agent REST/collab writes attributable and non-spoofable (§6.5/§6.6).
+      docmostTools = await this.tools.forUser(
+        user,
+        sessionId,
+        workspace.id,
+        chatId,
+        // Same server-validated open page used by the system prompt above;
+        // exposed to the model via getCurrentPage so page identity (and the
+        // AUTHORITATIVE title) survives prompt mangling / client title spoofing.
+        openPageContext,
+      );
+    } catch (err) {
+      await closeExternalClients();
+      throw err;
+    }
+
+    const tools = { ...external.tools, ...docmostTools };
+
+    // Accumulate the turn's streamed output so a provider error / disconnect can
+    // persist the PARTIAL answer the user already saw — the SDK's onError/onAbort
+    // callbacks don't hand us the in-progress text. `capturedSteps` holds finished
+    // steps (tool calls + their text); `inProgressText` holds the text streamed in
+    // the CURRENT, not-yet-finished step, reset whenever a step finishes.
+    const capturedSteps: StepLike[] = [];
+    let inProgressText = '';
+
+    // Step-granular durability (#183): create the assistant row UPFRONT in the
+    // 'streaming' state (before any token), then UPDATE it as each step finishes
+    // and finalize it once on the terminal callback. If the process dies
+    // mid-turn the row survives with every finished step already persisted; the
+    // startup sweep (sweepStreaming) later flips a dangling 'streaming' row to
+    // 'aborted'. The DB is now the single source of truth for the turn — the
+    // socket is never required for the write path. A failed upfront insert is
+    // logged and leaves assistantId undefined; the per-step/terminal updates then
+    // no-op (guarded below) so the turn still streams to the user.
+    let assistantId: string | undefined;
+    try {
+      const seed = flushAssistant([], '', 'streaming');
+      const seeded = await this.aiChatMessageRepo.insert({
+        chatId,
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: 'assistant',
+        content: seed.content,
+        // jsonb columns: cast through never (same as the user insert above).
+        toolCalls: (seed.toolCalls ?? null) as never,
+        metadata: seed.metadata as never,
+        status: seed.status,
+      });
+      assistantId = seeded?.id;
+    } catch (err) {
+      this.logger.error(
+        `Failed to insert upfront assistant row (chat ${chatId}, workspace ${workspace.id})`,
+        err as Error,
+      );
+    }
+
+    // Per-step (non-terminal) update: persist the finished steps the moment a
+    // step ends. Tolerant — a failed update is logged and swallowed so it never
+    // throws into the stream. Keeps status 'streaming'.
+    const updateStreaming = async (): Promise<void> => {
+      if (!assistantId) return;
+      // Cheap short-circuit once the turn is finalized (see `finalized` below).
+      // The AUTHORITATIVE guard is `onlyIfStreaming` on the UPDATE: a late
+      // fire-and-forget step update could still be in flight on another pool
+      // connection when finalize runs, so the SQL `WHERE status='streaming'`
+      // (not this flag) is what prevents it clobbering the terminal row.
+      if (finalized) return;
       try {
-        await this.aiChatMessageRepo.insert({
-          chatId,
-          workspaceId: workspace.id,
-          userId: user.id,
-          role: 'assistant',
-          content: data.text ?? '',
-          toolCalls: (data.toolCalls ?? null) as never,
-          metadata: data.metadata as never,
-        });
+        await this.aiChatMessageRepo.update(
+          assistantId,
+          workspace.id,
+          flushAssistant(capturedSteps, '', 'streaming'),
+          { onlyIfStreaming: true },
+        );
       } catch (err) {
-        this.logger.error('Failed to persist assistant message', err as Error);
+        this.logger.warn(
+          `Failed to update streaming assistant row: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
       }
     };
+
+    // Serialize the per-step updates (#183 review): onStepFinish fires them
+    // without await, so two could otherwise commit out of order on different pool
+    // connections (step N landing after N+1). Chaining each onto the previous
+    // keeps the persisted row monotonic with step order; each link short-circuits
+    // on `finalized`, so a tail of late updates is cheap.
+    let stepUpdateChain: Promise<void> = Promise.resolve();
+
+    // Terminal finalize: write the completed/error/aborted row exactly once
+    // across the (mutually-exclusive, at-most-once) onFinish/onError/onAbort
+    // callbacks — mirroring the pre-#183 persist-at-most-once guard for the
+    // TERMINAL status (the row may be updated many times with 'streaming' before
+    // this fires once).
+    let finalized = false;
+    const finalizeAssistant = async (
+      flushed: AssistantFlush,
+    ): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      const plan = planFinalizeAssistant(assistantId);
+      try {
+        // Shared dispatch (see applyFinalize): UPDATE the upfront row, or — when
+        // the upfront insert failed (kind 'insert') — INSERT the terminal row as
+        // the only safety against losing the turn entirely.
+        await applyFinalize(
+          this.aiChatMessageRepo,
+          plan,
+          { chatId, workspaceId: workspace.id, userId: user.id },
+          flushed,
+        );
+      } catch (err) {
+        this.logger.error(
+          `Failed to finalize assistant message (kind=${plan.kind})`,
+          err as Error,
+        );
+      }
+    };
+
+    // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Measure
+    // first-chunk latency, the model-silent gap right before a disconnect, and
+    // how many SSE heartbeats were written, so a Safari drop can be classified
+    // (idle-gap vs hard wall-clock cap vs slow first chunk).
+    const streamStartedAt = Date.now();
+    let firstModelChunkAt: number | undefined;
+    let lastModelChunkAt = streamStartedAt;
+    let heartbeatsSent = 0;
 
     // NOTE: streamText is synchronous in v6 — do NOT await it. A synchronous
     // failure here (or in pipe below) would skip the terminal callbacks, so the
@@ -235,88 +544,169 @@ export class AiChatService {
     let result: ReturnType<typeof streamText>;
     try {
       result = streamText({
-      model,
-      system,
-      messages,
-      tools,
-      // No maxOutputTokens cap on the agent: tool-call arguments (e.g. a full
-      // page body for the write tools) are emitted as OUTPUT tokens, so a fixed
-      // cap would truncate complex tool calls mid-argument. Let the model use its
-      // natural per-step budget. (Cost/credit limits are an account concern, not
-      // something to enforce by silently breaking the agent.)
-      stopWhen: stepCountIs(8),
-      abortSignal: signal,
-      onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
-        await persistAssistant({
-          text,
-          toolCalls: serializeSteps(steps),
-          metadata: {
-            finishReason,
-            usage: totalUsage,
-            // Final-step usage = the context actually fed to the model on the last LLM
-            // call (full history + tool results) plus the answer it just generated.
-            // input+output of the FINAL step ≈ the conversation's CURRENT context size,
-            // distinct from totalUsage which sums every step (cumulative tokens spent).
-            contextTokens:
-              (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) || undefined,
-            // Persist the FULL set of UIMessage parts for the turn (text +
-            // tool-call/result), so the rebuilt history replays prior tool
-            // context to the model on later turns.
-            parts: assistantParts(steps, text),
-          },
-        });
-        // Lifecycle: release the external MCP clients leased for this turn.
-        await closeExternalClients();
-      },
-      onError: async ({ error }) => {
-        // NestJS Logger.error(message, stack?, context?): pass the real message
-        // (with statusCode when present) + the stack string, not the Error
-        // object, so the actual provider cause is clearly logged.
-        const e = error as {
-          statusCode?: number;
-          message?: string;
-          stack?: string;
-        };
-        const errorText = e?.statusCode
-          ? `${e.statusCode}: ${e.message ?? String(error)}`
-          : (e?.message ?? String(error));
-        this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
-        // Persist whatever text we have (likely empty) so the turn is recorded,
-        // and record the error text in metadata so it is visible in history.
-        await persistAssistant({
-          text: '',
-          toolCalls: null,
-          metadata: { finishReason: 'error', parts: [], error: errorText },
-        });
-        await closeExternalClients();
-      },
-      onAbort: async ({ steps }) => {
-        // Client disconnected / request aborted: persist the partial answer,
-        // including any completed tool steps so the turn replays faithfully.
-        const text = steps.map((s) => s.text ?? '').join('');
-        await persistAssistant({
-          text,
-          toolCalls: serializeSteps(steps),
-          metadata: {
-            finishReason: 'aborted',
-            parts: assistantParts(steps, text),
-          },
-        });
-        await closeExternalClients();
-      },
+        model,
+        system,
+        messages,
+        tools,
+        // No maxOutputTokens cap on the agent: tool-call arguments (e.g. a full
+        // page body for the write tools) are emitted as OUTPUT tokens, so a fixed
+        // cap would truncate complex tool calls mid-argument. Let the model use its
+        // natural per-step budget. (Cost/credit limits are an account concern, not
+        // something to enforce by silently breaking the agent.)
+        stopWhen: stepCountIs(MAX_AGENT_STEPS),
+        // Forced finalization: reserve the LAST allowed step for a text-only
+        // answer. Without this, a turn that spends all its steps on tool calls
+        // ends with no assistant text (an empty turn). prepareAgentStep forbids
+        // further tool calls and appends a synthesis instruction on that step,
+        // concatenated onto the original `system` so the persona is preserved.
+        prepareStep: ({ stepNumber }) => prepareAgentStep(stepNumber, system),
+        abortSignal: signal,
+        onChunk: ({ chunk }) => {
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary. Any model
+          // output chunk means the stream is actively emitting bytes; track first
+          // + most-recent activity timestamps.
+          const now = Date.now();
+          firstModelChunkAt ??= now;
+          lastModelChunkAt = now;
+          // 'text-delta' is the assistant's prose; tool-call args are separate chunk
+          // types — so this mirrors exactly what streams to the client.
+          if (chunk.type === 'text-delta') inProgressText += chunk.text;
+        },
+        onStepFinish: (step) => {
+          // The finished step's full text is now in `step.text`; fold it in and reset
+          // the in-progress accumulator for the next step.
+          capturedSteps.push(step as StepLike);
+          inProgressText = '';
+          // Step-granular durability (#183): persist this finished step (its text +
+          // tool calls + tool RESULTS) the moment it ends, so a process death after
+          // this point still recovers the step. Not awaited here (never block the
+          // stream), but SERIALIZED via stepUpdateChain so the writes commit in
+          // step order; updateStreaming is error-tolerant (logs + swallows).
+          stepUpdateChain = stepUpdateChain.then(() => updateStreaming());
+        },
+        onFinish: async ({ text, finishReason, totalUsage, usage, steps }) => {
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: success
+          // baseline for Safari comparison.
+          const diagNow = Date.now();
+          this.logger.log(
+            `AI chat stream DIAGNOSTIC (finish): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `heartbeatsSent=${heartbeatsSent} steps=${steps.length}`,
+          );
+          // Finalize the assistant row (#183): the upfront 'streaming' row is
+          // UPDATEd to 'completed' with the turn's final text, cumulative usage and
+          // full UIMessage parts. We pass the SDK `steps` (which carry the final
+          // step's text) as the captured steps so metadata.parts matches the
+          // pre-#183 onFinish record exactly; `inProgressText` is '' here (the last
+          // step already finished). Final-step usage (usage.input+output) ≈ the
+          // conversation's CURRENT context size, distinct from totalUsage.
+          //
+          // COLUMN-SEMANTICS NOTE (#183): `content` is built by flushAssistant as
+          // the CONCATENATION of every step's text (stepsText), whereas pre-#183
+          // it stored only the FINAL step's text. This is a deliberate, harmless
+          // change: the UI and the Markdown export render from `metadata.parts`
+          // (per-step text + tool parts), not from `content`; `content` is the
+          // plain-text projection (full-text search / fallback). A multi-step
+          // turn's `content` therefore now holds all steps' prose, not just the
+          // last block.
+          await finalizeAssistant(
+            flushAssistant(steps as StepLike[], '', 'completed', {
+              finishReason: finishReason as string,
+              usage: totalUsage as StreamUsage,
+              contextTokens:
+                (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) ||
+                undefined,
+              // Max context window for the chat header badge denominator;
+              // resolved from the admin-configured provider settings (in
+              // closure scope here). Omitted/0 = no limit.
+              maxContextTokens: resolved?.chatContextWindow,
+            }),
+          );
+          // Lifecycle: release the external MCP clients leased for this turn.
+          await closeExternalClients();
+
+          // Generate the chat title for a freshly created chat AFTER the stream's
+          // provider call has completed — NOT concurrently with it. The z.ai coding
+          // endpoint stalls one of two concurrent requests to the same plan, which
+          // black-holed the chat stream (~300s headers timeout) when title
+          // generation raced it. Running it here (solo, fire-and-forget) avoids the
+          // race; never block the turn on it, swallow any error.
+          if (isNewChat && incomingText) {
+            void this.generateTitle(chatId, workspace.id, incomingText).catch(
+              (err) => {
+                this.logger.warn(
+                  `Title generation failed: ${(err as Error)?.message ?? err}`,
+                );
+              },
+            );
+          }
+        },
+        onError: async ({ error }) => {
+          // NestJS Logger.error(message, stack?, context?): pass the real message
+          // (with statusCode when present) + the stack string, not the Error
+          // object, so the actual provider cause is clearly logged. Reuse the
+          // shared formatter so provider error formatting stays unified.
+          const e = error as { stack?: string };
+          const errorText = describeProviderError(error, String(error));
+          this.logger.error(`AI chat stream error: ${errorText}`, e?.stack);
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: timing of
+          // an error-terminated stream.
+          const diagNow = Date.now();
+          this.logger.warn(
+            `AI chat stream DIAGNOSTIC (error): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent}`,
+          );
+          // Finalize the PARTIAL answer streamed before the failure (text + any
+          // finished tool steps) WITH the error in metadata, so the turn shows what
+          // the user already saw plus the cause — not just a bare error. Status
+          // 'error' (#183).
+          await finalizeAssistant(
+            flushAssistant(capturedSteps, inProgressText, 'error', {
+              error: errorText,
+            }),
+          );
+          await closeExternalClients();
+        },
+        onAbort: async ({ steps }) => {
+          const partialChars =
+            capturedSteps.reduce((n, s) => n + (s.text?.length ?? 0), 0) +
+            inProgressText.length;
+          // Unlike onError/onFinish, this terminal path otherwise writes nothing, so
+          // an aborted turn (client disconnect / proxy drop / stop()) would be
+          // invisible in the logs. Log it (warn) so the abort is traceable.
+          this.logger.warn(
+            `AI chat stream aborted (chat ${chatId}) after ${steps.length} ` +
+              `step(s), ${partialChars} chars partial text; persisting partial turn.`,
+          );
+          // DIAGNOSTIC (Safari stream-drop investigation) — temporary: THE key
+          // line — classifies the Safari drop.
+          const diagNow = Date.now();
+          this.logger.warn(
+            `AI chat stream DIAGNOSTIC (abort/disconnect): elapsed=${diagNow - streamStartedAt}ms ` +
+              `firstChunkLatency=${firstModelChunkAt ? firstModelChunkAt - streamStartedAt : 'none'}ms ` +
+              `silentGapBeforeDrop=${diagNow - lastModelChunkAt}ms heartbeatsSent=${heartbeatsSent} ` +
+              `steps=${steps.length}`,
+          );
+          await finalizeAssistant(
+            flushAssistant(capturedSteps, inProgressText, 'aborted'),
+          );
+          await closeExternalClients();
+        },
       });
 
-      // Fire-and-forget async title generation for a freshly created chat. Never
-      // block the stream on it; swallow any error.
-      if (isNewChat && incomingText) {
-        void this.generateTitle(chatId, workspace.id, incomingText).catch(
-          (err) => {
-            this.logger.warn(
-              `Title generation failed: ${(err as Error)?.message ?? err}`,
-            );
-          },
-        );
-      }
+      // Drain the stream independently of the client socket so the turn always
+      // runs to completion (or to its abort) and the terminal callbacks
+      // (onFinish/onError/onAbort) fire — releasing the per-turn object graph
+      // (history, the per-request toolset closures, captured steps, SDK buffers)
+      // and closing leased MCP clients. WITHOUT this, a client disconnect leaves
+      // the pipe's dead socket as the only reader; backpressure stalls the stream,
+      // the callbacks never run, and every dropped turn stays rooted in memory —
+      // the heap-OOM leak. consumeStream removes that backpressure (AI SDK v6
+      // "Handling client disconnects"). NOT awaited (fire-and-forget); the stream
+      // errors are already logged by the streamText `onError` callback above, so
+      // swallow here to avoid an unhandledRejection.
+      void result.consumeStream({ onError: () => undefined });
 
       // Stream the UI-message protocol straight to the hijacked Node response.
       // Without onError the AI SDK masks the cause ('An error occurred.') and the
@@ -337,13 +727,48 @@ export class AiChatService {
       // `x-accel-buffering: no` header we send (and additionally set
       // `proxy_buffering off; proxy_cache off;` for /api/ai-chat/stream); traefik
       // does not buffer responses by default.
+      // Scrub the SDK's hop-by-hop Connection header before it writes the head (Safari/HTTP2).
+      stripStreamingHopByHopHeaders(res.raw);
+      // Running sum of per-step usage (v6 `finish-step.usage` is per-step). Sent
+      // as the cumulative authoritative usage so the client never jumps DOWN.
+      let cumulativeStepUsage: ChatStreamUsage | undefined;
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
+        // Surface the authoritative chatId on the streamed assistant UI message so
+        // the client adopts the REAL id of the row we created, instead of guessing
+        // the newest chat in its list. `messageMetadata` is invoked by the AI SDK
+        // on the `start`, `finish-step` and `finish` stream parts (ai@6 — note the
+        // `finish-step` trigger relies on it being delivered as its own
+        // message-metadata chunk); we attach `chatId` on the `start` part so it
+        // reaches the client (as message.metadata.chatId) at the very first chunk —
+        // before any second tab can race a newer chat into the list. This fixes the
+        // two-tab "adoption race" (#137).
+        //
+        // `finish-step.usage` is PER-STEP (not cumulative) in v6, and the client
+        // merges each metadata.usage by replacement — so on a multi-step agent turn
+        // (up to MAX_AGENT_STEPS) the naive per-step value would make the live
+        // counter jump DOWN at each boundary. We keep a running sum here and send
+        // the CUMULATIVE usage, which converges to `finish.totalUsage` (#151).
+        messageMetadata: ({ part }) => {
+          const p = part as StreamMetadataPart;
+          if (p.type === 'finish-step') {
+            cumulativeStepUsage = accumulateStepUsage(
+              cumulativeStepUsage,
+              normalizeStreamUsage(p.usage),
+            );
+          }
+          return chatStreamMetadata(p, chatId, cumulativeStepUsage);
+        },
+        // Stream reasoning (thinking) parts to the client so the live counter can
+        // estimate reasoning tokens from streamed text. v6 default is already
+        // true; set explicitly so the intent survives any future SDK default
+        // change. Providers that don't emit reasoning text still surface the
+        // count via the authoritative `usage.reasoningTokens` on finish-step.
+        sendReasoning: true,
         onError: (error: unknown) => {
-          const e = error as { statusCode?: number; message?: string };
-          return e?.statusCode
-            ? `${e.statusCode}: ${e.message}`
-            : (e?.message ?? 'AI stream error');
+          // Reuse the shared formatter so provider error formatting stays
+          // unified between the log line and the streamed error message.
+          return describeProviderError(error, 'AI stream error');
         },
       });
 
@@ -353,6 +778,12 @@ export class AiChatService {
       // writeHead synchronously above; flushHeaders is a belt-and-braces no-op once
       // headers are sent, and is guarded for response-likes that lack it.
       res.raw.flushHeaders?.();
+      // Heartbeat: keep the SSE stream progressing during silent tool/think gaps (Safari/proxy idle timeout).
+      // DIAGNOSTIC (Safari stream-drop investigation) — temporary: count beats so a disconnect log can show
+      // how many pings were written before Safari dropped.
+      startSseHeartbeat(res.raw, 15_000, () => {
+        heartbeatsSent += 1;
+      });
     } catch (err) {
       // Synchronous failure before/while wiring the stream: the terminal
       // callbacks will not run, so release the leased external clients here and
@@ -381,11 +812,107 @@ export class AiChatService {
         'punctuation at the end.',
       prompt: firstMessage.slice(0, 2000),
     });
-    const title = text.trim().replace(/^["']|["']$/g, '').slice(0, 120);
+    const title = text
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .slice(0, 120);
     if (title) {
       await this.aiChatRepo.update(chatId, { title }, workspaceId);
     }
   }
+}
+
+/** Shape of the AI SDK v6 LanguageModelUsage we forward to the client. The SDK
+ *  exposes `reasoningTokens` both as a (deprecated) top-level field and under
+ *  `outputTokenDetails.reasoningTokens`; we normalize to a single field so the
+ *  client gets one stable usage shape regardless of provider/SDK version. */
+interface StreamUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+  outputTokenDetails?: { reasoningTokens?: number };
+}
+
+/** A streamed part the messageMetadata callback can receive (only the fields we read). */
+interface StreamMetadataPart {
+  type: string;
+  usage?: StreamUsage;
+  totalUsage?: StreamUsage;
+}
+
+/** Authoritative usage we attach to a streamed assistant message's metadata. */
+export interface ChatStreamUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+}
+
+/** Normalize an AI SDK usage object to our flat client-facing shape, resolving
+ *  reasoning tokens from either the new `outputTokenDetails` or the deprecated
+ *  top-level field. Returns undefined for a missing usage object. */
+function normalizeStreamUsage(
+  usage: StreamUsage | undefined,
+): ChatStreamUsage | undefined {
+  if (!usage) return undefined;
+  const reasoningTokens =
+    usage.outputTokenDetails?.reasoningTokens ?? usage.reasoningTokens;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    reasoningTokens,
+  };
+}
+
+/** Sum a (normalized) per-step usage into a running cumulative usage. v6's
+ *  `finish-step.usage` is PER-STEP, so the caller accumulates across steps; the
+ *  cumulative sum converges to the turn's `totalUsage` (no down-jump on the
+ *  client). Returns undefined only when both sides are absent. Pure. */
+export function accumulateStepUsage(
+  acc: ChatStreamUsage | undefined,
+  step: ChatStreamUsage | undefined,
+): ChatStreamUsage | undefined {
+  if (!acc) return step;
+  if (!step) return acc;
+  const add = (a?: number, b?: number): number | undefined =>
+    a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
+  return {
+    inputTokens: add(acc.inputTokens, step.inputTokens),
+    outputTokens: add(acc.outputTokens, step.outputTokens),
+    totalTokens: add(acc.totalTokens, step.totalTokens),
+    reasoningTokens: add(acc.reasoningTokens, step.reasoningTokens),
+  };
+}
+
+/**
+ * Pure metadata builder for the streamed assistant UI message. The AI SDK calls
+ * `messageMetadata` on the `start`, `finish-step` and `finish` stream parts; we
+ * attach (as `message.metadata`):
+ *  - `start`        -> `{ chatId }` so the client adopts the real created chat id
+ *                      at the first chunk (see adopt-chat-id.ts / #137).
+ *  - `finish-step`  -> `{ usage }` the CUMULATIVE authoritative usage so far
+ *                      (incl. reasoning tokens) — the caller passes the running
+ *                      sum (`cumulativeStepUsage`), since v6 per-step usage is not
+ *                      cumulative; the client snaps to exact without jumping down.
+ *  - `finish`       -> `{ usage }` from the turn's `totalUsage` (final reconcile).
+ * Any other part type contributes no metadata. Pure + unit-testable.
+ */
+export function chatStreamMetadata(
+  part: StreamMetadataPart,
+  chatId: string,
+  cumulativeStepUsage?: ChatStreamUsage,
+): { chatId: string } | { usage: ChatStreamUsage } | undefined {
+  if (part.type === 'start') return { chatId };
+  if (part.type === 'finish-step') {
+    return cumulativeStepUsage ? { usage: cumulativeStepUsage } : undefined;
+  }
+  if (part.type === 'finish') {
+    const usage = normalizeStreamUsage(part.totalUsage);
+    return usage ? { usage } : undefined;
+  }
+  return undefined;
 }
 
 /** The last message with role 'user' from a useChat payload, if any. */
@@ -538,7 +1065,9 @@ function compactValue(value: unknown, depth: number): unknown {
  * recovers the name. Falls back to a single `text` part built from
  * `fallbackText` when the steps carry no text.
  */
-function assistantParts(
+// Exported only so the unit tests can import these pure helpers; exporting
+// them does not change runtime behavior.
+export function assistantParts(
   steps: ReadonlyArray<StepLike> | undefined,
   fallbackText: string,
 ): UIMessage['parts'] {
@@ -596,7 +1125,7 @@ function assistantParts(
  * stored parts when available; assistant messages restore the reconstructable
  * parts from metadata, falling back to a single text part from `content`.
  */
-function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
+export function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
   id: string;
 } {
   const role = row.role === 'assistant' ? 'assistant' : 'user';
@@ -609,11 +1138,145 @@ function rowToUiMessage(row: AiChatMessage): Omit<UIMessage, 'id'> & {
 }
 
 /**
+ * The persisted-row patch shape produced by {@link flushAssistant}. It is the
+ * SAME shape the assistant repo insert/update consume (content + toolCalls +
+ * metadata) plus the lifecycle `status` column added in #183.
+ */
+export interface AssistantFlush {
+  content: string;
+  toolCalls: unknown;
+  metadata: Record<string, unknown>;
+  status: 'streaming' | 'completed' | 'error' | 'aborted';
+}
+
+/**
+ * Pure decision for the terminal finalize (#183): given whether the upfront
+ * assistant row exists (`assistantId`), choose whether the terminal payload is
+ * written by UPDATEing that row or — when the upfront insert failed and there is
+ * no id — by INSERTing a fresh terminal row so the turn is not lost entirely.
+ * Returns `{ kind: 'update', id }` or `{ kind: 'insert' }`. Extracted so the
+ * fallback-insert branch (the only safety against losing a turn whose upfront
+ * insert failed) is unit-testable without seaming streamText.
+ */
+export function planFinalizeAssistant(
+  assistantId: string | undefined,
+): { kind: 'update'; id: string } | { kind: 'insert' } {
+  return assistantId ? { kind: 'update', id: assistantId } : { kind: 'insert' };
+}
+
+/** The repo surface the terminal finalize needs (structural — the real repo and
+ *  a test mock both satisfy it). */
+export interface FinalizeRepo {
+  insert(insertable: Record<string, unknown>): Promise<unknown>;
+  update(
+    id: string,
+    workspaceId: string,
+    patch: AssistantFlush,
+  ): Promise<unknown>;
+}
+
+/**
+ * Apply a finalize `plan` to the repo with the terminal `flushed` payload (#183):
+ * UPDATE the upfront row, or INSERT a fresh terminal row as the fallback when the
+ * upfront insert failed. The SINGLE dispatch shared by the service's
+ * finalizeAssistant and its test, so the test exercises the real path instead of
+ * a copy (#186 review). Pure of error handling — the caller wraps it.
+ */
+export async function applyFinalize(
+  repo: FinalizeRepo,
+  plan: { kind: 'update'; id: string } | { kind: 'insert' },
+  base: { chatId: string; workspaceId: string; userId: string },
+  flushed: AssistantFlush,
+): Promise<void> {
+  if (plan.kind === 'update') {
+    await repo.update(plan.id, base.workspaceId, flushed);
+    return;
+  }
+  await repo.insert({
+    chatId: base.chatId,
+    workspaceId: base.workspaceId,
+    userId: base.userId,
+    role: 'assistant',
+    content: flushed.content,
+    toolCalls: flushed.toolCalls ?? null,
+    metadata: flushed.metadata,
+    status: flushed.status,
+  });
+}
+
+/**
+ * PURE assistant-row builder (#183 step-granular durability). Given the turn's
+ * accumulated steps + the in-progress (not-yet-finished) text + the lifecycle
+ * status, it returns the row patch to persist. The SAME path runs for the
+ * upfront insert (empty steps, status 'streaming'), every per-step update, and
+ * the terminal finalize (completed/error/aborted) — and a future background
+ * worker can call it identically, so it must stay a pure function of its inputs
+ * (NO `this`, no IO).
+ *
+ * `metadata.parts` is built by assistantParts over the finished steps, then the
+ * in-progress text appended as a trailing text part, so rowToUiMessage /
+ * findRecent keep replaying the turn unchanged. `metadata.finishReason`,
+ * `metadata.error`, `metadata.usage`, `metadata.contextTokens` and
+ * `metadata.maxContextTokens` are attached only when provided/relevant, matching
+ * the pre-#183 onFinish/onError records.
+ */
+export function flushAssistant(
+  capturedSteps: ReadonlyArray<StepLike> | undefined,
+  inProgressText: string,
+  status: 'streaming' | 'completed' | 'error' | 'aborted',
+  extra?: {
+    finishReason?: string;
+    usage?: ChatStreamUsage | StreamUsage | undefined;
+    contextTokens?: number;
+    maxContextTokens?: number;
+    error?: string;
+  },
+): AssistantFlush {
+  const finished = capturedSteps ?? [];
+  const stepsText = finished.map((s) => s.text ?? '').join('');
+  const trailing = inProgressText ?? '';
+  // assistantParts emits text parts only for FINISHED steps; append the
+  // in-progress step's text (the partial answer cut off by an error/abort, or
+  // simply not yet flushed mid-stream) as the last text part so the persisted
+  // parts match what streamed to the client.
+  const parts = assistantParts(finished, '') as unknown as Array<
+    Record<string, unknown>
+  >;
+  if (trailing) parts.push({ type: 'text', text: trailing });
+
+  const metadata: Record<string, unknown> = {
+    parts: parts as unknown as UIMessage['parts'],
+  };
+  // finishReason: prefer an explicit one; else derive a sensible value from the
+  // terminal status (so onError/onAbort records keep their historical reason).
+  if (extra?.finishReason) {
+    metadata.finishReason = extra.finishReason;
+  } else if (status === 'error' || status === 'aborted') {
+    metadata.finishReason = status;
+  }
+  if (extra?.usage !== undefined) {
+    metadata.usage =
+      normalizeStreamUsage(extra.usage as StreamUsage) ?? extra.usage;
+  }
+  if (extra?.contextTokens) metadata.contextTokens = extra.contextTokens;
+  if (extra?.maxContextTokens)
+    metadata.maxContextTokens = extra.maxContextTokens;
+  if (extra?.error) metadata.error = extra.error;
+
+  return {
+    content: stepsText + trailing,
+    toolCalls: serializeSteps(finished),
+    metadata,
+    status,
+  };
+}
+
+/**
  * Reduce SDK step objects to a compact, JSON-serializable trace for the
  * `tool_calls` column. Stores only what the UI action-log and history need —
  * never raw provider payloads or keys.
  */
-function serializeSteps(
+export function serializeSteps(
   steps: ReadonlyArray<{
     toolCalls?: ReadonlyArray<{ toolName?: string; input?: unknown }>;
     toolResults?: ReadonlyArray<{ toolName?: string; output?: unknown }>;

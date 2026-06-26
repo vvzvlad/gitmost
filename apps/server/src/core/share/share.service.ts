@@ -26,6 +26,11 @@ import { validate as isValidUUID } from 'uuid';
 import { sql } from 'kysely';
 import { TransclusionService } from '../page/transclusion/transclusion.service';
 import { TransclusionLookup } from '../page/transclusion/transclusion.types';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import {
+  isHtmlEmbedFeatureEnabled,
+  stripHtmlEmbedNodes,
+} from '../../common/helpers/prosemirror/html-embed.util';
 
 @Injectable()
 export class ShareService {
@@ -38,7 +43,21 @@ export class ShareService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly tokenService: TokenService,
     private readonly transclusionService: TransclusionService,
+    private readonly workspaceRepo: WorkspaceRepo,
   ) {}
+
+  /**
+   * Resolve whether the htmlEmbed feature toggle is ON for a workspace.
+   * Fail-closed: a missing workspace (or absent/non-true setting) => OFF, so
+   * share content gets the embed stripped when we can't positively confirm the
+   * feature is enabled.
+   */
+  private async isHtmlEmbedEnabledForWorkspace(
+    workspaceId: string,
+  ): Promise<boolean> {
+    const workspace = await this.workspaceRepo.findById(workspaceId);
+    return isHtmlEmbedFeatureEnabled(workspace?.settings);
+  }
 
   async getShareTree(shareId: string, workspaceId: string) {
     const share = await this.shareRepo.findById(shareId);
@@ -109,28 +128,82 @@ export class ShareService {
     }
   }
 
-  async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
-    const share = await this.getShareForPage(dto.pageId, workspaceId);
+  /**
+   * THE share access boundary in ONE place.
+   *
+   * Answers exactly: "does this (shareId, pageId) pair resolve to a usable,
+   * non-restricted, live page WITHIN this share?" Returns the resolved
+   * `{ share, page }` on success, or `null` on ANY failure (share not found /
+   * wrong workspace / out-of-tree page / share-id mismatch / missing /
+   * soft-deleted / restricted ancestor).
+   *
+   * This is the single canonical sequence that every public-share read path
+   * must funnel through, so no path can skip a check (most importantly the
+   * restricted-ancestor gate, which `getShareForPage` does NOT perform on its
+   * own). The checks run in this fixed order:
+   *   1. getShareForPage(pageId, workspaceId)   — page reachable in this ws?
+   *   2. share.id === shareId                   — and it is THIS share?
+   *      (pass `null`/`undefined` shareId to skip the match when the caller has
+   *       no independent requested shareId — getSharedPage resolves the share
+   *       FROM the page, so there is nothing to cross-check.)
+   *   3. pageRepo.findById(pageId, ...)         — page row (+ content/creator)
+   *   4. !page.deletedAt                        — live (defense in depth:
+   *      getShareForPage already excludes deleted anchors)
+   *   5. !hasRestrictedAncestor(page.id)        — not a restricted descendant
+   *
+   * `isSharingAllowed` is intentionally NOT part of this boundary: it is an
+   * orthogonal workspace/space toggle that each call-site layers separately
+   * (share.controller after getSharedPage; the assistant funnel as its own
+   * gate). Folding it in here would silently change those call-sites' grading.
+   */
+  async resolveReadableSharePage(
+    shareId: string | null | undefined,
+    pageId: string,
+    workspaceId: string,
+    opts?: { includeCreator?: boolean },
+  ): Promise<{
+    share: NonNullable<Awaited<ReturnType<ShareService['getShareForPage']>>>;
+    page: Page;
+  } | null> {
+    const share = await this.getShareForPage(pageId, workspaceId);
+    if (!share) return null;
 
-    if (!share) {
-      throw new NotFoundException('Shared page not found');
-    }
+    // Only ever an equality check against the server-resolved share id; an
+    // attacker-supplied shareId can never widen access. Skipped when the caller
+    // passes no shareId (it resolved the share from the page itself).
+    if (shareId != null && share.id !== shareId) return null;
 
-    const page = await this.pageRepo.findById(dto.pageId, {
+    const page = await this.pageRepo.findById(pageId, {
       includeContent: true,
-      includeCreator: true,
+      includeCreator: opts?.includeCreator ?? false,
     });
+    if (!page || page.deletedAt) return null;
 
-    if (!page || page.deletedAt) {
+    // Restricted descendants are hidden from the public view even inside an
+    // includeSubPages share; getShareForPage does NOT exclude them.
+    if (await this.pagePermissionRepo.hasRestrictedAncestor(page.id)) {
+      return null;
+    }
+
+    return { share, page };
+  }
+
+  async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
+    // Resolve via the single canonical boundary. There is no independent
+    // requested shareId here (the share is resolved FROM the page), so no
+    // share-id match is performed.
+    const resolved = await this.resolveReadableSharePage(
+      null,
+      dto.pageId,
+      workspaceId,
+      { includeCreator: true },
+    );
+
+    if (!resolved) {
       throw new NotFoundException('Shared page not found');
     }
 
-    // Block access to restricted pages
-    const isRestricted =
-      await this.pagePermissionRepo.hasRestrictedAncestor(page.id);
-    if (isRestricted) {
-      throw new NotFoundException('Shared page not found');
-    }
+    const { share, page } = resolved;
 
     page.content = await this.updatePublicAttachments(page);
 
@@ -360,6 +433,11 @@ export class ShareService {
       workspaceId,
     );
 
+    // Resolve the workspace htmlEmbed toggle once for this share request; all
+    // transcluded items belong to the same workspace as the host share.
+    const htmlEmbedEnabled =
+      await this.isHtmlEmbedEnabledForWorkspace(workspaceId);
+
     // Sanitize each item's content for public delivery
     // generate per-attachment tokens scoped to the source page
     // and strip comment marks.
@@ -370,6 +448,7 @@ export class ShareService {
           item.content,
           item.sourcePageId,
           workspaceId,
+          htmlEmbedEnabled,
         );
         return { ...item, content: doc?.toJSON() ?? item.content };
       }),
@@ -417,10 +496,14 @@ export class ShareService {
   }
 
   async updatePublicAttachments(page: Page): Promise<any> {
+    const htmlEmbedEnabled = await this.isHtmlEmbedEnabledForWorkspace(
+      page.workspaceId,
+    );
     const doc = await this.prepareContentForShare(
       page.content,
       page.id,
       page.workspaceId,
+      htmlEmbedEnabled,
     );
     return doc?.toJSON() ?? page.content;
   }
@@ -441,6 +524,15 @@ export class ShareService {
    *    not leak structure (existence, location, count, resolved state, or
    *    comment ids) to public viewers.
    *
+   * 3. Strip `htmlEmbed` nodes when the workspace master toggle is OFF. The
+   *    block renders inside a sandboxed iframe on the client (harmless, no
+   *    same-origin access), so this is NOT an XSS guard — it is the
+   *    SERVER-AUTHORITATIVE enforcement of the workspace master toggle for
+   *    anonymous shares: an anonymous viewer cannot read the per-workspace
+   *    toggle, so when OFF the block is never served, and when ON it is served
+   *    and rendered in its sandboxed frame. `htmlEmbedEnabled` is resolved
+   *    fail-closed by the callers (missing workspace => OFF => strip).
+   *
    * Both share-content paths — the host page (`updatePublicAttachments`) and
    * the share-scoped transclusion lookup (`lookupTransclusionForShare`) —
    * call into this single helper so the two paths can never drift on
@@ -450,8 +542,17 @@ export class ShareService {
     content: unknown,
     attachmentOwnerPageId: string,
     workspaceId: string,
+    htmlEmbedEnabled: boolean,
   ): Promise<Node | null> {
-    const pmJson = getProsemirrorContent(content);
+    let pmJson = getProsemirrorContent(content);
+
+    // Master-toggle enforcement: when the workspace toggle is OFF, never serve
+    // htmlEmbed nodes to anonymous public viewers (who cannot read the toggle).
+    // Strip before tokenizing/serializing.
+    if (!htmlEmbedEnabled) {
+      pmJson = stripHtmlEmbedNodes(pmJson);
+    }
+
     const attachmentIds = getAttachmentIds(pmJson);
 
     const tokenMap = new Map<string, string>();

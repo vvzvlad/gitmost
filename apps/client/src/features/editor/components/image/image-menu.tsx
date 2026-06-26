@@ -13,6 +13,8 @@ import {
   IconLayoutAlignCenter,
   IconLayoutAlignLeft,
   IconLayoutAlignRight,
+  IconFloatLeft,
+  IconFloatRight,
   IconDownload,
   IconRefresh,
   IconTrash,
@@ -41,6 +43,8 @@ export function ImageMenu({ editor }: EditorMenuProps) {
         isAlignLeft: ctx.editor.isActive("image", { align: "left" }),
         isAlignCenter: ctx.editor.isActive("image", { align: "center" }),
         isAlignRight: ctx.editor.isActive("image", { align: "right" }),
+        isFloatLeft: ctx.editor.isActive("image", { align: "floatLeft" }),
+        isFloatRight: ctx.editor.isActive("image", { align: "floatRight" }),
         src: imageAttrs?.src || null,
         alt: imageAttrs?.alt || "",
       };
@@ -101,6 +105,22 @@ export function ImageMenu({ editor }: EditorMenuProps) {
       .chain()
       .focus(undefined, { scrollIntoView: false })
       .setImageAlign("right")
+      .run();
+  }, [editor]);
+
+  const alignImageFloatLeft = useCallback(() => {
+    editor
+      .chain()
+      .focus(undefined, { scrollIntoView: false })
+      .setImageAlign("floatLeft")
+      .run();
+  }, [editor]);
+
+  const alignImageFloatRight = useCallback(() => {
+    editor
+      .chain()
+      .focus(undefined, { scrollIntoView: false })
+      .setImageAlign("floatRight")
       .run();
   }, [editor]);
 
@@ -198,6 +218,30 @@ export function ImageMenu({ editor }: EditorMenuProps) {
             className={clsx({ [classes.active]: editorState?.isAlignRight })}
           >
             <IconLayoutAlignRight size={18} />
+          </ActionIcon>
+        </Tooltip>
+
+        <Tooltip position="top" label={t("Float left (wrap text)")} withinPortal={false}>
+          <ActionIcon
+            onClick={alignImageFloatLeft}
+            size="lg"
+            aria-label={t("Float left (wrap text)")}
+            variant="subtle"
+            className={clsx({ [classes.active]: editorState?.isFloatLeft })}
+          >
+            <IconFloatLeft size={18} />
+          </ActionIcon>
+        </Tooltip>
+
+        <Tooltip position="top" label={t("Float right (wrap text)")} withinPortal={false}>
+          <ActionIcon
+            onClick={alignImageFloatRight}
+            size="lg"
+            aria-label={t("Float right (wrap text)")}
+            variant="subtle"
+            className={clsx({ [classes.active]: editorState?.isFloatRight })}
+          >
+            <IconFloatRight size={18} />
           </ActionIcon>
         </Tooltip>
 

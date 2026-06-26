@@ -11,6 +11,7 @@ import {
   Badge,
   Text,
   ScrollArea,
+  Tooltip,
 } from "@mantine/core";
 import CommentListItem from "@/features/comment/components/comment-list-item";
 import {
@@ -26,12 +27,16 @@ import { IPagination } from "@/lib/types.ts";
 import { extractPageSlugId } from "@/lib";
 import { useTranslation } from "react-i18next";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
-import { IconArrowUp, IconMessageOff } from "@tabler/icons-react";
+import { IconArrowUp, IconMessageOff, IconX } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 
-function CommentListWithTabs() {
+interface CommentListWithTabsProps {
+  onClose?: () => void;
+}
+
+function CommentListWithTabs({ onClose }: CommentListWithTabsProps) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
   const { data: page } = usePageQuery({ pageId: extractPageSlugId(pageSlug) });
@@ -121,8 +126,8 @@ function CommentListWithTabs() {
       <Paper
         shadow="sm"
         radius="md"
-        p="sm"
-        mb="sm"
+        p="xs"
+        mb="xs"
         withBorder
         key={comment.id}
         data-comment-id={comment.id}
@@ -145,7 +150,7 @@ function CommentListWithTabs() {
 
         {!comment.resolvedAt && canComment && (
           <>
-            <Divider my={4} />
+            <Divider my={2} />
             <CommentEditorWithActions
               commentId={comment.id}
               onSave={handleAddReply}
@@ -194,28 +199,50 @@ function CommentListWithTabs() {
           overflow: "hidden",
         }}
       >
-        <Tabs.List justify="center">
-          <Tabs.Tab
-            value="open"
-            leftSection={
-              <Badge size="sm" variant="light" color="blue">
-                {activeComments.length}
-              </Badge>
-            }
-          >
-            {t("Open")}
-          </Tabs.Tab>
-          <Tabs.Tab
-            value="resolved"
-            leftSection={
-              <Badge size="sm" variant="light" color="green">
-                {resolvedComments.length}
-              </Badge>
-            }
-          >
-            {t("Resolved")}
-          </Tabs.Tab>
-        </Tabs.List>
+        {/* Header row: full-width centered tab list with the close button overlaid on the right. */}
+        <div style={{ position: "relative" }}>
+          <Tabs.List justify="center">
+            <Tabs.Tab
+              value="open"
+              leftSection={
+                <Badge size="sm" variant="light" color="blue">
+                  {activeComments.length}
+                </Badge>
+              }
+            >
+              {t("Open")}
+            </Tabs.Tab>
+            <Tabs.Tab
+              value="resolved"
+              leftSection={
+                <Badge size="sm" variant="light" color="green">
+                  {resolvedComments.length}
+                </Badge>
+              }
+            >
+              {t("Resolved")}
+            </Tabs.Tab>
+          </Tabs.List>
+          {onClose && (
+            <Tooltip label={t("Close")} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                onClick={onClose}
+                aria-label={t("Close")}
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "50%",
+                  // Nudge the close button slightly up to align with the tab labels.
+                  transform: "translateY(calc(-50% - 4px))",
+                }}
+              >
+                <IconX size={18} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+        </div>
 
         <ScrollArea
           style={{ flex: "1 1 auto" }}
@@ -365,7 +392,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
         flex: "0 0 auto",
         borderTop: "1px solid var(--mantine-color-default-border)",
         paddingTop: "var(--mantine-spacing-sm)",
-        paddingBottom: 25,
+        paddingBottom: 10,
         position: "relative",
       }}
     >
@@ -374,7 +401,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
           size="sm"
           avatarUrl={currentUser?.user?.avatarUrl}
           name={currentUser?.user?.name}
-          style={{ flexShrink: 0, marginTop: 10 }}
+          style={{ flexShrink: 0, marginTop: 2 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
           <CommentEditor
@@ -396,7 +423,7 @@ const PageCommentInput = ({ onSave, isLoading }) => {
           onClick={handleSave}
           onMouseDown={(e) => e.preventDefault()}
           loading={isLoading}
-          style={{ position: "absolute", right: 8, bottom: 30 }}
+          style={{ position: "absolute", right: 8, bottom: 15 }}
         >
           <IconArrowUp size={16} />
         </ActionIcon>

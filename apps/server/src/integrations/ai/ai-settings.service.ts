@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QueueName, QueueJob } from '../queue/constants';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
@@ -13,7 +14,21 @@ import {
   MaskedAiSettings,
   ResolvedAiConfig,
   SttApiStyle,
+  ChatApiStyle,
+  PROVIDER_SETTINGS_KEYS,
 } from './ai.types';
+
+/**
+ * Coerce a raw provider value (stored as `::text`, so it arrives as a string —
+ * see workspace.repo.ts) into a positive integer, or `undefined` when it is not
+ * a finite number greater than zero. Used for numeric `::text` settings such as
+ * `chatContextWindow`. Fractions are floored: `"1.9" → 1`, `"0"`/`"-5"`/`""`/
+ * `"abc"`/`undefined` → `undefined`.
+ */
+export function parsePositiveInt(raw: unknown): number | undefined {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
 
 /**
  * Shape of the partial update accepted by `update`. Mirrors the validated
@@ -23,6 +38,9 @@ import {
 export interface UpdateAiSettingsInput {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens for the chat header badge. 0/empty = no limit.
+  chatContextWindow?: number;
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
@@ -32,7 +50,11 @@ export interface UpdateAiSettingsInput {
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty = auto-detect.
+  sttLanguage?: string;
   sttApiKey?: string;
+  publicShareChatModel?: string;
+  publicShareAssistantRoleId?: string;
 }
 
 /**
@@ -47,6 +69,7 @@ export interface UpdateAiSettingsInput {
 export class AiSettingsService {
   constructor(
     private readonly workspaceRepo: WorkspaceRepo,
+    private readonly aiAgentRoleRepo: AiAgentRoleRepo,
     private readonly aiProviderCredentialsRepo: AiProviderCredentialsRepo,
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
@@ -94,6 +117,40 @@ export class AiSettingsService {
     );
   }
 
+  /**
+   * Whether the anonymous public-share AI assistant is enabled for a workspace
+   * (single master toggle `settings.ai.publicShareAssistant`, default false).
+   * Used by the public `/api/shares/ai/stream` guardrail funnel: when off, the
+   * route 404s so the feature's existence is not revealed.
+   */
+  async isPublicShareAssistantEnabled(workspaceId: string): Promise<boolean> {
+    const workspace = await this.workspaceRepo.findById(workspaceId);
+    const settings = (workspace?.settings ?? {}) as {
+      ai?: { publicShareAssistant?: boolean };
+    };
+    return settings?.ai?.publicShareAssistant === true;
+  }
+
+  /**
+   * Resolve the display name of the agent role acting as the public-share
+   * assistant's identity, so the anonymous widget can label messages with the
+   * persona name instead of the generic "AI agent". Returns null when no role
+   * is configured, or the referenced role is missing/disabled (built-in persona
+   * → the client falls back to "AI agent"). Mirrors the role resolution in
+   * PublicShareChatService.resolveShareRole.
+   */
+  async resolvePublicShareAssistantName(
+    workspaceId: string,
+  ): Promise<string | null> {
+    const resolved = await this.resolve(workspaceId);
+    const roleId = resolved?.publicShareAssistantRoleId;
+    if (!roleId) return null;
+    const role = await this.aiAgentRoleRepo.findById(roleId, workspaceId);
+    if (!role || !role.enabled) return null;
+    const name = role.name?.trim();
+    return name ? name : null;
+  }
+
   /** Read the stored non-secret provider settings for a workspace. */
   private async readProvider(
     workspaceId: string,
@@ -117,11 +174,24 @@ export class AiSettingsService {
     const config: ResolvedAiConfig = {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      // Max context window for the chat header badge denominator. Stored as
+      // ::text; 0/unset/invalid = no limit (undefined).
+      chatContextWindow: parsePositiveInt(provider.chatContextWindow),
+      // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
+      chatApiStyle: provider.chatApiStyle,
+      // Cheap model id for the anonymous public-share assistant; reuses the chat
+      // driver/baseUrl/apiKey. Empty/unset → callers fall back to chatModel.
+      publicShareChatModel: provider.publicShareChatModel,
+      // Agent-role id whose persona the public-share assistant adopts; empty/unset
+      // = built-in locked persona.
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       embeddingModel: provider.embeddingModel,
       sttModel: provider.sttModel,
       // Plain passthrough, no fallback; the transcribe path defaults unset to
       // 'multipart' (current behavior).
       sttApiStyle: provider.sttApiStyle,
+      // Plain passthrough; empty/unset = auto-detect at the transcribe path.
+      sttLanguage: provider.sttLanguage,
       baseUrl: provider.baseUrl,
       systemPrompt: provider.systemPrompt,
     };
@@ -166,6 +236,10 @@ export class AiSettingsService {
   async getMasked(workspaceId: string): Promise<MaskedAiSettings> {
     const provider = await this.readProvider(workspaceId);
 
+    // Stored as ::text; coerce to a positive integer (or undefined) so the
+    // client receives a real number.
+    const chatContextWindow = parsePositiveInt(provider.chatContextWindow);
+
     let hasApiKey = false;
     let hasEmbeddingApiKey = false;
     let hasSttApiKey = false;
@@ -190,13 +264,18 @@ export class AiSettingsService {
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
+      chatContextWindow,
+      chatApiStyle: provider.chatApiStyle,
       embeddingModel: provider.embeddingModel,
       baseUrl: provider.baseUrl,
       embeddingBaseUrl: provider.embeddingBaseUrl,
       sttModel: provider.sttModel,
       sttBaseUrl: provider.sttBaseUrl,
       sttApiStyle: provider.sttApiStyle,
+      sttLanguage: provider.sttLanguage,
       systemPrompt: provider.systemPrompt,
+      publicShareChatModel: provider.publicShareChatModel,
+      publicShareAssistantRoleId: provider.publicShareAssistantRoleId,
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
@@ -224,17 +303,8 @@ export class AiSettingsService {
 
     // Persist non-secret provider fields (only those present in the partial).
     const providerPatch: Partial<AiProviderSettings> = {};
-    for (const key of [
-      'driver',
-      'chatModel',
-      'embeddingModel',
-      'baseUrl',
-      'embeddingBaseUrl',
-      'sttModel',
-      'sttBaseUrl',
-      'sttApiStyle',
-      'systemPrompt',
-    ] as const) {
+    // Single source of truth for the writable provider keys (see ai.types).
+    for (const key of PROVIDER_SETTINGS_KEYS) {
       if (nonSecret[key] !== undefined) {
         (providerPatch as Record<string, unknown>)[key] = nonSecret[key];
       }

@@ -1,0 +1,24 @@
+.recordingWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Translucent red halo that sits behind the stop button and scales with the
+   live microphone level (scale set inline from audioLevel). Radius follows the
+   ActionIcon's own radius so the halo matches the button's rounded-square
+   outline instead of being a circle. */
+.pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--mantine-radius-default);
+  background-color: var(--mantine-color-red-5);
+  opacity: 0.35;
+  transform-origin: center;
+  transform: scale(1);
+  transition: transform 90ms linear;
+  pointer-events: none;
+  will-change: transform;
+  z-index: 0;
+}

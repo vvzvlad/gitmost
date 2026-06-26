@@ -12,6 +12,28 @@ import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const tsquery = require('pg-tsquery')();
 
+// Build a safe prefix tsquery string from a raw user query.
+//
+// The previous inline form `tsquery(query.trim() + '*')` passed user input
+// (including to_tsquery operators like `&`, `|`, `!`, `<->`, `*`, backslashes)
+// straight through. pg-tsquery would then emit operator fragments that
+// `to_tsquery('english', ...)` can reject as a syntax error, turning a search
+// into a 500. We strip everything that is not a letter, number or whitespace
+// BEFORE handing the text to pg-tsquery, so adversarial input degrades to a
+// neutral (possibly empty) query instead of throwing, while normal word queries
+// (incl. accented / non-Latin words) are unaffected.
+export function buildTsQuery(raw: string): string {
+  const cleaned = (raw ?? '')
+    .normalize('NFC')
+    // Keep Unicode letters/numbers and whitespace; drop everything else.
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned) return '';
+  return tsquery(cleaned + '*');
+}
+
 @Injectable()
 export class SearchService {
   constructor(
@@ -34,7 +56,7 @@ export class SearchService {
     if (query.length < 1) {
       return { items: [] };
     }
-    const searchQuery = tsquery(query.trim() + '*');
+    const searchQuery = buildTsQuery(query);
 
     let queryResults = this.db
       .selectFrom('pages')
@@ -215,6 +237,11 @@ export class SearchService {
         .where('deletedAt', 'is', null)
         .where('workspaceId', '=', workspaceId)
         .limit(limit);
+
+      // Template picker: restrict to pages flagged as templates.
+      if (suggestion.onlyTemplates) {
+        pageSearch = pageSearch.where('isTemplate', '=', true);
+      }
 
       // search all spaces the user has access to, prioritizing the current space
       const userSpaceIds = await this.spaceMemberRepo.getUserSpaceIds(userId);

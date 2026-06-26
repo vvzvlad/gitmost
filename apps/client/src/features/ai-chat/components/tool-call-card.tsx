@@ -13,6 +13,14 @@ import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface ToolCallCardProps {
   part: ToolUiPart;
+  /**
+   * Whether to render page citation links. Defaults to true (the internal chat,
+   * where the reader is authenticated and the `/p/{id}` links resolve). The
+   * public share passes false: an anonymous reader cannot open internal pages,
+   * so the links would 404/redirect to login. Suppressing them keeps the card
+   * (the action log itself) while dropping the unusable links.
+   */
+  showCitations?: boolean;
 }
 
 /**
@@ -20,12 +28,15 @@ interface ToolCallCardProps {
  * agent DID (the agent writes without confirmation — D2), its run state
  * (running / done / error), and citation link(s) to any referenced page(s).
  */
-export default function ToolCallCard({ part }: ToolCallCardProps) {
+export default function ToolCallCard({
+  part,
+  showCitations = true,
+}: ToolCallCardProps) {
   const { t } = useTranslation();
   const toolName = getToolName(part);
   const state = toolRunState(part.state);
   const { key, values } = toolLabelKey(toolName);
-  const citations = toolCitations(part);
+  const citations = showCitations ? toolCitations(part) : [];
 
   return (
     <div className={classes.toolCard}>

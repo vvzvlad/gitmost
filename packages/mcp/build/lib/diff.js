@@ -16,13 +16,10 @@
  * If recreateTransform / the changeset throws on a pathological document pair,
  * we fall back to a coarse block-level text diff so the tool never hard-fails.
  */
-import { getSchema } from "@tiptap/core";
 import { Node } from "@tiptap/pm/model";
 import { ChangeSet, simplifyChanges } from "@tiptap/pm/changeset";
 import { recreateTransform } from "@fellow/prosemirror-recreate-transform";
-import { docmostExtensions } from "./docmost-schema.js";
-/** Build the schema once; it is pure and reused across calls. */
-const schema = getSchema(docmostExtensions);
+import { docmostSchema } from "./docmost-schema.js";
 /** Recursively concatenate the plain text of a JSON node. */
 function plainText(node) {
     if (!node || typeof node !== "object")
@@ -79,10 +76,26 @@ function countUniqueLinks(doc) {
     visit(doc);
     return hrefs.size;
 }
+/** Count footnoteReference nodes anywhere under a node (reading order). */
+function countFootnoteRefs(node) {
+    if (!node || typeof node !== "object")
+        return 0;
+    let n = node.type === "footnoteReference" ? 1 : 0;
+    if (Array.isArray(node.content)) {
+        for (const child of node.content)
+            n += countFootnoteRefs(child);
+    }
+    return n;
+}
 /**
- * Parse the ordered list of integers from `[N]` footnote markers found in the
- * BODY only (every top-level block before the first "Примечания..." notes
- * heading; if no such heading, the whole doc). Returned in reading order.
+ * Ordered list of footnote marker numbers found in the BODY only (every
+ * top-level block before the first "Примечания..." notes heading; if no such
+ * heading, the whole doc), in reading order.
+ *
+ * Supports BOTH representations:
+ *  - real `footnoteReference` nodes (the current footnote feature) — numbered
+ *    1..n by reading position, since their visible number is derived;
+ *  - legacy `[N]` text markers (older translated docs) — the literal N.
  */
 function footnoteMarkers(doc, notesHeading) {
     const top = Array.isArray(doc?.content) ? doc.content : [];
@@ -90,6 +103,15 @@ function footnoteMarkers(doc, notesHeading) {
         n.type === "heading" &&
         plainText(n).trim() === notesHeading);
     const bodyBlocks = notesIdx >= 0 ? top.slice(0, notesIdx) : top;
+    // Real footnoteReference nodes take precedence: when present, number them by
+    // reading position (their displayed number is not stored).
+    let refCount = 0;
+    for (const block of bodyBlocks)
+        refCount += countFootnoteRefs(block);
+    if (refCount > 0) {
+        return Array.from({ length: refCount }, (_, i) => i + 1);
+    }
+    // Fallback: legacy `[N]` text markers.
     const markers = [];
     const re = /\[(\d+)\]/g;
     for (const block of bodyBlocks) {
@@ -217,8 +239,8 @@ export function diffDocs(oldDocJson, newDocJson, notesHeading = "Примеча�
     let fellBack = false;
     const changedBlocks = new Set();
     try {
-        const oldNode = Node.fromJSON(schema, oldDocJson);
-        const newNode = Node.fromJSON(schema, newDocJson);
+        const oldNode = Node.fromJSON(docmostSchema, oldDocJson);
+        const newNode = Node.fromJSON(docmostSchema, newDocJson);
         const tr = recreateTransform(oldNode, newNode, {
             complexSteps: false,
             wordDiffs: true,

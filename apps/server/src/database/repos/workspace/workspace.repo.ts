@@ -10,6 +10,30 @@ import {
 import { ExpressionBuilder, sql } from 'kysely';
 import { DB, Workspaces } from '@docmost/db/types/db';
 
+/**
+ * Writable `settings.ai.provider` keys, enforced at this generic SQL layer. This
+ * repo cannot import AI-feature types, so this list is its own copy; a parity
+ * test (ai-provider-settings-keys.spec.ts) asserts it equals
+ * PROVIDER_SETTINGS_KEYS in ai.types so a future drift fails in CI rather than
+ * silently dropping a field at this boundary.
+ */
+export const AI_PROVIDER_SETTINGS_ALLOWED: readonly string[] = [
+  'driver',
+  'chatModel',
+  'chatContextWindow',
+  'chatApiStyle',
+  'embeddingModel',
+  'baseUrl',
+  'embeddingBaseUrl',
+  'sttModel',
+  'sttBaseUrl',
+  'sttApiStyle',
+  'sttLanguage',
+  'systemPrompt',
+  'publicShareChatModel',
+  'publicShareAssistantRoleId',
+];
+
 @Injectable()
 export class WorkspaceRepo {
   public baseFields: Array<keyof Workspaces> = [
@@ -239,9 +263,8 @@ export class WorkspaceRepo {
     // is a real jsonb object, never a double-encoded string. The CASE self-heals
     // workspaces whose settings.ai.provider was previously corrupted into an
     // array/string.
-    const ALLOWED = ['driver', 'chatModel', 'embeddingModel', 'baseUrl', 'embeddingBaseUrl', 'sttModel', 'sttBaseUrl', 'sttApiStyle', 'systemPrompt'];
     const entries = Object.entries(provider).filter(
-      ([k, v]) => v !== undefined && ALLOWED.includes(k),
+      ([k, v]) => v !== undefined && AI_PROVIDER_SETTINGS_ALLOWED.includes(k),
     );
     const patch = entries.length
       ? sql`jsonb_build_object(${sql.join(
@@ -258,6 +281,32 @@ export class WorkspaceRepo {
                   THEN settings->'ai'->'provider' ELSE '{}'::jsonb END)
             || ${patch}
           ))`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', workspaceId)
+      .returning(this.baseFields)
+      .executeTakeFirst();
+  }
+
+  /**
+   * Set a single scalar key at the TOP LEVEL of `settings` (e.g.
+   * `settings.htmlEmbed`). Mirrors `updateAiSettings`/`updateSharingSettings`
+   * but without a nested namespace object. `prefKey` comes from a fixed
+   * allowlist at the call site (inlined via `sql.raw`, never user input); the
+   * value is inlined via `sql.lit`.
+   */
+  async updateSetting(
+    workspaceId: string,
+    prefKey: string,
+    prefValue: string | boolean,
+    trx?: KyselyTransaction,
+  ) {
+    const db = dbOrTx(this.db, trx);
+    return db
+      .updateTable('workspaces')
+      .set({
+        settings: sql`COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object('${sql.raw(prefKey)}', ${sql.lit(prefValue)})`,
         updatedAt: new Date(),
       })
       .where('id', '=', workspaceId)

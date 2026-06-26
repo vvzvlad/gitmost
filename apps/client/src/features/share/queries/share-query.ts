@@ -65,10 +65,13 @@ export function useSharePageQuery(
 
 export function useShareForPageQuery(
   pageId: string,
-): UseQueryResult<IShareForPage, Error> {
+): UseQueryResult<IShareForPage | null, Error> {
   const query = useQuery({
     queryKey: ["share-for-page", pageId],
-    queryFn: () => getShareForPage(pageId),
+    // React Query forbids `undefined` as resolved data ("Query data cannot be
+    // undefined"). When no share exists for the page the endpoint resolves to
+    // undefined, so normalize the absence to `null`.
+    queryFn: async () => (await getShareForPage(pageId)) ?? null,
     enabled: !!pageId,
     staleTime: 60 * 1000,
     retry: false,

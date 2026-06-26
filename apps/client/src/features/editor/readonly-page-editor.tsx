@@ -48,9 +48,16 @@ export default function ReadonlyPageEditor({
   }, []);
 
   const extensions = useMemo(() => {
-    const filteredExtensions = mainExtensions.filter(
-      (ext) => ext.name !== "uniqueID",
-    );
+    const filteredExtensions = mainExtensions
+      .filter((ext) => ext.name !== "uniqueID")
+      // Read-only must only DECORATE footnotes (numbering), never mutate the
+      // doc. Disable the footnote sync/integrity plugin so a programmatic
+      // setContent on a doc the viewer can't edit is never rewritten.
+      .map((ext) =>
+        ext.name === "footnoteReference"
+          ? ext.configure({ enableSync: false })
+          : ext,
+      );
 
     return [
       ...filteredExtensions,

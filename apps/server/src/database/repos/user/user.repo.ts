@@ -45,6 +45,12 @@ export class UserRepo {
       includePassword?: boolean;
       includeUserMfa?: boolean;
       includeScimExternalId?: boolean;
+      // Opt-in: `isAgent` is internal provenance state, not part of the generic
+      // user payload. Keeping it out of `baseFields` stops it from leaking into
+      // the workspace member list / `/users/me` (an enumeration leak). Only the
+      // JWT + collab auth seams opt in, because they derive a non-spoofable
+      // 'agent' provenance from the signed server-side identity.
+      includeIsAgent?: boolean;
       trx?: KyselyTransaction;
     },
   ): Promise<User> {
@@ -55,6 +61,7 @@ export class UserRepo {
       .$if(opts?.includePassword, (qb) => qb.select('password'))
       .$if(opts?.includeUserMfa, (qb) => qb.select(this.withUserMfa))
       .$if(opts?.includeScimExternalId, (qb) => qb.select('scimExternalId'))
+      .$if(opts?.includeIsAgent, (qb) => qb.select('isAgent'))
       .where('id', '=', userId)
       .where('workspaceId', '=', workspaceId)
       .executeTakeFirst();

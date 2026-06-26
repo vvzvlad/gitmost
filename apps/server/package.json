@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "0.91.0",
+  "version": "0.94.0",
   "description": "",
   "author": "",
   "private": true,
@@ -11,7 +11,7 @@
     "start": "cross-env NODE_ENV=development nest start",
     "start:dev": "cross-env NODE_ENV=development nest start --watch",
     "start:debug": "cross-env NODE_ENV=development nest start --debug --watch",
-    "start:prod": "cross-env NODE_ENV=production node dist/main",
+    "start:prod": "cross-env NODE_ENV=production node --heapsnapshot-near-heap-limit=2 dist/main",
     "collab:prod": "cross-env NODE_ENV=production node dist/collaboration/server/collab-main",
     "collab:dev": "cross-env NODE_ENV=development node dist/collaboration/server/collab-main",
     "email:dev": "email dev -p 5019 -d ./src/integrations/transactional/emails",
@@ -23,7 +23,9 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "pretest": "pnpm --filter @docmost/editor-ext build",
     "test": "jest",
+    "test:int": "jest --config test/jest-integration.json",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
@@ -162,10 +164,14 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "tsx"
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "testPathIgnorePatterns": [
+      "/node_modules/"
+    ],
     "transform": {
       "happy-dom.+\\.js$": [
         "babel-jest",
@@ -182,10 +188,10 @@
           ]
         }
       ],
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom)(@|/))"
+      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
@@ -195,7 +201,8 @@
     "moduleNameMapper": {
       "^@docmost/db/(.*)$": "<rootDir>/database/$1",
       "^@docmost/transactional/(.*)$": "<rootDir>/integrations/transactional/$1",
-      "^@docmost/ee/(.*)$": "<rootDir>/ee/$1"
+      "^@docmost/ee/(.*)$": "<rootDir>/ee/$1",
+      "^src/(.*)$": "<rootDir>/$1"
     }
   }
 }

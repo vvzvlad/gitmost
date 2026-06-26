@@ -1,4 +1,5 @@
-import { Group, Text, Box, Badge } from "@mantine/core";
+import { Group, Text, Box } from "@mantine/core";
+import { AiAgentBadge } from "@/components/ui/ai-agent-badge.tsx";
 import React, { useEffect, useRef, useState } from "react";
 import classes from "./comment.module.css";
 import { useAtom, useAtomValue } from "jotai";
@@ -116,8 +117,8 @@ function CommentListItem({
   }
 
   return (
-    <Box ref={ref} pb="xs">
-      <Group>
+    <Box ref={ref} pb={6}>
+      <Group gap="xs">
         <CustomAvatar
           size="sm"
           avatarUrl={comment.creator.avatarUrl}
@@ -126,9 +127,18 @@ function CommentListItem({
 
         <div style={{ flex: 1 }}>
           <Group justify="space-between" wrap="nowrap">
-            <Text size="sm" fw={500} lineClamp={1}>
-              {comment.creator.name}
-            </Text>
+            <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+              <Text size="xs" fw={500} lineClamp={1} lh={1.2}>
+                {comment.creator.name}
+              </Text>
+
+              {comment.createdSource === "agent" && (
+                <AiAgentBadge
+                  authorName={comment.creator?.name}
+                  aiChatId={comment.aiChatId}
+                />
+              )}
+            </Group>
 
             <div style={{ visibility: hovered ? "visible" : "hidden" }}>
               {!comment.parentCommentId && canComment && (
@@ -155,7 +165,7 @@ function CommentListItem({
           </Group>
 
           <Group gap="xs">
-            <Text size="xs" fw={500} c="dimmed">
+            <Text size="xs" fw={500} c="dimmed" lh={1.1}>
               {createdAtAgo}
             </Text>
           </Group>
@@ -177,7 +187,7 @@ function CommentListItem({
             tabIndex={0}
             aria-label={t("Jump to comment selection")}
           >
-            <Text size="sm">{comment?.selection}</Text>
+            <Text size="xs">{comment?.selection}</Text>
           </Box>
         )}
 

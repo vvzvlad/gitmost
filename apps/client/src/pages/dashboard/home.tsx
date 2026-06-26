@@ -1,9 +1,11 @@
 import { Container, Space } from "@mantine/core";
 import HomeTabs from "@/features/home/components/home-tabs";
+import NewNoteButton from "@/features/home/components/new-note-button";
 import SpaceCarousel from "@/features/space/components/space-carousel.tsx";
 import { getAppName } from "@/lib/config.ts";
 import { Helmet } from "react-helmet-async";
 import { useTranslation } from "react-i18next";
+import classes from "./home.module.css";
 
 export default function Home() {
   const { t } = useTranslation();
@@ -15,7 +17,11 @@ export default function Home() {
           {t("Home")} - {getAppName()}
         </title>
       </Helmet>
-      <Container size={"900"} pt="xl">
+      <Container size={"900"} className={classes.container}>
+        <NewNoteButton />
+
+        <Space h="xl" />
+
         <SpaceCarousel />
 
         <Space h="xl" />

@@ -20,6 +20,9 @@ export interface McpServerView {
   enabled: boolean;
   toolAllowlist: string[] | null;
   hasHeaders: boolean;
+  // Admin-authored prompt guidance (#180). NON-secret, so returned in the view.
+  // Null when no guidance is configured.
+  instructions: string | null;
 }
 
 /**
@@ -56,6 +59,8 @@ export class McpServersService {
       url: dto.url,
       headersEnc,
       toolAllowlist: dto.toolAllowlist ?? null,
+      // Blank/whitespace guidance is normalized to null by the repo.
+      instructions: dto.instructions ?? null,
       enabled: dto.enabled ?? true,
     });
     this.clients.invalidate(workspaceId);
@@ -97,6 +102,8 @@ export class McpServersService {
       headersEnc,
       // undefined => unchanged; [] / value handled by repo (empty => null).
       toolAllowlist: dto.toolAllowlist,
+      // undefined => unchanged; blank => cleared (null) by the repo.
+      instructions: dto.instructions,
       enabled: dto.enabled,
     });
     this.clients.invalidate(workspaceId);
@@ -167,6 +174,7 @@ export class McpServersService {
       enabled: row.enabled,
       toolAllowlist: row.toolAllowlist ?? null,
       hasHeaders: Boolean(row.headersEnc),
+      instructions: row.instructions ?? null,
     };
   }
 }

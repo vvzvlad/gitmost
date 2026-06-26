@@ -1,15 +1,14 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { EnvironmentService } from './environment.service';
 
+// Direct instantiation with a stub ConfigService, mirroring the rest of these
+// unit specs.
 describe('EnvironmentService', () => {
   let service: EnvironmentService;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [EnvironmentService],
-    }).compile();
-
-    service = module.get<EnvironmentService>(EnvironmentService);
+  beforeEach(() => {
+    service = new EnvironmentService(
+      {} as any, // configService
+    );
   });
 
   it('should be defined', () => {

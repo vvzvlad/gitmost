@@ -1,15 +1,16 @@
-.wrapper {
-    padding: var(--mantine-spacing-md);
-}
-
 .focused-thread {
     border: 2px solid #8d7249;
 }
 
 .textSelection {
-    margin-top: 4px;
+    /* Breathing room below the comment header (author + timestamp) so the
+       quote does not stick to the timestamp when it is the first block. */
+    margin-top: 8px;
+    /* Align the quote's left bar with the comment body text left edge
+       (the comment editor insets its text by 6px). */
+    margin-left: 6px;
     border-left: 2px solid var(--mantine-color-gray-6);
-    padding: 8px;
+    padding: 6px;
     background: var(--mantine-color-gray-light);
     cursor: pointer;
     overflow-wrap: break-word;
@@ -32,6 +33,9 @@
         box-shadow: 0 0 0 2px var(--mantine-color-blue-3);
     }
 
+    /* Denser comments: override the global 16px ProseMirror body size with 14px
+       and tighten the rhythm vs. the comment header. Scoped to the comment
+       editor only - the page editor is unaffected. */
     .ProseMirror :global(.ProseMirror){
         border-radius: var(--mantine-radius-sm);
         max-width: 100%;
@@ -39,7 +43,9 @@
         word-break: break-word;
         padding-left: 6px;
         padding-right: 6px;
-        margin-top: 10px;
+        font-size: var(--mantine-font-size-sm);
+        line-height: 1.4;
+        margin-top: 4px;
         margin-bottom: 2px;
     }
 

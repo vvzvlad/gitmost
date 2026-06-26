@@ -511,6 +511,65 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.aiDictationStreaming !== 'undefined') {
+        const prev = settingsBefore?.ai?.dictationStreaming ?? false;
+        if (prev !== updateWorkspaceDto.aiDictationStreaming) {
+          before.aiDictationStreaming = prev;
+          after.aiDictationStreaming = updateWorkspaceDto.aiDictationStreaming;
+        }
+        await this.workspaceRepo.updateAiSettings(
+          workspaceId,
+          'dictationStreaming',
+          updateWorkspaceDto.aiDictationStreaming,
+          trx,
+        );
+      }
+
+      if (typeof updateWorkspaceDto.htmlEmbed !== 'undefined') {
+        const prev = settingsBefore?.htmlEmbed ?? false;
+        if (prev !== updateWorkspaceDto.htmlEmbed) {
+          before.htmlEmbed = prev;
+          after.htmlEmbed = updateWorkspaceDto.htmlEmbed;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'htmlEmbed',
+          updateWorkspaceDto.htmlEmbed,
+          trx,
+        );
+      }
+
+      if (typeof updateWorkspaceDto.trackerHead !== 'undefined') {
+        // Admin-only analytics/tracker snippet injected into the <head> of
+        // public share pages (same-origin). Persisted at settings.trackerHead.
+        const prev = (settingsBefore as any)?.trackerHead ?? '';
+        if (prev !== updateWorkspaceDto.trackerHead) {
+          before.trackerHead = prev;
+          after.trackerHead = updateWorkspaceDto.trackerHead;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'trackerHead',
+          updateWorkspaceDto.trackerHead,
+          trx,
+        );
+      }
+
+      if (typeof updateWorkspaceDto.aiPublicShareAssistant !== 'undefined') {
+        const prev = settingsBefore?.ai?.publicShareAssistant ?? false;
+        if (prev !== updateWorkspaceDto.aiPublicShareAssistant) {
+          before.aiPublicShareAssistant = prev;
+          after.aiPublicShareAssistant =
+            updateWorkspaceDto.aiPublicShareAssistant;
+        }
+        await this.workspaceRepo.updateAiSettings(
+          workspaceId,
+          'publicShareAssistant',
+          updateWorkspaceDto.aiPublicShareAssistant,
+          trx,
+        );
+      }
+
       delete updateWorkspaceDto.restrictApiToAdmins;
       delete updateWorkspaceDto.aiSearch;
       delete updateWorkspaceDto.generativeAi;
@@ -519,6 +578,10 @@ export class WorkspaceService {
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
+      delete updateWorkspaceDto.aiDictationStreaming;
+      delete updateWorkspaceDto.htmlEmbed;
+      delete updateWorkspaceDto.trackerHead;
+      delete updateWorkspaceDto.aiPublicShareAssistant;
 
       await this.workspaceRepo.updateWorkspace(
         updateWorkspaceDto,

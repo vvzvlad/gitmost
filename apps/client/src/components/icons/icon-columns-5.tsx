@@ -9,8 +9,10 @@ export function IconColumns5({ size = 24, stroke = 2 }: Props) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      width={rem(size)}
-      height={rem(size)}
+      // rem(size) returns a `calc(...)` string, which is invalid for the raw
+      // SVG width/height length attributes ("Expected length, calc(...)"). Pass
+      // it via CSS style instead (matching the other icon components).
+      style={{ width: rem(size), height: rem(size) }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

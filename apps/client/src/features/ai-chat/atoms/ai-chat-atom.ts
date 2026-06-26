@@ -1,4 +1,22 @@
 import { atom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
+
+/**
+ * Persisted floating AI chat window geometry (position + size). Held in
+ * localStorage so a drag/resize survives a full page reload. `null` means
+ * "never placed yet" — the window then computes an initial top-right placement.
+ * On restore the value is clamped to the current viewport (see AiChatWindow).
+ */
+export type AiChatWindowGeom = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+export const aiChatWindowGeomAtom = atomWithStorage<AiChatWindowGeom | null>(
+  "ai-chat-window-geom",
+  null,
+);
 
 /**
  * The currently selected chat id. `null` means a fresh (not-yet-created) chat:
@@ -12,6 +30,15 @@ export const activeAiChatIdAtom = atom(null as string | null);
 
 // Whether the floating AI chat window is open. Non-persistent (resets per session).
 export const aiChatWindowOpenAtom = atom<boolean>(false);
+
+/**
+ * The agent role selected for the NEXT new chat. `null` = "Universal assistant"
+ * (no role). Consulted ONLY when creating a chat (its first message): the server
+ * persists it to ai_chats.role_id and the role is immutable afterwards. Reset to
+ * null when starting a new chat. It does NOT affect already-created chats.
+ */
+// Cast default for the same jotai overload reason as activeAiChatIdAtom above.
+export const selectedAiRoleIdAtom = atom(null as string | null);
 
 // The AI chat composer draft (text typed but not yet sent). Held here — OUTSIDE
 // ChatThread — so it survives the thread remount that happens when a brand-new

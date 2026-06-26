@@ -14,12 +14,13 @@ import fastifyIp from 'fastify-ip';
 import { InternalLogFilter } from './common/logger/internal-log-filter';
 import { EnvironmentService } from './integrations/environment/environment.service';
 import { resolveFrameHeader } from './common/helpers';
+import { resolveTrustProxy } from './integrations/environment/trust-proxy.util';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({
-      trustProxy: true,
+      trustProxy: resolveTrustProxy(process.env.TRUST_PROXY),
       routerOptions: {
         maxParamLength: 1000,
         ignoreTrailingSlash: true,

@@ -27,6 +27,7 @@ export function BrandLogo({
       src={src}
       alt="Gitmost"
       className={className}
+      draggable={false}
       style={{ height, width: "auto", display: "block", userSelect: "none" }}
     />
   );

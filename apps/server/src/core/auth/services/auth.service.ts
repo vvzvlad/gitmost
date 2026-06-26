@@ -28,7 +28,7 @@ import ForgotPasswordEmail from '@docmost/transactional/emails/forgot-password-e
 import { UserTokenRepo } from '@docmost/db/repos/user-token/user-token.repo';
 import { PasswordResetDto } from '../dto/password-reset.dto';
 import { User, UserToken, Workspace } from '@docmost/db/types/entity.types';
-import { UserTokenType } from '../auth.constants';
+import { UserTokenType, CREDENTIALS_MISMATCH_MESSAGE } from '../auth.constants';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
@@ -40,6 +40,20 @@ import {
   IAuditService,
 } from '../../../integrations/audit/audit.service';
 import { EnvironmentService } from '../../../integrations/environment/environment.service';
+
+// A valid bcrypt hash (cost 10, of an arbitrary throwaway string) used ONLY to
+// equalize timing in verifyUserCredentials: when the email does not exist or
+// the user is disabled, we still run ONE bcrypt comparison against this hash
+// before throwing, so the missing/disabled path takes about the same time as
+// the real-user wrong-password path. Without it, the "no bcrypt at all" branch
+// returns measurably faster, leaking whether an email is registered (a user-
+// enumeration timing oracle, now reachable via /mcp where throttling is only a
+// spoofable in-memory limiter). This is never used as a real credential.
+// The cost factor MUST match the production saltRounds (12 — see
+// common/helpers/utils.ts hashPassword), otherwise the dummy compare runs
+// faster than a real wrong-password compare and the timing oracle survives.
+const DUMMY_PASSWORD_HASH =
+  '$2b$12$q/l637TULK3vU3Cmji0y8utpJS/UiftMi3Jdm4Tsi5EIv/0FE7WV.';
 
 @Injectable()
 export class AuthService {
@@ -57,13 +71,44 @@ export class AuthService {
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
 
-  async login(loginDto: LoginDto, workspaceId: string) {
+  /**
+   * Verify a user's email + password WITHOUT any side effects: it performs the
+   * exact same user lookup, password comparison, email-verified and disabled
+   * checks as `login()`, but does NOT mint a session/token, does NOT write the
+   * USER_LOGIN audit event, and does NOT update lastLoginAt. Returns the matched
+   * user on success; throws UnauthorizedException (credentials) or whatever
+   * `throwIfEmailNotVerified` throws otherwise.
+   *
+   * Use this for repeated per-request credential re-validation (e.g. the /mcp
+   * anti-fixation check on subsequent requests) where minting a new DB session
+   * and audit row on every call would be audit spam / a session-table DoS. The
+   * full `login()` reuses it so there is no behaviour drift between the two.
+   */
+  async verifyUserCredentials(
+    loginDto: LoginDto,
+    workspaceId: string,
+  ): Promise<User> {
     const user = await this.userRepo.findByEmail(loginDto.email, workspaceId, {
       includePassword: true,
     });
 
-    const errorMessage = 'Email or password does not match';
-    if (!user || isUserDisabled(user)) {
+    // Single source of truth (see auth.constants): the /mcp brute-force limiter
+    // recognises this exact message via isCredentialsFailure.
+    const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
+    if (!user || isUserDisabled(user) || !user.password) {
+      // SSO/LDAP-only accounts have no local password hash (user.password is
+      // null): feeding null to native bcrypt makes it REJECT with
+      // "data and hash arguments required", which surfaces as a 500 on
+      // /api/auth/login and as a leaky 401 (not recognised by the /mcp
+      // brute-force limiter) on /mcp. Treat such accounts like a missing user.
+      //
+      // Constant-time intent: run ONE bcrypt comparison (against a dummy hash)
+      // even when the user is missing/disabled/password-less, so this path takes
+      // about the same time as the real-user wrong-password path below. This
+      // closes the user-enumeration timing oracle (registered vs. not). The
+      // result is intentionally discarded — we always throw the same
+      // credentials error (recognised by isCredentialsFailure on /mcp).
+      await comparePasswordHash(loginDto.password, DUMMY_PASSWORD_HASH);
       throw new UnauthorizedException(errorMessage);
     }
 
@@ -83,6 +128,12 @@ export class AuthService {
       workspaceId,
       appSecret: this.environmentService.getAppSecret(),
     });
+
+    return user;
+  }
+
+  async login(loginDto: LoginDto, workspaceId: string) {
+    const user = await this.verifyUserCredentials(loginDto, workspaceId);
 
     user.lastLoginAt = new Date();
     await this.userRepo.updateLastLogin(user.id, workspaceId);
@@ -122,6 +173,15 @@ export class AuthService {
 
     if (!user || isUserDisabled(user)) {
       throw new NotFoundException('User not found');
+    }
+
+    // SSO/LDAP-only accounts have no local password hash (user.password is
+    // null). Passing null to native bcrypt makes it REJECT with
+    // "data and hash arguments required" (an unhandled 500), so never call
+    // comparePasswordHash on null. There is no current local password to verify,
+    // so reject the same way a wrong current password is rejected.
+    if (!user.password) {
+      throw new BadRequestException('Current password is incorrect');
     }
 
     const comparePasswords = await comparePasswordHash(

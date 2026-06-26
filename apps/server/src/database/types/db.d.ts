@@ -240,6 +240,14 @@ export interface PageTransclusionReferences {
   workspaceId: string;
 }
 
+export interface PageTemplateReferences {
+  createdAt: Generated<Timestamp>;
+  id: Generated<string>;
+  referencePageId: string;
+  sourcePageId: string;
+  workspaceId: string;
+}
+
 export interface PageTransclusions {
   content: Json;
   createdAt: Generated<Timestamp>;
@@ -281,6 +289,7 @@ export interface Pages {
   icon: string | null;
   id: Generated<string>;
   isLocked: Generated<boolean>;
+  isTemplate: Generated<boolean>;
   lastUpdatedAiChatId: string | null;
   lastUpdatedById: string | null;
   lastUpdatedSource: Generated<string>;
@@ -359,6 +368,7 @@ export interface Users {
   emailVerifiedAt: Timestamp | null;
   id: Generated<string>;
   invitedById: string | null;
+  isAgent: Generated<boolean>;
   lastActiveAt: Timestamp | null;
   lastLoginAt: Timestamp | null;
   locale: string | null;
@@ -561,6 +571,41 @@ export interface AiChats {
   workspaceId: string;
   creatorId: string;
   title: string | null;
+  // The agent role this chat is bound to (set on creation, immutable). NULL =>
+  // universal assistant. ON DELETE SET NULL: a hard-deleted role degrades the
+  // chat to universal instead of breaking it. Resolved from this column on every
+  // turn — NOT from the request body.
+  roleId: string | null;
+  // The document the chat was created in (open page at first message). NULL =>
+  // started outside any document. ON DELETE SET NULL on the page FK.
+  pageId: string | null;
+  createdAt: Generated<Timestamp>;
+  updatedAt: Generated<Timestamp>;
+  deletedAt: Timestamp | null;
+}
+
+// Reusable, workspace-scoped agent roles (admin-owned). Mirrors migration
+// 20260620T120000-ai-agent-roles.ts. A role REPLACES the persona layer of the
+// system prompt (`instructions`) and may optionally override the chat model
+// (`modelConfig`). The non-removable SAFETY_FRAMEWORK is always still appended
+// downstream. Soft-deletable via `deletedAt`.
+export interface AiAgentRoles {
+  id: Generated<string>;
+  workspaceId: string;
+  // Audit only; SET NULL on user deletion (the role outlives its author).
+  creatorId: string | null;
+  name: string;
+  emoji: string | null;
+  description: string | null;
+  instructions: string;
+  // { chatModel } | { driver, chatModel } | null. null => workspace default.
+  modelConfig: Json | null;
+  enabled: Generated<boolean>;
+  // When true (default), picking the role auto-sends a launch message and starts
+  // the new chat; when false the client only binds the role and shows the composer.
+  autoStart: Generated<boolean>;
+  // Optional custom auto-start text. null/empty => client default launch message.
+  launchMessage: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;
@@ -575,6 +620,10 @@ export interface AiChatMessages {
   content: string | null;
   toolCalls: Json | null;
   metadata: Json | null;
+  // Turn lifecycle status (#183): 'streaming' | 'completed' | 'error' |
+  // 'aborted'. NULL on rows written before the status column existed; the app
+  // treats NULL as 'completed' (a settled, pre-status message).
+  status: string | null;
   tsv: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
@@ -597,6 +646,7 @@ export interface UserSessions {
 }
 
 export interface DB {
+  aiAgentRoles: AiAgentRoles;
   aiChats: AiChats;
   aiChatMessages: AiChatMessages;
   apiKeys: ApiKeys;
@@ -615,6 +665,7 @@ export interface DB {
   notifications: Notifications;
   pageAccess: PageAccess;
   pageTransclusionReferences: PageTransclusionReferences;
+  pageTemplateReferences: PageTemplateReferences;
   pageTransclusions: PageTransclusions;
   pagePermissions: PagePermissions;
   pageHistory: PageHistory;

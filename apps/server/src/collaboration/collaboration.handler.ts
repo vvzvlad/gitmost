@@ -17,8 +17,6 @@ export type CollabEventHandlers = ReturnType<
 export class CollaborationHandler {
   private readonly logger = new Logger(CollaborationHandler.name);
 
-  constructor() {}
-
   getHandlers(hocuspocus: Hocuspocus) {
     return {
       alterState: async (documentName: string, payload: { pageId: string }) => {
@@ -83,8 +81,10 @@ export class CollaborationHandler {
           user: User;
         },
       ) => {
-        const { prosemirrorJson, operation, user } = payload;
+        const { operation, user } = payload;
+        const { prosemirrorJson } = payload;
         this.logger.debug('Updating page content via yjs', documentName);
+
         await this.withYdocConnection(
           hocuspocus,
           documentName,

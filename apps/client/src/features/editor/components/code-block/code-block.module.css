@@ -17,7 +17,14 @@
     justify-content: center;
 }
 
+/* #146: the menu now follows the <pre> in the DOM (so the editable contentDOM is
+   FIRST and click hit-testing is correct). Lift it back ABOVE the code visually
+   with flex `order` — the .codeBlock wrapper is a flex column (see code.css) —
+   so the menu still reads as a row above the code, exactly as before, without
+   sitting in-flow before the contentDOM. */
 .menuGroup {
+    order: -1;
+
     @media print {
         display: none;
     }

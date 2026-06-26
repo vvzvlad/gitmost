@@ -1,5 +1,6 @@
 import { Insertable, Selectable, Updateable } from 'kysely';
 import {
+  AiAgentRoles,
   AiChats,
   AiChatMessages,
   Attachments,
@@ -11,6 +12,7 @@ import {
   PageAccess as _PageAccess,
   PageTransclusions,
   PageTransclusionReferences,
+  PageTemplateReferences,
   PagePermissions as _PagePermissions,
   PageVerifications as _PageVerifications,
   PageVerifiers as _PageVerifiers,
@@ -73,6 +75,13 @@ export type UpdatableAiProviderCredentials = Updateable<
 export type AiMcpServer = Selectable<AiMcpServersTable>;
 export type InsertableAiMcpServer = Insertable<AiMcpServersTable>;
 export type UpdatableAiMcpServer = Updateable<Omit<AiMcpServersTable, 'id'>>;
+
+// AI Agent Roles (reusable, workspace-scoped, admin-owned agent presets).
+// A role replaces the persona layer of the system prompt (instructions) and may
+// optionally override the chat model (`modelConfig`). Soft-deletable.
+export type AiAgentRole = Selectable<AiAgentRoles>;
+export type InsertableAiAgentRole = Insertable<AiAgentRoles>;
+export type UpdatableAiAgentRole = Updateable<Omit<AiAgentRoles, 'id'>>;
 
 // Workspace
 export type Workspace = Selectable<Workspaces>;
@@ -178,6 +187,14 @@ export type PageTransclusionReference = Selectable<PageTransclusionReferences>;
 export type InsertablePageTransclusionReference = Insertable<PageTransclusionReferences>;
 export type UpdatablePageTransclusionReference = Updateable<
   Omit<PageTransclusionReferences, 'id'>
+>;
+
+// Page Template Reference (whole-page live embed back-references)
+export type PageTemplateReference = Selectable<PageTemplateReferences>;
+export type InsertablePageTemplateReference =
+  Insertable<PageTemplateReferences>;
+export type UpdatablePageTemplateReference = Updateable<
+  Omit<PageTemplateReferences, 'id'>
 >;
 
 // File Task

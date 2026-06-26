@@ -14,7 +14,7 @@ import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
 import Subscript from "@tiptap/extension-subscript";
 import Superscript from "@tiptap/extension-superscript";
-import { Node, Extension, Mark } from "@tiptap/core";
+import { Node, Extension, Mark, getSchema } from "@tiptap/core";
 
 // Inlined from @tiptap/core's getStyleProperty (added after 3.20.x) so this
 // package can stay on the same @tiptap/core version as the editor and avoid a
@@ -378,6 +378,83 @@ const Mention = Node.create({
   },
 });
 
+/**
+ * Footnote feature (mirror of packages/editor-ext/src/lib/footnote). Three
+ * nodes connected by `id`:
+ *  - FootnoteReference: inline atom marker in the body (<sup data-footnote-ref>);
+ *  - FootnotesList:     a single bottom container (<section data-footnotes>);
+ *  - FootnoteDefinition: one editable note keyed by id (<div data-footnote-def>).
+ * The visible number is not stored; it is derived from reference order.
+ *
+ * priority 101 so this node's <sup> parse rule beats the Superscript mark's
+ * <sup> rule (otherwise an empty reference is parsed as an empty superscript
+ * mark and dropped). Keep in sync with editor-ext.
+ */
+const FootnoteReference = Node.create({
+  name: "footnoteReference",
+  priority: 101,
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes() {
+    return {
+      id: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-id"),
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.id ? { "data-id": attrs.id } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "sup[data-footnote-ref]", priority: 100 }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["sup", { "data-footnote-ref": "", ...HTMLAttributes }];
+  },
+});
+
+const FootnotesList = Node.create({
+  name: "footnotesList",
+  group: "block",
+  content: "footnoteDefinition+",
+  isolating: true,
+  selectable: false,
+  defining: true,
+  parseHTML() {
+    return [{ tag: "section[data-footnotes]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["section", { "data-footnotes": "", ...HTMLAttributes }, 0];
+  },
+});
+
+const FootnoteDefinition = Node.create({
+  name: "footnoteDefinition",
+  content: "paragraph+",
+  defining: true,
+  isolating: true,
+  selectable: false,
+  addAttributes() {
+    return {
+      id: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-id"),
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.id ? { "data-id": attrs.id } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "div[data-footnote-def]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", { "data-footnote-def": "", ...HTMLAttributes }, 0];
+  },
+});
+
 /** Inline KaTeX expression. Carries the LaTeX source in `text`. */
 const MathInline = Node.create({
   name: "mathInline",
@@ -717,6 +794,60 @@ const Embed = Node.create({
   },
   renderHTML({ HTMLAttributes }) {
     return ["div", { "data-type": "embed", ...HTMLAttributes }, 0];
+  },
+});
+
+/**
+ * Docmost raw HTML embed. Block atom; the client renders `source` inside a
+ * sandboxed iframe. The MCP server never renders it — it only needs the
+ * schema to accept and carry the node so a fromYdoc -> transform -> toYdoc
+ * round-trip does not throw "Unknown node type: htmlEmbed". Mirrors the
+ * @docmost/editor-ext node name, attribute keys and flags; keep in sync when
+ * the editor-ext htmlEmbed schema changes.
+ *
+ * NOTE: unlike the canonical editor-ext node, `data-source` here is mapped as
+ * plain text rather than base64-encoded. That is intentional: the MCP write
+ * path carries the node through Yjs (fromYdoc -> toYdoc) on its JSON `source`
+ * attribute and never invokes parseHTML/renderHTML, and htmlEmbed is not
+ * produced from the markdown/HTML (generateJSON) path. If a future HTML path
+ * for htmlEmbed is added here, this mapping must adopt editor-ext's base64
+ * encode/decode to avoid double-encoding `source`.
+ */
+const HtmlEmbed = Node.create({
+  name: "htmlEmbed",
+  group: "block",
+  inline: false,
+  isolating: true,
+  atom: true,
+  defining: true,
+  draggable: true,
+  addAttributes() {
+    return {
+      source: {
+        default: "",
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-source") ?? "",
+        renderHTML: (attrs: Record<string, any>) => ({
+          "data-source": attrs.source ?? "",
+        }),
+      },
+      height: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-height");
+          if (!v) return null;
+          const n = parseInt(v, 10);
+          return Number.isFinite(n) ? n : null;
+        },
+        renderHTML: (attrs: Record<string, any>) =>
+          attrs.height != null ? { "data-height": String(attrs.height) } : {},
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-type="htmlEmbed"]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", { "data-type": "htmlEmbed", ...HTMLAttributes }, 0];
   },
 });
 
@@ -1069,6 +1200,9 @@ export const docmostExtensions = [
   TableCell,
   TableHeader,
   Mention,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
   MathInline,
   MathBlock,
   Details,
@@ -1078,6 +1212,7 @@ export const docmostExtensions = [
   Video,
   Youtube,
   Embed,
+  HtmlEmbed,
   Drawio,
   Excalidraw,
   Columns,
@@ -1088,3 +1223,11 @@ export const docmostExtensions = [
   PageBreak,
   DocmostAttributes,
 ];
+
+/**
+ * The ProseMirror schema for the docmost editor, built ONCE from
+ * `docmostExtensions`. Pure and reused by every consumer (diff, collaboration
+ * write-back) so the schema can never drift between call sites — it lives next
+ * to the extension list it is derived from.
+ */
+export const docmostSchema = getSchema(docmostExtensions);

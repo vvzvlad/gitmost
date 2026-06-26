@@ -3,6 +3,7 @@ export enum EventName {
   PAGE_CREATED = 'page.created',
   PAGE_UPDATED = 'page.updated',
   PAGE_CONTENT_UPDATED = 'page-content-updated',
+  PAGE_MOVED = 'page.moved',
   PAGE_MOVED_TO_SPACE = 'page-moved-to-space',
   PAGE_DELETED = 'page.deleted',
   PAGE_SOFT_DELETED = 'page.soft_deleted',

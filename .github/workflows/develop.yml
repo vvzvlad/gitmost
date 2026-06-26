@@ -3,7 +3,7 @@ name: Develop
 on:
   push:
     branches:
-      - main
+      - develop
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +18,12 @@ env:
   IMAGE: ghcr.io/vvzvlad/gitmost
 
 jobs:
+  # Run the reusable test suite first so a failing test blocks the image build.
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -51,3 +56,160 @@ jobs:
           tags: ${{ env.IMAGE }}:develop
           cache-from: type=gha,scope=develop-amd64
           cache-to: type=gha,scope=develop-amd64,mode=max,ignore-error=true
+
+  # e2e jobs run on every develop push but DO NOT gate the build/publish above:
+  # `build` stays `needs: test` only, so the :develop image still ships even if
+  # e2e fails. A failing e2e job turns the run red and triggers GitHub's email
+  # to the pusher — that red run + email is the intended notification, not a
+  # deploy block.
+  e2e-server:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
+      REDIS_URL: redis://localhost:6379
+      APP_SECRET: ci-e2e-secret-change-me-min-32-characters
+      APP_URL: http://localhost:3000
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_DB: docmost
+          POSTGRES_USER: docmost
+          POSTGRES_PASSWORD: docmost
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docmost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build editor-ext
+        run: pnpm --filter @docmost/editor-ext build
+
+      - name: Run migrations
+        run: pnpm --filter ./apps/server migration:latest
+
+      - name: Run server e2e
+        run: pnpm --filter ./apps/server test:e2e
+
+  # Same rationale as e2e-server: this job is intentionally NOT in
+  # `build.needs`. Deploy of the :develop image must not be blocked by e2e;
+  # a red run plus GitHub's email to the pusher is the notification mechanism.
+  e2e-mcp:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
+      REDIS_URL: redis://localhost:6379
+      APP_SECRET: ci-e2e-secret-change-me-min-32-characters
+      APP_URL: http://localhost:3000
+      NODE_ENV: production
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_DB: docmost
+          POSTGRES_USER: docmost
+          POSTGRES_PASSWORD: docmost
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docmost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build editor-ext
+        run: pnpm --filter @docmost/editor-ext build
+
+      - name: Build server
+        run: pnpm server:build
+
+      - name: Build mcp
+        run: pnpm --filter @docmost/mcp build
+
+      - name: Run migrations
+        run: pnpm --filter ./apps/server migration:latest
+
+      - name: Start server (prod)
+        # Capture stdout/stderr so a start-up crash (bind error, stack trace,
+        # migration mismatch) is diagnosable; without this the only signal is
+        # the generic health-loop timeout below, ~120s later.
+        run: pnpm --filter ./apps/server start:prod > /tmp/server.log 2>&1 &
+
+      - name: Wait for server health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/api/health > /dev/null; then
+              echo "Server is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Server did not become healthy in time"
+          exit 1
+
+      - name: Dump server log on failure
+        if: failure()
+        run: cat /tmp/server.log || true
+
+      - name: Seed admin
+        run: |
+          curl -fsS -X POST http://localhost:3000/api/auth/setup \
+            -H "Content-Type: application/json" \
+            -d '{"name":"E2E","email":"e2e@example.com","password":"E2ePassword123","workspaceName":"E2E"}'
+
+      - name: Run mcp e2e
+        env:
+          DOCMOST_API_URL: http://localhost:3000/api
+          DOCMOST_EMAIL: e2e@example.com
+          DOCMOST_PASSWORD: E2ePassword123
+        run: pnpm --filter @docmost/mcp test:e2e

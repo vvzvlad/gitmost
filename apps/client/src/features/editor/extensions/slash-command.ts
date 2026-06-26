@@ -14,6 +14,10 @@ const Command = Extension.create({
     return {
       suggestion: {
         char: '/',
+        // Keep the query alive through spaces so multi-word item labels
+        // (e.g. "Heading 1", "Math block") match instead of terminating the
+        // query and leaving literal "/Heading 1" text in the document.
+        allowSpaces: true,
         command: ({ editor, range, props }) => {
           props.command({ editor, range, props });
         },
@@ -23,7 +27,22 @@ const Command = Extension.create({
           if ($from.parent.type.name === 'codeBlock') {
             return false;
           }
-          return true;
+          // With `allowSpaces: true` a query that contains a space no longer
+          // terminates the suggestion on its own, so a space-bearing query that
+          // matches nothing (e.g. "/todo abc") would otherwise keep an empty
+          // popup logically active and leave the literal "/todo abc" text in the
+          // document, only dismissable via Escape. Deactivate the suggestion when
+          // no item matches the current query: returning false here removes the
+          // decoration, fires the popup's `onExit`, and lets subsequent keystrokes
+          // pass through normally — restoring the pre-`allowSpaces` behavior for
+          // non-matching queries while keeping multi-word matches (e.g.
+          // "/Heading 1") working.
+          const query = state.doc.textBetween(range.from + 1, range.to);
+          const groups = getSuggestionItems({ query });
+          const hasMatches = Object.values(groups).some(
+            (items) => items.length > 0,
+          );
+          return hasMatches;
         },
       } as Partial<SuggestionOptions>,
     };

@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
 import { TransclusionController } from './transclusion.controller';
+import { PageTemplateController } from './page-template.controller';
 import { TransclusionService } from './transclusion.service';
 
 @Module({
-  controllers: [TransclusionController],
+  controllers: [TransclusionController, PageTemplateController],
   providers: [TransclusionService],
   exports: [TransclusionService],
 })

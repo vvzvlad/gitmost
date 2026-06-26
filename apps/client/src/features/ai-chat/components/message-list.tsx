@@ -1,19 +1,42 @@
-import { useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef } from "react";
 import { Center, ScrollArea, Stack, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { UIMessage } from "@ai-sdk/react";
 import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
+import { isToolPart, toolRunState, ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
+import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
   messages: UIMessage[];
   isStreaming: boolean;
-}
-
-/** True for AI SDK tool parts (static `tool-*` or `dynamic-tool`). */
-function isToolPart(type: string): boolean {
-  return type.startsWith("tool-") || type === "dynamic-tool";
+  /**
+   * Content shown when the transcript is empty and no turn is in flight.
+   * Defaults to the internal chat's prompt. The public share passes its own
+   * documentation-focused copy. This is purely the empty-state text; the
+   * streaming/typing/markdown/tool-card paths below are shared verbatim.
+   */
+  emptyState?: ReactNode;
+  /**
+   * Forwarded to MessageItem -> ToolCallCard: whether tool cards render page
+   * citation links. Defaults to true (internal chat). The public share passes
+   * false because an anonymous reader cannot open the linked internal pages.
+   */
+  showCitations?: boolean;
+  /**
+   * Forwarded to MessageItem: neutralize internal/relative markdown links in
+   * the rendered answers (drop their href so they render as inert text).
+   * Defaults to false (internal chat). The public share passes true so internal
+   * UUIDs/routes don't leak as clickable links to anonymous readers.
+   */
+  neutralizeInternalLinks?: boolean;
+  /**
+   * Display name for the assistant's dimmed row label and typing indicator.
+   * Defaults to "AI agent" when absent. The public share passes the configured
+   * identity (agent role) name; the internal chat omits it.
+   */
+  assistantName?: string;
 }
 
 // Distance (px) from the bottom within which the viewport still counts as
@@ -21,23 +44,68 @@ function isToolPart(type: string): boolean {
 const BOTTOM_THRESHOLD = 40;
 
 /**
- * Whether to show the standalone "AI agent is typing…" indicator. It bridges the
- * gap between sending and the first streamed content, so it shows only while a
- * turn is in flight AND the latest assistant message has nothing visible yet:
+ * Whether to show the standalone "Thinking…" indicator. It bridges every
+ * gap in a turn where the assistant is working but nothing visible is actively
+ * being produced yet — so it shows while a turn is in flight AND the latest
+ * assistant message's LAST part is not live output:
  *  - the last message is still the user's (assistant hasn't started a row), or
- *  - the last (assistant) message has no non-empty text and no tool part.
- * Once any text/tool part arrives, MessageItem renders it and this hides.
+ *  - the assistant row has no parts yet, or
+ *  - its last part is an empty/whitespace text part, or a finished ("done")
+ *    text part while the turn continues (the model paused after some narration
+ *    and is thinking about its next step), or
+ *  - its last part is a finished/errored tool (the model is thinking about the
+ *    next step between tool calls).
+ * It hides only while output is actively rendering: a non-empty streaming text
+ * part, or a tool that is still running (ToolCallCard shows its own Loader).
  */
-function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boolean {
+export function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boolean {
   if (!isStreaming) return false;
   const last = messages[messages.length - 1];
   if (!last) return true; // submitted with nothing rendered yet.
   if (last.role !== "assistant") return true; // assistant row not started.
-  const hasVisible = last.parts.some(
-    (p) =>
-      (p.type === "text" && p.text.trim().length > 0) || isToolPart(p.type),
-  );
-  return !hasVisible;
+  const lastPart = last.parts[last.parts.length - 1];
+  if (!lastPart) return true; // assistant row exists but has no parts yet.
+  // The answer text is actively streaming in -> MessageItem renders it; no dots.
+  // Only while it is STILL streaming, though: once a non-empty text part is
+  // finalized ("done") but the turn is still in flight, the model has paused
+  // after some narration and is working on its next step (e.g. about to call a
+  // tool) — nothing is visibly progressing, so the dots must show. A text part
+  // without a `state` is treated as still-rendering (kept suppressed); this
+  // branch only runs while streaming, where live parts always carry a state.
+  if (
+    lastPart.type === "text" &&
+    lastPart.text.trim().length > 0 &&
+    (lastPart as { state?: "streaming" | "done" }).state !== "done"
+  ) {
+    return false;
+  }
+  // A tool still in flight shows its own Loader in ToolCallCard -> no dots.
+  if (
+    isToolPart(lastPart.type) &&
+    toolRunState((lastPart as unknown as ToolUiPart).state) === "running"
+  ) {
+    return false;
+  }
+  // Otherwise the turn is in flight but nothing is actively producing visible
+  // output yet: a finished/errored tool with no follow-up content, or an empty
+  // trailing text part. The model is thinking between steps -> show the dots.
+  return true;
+}
+
+/**
+ * Whether the standalone typing indicator should render its own assistant-name
+ * label. The indicator OWNS the name while the tail assistant row has no visible
+ * content yet (an empty streaming text part, or reasoning/step-start while the
+ * model is still thinking): in that gap the assistant MessageItem renders nothing,
+ * so the indicator stands in for the nascent bubble (name + dots) at a constant
+ * gap. It hides the name only once that row shows visible content, because then
+ * MessageItem draws the same name — avoids a duplicate stacked label and the
+ * layout jump that switching owners mid-stream used to cause.
+ */
+export function typingIndicatorShowsName(messages: UIMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return true;
+  return !assistantMessageHasVisibleContent(last);
 }
 
 /**
@@ -45,7 +113,14 @@ function showTypingIndicator(messages: UIMessage[], isStreaming: boolean): boole
  * but only while the user is pinned to the bottom — if they scrolled up to read
  * earlier messages, streamed deltas no longer yank them back down.
  */
-export default function MessageList({ messages, isStreaming }: MessageListProps) {
+export default function MessageList({
+  messages,
+  isStreaming,
+  emptyState,
+  showCitations = true,
+  neutralizeInternalLinks = false,
+  assistantName,
+}: MessageListProps) {
   const { t } = useTranslation();
   const viewportRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned to the bottom. Starts true so the
@@ -108,9 +183,11 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
   if (messages.length === 0 && !typing) {
     return (
       <Center className={classes.messages}>
-        <Text size="sm" c="dimmed" ta="center">
-          {t("Ask the AI agent anything about your workspace.")}
-        </Text>
+        {emptyState ?? (
+          <Text size="sm" c="dimmed" ta="center">
+            {t("Ask the AI agent anything about your workspace.")}
+          </Text>
+        )}
       </Center>
     );
   }
@@ -119,9 +196,20 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
     <ScrollArea className={classes.messages} viewportRef={viewportRef} scrollbarSize={6} type="scroll">
       <Stack gap={0} pr="xs">
         {messages.map((message) => (
-          <MessageItem key={message.id} message={message} />
+          <MessageItem
+            key={message.id}
+            message={message}
+            showCitations={showCitations}
+            neutralizeInternalLinks={neutralizeInternalLinks}
+            assistantName={assistantName}
+          />
         ))}
-        {typing && <TypingIndicator />}
+        {typing && (
+          <TypingIndicator
+            assistantName={assistantName}
+            showName={typingIndicatorShowsName(messages)}
+          />
+        )}
       </Stack>
     </ScrollArea>
   );

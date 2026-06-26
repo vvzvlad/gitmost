@@ -90,7 +90,9 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
           {query.length > 0 && !isLoading
             ? resultItems.length === 0
               ? t("No results found")
-              : t("{{count}} results found", { count: resultItems.length })
+              : // Singular/plural handling so 1 result is not announced as
+                // "1 results found".
+                t("{{count}} result found", { count: resultItems.length })
             : ""}
         </VisuallyHidden>
 

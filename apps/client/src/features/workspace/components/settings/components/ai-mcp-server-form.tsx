@@ -11,6 +11,7 @@ import {
   Switch,
   TagsInput,
   Text,
+  Textarea,
   TextInput,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
@@ -26,7 +27,6 @@ import {
   IAiMcpServer,
   IAiMcpServerCreate,
   IAiMcpServerUpdate,
-  McpTransport,
 } from "@/features/workspace/services/ai-mcp-server-service.ts";
 
 const formSchema = z.object({
@@ -36,6 +36,8 @@ const formSchema = z.object({
   // Write-only secret buffer. Empty string means "do not change" (unless cleared).
   authHeader: z.string(),
   toolAllowlist: z.array(z.string()),
+  // Admin-authored prompt guidance (#180). Capped to mirror the DTO MaxLength.
+  instructions: z.string().max(4000),
   enabled: z.boolean(),
 });
 
@@ -47,12 +49,27 @@ interface AiMcpServerFormProps {
   onClose: () => void;
 }
 
-// Tavily preset (§8.10): the API key goes in the Authorization HEADER, not the URL.
-const TAVILY_PRESET = {
-  name: "Tavily",
-  transport: "http" as McpTransport,
-  url: "https://mcp.tavily.com/mcp/",
-};
+// Build the form's field values from a (possibly undefined) server. Used both
+// for the initial mount and for re-hydration when the modal is reused for a
+// different server, so the two stay in sync. authHeader is always empty: it is
+// a write-only secret buffer never echoed back from the server.
+function buildInitialValues(server?: IAiMcpServer): FormValues {
+  return {
+    name: server?.name ?? "",
+    transport: server?.transport ?? "http",
+    url: server?.url ?? "",
+    authHeader: "",
+    // Defensive: TagsInput calls `.map`, so a non-array here (e.g. an API that
+    // returns the jsonb column as a JSON string) would crash the whole page. The
+    // server normalizes this now, but guard anyway so a bad shape can never take
+    // the settings UI down.
+    toolAllowlist: Array.isArray(server?.toolAllowlist)
+      ? server.toolAllowlist
+      : [],
+    instructions: server?.instructions ?? "",
+    enabled: server?.enabled ?? true,
+  };
+}
 
 export default function AiMcpServerForm({
   server,
@@ -72,26 +89,12 @@ export default function AiMcpServerForm({
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
-    initialValues: {
-      name: server?.name ?? "",
-      transport: server?.transport ?? "http",
-      url: server?.url ?? "",
-      authHeader: "",
-      toolAllowlist: server?.toolAllowlist ?? [],
-      enabled: server?.enabled ?? true,
-    },
+    initialValues: buildInitialValues(server),
   });
 
   // Re-hydrate when the target server changes (e.g. reusing the modal).
   useEffect(() => {
-    form.setValues({
-      name: server?.name ?? "",
-      transport: server?.transport ?? "http",
-      url: server?.url ?? "",
-      authHeader: "",
-      toolAllowlist: server?.toolAllowlist ?? [],
-      enabled: server?.enabled ?? true,
-    });
+    form.setValues(buildInitialValues(server));
     form.resetDirty();
     setHasHeaders(server?.hasHeaders ?? false);
     setHeadersCleared(false);
@@ -125,6 +128,8 @@ export default function AiMcpServerForm({
         transport: values.transport,
         url: values.url,
         toolAllowlist: values.toolAllowlist,
+        // Always sent: a blank value clears the stored guidance (server -> null).
+        instructions: values.instructions,
         enabled: values.enabled,
       };
       // Only attach headers when set or explicitly cleared (omit => unchanged).
@@ -136,6 +141,8 @@ export default function AiMcpServerForm({
         transport: values.transport,
         url: values.url,
         toolAllowlist: values.toolAllowlist,
+        // Blank => server stores null (no guidance).
+        instructions: values.instructions,
         enabled: values.enabled,
       };
       // On create, only a typed value matters (no prior stored headers).
@@ -154,32 +161,12 @@ export default function AiMcpServerForm({
     form.setFieldValue("authHeader", "");
   }
 
-  function applyTavilyPreset() {
-    form.setFieldValue("name", TAVILY_PRESET.name);
-    form.setFieldValue("transport", TAVILY_PRESET.transport);
-    form.setFieldValue("url", TAVILY_PRESET.url);
-    // Prefill the Bearer prefix; the admin pastes their Tavily key after it.
-    form.setFieldValue("authHeader", "Bearer ");
-    setHeadersCleared(false);
-  }
-
   const testResult = testMutation.data;
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
   return (
     <Stack>
-      {!isEdit && (
-        <Group justify="flex-start">
-          <Button variant="default" size="compact-sm" onClick={applyTavilyPreset}>
-            {t("Use Tavily preset")}
-          </Button>
-        </Group>
-      )}
-
-      <TextInput
-        label={t("Server name")}
-        {...form.getInputProps("name")}
-      />
+      <TextInput label={t("Server name")} {...form.getInputProps("name")} />
 
       <Select
         label={t("Transport")}
@@ -192,6 +179,11 @@ export default function AiMcpServerForm({
 
       <PasswordInput
         label={t("Authorization header")}
+        // Clarify that the value is sent verbatim as the Authorization header,
+        // so the user supplies the full scheme (no implicit Bearer prefix).
+        description={t(
+          'Sent verbatim as the value of the Authorization header (e.g. "Bearer <token>" or "Basic <base64>").',
+        )}
         // Placeholder hints whether headers are stored; the value is never shown.
         placeholder={hasHeaders ? t("•••• set") : ""}
         autoComplete="off"
@@ -219,6 +211,20 @@ export default function AiMcpServerForm({
         splitChars={[",", " "]}
         clearable
         {...form.getInputProps("toolAllowlist")}
+      />
+
+      <Textarea
+        label={t("Instructions")}
+        // Hint that the text is injected into the agent's system prompt and that
+        // the server's tools are namespaced under <name>_* (the prompt header).
+        description={t(
+          "Optional guidance for the agent on how and when to use this server's tools. Injected into the system prompt. The server's tools are namespaced as \"<server name>_*\".",
+        )}
+        autosize
+        minRows={2}
+        maxRows={8}
+        maxLength={4000}
+        {...form.getInputProps("instructions")}
       />
 
       <Switch

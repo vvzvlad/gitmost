@@ -15,12 +15,13 @@ import {
   executeWithCursorPagination,
 } from '@docmost/db/pagination/cursor-pagination';
 import { InjectKysely } from 'nestjs-kysely';
-import { KyselyDB } from '@docmost/db/types/kysely.types';
+import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { MovePageDto } from '../dto/move-page.dto';
+import { shapeSidebarPagesTree } from './sidebar-pages-tree.util';
 import { generateSlugId } from '../../../common/helpers';
 import { getPageTitle } from '../../../common/helpers';
-import { executeTx } from '@docmost/db/utils';
+import { dbOrTx, executeTx } from '@docmost/db/utils';
 import { AttachmentRepo } from '@docmost/db/repos/attachment/attachment.repo';
 import { v7 as uuid7 } from 'uuid';
 import {
@@ -55,7 +56,28 @@ import { markdownToHtml } from '@docmost/editor-ext';
 import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
-import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
+import { remapPageEmbedSourceId } from '../transclusion/utils/transclusion-prosemirror.util';
+import {
+  AuthProvenanceData,
+  agentSourceFields,
+} from '../../../common/decorators/auth-provenance.decorator';
+
+// Hard upper bound on how deep the recursive page-tree CTEs (ancestor /
+// descendant traversals) may walk. Real page trees are only a handful of levels
+// deep, so this cap never truncates a legitimate result; it purely defends the
+// recursive CTEs against runaway iteration if a parent/child cycle ever exists
+// in the data (e.g. one slipped in before the move guard, #207 #8). Without it a
+// cycle makes `withRecursive` loop forever (hang / statement timeout), and the
+// move guard itself calls one of these CTEs — so a cycle would disable the very
+// guard meant to prevent it. Each CTE carries a depth counter and stops here.
+const MAX_PAGE_TREE_DEPTH = 10_000;
+
+// Advisory-lock namespace (the first key of pg_advisory_xact_lock) used to
+// serialize concurrent page moves within a single space so the cycle check and
+// the move UPDATE stay atomic (see movePage, #207 #7). A dedicated namespace
+// constant keeps these locks from colliding with any other advisory lock; the
+// second key is hashtext(spaceId). Fits a signed int4 ('page' in ASCII).
+const PAGE_MOVE_LOCK_NAMESPACE = 0x70616765;
 
 @Injectable()
 export class PageService {
@@ -133,8 +155,6 @@ export class PageService {
       ydoc = createYdocFromJson(prosemirrorJson);
     }
 
-    const isAgent = provenance?.actor === 'agent';
-
     const page = await this.pageRepo.insertPage({
       slugId: generateSlugId(),
       title: createPageDto.title,
@@ -151,12 +171,7 @@ export class PageService {
       // Agent-edit provenance. The human stays the responsible author
       // (creatorId/lastUpdatedById); these only annotate the source. A normal
       // user request leaves the column default ('user').
-      ...(isAgent
-        ? {
-            lastUpdatedSource: 'agent',
-            lastUpdatedAiChatId: provenance.aiChatId,
-          }
-        : {}),
+      ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
       content,
       textContent,
       ydoc,
@@ -229,7 +244,16 @@ export class PageService {
     contributors.add(user.id);
     const contributorIds = Array.from(contributors);
 
-    const isAgent = provenance?.actor === 'agent';
+    // Detect a real title/icon change so the WS tree listener can broadcast an
+    // `updateOne` to the space (rename / icon swap) WITHOUT re-broadcasting on a
+    // content-only save. Only treat a field as changed when the DTO actually
+    // carries it AND its value differs from what is already stored — a no-op
+    // save (same title, or a content-only update where these are undefined)
+    // produces no tree snapshot, so the listener stays quiet.
+    const titleChanged =
+      updatePageDto.title !== undefined && updatePageDto.title !== page.title;
+    const iconChanged =
+      updatePageDto.icon !== undefined && updatePageDto.icon !== page.icon;
 
     await this.pageRepo.updatePage(
       {
@@ -237,17 +261,29 @@ export class PageService {
         icon: updatePageDto.icon,
         lastUpdatedById: user.id,
         // Agent-edit provenance: annotate the source without changing the
-        // responsible author. A normal user request leaves the column default.
-        ...(isAgent
-          ? {
-              lastUpdatedSource: 'agent',
-              lastUpdatedAiChatId: provenance.aiChatId,
-            }
-          : {}),
+        // responsible author. A normal user request leaves the existing source
+        // value unchanged.
+        ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
         updatedAt: new Date(),
         contributorIds: contributorIds,
       },
       page.id,
+      undefined,
+      // Enrich PAGE_UPDATED only when title/icon actually changed. The snapshot
+      // values come from the server-side data being persisted (DTO when present,
+      // otherwise the unchanged stored value), never relayed from the client.
+      titleChanged || iconChanged
+        ? {
+            treeUpdate: {
+              id: page.id,
+              slugId: page.slugId,
+              spaceId: page.spaceId,
+              parentPageId: page.parentPageId ?? null,
+              ...(titleChanged ? { title: updatePageDto.title } : {}),
+              ...(iconChanged ? { icon: updatePageDto.icon } : {}),
+            },
+          }
+        : undefined,
     );
 
     this.generalQueue
@@ -319,6 +355,7 @@ export class PageService {
         'parentPageId',
         'spaceId',
         'creatorId',
+        'isTemplate',
         'deletedAt',
       ])
       .select((eb) => this.pageRepo.withHasChildren(eb))
@@ -413,7 +450,6 @@ export class PageService {
     provenance?: AuthProvenanceData,
   ) {
     let childPageIds: string[] = [];
-    const isAgent = provenance?.actor === 'agent';
 
     const allPages = await this.pageRepo.getPageAndDescendants(rootPage.id, {
       includeContent: false,
@@ -460,12 +496,7 @@ export class PageService {
           // Agent-edit provenance on the moved root page. Child pages are bulk
           // re-parented to the new space (no content change), so the marker is
           // stamped on the root the agent acted on. Normal user: no change.
-          ...(isAgent
-            ? {
-                lastUpdatedSource: 'agent',
-                lastUpdatedAiChatId: provenance.aiChatId,
-              }
-            : {}),
+          ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
         },
         rootPage.id,
         trx,
@@ -587,7 +618,13 @@ export class PageService {
       slugIdMap.set(entry.oldSlugId, entry);
     }
 
-    const attachmentMap = new Map<string, ICopyPageAttachment>();
+    // Keyed by old attachmentId. A single attachment can be referenced by more
+    // than one page in the copied subtree (e.g. a block copy-pasted into a child
+    // page keeps the same attachmentId). Each referencing page needs its own
+    // fresh attachment id / row / blob copy, so the value is a LIST of copy
+    // entries rather than a single one — otherwise the last page's entry would
+    // clobber the others and their images would 404 in the copies (#206 attach-1).
+    const attachmentMap = new Map<string, ICopyPageAttachment[]>();
 
     const insertablePages: InsertablePage[] = await Promise.all(
       pages.map(async (page) => {
@@ -603,12 +640,14 @@ export class PageService {
           attachmentIds.forEach((attachmentId: string) => {
             const newPageId = pageFromMap.newPageId;
             const newAttachmentId = uuid7();
-            attachmentMap.set(attachmentId, {
+            const existingEntries = attachmentMap.get(attachmentId) ?? [];
+            existingEntries.push({
               newPageId: newPageId,
               oldPageId: page.id,
               oldAttachmentId: attachmentId,
               newAttachmentId: newAttachmentId,
             });
+            attachmentMap.set(attachmentId, existingEntries);
 
             prosemirrorDoc.descendants((node: PMNode) => {
               if (isAttachmentNode(node.type.name)) {
@@ -663,6 +702,17 @@ export class PageService {
               //@ts-ignore
               node.attrs.sourcePageId = mappedPage.newPageId;
             }
+          }
+
+          // Remap whole-page embeds (pageEmbed) the same way: if the embedded
+          // source page is also part of the copied set, point at its new copy;
+          // otherwise leave it pointing at the original (live embed of original).
+          if (node.type.name === 'pageEmbed') {
+            // @ts-expect-error ProseMirror Attrs is read-only typed; intentional remap to the duplicated copy
+            node.attrs.sourcePageId = remapPageEmbedSourceId(
+              node.attrs.sourcePageId,
+              (id) => pageMap.get(id)?.newPageId,
+            );
           }
 
           // Update internal page links in link marks
@@ -757,10 +807,30 @@ export class PageService {
       );
     }
 
+    try {
+      await this.transclusionService.insertTemplateReferencesForPages(
+        insertablePages.map((p) => ({
+          id: p.id,
+          workspaceId: p.workspaceId,
+          content: p.content,
+        })),
+      );
+    } catch (err) {
+      this.logger.error(
+        'Failed to insert page template references for duplicated pages',
+        err,
+      );
+    }
+
     const insertedPageIds = insertablePages.map((page) => page.id);
+    // `spaceId` is the single destination space for the whole copy/duplicate
+    // (every inserted page above gets `spaceId: spaceId`). It lets the WS
+    // listener trigger a root refetch for the bulk subtree (no `pages` snapshot
+    // here on purpose — we want the refetch fallback, not per-node addTreeNode).
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: insertedPageIds,
       workspaceId: authUser.workspaceId,
+      spaceId,
     });
 
     //TODO: best to handle this in a queue
@@ -774,51 +844,53 @@ export class PageService {
         .execute();
 
       for (const attachment of attachments) {
-        try {
-          const pageAttachment = attachmentMap.get(attachment.id);
-
-          // make sure the copied attachment belongs to the page it was copied from
-          if (attachment.pageId !== pageAttachment.oldPageId) {
-            continue;
-          }
-
-          const newAttachmentId = pageAttachment.newAttachmentId;
-
-          const newPageId = pageAttachment.newPageId;
-
-          const newPathFile = attachment.filePath.replace(
-            attachment.id,
-            newAttachmentId,
-          );
-
+        // One source attachment may need to be copied for several destination
+        // pages (it is referenced by more than one page in the subtree). Copy a
+        // distinct blob + row for every referencing page so each copy resolves
+        // (#206 attach-1). The old per-page ownership guard is gone: when the
+        // same attachmentId is shared, only one page would ever match the row's
+        // pageId, silently dropping the other copies.
+        const pageAttachments = attachmentMap.get(attachment.id) ?? [];
+        for (const pageAttachment of pageAttachments) {
           try {
-            await this.storageService.copy(attachment.filePath, newPathFile);
+            const newAttachmentId = pageAttachment.newAttachmentId;
 
-            await this.db
-              .insertInto('attachments')
-              .values({
-                id: newAttachmentId,
-                type: attachment.type,
-                filePath: newPathFile,
-                fileName: attachment.fileName,
-                fileSize: attachment.fileSize,
-                mimeType: attachment.mimeType,
-                fileExt: attachment.fileExt,
-                creatorId: attachment.creatorId,
-                workspaceId: attachment.workspaceId,
-                pageId: newPageId,
-                spaceId: spaceId,
-              })
-              .execute();
-          } catch (err) {
-            this.logger.error(
-              `Duplicate page: failed to copy attachment ${attachment.id}`,
-              err,
+            const newPageId = pageAttachment.newPageId;
+
+            const newPathFile = attachment.filePath.replace(
+              attachment.id,
+              newAttachmentId,
             );
-            // Continue with other attachments even if one fails
+
+            try {
+              await this.storageService.copy(attachment.filePath, newPathFile);
+
+              await this.db
+                .insertInto('attachments')
+                .values({
+                  id: newAttachmentId,
+                  type: attachment.type,
+                  filePath: newPathFile,
+                  fileName: attachment.fileName,
+                  fileSize: attachment.fileSize,
+                  mimeType: attachment.mimeType,
+                  fileExt: attachment.fileExt,
+                  creatorId: attachment.creatorId,
+                  workspaceId: attachment.workspaceId,
+                  pageId: newPageId,
+                  spaceId: spaceId,
+                })
+                .execute();
+            } catch (err) {
+              this.logger.error(
+                `Duplicate page: failed to copy attachment ${attachment.id}`,
+                err,
+              );
+              // Continue with other attachments even if one fails
+            }
+          } catch (err) {
+            this.logger.error(err);
           }
-        } catch (err) {
-          this.logger.error(err);
         }
       }
     }
@@ -870,27 +942,101 @@ export class PageService {
       }
     }
 
-    const isAgent = provenance?.actor === 'agent';
+    // Server-side cycle guard + the move UPDATE run in ONE transaction. A page
+    // may not be moved into itself or into any page within its own subtree;
+    // without this an MCP/REST/agent caller (or a fast drag racing the client
+    // check) could persist a cycle and broadcast it. Crucially, doing the guard
+    // and the write as two separate, unlocked statements is a TOCTOU race: two
+    // concurrent moves ("A under B" and "B under A") can each read the same
+    // pre-write acyclic snapshot, both pass the guard, then persist
+    // A.parentPageId=B AND B.parentPageId=A — a parent/child cycle (#207 #7). A
+    // per-space advisory lock (held until COMMIT) serializes all moves within a
+    // space: the second mover blocks until the first commits and then sees the
+    // freshly written parent, so its guard rejects the cycle.
+    const updateResult = await executeTx(this.db, async (trx) => {
+      await sql`select pg_advisory_xact_lock(${sql.lit(
+        PAGE_MOVE_LOCK_NAMESPACE,
+      )}, hashtext(${movedPage.spaceId}))`.execute(trx);
 
-    await this.pageRepo.updatePage(
-      {
+      // Only relevant when re-parenting under a concrete parent; moving to root
+      // (parentPageId null/undefined) can never create a cycle.
+      if (dto.parentPageId) {
+        if (dto.parentPageId === dto.pageId) {
+          throw new BadRequestException(
+            'Cannot move a page into its own subtree',
+          );
+        }
+        // Walk the destination parent's ancestor chain (reusing the breadcrumb
+        // ancestor CTE) inside the lock. If the page being moved appears among
+        // those ancestors, the destination lives inside the moved page's
+        // subtree -> cycle.
+        const destAncestors = await this.getPageBreadCrumbs(
+          dto.parentPageId,
+          trx,
+        );
+        if (destAncestors.some((ancestor) => ancestor.id === dto.pageId)) {
+          throw new BadRequestException(
+            'Cannot move a page into its own subtree',
+          );
+        }
+      }
+
+      return this.pageRepo.updatePage(
+        {
+          position: dto.position,
+          parentPageId: parentPageId,
+          // Agent-edit provenance: annotate the source on an agent move. A
+          // normal user request leaves the existing source value unchanged.
+          ...agentSourceFields(
+            provenance,
+            'lastUpdatedSource',
+            'lastUpdatedAiChatId',
+          ),
+        },
+        dto.pageId,
+        trx,
+      );
+    });
+
+    // Guard against a phantom broadcast: if the row was concurrently deleted or
+    // otherwise not updated, skip the PAGE_MOVED event so we don't replay a move
+    // built from the stale pre-read snapshot to every connected client.
+    if (!updateResult || updateResult.numUpdatedRows === 0n) {
+      return;
+    }
+
+    // The generic PAGE_UPDATED emitted by updatePage above is intentionally NOT
+    // used to drive the tree `moveTreeNode` broadcast: it also fires on rename /
+    // content-save and carries neither oldParentId nor the new position. Emit a
+    // dedicated PAGE_MOVED so the WS listener can build a precise moveTreeNode
+    // without a DB read (variant A: snapshot in the event).
+    //
+    // `parentPageId` is `undefined` when only the position changed (same
+    // parent); resolve it back to the page's actual parent for the snapshot.
+    const newParentPageId =
+      parentPageId === undefined ? movedPage.parentPageId : parentPageId;
+
+    this.eventEmitter.emit(EventName.PAGE_MOVED, {
+      workspaceId: movedPage.workspaceId,
+      oldParentId: movedPage.parentPageId ?? null,
+      // `hasChildren` is selected by findById({ includeHasChildren: true }) in
+      // the controller; it isn't on the base Page type, hence the cast.
+      hasChildren:
+        (movedPage as Page & { hasChildren?: boolean }).hasChildren ?? false,
+      node: {
+        id: movedPage.id,
+        slugId: movedPage.slugId,
+        title: movedPage.title,
+        icon: movedPage.icon,
         position: dto.position,
-        parentPageId: parentPageId,
-        // Agent-edit provenance: annotate the source on an agent move. A normal
-        // user request leaves the column default ('user').
-        ...(isAgent
-          ? {
-              lastUpdatedSource: 'agent',
-              lastUpdatedAiChatId: provenance.aiChatId,
-            }
-          : {}),
+        spaceId: movedPage.spaceId,
+        parentPageId: newParentPageId ?? null,
       },
-      dto.pageId,
-    );
+    });
   }
 
-  async getPageBreadCrumbs(childPageId: string) {
-    const ancestors = await this.db
+  async getPageBreadCrumbs(childPageId: string, trx?: KyselyTransaction) {
+    const ancestors = await dbOrTx(this.db, trx)
       .withRecursive('page_ancestors', (db) =>
         db
           .selectFrom('pages')
@@ -904,6 +1050,9 @@ export class PageService {
             'spaceId',
             'deletedAt',
           ])
+          // Depth counter: bounds the walk so a parent/child cycle in the data
+          // can't make this recursive CTE loop forever (#207 #8).
+          .select(sql<number>`0`.as('depth'))
           .where('id', '=', childPageId)
           .where('deletedAt', 'is', null)
           .unionAll((exp) =>
@@ -919,12 +1068,25 @@ export class PageService {
                 'p.spaceId',
                 'p.deletedAt',
               ])
+              .select(sql<number>`pa.depth + 1`.as('depth'))
               .innerJoin('page_ancestors as pa', 'pa.parentPageId', 'p.id')
-              .where('p.deletedAt', 'is', null),
+              .where('p.deletedAt', 'is', null)
+              .where(sql<number>`pa.depth`, '<', MAX_PAGE_TREE_DEPTH),
           ),
       )
       .selectFrom('page_ancestors')
-      .selectAll('page_ancestors')
+      // Explicit column list (not selectAll) so the internal `depth` counter
+      // never leaks into the breadcrumb result shape.
+      .select([
+        'id',
+        'slugId',
+        'title',
+        'icon',
+        'position',
+        'parentPageId',
+        'spaceId',
+        'deletedAt',
+      ])
       .select((eb) =>
         eb
           .exists(
@@ -1045,16 +1207,21 @@ export class PageService {
         db
           .selectFrom('pages')
           .select(['id'])
+          // Depth counter: bounds the walk so a parent/child cycle in the data
+          // can't make this recursive CTE loop forever (#207 #8).
+          .select(sql<number>`0`.as('depth'))
           .where('id', '=', pageId)
           .unionAll((exp) =>
             exp
               .selectFrom('pages as p')
               .select(['p.id'])
-              .innerJoin('page_descendants as pd', 'pd.id', 'p.parentPageId'),
+              .select(sql<number>`pd.depth + 1`.as('depth'))
+              .innerJoin('page_descendants as pd', 'pd.id', 'p.parentPageId')
+              .where(sql<number>`pd.depth`, '<', MAX_PAGE_TREE_DEPTH),
           ),
       )
       .selectFrom('page_descendants')
-      .selectAll()
+      .select(['id'])
       .execute();
 
     const pageIds = descendants.map((d) => d.id);
@@ -1137,7 +1304,7 @@ export class PageService {
     T extends { id: string; parentPageId: string | null },
   >(
     pages: T[],
-    rootPageId: string,
+    rootPageId: string | null,
     userId: string,
     spaceId?: string,
   ): Promise<T[]> {
@@ -1153,6 +1320,15 @@ export class PageService {
     );
     const accessibleSet = new Set(accessibleIds);
 
+    // When no explicit root is given (whole-space tree), every page whose
+    // parent is outside the returned set acts as a root (space root pages have
+    // parentPageId === null). This mirrors the single-root case below.
+    const pageIdSet = new Set(pageIds);
+    const isRoot = (page: T): boolean => {
+      if (rootPageId !== null) return page.id === rootPageId;
+      return !page.parentPageId || !pageIdSet.has(page.parentPageId);
+    };
+
     // Prune: include a page only if it's accessible AND its parent chain to root is included
     const includedIds = new Set<string>();
 
@@ -1166,7 +1342,7 @@ export class PageService {
         if (!accessibleSet.has(page.id)) continue;
 
         // Root page: include if accessible
-        if (page.id === rootPageId) {
+        if (isRoot(page)) {
           includedIds.add(page.id);
           changed = true;
           continue;
@@ -1181,5 +1357,100 @@ export class PageService {
     }
 
     return pages.filter((p) => includedIds.has(p.id));
+  }
+
+  /**
+   * Whole subtree (pageId) or whole space tree (spaceId only) in a single
+   * query, permission-filtered, returned as a flat list matching the sidebar
+   * item shape (id, slugId, title, icon, position, parentPageId, spaceId,
+   * hasChildren, canEdit) ordered by position. content is never fetched.
+   *
+   * Reproduces the exact two-branch permission logic of getSidebarPages():
+   *  - open space (no restrictions): every returned page is visible, canEdit =
+   *    spaceCanEdit, hasChildren derived from the returned set.
+   *  - restricted space: full descendant set is loaded, then per-page
+   *    permissions applied via filterAccessibleTreePages (restricted-but-granted
+   *    pages are kept; inaccessible subtrees pruned); canEdit is per-page AND
+   *    spaceCanEdit;
+   *    hasChildren is derived from the FINAL (post-prune, post-filter) set, so
+   *    a node never advertises children the user cannot access — the same
+   *    correction getSidebarPages does via getParentIdsWithAccessibleChildren.
+   */
+  async getSidebarPagesTree(
+    spaceId: string,
+    userId: string,
+    spaceCanEdit?: boolean,
+    pageId?: string,
+  ): Promise<
+    Array<
+      Pick<
+        Page,
+        | 'id'
+        | 'slugId'
+        | 'title'
+        | 'icon'
+        | 'position'
+        | 'parentPageId'
+        | 'spaceId'
+      > & { hasChildren: boolean; canEdit: boolean }
+    >
+  > {
+    const hasRestrictions =
+      await this.pagePermissionRepo.hasRestrictedPagesInSpace(spaceId);
+
+    // Seed: a single page subtree, or all root pages of the space.
+    // Always seed with the FULL (non-excluding) descendant set — in a restricted
+    // space the per-page filtering below (filterAccessibleTreePages) does the
+    // pruning, exactly like getSidebarPages. Seeding with *ExcludingRestricted
+    // would wrongly drop restricted pages the user has an explicit grant for
+    // (and never recurse into their children), diverging from the sidebar.
+    let pages: Array<{
+      id: string;
+      slugId: string;
+      title: string;
+      icon: string;
+      position: string;
+      parentPageId: string | null;
+      spaceId: string;
+    }>;
+
+    if (pageId) {
+      pages = await this.pageRepo.getPageAndDescendants(pageId, {
+        includeContent: false,
+      });
+    } else {
+      pages = await this.pageRepo.getSpaceDescendants(spaceId, {
+        includeContent: false,
+      });
+    }
+
+    let permissionMap: Map<string, boolean> | undefined;
+
+    if (hasRestrictions) {
+      // Fine-grained per-page permissions on top of restricted pruning.
+      pages = await this.filterAccessibleTreePages(
+        pages,
+        pageId ?? null,
+        userId,
+        spaceId,
+      );
+
+      // Per-page canEdit, same source as getSidebarPages.
+      const accessiblePages =
+        await this.pagePermissionRepo.filterAccessiblePageIdsWithPermissions(
+          pages.map((p) => p.id),
+          userId,
+        );
+      permissionMap = new Map(accessiblePages.map((p) => [p.id, p.canEdit]));
+    }
+
+    // Shape into sidebar items (derive hasChildren, apply per-branch canEdit,
+    // order by position). Extracted as a pure helper so the load-bearing logic
+    // is unit-testable directly (see sidebar-pages-tree.util.ts / its spec).
+    return shapeSidebarPagesTree(pages, {
+      hasRestrictions,
+      spaceCanEdit,
+      permissionMap,
+    });
   }
 }

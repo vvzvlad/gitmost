@@ -14,6 +14,9 @@ export interface IAiMcpServer {
   enabled: boolean;
   toolAllowlist: string[] | null;
   hasHeaders: boolean;
+  // Admin-authored guidance injected into the agent system prompt (#180).
+  // NON-secret, so it IS returned. Null when no guidance is configured.
+  instructions: string | null;
 }
 
 // Create payload. `headers` is write-only: omit => no auth headers.
@@ -25,6 +28,8 @@ export interface IAiMcpServerCreate {
   // never returned.
   headers?: Record<string, string>;
   toolAllowlist?: string[];
+  // Admin-authored prompt guidance (#180). Blank => stored as null.
+  instructions?: string;
   enabled?: boolean;
 }
 
@@ -39,6 +44,8 @@ export interface IAiMcpServerUpdate {
   url?: string;
   headers?: Record<string, string>;
   toolAllowlist?: string[];
+  // Admin-authored prompt guidance (#180). Absent => unchanged; blank => cleared.
+  instructions?: string;
   enabled?: boolean;
 }
 

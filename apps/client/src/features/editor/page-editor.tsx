@@ -49,6 +49,7 @@ import { TableHandlesLayer } from "@/features/editor/components/table/handle/tab
 import ImageMenu from "@/features/editor/components/image/image-menu.tsx";
 import CalloutMenu from "@/features/editor/components/callout/callout-menu.tsx";
 import VideoMenu from "@/features/editor/components/video/video-menu.tsx";
+import AudioMenu from "@/features/editor/components/audio/audio-menu.tsx";
 import PdfMenu from "@/features/editor/components/pdf/pdf-menu.tsx";
 import SubpagesMenu from "@/features/editor/components/subpages/subpages-menu.tsx";
 import {
@@ -65,6 +66,12 @@ import { queryClient } from "@/main.tsx";
 import { IPage } from "@/features/page/types/page.types.ts";
 import { useParams } from "react-router-dom";
 import { extractPageSlugId, platformModifierKey } from "@/lib";
+import {
+  GitmostBridge,
+  GitmostInsertRecordingPayload,
+  GitmostInsertRecordingResult,
+  gitmostInsertRecordingIntoEditor,
+} from "@/features/editor/gitmost/gitmost-recording.ts";
 import { FIVE_MINUTES } from "@/lib/constants.ts";
 import { PageEditMode } from "@/features/user/types/user.types.ts";
 import { jwtDecode } from "jwt-decode";
@@ -73,6 +80,9 @@ import { useEditorScroll } from "./hooks/use-editor-scroll";
 import { EditorLinkMenu } from "@/features/editor/components/link/link-menu";
 import ColumnsMenu from "@/features/editor/components/columns/columns-menu.tsx";
 import { TransclusionLookupProvider } from "@/features/editor/components/transclusion/transclusion-lookup-context";
+import { PageEmbedLookupProvider } from "@/features/editor/components/page-embed/page-embed-lookup-context";
+import { PageEmbedAncestryProvider } from "@/features/editor/components/page-embed/page-embed-ancestry-context";
+import PageEmbedPicker from "@/features/editor/components/page-embed/page-embed-picker";
 import { useTranslation } from "react-i18next";
 
 interface PageEditorProps {
@@ -110,6 +120,13 @@ export default function PageEditor({
   );
   const menuContainerRef = useRef(null);
   const { data: collabQuery, refetch: refetchCollabToken } = useCollabToken();
+  // Always holds the latest collab token. The provider effect below runs once
+  // per pageId, so a handler created inside it would otherwise close over a
+  // stale `collabQuery`. Reading the ref gives the current token instead.
+  const collabTokenRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    collabTokenRef.current = collabQuery?.token;
+  }, [collabQuery?.token]);
   const { isIdle, resetIdle } = useIdle(FIVE_MINUTES, { initialState: false });
   const documentState = useDocumentVisibility();
   const { pageSlug } = useParams();
@@ -164,20 +181,33 @@ export default function PageEditor({
         }
       };
       const onAuthenticationFailedHandler = () => {
-        const payload = jwtDecode(collabQuery?.token);
-        const now = Date.now().valueOf() / 1000;
-        const isTokenExpired = now >= payload.exp;
-        if (isTokenExpired) {
-          refetchCollabToken().then((result) => {
-            if (result.data?.token) {
-              socket.disconnect();
-              setTimeout(() => {
-                remote.configuration.token = result.data.token;
-                socket.connect();
-              }, 100);
-            }
-          });
+        // Read the latest token via the ref (the closure-captured `collabQuery`
+        // may be stale). Guard the decode: a missing or unparseable token must
+        // not throw "Invalid token specified" and should trigger a refresh so
+        // the editor reconnects even when the initial token fetch failed.
+        const token = collabTokenRef.current;
+        let needsRefresh = true; // no/unparseable token -> fetch a fresh one and reconnect
+        if (token) {
+          try {
+            // A token that decodes but lacks a numeric `exp` must be treated as
+            // expired (`Date.now()/1000 >= undefined` is `false`, which would
+            // otherwise skip the reconnect), so refresh on any missing/non-number exp.
+            const exp = jwtDecode<{ exp?: number }>(token).exp;
+            needsRefresh = typeof exp !== "number" || Date.now() / 1000 >= exp;
+          } catch {
+            needsRefresh = true;
+          }
         }
+        if (!needsRefresh) return;
+        refetchCollabToken().then((result) => {
+          if (result.data?.token) {
+            socket.disconnect();
+            setTimeout(() => {
+              remote.configuration.token = result.data.token;
+              socket.connect();
+            }, 100);
+          }
+        });
       };
       const remote = new HocuspocusProvider({
         websocketProvider: socket,
@@ -330,6 +360,39 @@ export default function PageEditor({
     },
   });
 
+  // Expose the gitmost native bridge only while an editable page editor is
+  // mounted. Registering/tearing down here ties `ready` + `insertRecording`
+  // to the lifetime of the current editable editor: readonly/share pages and
+  // page switches re-run this effect (deps: live editable flag + pageId),
+  // recreating the closure over the active editor/pageId so a recording always
+  // targets whatever page is active at call time.
+  useEffect(() => {
+    if (!editor || !editor.isEditable) return;
+
+    const w = window as unknown as { gitmost?: Partial<GitmostBridge> };
+    w.gitmost = w.gitmost || {};
+    w.gitmost.version = 1;
+    w.gitmost.ready = true;
+
+    const insertRecording = (
+      payload: GitmostInsertRecordingPayload,
+    ): Promise<GitmostInsertRecordingResult> =>
+      gitmostInsertRecordingIntoEditor(editor, pageId, payload);
+
+    w.gitmost.insertRecording = insertRecording;
+
+    return () => {
+      // Only tear down if our registration is still the active one. With
+      // React's mount-before-unmount ordering, a newer PageEditor instance may
+      // have already replaced the bridge; clearing it here would disable the
+      // live editor's bridge.
+      if (w.gitmost && w.gitmost.insertRecording === insertRecording) {
+        w.gitmost.ready = false;
+        delete w.gitmost.insertRecording;
+      }
+    };
+  }, [editor, pageId, editorIsEditable]);
+
   const debouncedUpdateContent = useDebouncedCallback((newContent: any) => {
     const pageData = queryClient.getQueryData<IPage>(["pages", slugId]);
 
@@ -407,6 +470,8 @@ export default function PageEditor({
 
   return (
     <TransclusionLookupProvider>
+      <PageEmbedLookupProvider>
+        <PageEmbedAncestryProvider hostPageId={pageId}>
       {showStatic ? (
         <EditorProvider
           editable={false}
@@ -436,6 +501,7 @@ export default function PageEditor({
                 <TableHandlesLayer editor={editor} />
                 <ImageMenu editor={editor} />
                 <VideoMenu editor={editor} />
+                <AudioMenu editor={editor} />
                 <PdfMenu editor={editor} />
                 <CalloutMenu editor={editor} />
                 <SubpagesMenu editor={editor} />
@@ -454,6 +520,7 @@ export default function PageEditor({
             {showReadOnlyCommentPopup && (
               <CommentDialog editor={editor} pageId={pageId} readOnly />
             )}
+            {editor && editorIsEditable && <PageEmbedPicker />}
           </div>
           <div
             onClick={() => editor.commands.focus("end")}
@@ -461,6 +528,8 @@ export default function PageEditor({
           ></div>
         </div>
       )}
+        </PageEmbedAncestryProvider>
+      </PageEmbedLookupProvider>
     </TransclusionLookupProvider>
   );
 }

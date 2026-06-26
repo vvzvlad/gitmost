@@ -12,6 +12,15 @@ i18n
   // init i18next
   // for all options read: https://www.i18next.com/overview/configuration-options
   .init({
+    // i18n maintenance policy:
+    // - en-US is the source of truth for all UI strings (keys are the English text).
+    // - en-US and ru-RU are the fully-maintained locales; in particular, the
+    //   AI-chat string set is kept complete in both so the UI never renders
+    //   mixed-language (no per-key en-US fallback within a single widget).
+    // - The other 10 locales (fr-FR, de-DE, es-ES, nl-NL, ja-JP, zh-CN, ko-KR,
+    //   pt-BR, it-IT, uk-UA) are partial and intentionally rely on the
+    //   `fallbackLng: "en-US"` fallback below until translations are
+    //   contributed (e.g. via Crowdin).
     fallbackLng: "en-US",
     debug: false,
     showSupportNotice: false,

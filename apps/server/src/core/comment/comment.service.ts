@@ -22,7 +22,10 @@ import {
   ICommentResolvedNotificationJob,
 } from '../../integrations/queue/constants/queue.interface';
 import { WsService } from '../../ws/ws.service';
-import { AuthProvenanceData } from '../../common/decorators/auth-provenance.decorator';
+import {
+  AuthProvenanceData,
+  agentSourceFields,
+} from '../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class CommentService {
@@ -60,7 +63,6 @@ export class CommentService {
   ) {
     const { page, workspaceId, user } = opts;
     const commentContent = JSON.parse(createCommentDto.content);
-    const isAgent = provenance?.actor === 'agent';
 
     if (createCommentDto.parentCommentId) {
       const parentComment = await this.commentRepo.findById(
@@ -87,9 +89,7 @@ export class CommentService {
       spaceId: page.spaceId,
       // Agent-edit provenance: the user stays creatorId; this only annotates the
       // source. Normal user requests leave the column default ('user').
-      ...(isAgent
-        ? { createdSource: 'agent', aiChatId: provenance.aiChatId }
-        : {}),
+      ...agentSourceFields(provenance, 'createdSource', 'aiChatId'),
     });
 
     if (createCommentDto.yjsSelection) {

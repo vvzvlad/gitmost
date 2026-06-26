@@ -1,4 +1,20 @@
-import { compactToolOutput } from './ai-chat.service';
+import { ForbiddenException } from '@nestjs/common';
+import {
+  AiChatService,
+  compactToolOutput,
+  assistantParts,
+  serializeSteps,
+  rowToUiMessage,
+  prepareAgentStep,
+  flushAssistant,
+  chatStreamMetadata,
+  accumulateStepUsage,
+  MAX_AGENT_STEPS,
+  FINAL_STEP_INSTRUCTION,
+} from './ai-chat.service';
+import type { AiChatMessage, Workspace } from '@docmost/db/types/entity.types';
+import { buildSystemPrompt } from './ai-chat.prompt';
+import type { McpClientsService } from './external-mcp/mcp-clients.service';
 
 /**
  * Unit tests for compactToolOutput: the pure helper that shrinks LARGE tool
@@ -64,5 +80,572 @@ describe('compactToolOutput', () => {
     const originalBytes = Buffer.byteLength(JSON.stringify(original), 'utf8');
     const compactedBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
     expect(compactedBytes).toBeLessThan(originalBytes / 10);
+  });
+});
+
+/**
+ * Tests for assistantParts: the pure function that rebuilds the persisted
+ * UIMessage parts for a turn. Its output decides whether the conversation
+ * replays correctly on the next turn. The crux: a tool-call WITHOUT a paired
+ * result must become a synthetic `output-error` part, so convertToModelMessages
+ * never throws MissingToolResultsError. This test MUST fail on pre-fix logic
+ * that persisted a bare input-available call.
+ */
+describe('assistantParts', () => {
+  type AnyPart = Record<string, unknown>;
+
+  it('emits output-available for a tool-call WITH a paired result', () => {
+    const steps = [
+      {
+        text: '',
+        toolCalls: [
+          { toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } },
+        ],
+        toolResults: [
+          { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+        ],
+      },
+    ];
+    const parts = assistantParts(steps, '') as AnyPart[];
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart).toBeDefined();
+    expect(toolPart!.state).toBe('output-available');
+    expect(toolPart!.output).toEqual({ title: 'T' });
+  });
+
+  it('emits a synthetic output-error for an UNPAIRED tool-call (crux)', () => {
+    const steps = [
+      {
+        text: '',
+        toolCalls: [
+          { toolCallId: 'c9', toolName: 'insertNode', input: { node: {} } },
+        ],
+        toolResults: [],
+      },
+    ];
+    const parts = assistantParts(steps, '') as AnyPart[];
+    const toolPart = parts.find((p) => p.type === 'tool-insertNode');
+    expect(toolPart).toBeDefined();
+    // The unpaired call MUST become output-error (NOT input-available), so the
+    // rebuilt history is balanced for convertToModelMessages on the next turn.
+    expect(toolPart!.state).toBe('output-error');
+    expect(toolPart!.errorText).toBeTruthy();
+    expect(toolPart).not.toHaveProperty('output');
+  });
+
+  it('skips malformed tool-calls (missing toolName or toolCallId)', () => {
+    const steps = [
+      {
+        text: '',
+        toolCalls: [
+          { toolCallId: 'c1', input: {} }, // no toolName
+          { toolName: 'getPage', input: {} }, // no toolCallId
+        ],
+        toolResults: [],
+      },
+    ];
+    const parts = assistantParts(steps, '') as AnyPart[];
+    const toolParts = parts.filter(
+      (p) =>
+        typeof p.type === 'string' && (p.type as string).startsWith('tool-'),
+    );
+    expect(toolParts).toHaveLength(0);
+  });
+
+  it('uses per-step text when present', () => {
+    const steps = [{ text: 'hello', toolCalls: [], toolResults: [] }];
+    const parts = assistantParts(steps, 'fallback-ignored') as AnyPart[];
+    expect(parts).toEqual([{ type: 'text', text: 'hello' }]);
+  });
+
+  it('falls back to a single text part when no step text', () => {
+    const parts = assistantParts([], 'final answer') as AnyPart[];
+    expect(parts).toEqual([{ type: 'text', text: 'final answer' }]);
+  });
+});
+
+describe('serializeSteps', () => {
+  it('returns null when there are no calls or results', () => {
+    expect(serializeSteps([])).toBeNull();
+  });
+
+  it('flattens calls and results into a compact trace', () => {
+    const trace = serializeSteps([
+      {
+        toolCalls: [{ toolName: 'getPage', input: { id: 'p1' } }],
+        toolResults: [{ toolName: 'getPage', output: { title: 'T' } }],
+      },
+    ]) as Array<Record<string, unknown>>;
+    expect(trace).toHaveLength(2);
+    expect(trace[0]).toEqual({ toolName: 'getPage', input: { id: 'p1' } });
+    expect(trace[1]).toEqual({ toolName: 'getPage', output: { title: 'T' } });
+  });
+});
+
+describe('rowToUiMessage', () => {
+  it('prefers metadata.parts over content', () => {
+    const row = {
+      id: 'm1',
+      role: 'assistant',
+      content: 'plain text',
+      metadata: { parts: [{ type: 'text', text: 'rich part' }] },
+    } as unknown as AiChatMessage;
+    const ui = rowToUiMessage(row);
+    expect(ui.role).toBe('assistant');
+    expect(ui.parts).toEqual([{ type: 'text', text: 'rich part' }]);
+  });
+
+  it('falls back to a single text part from content when no metadata.parts', () => {
+    const row = {
+      id: 'm2',
+      role: 'user',
+      content: 'hi there',
+      metadata: null,
+    } as unknown as AiChatMessage;
+    const ui = rowToUiMessage(row);
+    expect(ui.role).toBe('user');
+    expect(ui.parts).toEqual([{ type: 'text', text: 'hi there' }]);
+  });
+});
+
+/**
+ * Unit tests for prepareAgentStep: the pure helper that decides per-step
+ * overrides for the agent loop. Early steps return undefined (default
+ * behavior); the final allowed step (stepNumber === MAX_AGENT_STEPS - 1) forces
+ * a text-only synthesis answer (toolChoice 'none') with the FINAL_STEP_INSTRUCTION
+ * appended onto — not replacing — the original system prompt.
+ */
+describe('prepareAgentStep', () => {
+  it('returns undefined for the first step', () => {
+    expect(prepareAgentStep(0, 'SYS')).toBeUndefined();
+  });
+
+  it('returns undefined for a non-final step (just before the last)', () => {
+    expect(prepareAgentStep(MAX_AGENT_STEPS - 2, 'SYS')).toBeUndefined();
+  });
+
+  it('forces a text-only synthesis on the final allowed step', () => {
+    const result = prepareAgentStep(MAX_AGENT_STEPS - 1, 'SYS');
+    expect(result).toBeDefined();
+    expect(result?.toolChoice).toBe('none');
+    // The original persona is preserved (prefix), not replaced.
+    expect(result?.system.startsWith('SYS')).toBe(true);
+    // The synthesis instruction is appended.
+    expect(result?.system).toContain(FINAL_STEP_INSTRUCTION);
+  });
+});
+
+/**
+ * flushAssistant (#183): the PURE row builder behind the step-granular durable
+ * write path. It runs identically for the upfront insert (empty steps,
+ * 'streaming'), every per-step update, and the terminal finalize — so a future
+ * background worker can call the same function. These tests pin the four status
+ * shapes and the `metadata.parts` shape that rowToUiMessage/findRecent depend on
+ * (per-step text + tool parts via assistantParts, in-progress text appended).
+ */
+describe('flushAssistant', () => {
+  type AnyPart = Record<string, unknown>;
+
+  const toolStep = {
+    text: 'looked it up',
+    toolCalls: [{ toolCallId: 'c1', toolName: 'getPage', input: { id: 'p1' } }],
+    toolResults: [
+      { toolCallId: 'c1', toolName: 'getPage', output: { title: 'T' } },
+    ],
+  };
+
+  it('upfront seed: empty streaming row (no content, no toolCalls, empty parts)', () => {
+    const f = flushAssistant([], '', 'streaming');
+    expect(f.status).toBe('streaming');
+    expect(f.content).toBe('');
+    expect(f.toolCalls).toBeNull();
+    expect(f.metadata.parts).toEqual([]);
+    // No finishReason while streaming (it is not a terminal state).
+    expect('finishReason' in f.metadata).toBe(false);
+  });
+
+  it('streaming update folds in finished steps but keeps status streaming', () => {
+    const f = flushAssistant([toolStep], '', 'streaming');
+    expect(f.status).toBe('streaming');
+    expect(f.content).toBe('looked it up');
+    const parts = f.metadata.parts as AnyPart[];
+    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart!.state).toBe('output-available');
+    expect(f.toolCalls).not.toBeNull();
+  });
+
+  it('completed: attaches finishReason + normalized usage + contextTokens + maxContextTokens', () => {
+    const f = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      contextTokens: 15,
+      maxContextTokens: 200000,
+    });
+    expect(f.status).toBe('completed');
+    expect(f.metadata.finishReason).toBe('stop');
+    expect(f.metadata.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      reasoningTokens: undefined,
+    });
+    expect(f.metadata.contextTokens).toBe(15);
+    expect(f.metadata.maxContextTokens).toBe(200000);
+  });
+
+  it('completed: omits maxContextTokens when unset or 0', () => {
+    // No maxContextTokens in the extra (admin set no context window).
+    const f = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      contextTokens: 15,
+    });
+    expect('maxContextTokens' in f.metadata).toBe(false);
+    // Explicit 0 is treated the same as unset (no limit -> key omitted).
+    const f0 = flushAssistant([toolStep], '', 'completed', {
+      finishReason: 'stop',
+      contextTokens: 15,
+      maxContextTokens: 0,
+    });
+    expect('maxContextTokens' in f0.metadata).toBe(false);
+  });
+
+  it('error: records the error and a derived finishReason', () => {
+    const f = flushAssistant([], 'partial answer', 'error', { error: 'boom' });
+    expect(f.status).toBe('error');
+    expect(f.content).toBe('partial answer');
+    expect(f.metadata.error).toBe('boom');
+    // Derives finishReason from the terminal status when none is supplied.
+    expect(f.metadata.finishReason).toBe('error');
+    expect(f.metadata.parts).toEqual([
+      { type: 'text', text: 'partial answer' },
+    ]);
+  });
+
+  it('aborted: in-progress text appended last, no error key', () => {
+    const f = flushAssistant([toolStep], ' and then', 'aborted');
+    expect(f.status).toBe('aborted');
+    expect(f.metadata.finishReason).toBe('aborted');
+    expect('error' in f.metadata).toBe(false);
+    expect(f.content).toBe('looked it up and then');
+    const parts = f.metadata.parts as AnyPart[];
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
+    });
+  });
+
+  it('combines a finished tool step with trailing in-progress text (error path)', () => {
+    // The error path captures the PARTIAL answer the user already saw: each
+    // finished step's text + tool parts, then the in-progress step's text last.
+    const flushed = flushAssistant([toolStep], ' and then', 'error', {
+      error: 'boom',
+    });
+    const parts = flushed.metadata.parts as AnyPart[];
+    expect(parts).toContainEqual({ type: 'text', text: 'looked it up' });
+    const toolPart = parts.find((p) => p.type === 'tool-getPage');
+    expect(toolPart!.state).toBe('output-available');
+    // In-progress text appended LAST so the parts match the stream order.
+    expect(parts[parts.length - 1]).toEqual({
+      type: 'text',
+      text: ' and then',
+    });
+    expect(flushed.content).toBe('looked it up and then');
+    expect(flushed.toolCalls).not.toBeNull();
+    expect(flushed.metadata.error).toBe('boom');
+  });
+});
+
+/**
+ * chatStreamMetadata: attach metadata to the streamed assistant UI message per
+ * part type — `chatId` on `start` (so the client adopts the real created chat id
+ * at the first chunk — see #137), and AUTHORITATIVE usage (incl. reasoning
+ * tokens) on `finish-step` and `finish` so the client's live token counter snaps
+ * to exact at each step/turn boundary.
+ */
+describe('chatStreamMetadata', () => {
+  it('returns { chatId } for the start part', () => {
+    expect(chatStreamMetadata({ type: 'start' }, 'chat-1')).toEqual({
+      chatId: 'chat-1',
+    });
+  });
+
+  it('returns the CUMULATIVE step usage passed in for the finish-step part', () => {
+    // finish-step usage is per-step in v6; the caller accumulates and passes the
+    // running sum, which this just wraps.
+    expect(
+      chatStreamMetadata(
+        { type: 'finish-step', usage: { outputTokens: 100 } },
+        'chat-1',
+        {
+          inputTokens: 500,
+          outputTokens: 220,
+          totalTokens: 720,
+          reasoningTokens: 30,
+        },
+      ),
+    ).toEqual({
+      usage: {
+        inputTokens: 500,
+        outputTokens: 220,
+        totalTokens: 720,
+        reasoningTokens: 30,
+      },
+    });
+  });
+
+  it('returns turn usage for the finish part (reasoning from deprecated top-level field)', () => {
+    expect(
+      chatStreamMetadata(
+        {
+          type: 'finish',
+          totalUsage: {
+            inputTokens: 1000,
+            outputTokens: 250,
+            totalTokens: 1250,
+            reasoningTokens: 50,
+          },
+        },
+        'chat-1',
+      ),
+    ).toEqual({
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 250,
+        totalTokens: 1250,
+        reasoningTokens: 50,
+      },
+    });
+  });
+
+  it('prefers outputTokenDetails.reasoningTokens over the deprecated field (finish)', () => {
+    expect(
+      chatStreamMetadata(
+        {
+          type: 'finish',
+          totalUsage: {
+            outputTokens: 100,
+            reasoningTokens: 5,
+            outputTokenDetails: { reasoningTokens: 30 },
+          },
+        },
+        'chat-1',
+      ),
+    ).toEqual({
+      usage: {
+        inputTokens: undefined,
+        outputTokens: 100,
+        totalTokens: undefined,
+        reasoningTokens: 30,
+      },
+    });
+  });
+
+  it('returns undefined for a finish-step with no accumulated usage', () => {
+    expect(
+      chatStreamMetadata({ type: 'finish-step' }, 'chat-1'),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for an unrelated part (e.g. text-delta)', () => {
+    expect(
+      chatStreamMetadata({ type: 'text-delta' }, 'chat-1'),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * accumulateStepUsage: sums per-step usage into a running cumulative total so the
+ * client never sees the live counter jump DOWN on a multi-step agent turn (#151).
+ */
+describe('accumulateStepUsage', () => {
+  it('sums every field across two steps', () => {
+    expect(
+      accumulateStepUsage(
+        {
+          inputTokens: 500,
+          outputTokens: 100,
+          totalTokens: 600,
+          reasoningTokens: 30,
+        },
+        {
+          inputTokens: 520,
+          outputTokens: 80,
+          totalTokens: 600,
+          reasoningTokens: 10,
+        },
+      ),
+    ).toEqual({
+      inputTokens: 1020,
+      outputTokens: 180,
+      totalTokens: 1200,
+      reasoningTokens: 40,
+    });
+  });
+
+  it('returns the step as-is when there is no accumulator yet', () => {
+    expect(accumulateStepUsage(undefined, { outputTokens: 10 })).toEqual({
+      outputTokens: 10,
+    });
+  });
+
+  it('returns the accumulator unchanged when the step usage is absent', () => {
+    const acc = { outputTokens: 10 };
+    expect(accumulateStepUsage(acc, undefined)).toBe(acc);
+  });
+
+  it('returns undefined when both sides are absent', () => {
+    expect(accumulateStepUsage(undefined, undefined)).toBeUndefined();
+  });
+
+  it('keeps a field undefined only when neither side has it', () => {
+    expect(
+      accumulateStepUsage({ outputTokens: 5 }, { outputTokens: 7 }),
+    ).toEqual({
+      inputTokens: undefined,
+      outputTokens: 12,
+      totalTokens: undefined,
+      reasoningTokens: undefined,
+    });
+  });
+});
+
+/**
+ * Contract test for the #180 wiring in AiChatService.handle: the external MCP
+ * toolset must be built BEFORE the system prompt, and its per-server guidance
+ * threaded into buildSystemPrompt({ mcpInstructions }). The full streaming
+ * handle() is not unit-testable, so this reproduces the exact prompt-build call
+ * the service makes with a connected-server toolset and asserts the guidance is
+ * present. The toolsFor->buildSystemPrompt ordering is additionally enforced at
+ * compile time (the prompt input now consumes external.instructions).
+ */
+describe('AiChatService system prompt wiring (#180)', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+
+  it('includes the external MCP server instructions in the built system prompt', () => {
+    // Shape returned by mcpClients.toolsFor (only `instructions` matters here).
+    const external: Pick<
+      Awaited<ReturnType<McpClientsService['toolsFor']>>,
+      'instructions'
+    > = {
+      instructions: [
+        {
+          serverName: 'Tavily',
+          toolPrefix: 'tavily',
+          instructions: 'Prefer tavily_search for current events.',
+        },
+      ],
+    };
+
+    // Exactly the call the service makes after building the external toolset.
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: external.instructions,
+    });
+
+    expect(system).toContain('<mcp_tooling');
+    expect(system).toContain('Tavily');
+    expect(system).toContain('tavily_*');
+    expect(system).toContain('Prefer tavily_search for current events.');
+  });
+
+  it('renders no MCP block when there are no external servers (empty instructions)', () => {
+    const system = buildSystemPrompt({
+      workspace,
+      adminPrompt: 'persona',
+      mcpInstructions: [],
+    });
+    expect(system).not.toContain('<mcp_tooling');
+  });
+});
+
+/**
+ * resolveOpenPageContext: the open page the client sends is attacker-controllable
+ * (id AND title), so the service must validate the id against the DB and take the
+ * title from the DB row — never echo the client title (#159, AI edits the wrong
+ * page). Built with Object.create so the test exercises the real method without
+ * the service's full dependency graph (the constructor only assigns fields).
+ */
+describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', () => {
+  const ws = { id: 'ws-1' } as Workspace;
+  const user = { id: 'u-1' } as any;
+
+  function makeService(opts: {
+    page?: { id: string; workspaceId: string; title: string | null } | null;
+    canView?: boolean | 'throw-other';
+  }) {
+    const svc = Object.create(AiChatService.prototype) as AiChatService;
+    (svc as any).logger = { warn: () => {} };
+    (svc as any).pageRepo = {
+      findById: async () => opts.page ?? undefined,
+    };
+    (svc as any).pageAccess = {
+      validateCanView: async () => {
+        if (opts.canView === 'throw-other') throw new Error('db down');
+        if (opts.canView === false) throw new ForbiddenException();
+        return true;
+      },
+    };
+    return svc;
+  }
+
+  const call = (svc: AiChatService, openPage: any) =>
+    (svc as any).resolveOpenPageContext(openPage, ws, user) as Promise<{
+      id: string;
+      title: string;
+    } | null>;
+
+  it('returns null when no page is open (no id)', async () => {
+    const svc = makeService({});
+    expect(await call(svc, null)).toBeNull();
+    expect(await call(svc, {})).toBeNull();
+    expect(await call(svc, { title: 'spoofed' })).toBeNull();
+  });
+
+  it('returns null when the page does not exist', async () => {
+    const svc = makeService({ page: null });
+    expect(await call(svc, { id: 'p-x' })).toBeNull();
+  });
+
+  it('returns null for a page in a DIFFERENT workspace (tenant isolation)', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-OTHER', title: 'Secret' },
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('returns null when the user may not view the page (Forbidden)', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Restricted' },
+      canView: false,
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('returns null (fail-closed) on a non-Forbidden access-check fault', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'X' },
+      canView: 'throw-other',
+    });
+    expect(await call(svc, { id: 'p-1' })).toBeNull();
+  });
+
+  it('uses the AUTHORITATIVE DB title, IGNORING the client-supplied title', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Real Title B' },
+      canView: true,
+    });
+    // The client claims it is on "Page A" but the id points at page B.
+    const result = await call(svc, { id: 'p-1', title: 'Page A' });
+    expect(result).toEqual({ id: 'p-1', title: 'Real Title B' });
+  });
+
+  it('coerces a null DB title to an empty string', async () => {
+    const svc = makeService({
+      page: { id: 'p-1', workspaceId: 'ws-1', title: null },
+      canView: true,
+    });
+    expect(await call(svc, { id: 'p-1' })).toEqual({ id: 'p-1', title: '' });
   });
 });

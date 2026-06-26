@@ -1,5 +1,12 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
-import { AI_DRIVERS, AiDriver, STT_API_STYLES, SttApiStyle } from '../ai.types';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import {
+  AI_DRIVERS,
+  AiDriver,
+  CHAT_API_STYLES,
+  ChatApiStyle,
+  STT_API_STYLES,
+  SttApiStyle,
+} from '../ai.types';
 
 /**
  * Admin update payload for the workspace AI provider settings.
@@ -17,6 +24,17 @@ export class UpdateAiSettingsDto {
   @IsOptional()
   @IsString()
   chatModel?: string;
+
+  // Max context window in tokens shown in the chat header badge. 0/empty =
+  // clear the limit (no denominator shown).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  chatContextWindow?: number;
+
+  @IsOptional()
+  @IsIn(CHAT_API_STYLES)
+  chatApiStyle?: ChatApiStyle;
 
   @IsOptional()
   @IsString()
@@ -54,7 +72,24 @@ export class UpdateAiSettingsDto {
   @IsIn(STT_API_STYLES)
   sttApiStyle?: SttApiStyle;
 
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty = auto-detect.
+  @IsOptional()
+  @IsString()
+  sttLanguage?: string;
+
   @IsOptional()
   @IsString()
   sttApiKey?: string;
+
+  // Cheap model id for the anonymous public-share assistant; reuses the chat
+  // driver/baseUrl/apiKey. Empty → the assistant falls back to chatModel.
+  @IsOptional()
+  @IsString()
+  publicShareChatModel?: string;
+
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  @IsOptional()
+  @IsString()
+  publicShareAssistantRoleId?: string;
 }

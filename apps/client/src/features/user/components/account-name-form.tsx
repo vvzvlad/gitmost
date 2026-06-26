@@ -10,16 +10,22 @@ import { TextInput, Button } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
 
-const formSchema = z.object({
-  name: z.string().min(1).max(40),
-});
-
-type FormValues = z.infer<typeof formSchema>;
+type FormValues = {
+  name: string;
+};
 
 export default function AccountNameForm() {
   const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
   const [user, setUser] = useAtom(userAtom);
+
+  // Build the schema with friendly, translated validation messages (issue #130)
+  const formSchema = z.object({
+    name: z
+      .string()
+      .min(1, t("Name is required"))
+      .max(40, t("Name must be 40 characters or fewer")),
+  });
 
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
@@ -34,6 +40,9 @@ export default function AccountNameForm() {
     try {
       const updatedUser = await updateUser(data);
       setUser(updatedUser);
+      // Reset the dirty baseline so the Save button disables again on a clean
+      // form right after a successful save.
+      form.resetDirty(data as FormValues);
       notifications.show({
         message: t("Updated successfully"),
       });
@@ -57,7 +66,12 @@ export default function AccountNameForm() {
         variant="filled"
         {...form.getInputProps("name")}
       />
-      <Button type="submit" mt="sm" disabled={isLoading} loading={isLoading}>
+      <Button
+        type="submit"
+        mt="sm"
+        disabled={isLoading || !form.isDirty()}
+        loading={isLoading}
+      >
         {t("Save")}
       </Button>
     </form>

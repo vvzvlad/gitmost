@@ -16,6 +16,15 @@ export const AI_DRIVERS: AiDriver[] = ['openai', 'gemini', 'ollama'];
 export type SttApiStyle = 'multipart' | 'json';
 export const STT_API_STYLES: SttApiStyle[] = ['multipart', 'json'];
 
+// Chat provider implementation for the `openai` driver. Chosen explicitly by the
+// admin (NOT inferred from baseUrl — a custom URL can front real OpenAI too).
+// 'openai-compatible' = @ai-sdk/openai-compatible: maps streamed
+//   `reasoning_content` to reasoning parts (z.ai/GLM, DeepSeek, OpenRouter, ...).
+// 'openai' = official @ai-sdk/openai: real-OpenAI reasoning-model request shaping
+//   (max_completion_tokens, the 'developer' role), no third-party reasoning map.
+export type ChatApiStyle = 'openai-compatible' | 'openai';
+export const CHAT_API_STYLES: ChatApiStyle[] = ['openai-compatible', 'openai'];
+
 /**
  * Non-secret provider settings persisted under `settings.ai.provider`.
  * The API key is intentionally absent here.
@@ -23,6 +32,12 @@ export const STT_API_STYLES: SttApiStyle[] = ['multipart', 'json'];
 export interface AiProviderSettings {
   driver: AiDriver;
   chatModel: string;
+  // Max context window in tokens; surfaced to the chat header badge as the
+  // denominator ("current / max"). 0/unset = no limit (badge shows no denominator).
+  chatContextWindow?: number;
+  // Chat provider implementation for the `openai` driver. Unset → defaults to
+  // 'openai-compatible' (so reasoning is surfaced by default). See ChatApiStyle.
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   // Embedding-specific base URL. Falls back to `baseUrl` when empty/unset.
@@ -31,8 +46,48 @@ export interface AiProviderSettings {
   // STT-specific base URL. Falls back to baseUrl when empty/unset.
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty/unset = auto-detect.
+  sttLanguage?: string;
   systemPrompt?: string;
+  // Cheap chat model id used ONLY by the anonymous public-share assistant. The
+  // driver / baseUrl / apiKey of the main chat provider are reused; this is the
+  // model id only. Empty/unset → the public-share assistant falls back to
+  // `chatModel`. The workspace owner pays for anonymous tokens, so a cheaper
+  // model is preferred for read-only Q&A over published documentation.
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the anonymous public-share assistant adopts;
+  // empty/unset = built-in locked persona.
+  publicShareAssistantRoleId?: string;
 }
+
+/**
+ * The persisted, non-secret provider setting keys — the SINGLE source of truth
+ * for which fields a settings update may write through to `settings.ai.provider`.
+ * `satisfies readonly (keyof AiProviderSettings)[]` makes the compiler reject a
+ * typo or a key that is not a real provider setting.
+ *
+ * The settings service consumes this directly. The generic workspace repo cannot
+ * import AI types, so it keeps its own copy of the same keys, guarded by a parity
+ * test against this constant (so any future drift fails in CI, not silently in
+ * prod — a missing key there validates fine, passes the service, and is then
+ * dropped at the SQL boundary with no error).
+ */
+export const PROVIDER_SETTINGS_KEYS = [
+  'driver',
+  'chatModel',
+  'chatContextWindow',
+  'chatApiStyle',
+  'embeddingModel',
+  'baseUrl',
+  'embeddingBaseUrl',
+  'sttModel',
+  'sttBaseUrl',
+  'sttApiStyle',
+  'sttLanguage',
+  'systemPrompt',
+  'publicShareChatModel',
+  'publicShareAssistantRoleId',
+] as const satisfies readonly (keyof AiProviderSettings)[];
 
 /**
  * Fully resolved provider config, including the decrypted API key for the
@@ -47,6 +102,14 @@ export interface AiProviderSettings {
 export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens; surfaced to the chat header badge as the
+  // "current / max" denominator. 0/unset = no limit.
+  chatContextWindow?: number;
+  // Cheap model id for the public-share assistant; reuses the chat creds.
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts (empty/unset
+  // = built-in locked persona). Re-declared for parity with the explicit fields.
+  publicShareAssistantRoleId?: string;
   apiKey?: string;
   embeddingApiKey?: string;
   sttApiKey?: string;
@@ -60,13 +123,23 @@ export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
 export interface MaskedAiSettings {
   driver?: AiDriver;
   chatModel?: string;
+  // Max context window in tokens; the chat header badge denominator. 0/unset =
+  // no limit.
+  chatContextWindow?: number;
+  chatApiStyle?: ChatApiStyle;
   embeddingModel?: string;
   baseUrl?: string;
   embeddingBaseUrl?: string;
   sttModel?: string;
   sttBaseUrl?: string;
   sttApiStyle?: SttApiStyle;
+  // ISO-639-1 dictation language hint (e.g. 'en', 'ru'). Empty/unset = auto-detect.
+  sttLanguage?: string;
   systemPrompt?: string;
+  publicShareChatModel?: string;
+  // Agent-role id whose persona the public-share assistant adopts; empty/unset
+  // = built-in locked persona.
+  publicShareAssistantRoleId?: string;
   hasApiKey: boolean;
   hasEmbeddingApiKey: boolean;
   hasSttApiKey: boolean;

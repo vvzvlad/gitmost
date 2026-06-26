@@ -9,18 +9,24 @@ import { MicButton } from "@/features/dictation/components/mic-button";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
+  /** Called instead of `onSend` while a turn is streaming: the text is queued
+   *  and sent automatically once the current turn finishes. */
+  onQueue: (text: string) => void;
   onStop: () => void;
   isStreaming: boolean;
   disabled?: boolean;
 }
 
 /**
- * Message composer. Enter sends, Shift+Enter inserts a newline. While the agent
- * is streaming, the send button becomes a Stop button (calls `stop()`); the
- * textarea stays usable so the user can draft the next turn.
+ * Message composer. Enter submits, Shift+Enter inserts a newline. While the
+ * agent is streaming, submitting QUEUES the message (via `onQueue`) instead of
+ * dropping it — it is sent automatically once the current turn finishes; the
+ * Stop button (calls `stop()`) is also shown. The textarea stays usable so the
+ * user can draft / queue the next turn while the agent is busy.
  */
 export default function ChatInput({
   onSend,
+  onQueue,
   onStop,
   isStreaming,
   disabled,
@@ -29,18 +35,23 @@ export default function ChatInput({
   const [value, setValue] = useAtom(aiChatDraftAtom);
   const workspace = useAtomValue(workspaceAtom);
   const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
+  // Streaming (silence-cut) dictation is opt-in per workspace; absent/false
+  // keeps the stable batch path.
+  const streamingDictation =
+    workspace?.settings?.ai?.dictationStreaming === true;
 
-  const send = (): void => {
+  const submit = (): void => {
     const text = value.trim();
-    if (!text || isStreaming || disabled) return;
-    onSend(text);
+    if (!text || disabled) return;
+    if (isStreaming) onQueue(text);
+    else onSend(text);
     setValue("");
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      submit();
     }
   };
 
@@ -64,28 +75,43 @@ export default function ChatInput({
       {isDictationEnabled && (
         <MicButton
           size="lg"
+          streaming={streamingDictation}
           disabled={isStreaming || disabled}
           onText={(text) => setValue((v) => (v ? `${v} ${text}` : text))}
         />
       )}
       {isStreaming ? (
-        <Tooltip label={t("Stop")} withArrow>
-          <ActionIcon
-            size="lg"
-            color="red"
-            variant="light"
-            onClick={onStop}
-            aria-label={t("Stop")}
-          >
-            <IconPlayerStopFilled size={18} />
-          </ActionIcon>
-        </Tooltip>
+        <Group gap="xs" wrap="nowrap">
+          {value.trim().length > 0 && (
+            <Tooltip label={t("Send when the agent finishes")} withArrow>
+              <ActionIcon
+                size="lg"
+                variant="filled"
+                onClick={submit}
+                aria-label={t("Queue message")}
+              >
+                <IconSend size={18} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          <Tooltip label={t("Stop")} withArrow>
+            <ActionIcon
+              size="lg"
+              color="red"
+              variant="light"
+              onClick={onStop}
+              aria-label={t("Stop")}
+            >
+              <IconPlayerStopFilled size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
       ) : (
         <Tooltip label={t("Send")} withArrow>
           <ActionIcon
             size="lg"
             variant="filled"
-            onClick={send}
+            onClick={submit}
             disabled={disabled || value.trim().length === 0}
             aria-label={t("Send")}
           >

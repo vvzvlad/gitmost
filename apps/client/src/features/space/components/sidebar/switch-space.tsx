@@ -1,8 +1,7 @@
 import classes from "./switch-space.module.css";
 import { useNavigate } from "react-router-dom";
 import { getSpaceUrl } from "@/lib/config";
-import { ActionIcon, Group, Text, Tooltip, UnstyledButton } from "@mantine/core";
-import { IconSettings } from "@tabler/icons-react";
+import { Text, UnstyledButton } from "@mantine/core";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import {
@@ -10,7 +9,6 @@ import {
   useGetSpacesQuery,
 } from "@/features/space/queries/space-query.ts";
 import { ISpace } from "../../types/space.types";
-import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import React, { useMemo } from "react";
 
@@ -19,7 +17,6 @@ interface SwitchSpaceProps {
   spaceName: string;
   spaceSlug: string;
   spaceIcon?: string;
-  onSettings: () => void;
 }
 
 export function SwitchSpace({
@@ -27,9 +24,7 @@ export function SwitchSpace({
   spaceName,
   spaceSlug,
   spaceIcon,
-  onSettings,
 }: SwitchSpaceProps) {
-  const { t } = useTranslation();
   const navigate = useNavigate();
   // Load every space the user belongs to (API caps limit at 100) and render
   // them as an always-visible grid instead of the previous searchable popover.
@@ -59,31 +54,6 @@ export function SwitchSpace({
 
   return (
     <div className={classes.wrapper}>
-      <Group gap={6} wrap="nowrap" className={classes.header}>
-        <CustomAvatar
-          name={spaceName}
-          avatarUrl={spaceIcon}
-          type={AvatarIconType.SPACE_ICON}
-          color="initials"
-          variant="filled"
-          size={20}
-        />
-        <Text className={classes.spaceName} size="md" fw={600} lineClamp={1}>
-          {spaceName}
-        </Text>
-        <Tooltip label={t("Space settings")} withArrow position="top">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
-            onClick={onSettings}
-            aria-label={t("Space settings")}
-          >
-            <IconSettings size={18} stroke={2} />
-          </ActionIcon>
-        </Tooltip>
-      </Group>
-
       <div className={classes.grid}>
         {spaces.map((space: ISpace) => (
           <UnstyledButton

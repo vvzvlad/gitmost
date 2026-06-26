@@ -41,6 +41,7 @@ import {
   Drawio,
   Excalidraw,
   Embed,
+  HtmlEmbed,
   TiptapPdf,
   PageBreak,
   SearchAndReplace,
@@ -60,7 +61,11 @@ import {
   Status,
   TransclusionSource,
   TransclusionReference,
+  PageEmbed,
   TableView,
+  FootnoteReference,
+  FootnotesList,
+  FootnoteDefinition,
 } from "@docmost/editor-ext";
 import {
   randomElement,
@@ -87,10 +92,15 @@ import CodeBlockView from "@/features/editor/components/code-block/code-block-vi
 import DrawioView from "../components/drawio/drawio-view";
 import ExcalidrawView from "@/features/editor/components/excalidraw/excalidraw-view-lazy.tsx";
 import EmbedView from "@/features/editor/components/embed/embed-view.tsx";
+import HtmlEmbedView from "@/features/editor/components/html-embed/html-embed-view.tsx";
 import PdfView from "@/features/editor/components/pdf/pdf-view.tsx";
 import SubpagesView from "@/features/editor/components/subpages/subpages-view.tsx";
 import TransclusionView from "@/features/editor/components/transclusion/transclusion-view.tsx";
 import TransclusionReferenceView from "@/features/editor/components/transclusion/transclusion-reference-view.tsx";
+import FootnoteReferenceView from "@/features/editor/components/footnote/footnote-reference-view.tsx";
+import FootnotesListView from "@/features/editor/components/footnote/footnotes-list-view.tsx";
+import FootnoteDefinitionView from "@/features/editor/components/footnote/footnote-definition-view.tsx";
+import PageEmbedView from "@/features/editor/components/page-embed/page-embed-view.tsx";
 import { common, createLowlight } from "lowlight";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import powershell from "highlight.js/lib/languages/powershell";
@@ -230,7 +240,7 @@ export const mainExtensions = [
   Typography,
   TrailingNode,
   GlobalDragHandle.configure({
-    customNodes: ["transclusionSource", "transclusionReference"],
+    customNodes: ["transclusionSource", "transclusionReference", "pageEmbed"],
   }),
   TextStyle,
   Color,
@@ -365,6 +375,13 @@ export const mainExtensions = [
   Embed.configure({
     view: EmbedView,
   }),
+  // Raw HTML/CSS/JS node (Variant C). The node is registered for ALL users so
+  // documents authored by admins render correctly for everyone; INSERTION is
+  // gated to admins in the slash menu, and the server strips the node from any
+  // non-admin write so a non-admin cannot persist it.
+  HtmlEmbed.configure({
+    view: HtmlEmbedView,
+  }),
   TiptapPdf.configure({
     view: PdfView,
   }),
@@ -380,6 +397,22 @@ export const mainExtensions = [
   }),
   TransclusionReference.configure({
     view: TransclusionReferenceView,
+  }),
+  FootnoteReference.configure({
+    view: FootnoteReferenceView,
+    // Skip orphan-cleanup on remote/collaboration steps so collaborating
+    // clients never fight over footnote integrity (deterministic numbering
+    // decorations handle the rest).
+    isRemoteTransaction: (tr: any) => isChangeOrigin(tr),
+  }),
+  FootnotesList.configure({
+    view: FootnotesListView,
+  }),
+  FootnoteDefinition.configure({
+    view: FootnoteDefinitionView,
+  }),
+  PageEmbed.configure({
+    view: PageEmbedView,
   }),
   MarkdownClipboard.configure({
     transformPastedText: true,
@@ -420,7 +453,8 @@ const TEMPLATE_EXCLUDED_SLASH_ITEMS = new Set([
   "Draw.io (diagrams.net)",
   "Excalidraw (Whiteboard)",
   "Audio",
-  "Synced block"
+  "Synced block",
+  "Embed page"
 ]);
 
 const TemplateSlashCommand = Command.configure({

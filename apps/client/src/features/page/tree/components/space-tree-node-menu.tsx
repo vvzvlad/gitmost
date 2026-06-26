@@ -12,13 +12,13 @@ import {
   IconLink,
   IconStar,
   IconStarFilled,
+  IconTemplate,
   IconTrash,
 } from "@tabler/icons-react";
 
 import ExportModal from "@/components/common/export-modal";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
 import CopyPageModal from "@/features/page/components/copy-page-modal.tsx";
-import { useDeletePageModal } from "@/features/page/hooks/use-delete-page-modal.tsx";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { duplicatePage } from "@/features/page/services/page-service.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
@@ -30,6 +30,7 @@ import {
   useRemoveFavoriteMutation,
 } from "@/features/favorite/queries/favorite-query";
 
+import { useToggleTemplateMutation } from "@/features/page-embed/queries/page-embed-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
@@ -45,7 +46,6 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const { t } = useTranslation();
   const clipboard = useClipboard({ timeout: 500 });
   const { spaceSlug } = useParams();
-  const { openDeleteModal } = useDeletePageModal();
   const { handleDelete } = useTreeMutation(node.spaceId);
   const [data, setData] = useAtom(treeDataAtom);
   const emit = useQueryEmit();
@@ -63,6 +63,26 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const addFavorite = useAddFavoriteMutation();
   const removeFavorite = useRemoveFavoriteMutation();
   const isFavorited = favoriteIds.has(node.id);
+  const toggleTemplate = useToggleTemplateMutation();
+  const isTemplate = !!node.isTemplate;
+
+  const handleToggleTemplate = async () => {
+    const next = !isTemplate;
+    try {
+      await toggleTemplate.mutateAsync({ pageId: node.id, isTemplate: next });
+      // Reflect the new flag locally so the menu label updates immediately.
+      setData((prev) =>
+        treeModel.update(prev, node.id, { isTemplate: next } as any),
+      );
+      notifications.show({
+        message: next
+          ? t("Page marked as template")
+          : t("Page is no longer a template"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
 
   const handleCopyLink = () => {
     const pageUrl =
@@ -128,7 +148,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
             variant="subtle"
             color="gray"
             className={classes.actionIcon}
-            aria-label={t("Page menu for {{name}}", { name: node.name || t("untitled") })}
+            aria-label={t("Page menu for {{name}}", { name: node.name || t("Untitled") })}
             tabIndex={-1}
             onClick={(e) => {
               e.preventDefault();
@@ -179,7 +199,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
               openExportModal();
             }}
           >
-            {t("Export page")}
+            {t("Export")}
           </Menu.Item>
 
           {canEdit && (
@@ -203,7 +223,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                   openMovePageModal();
                 }}
               >
-                {t("Move")}
+                {t("Move to space")}
               </Menu.Item>
 
               <Menu.Item
@@ -217,6 +237,17 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 {t("Copy to space")}
               </Menu.Item>
 
+              <Menu.Item
+                leftSection={<IconTemplate size={16} />}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleToggleTemplate();
+                }}
+              >
+                {isTemplate ? t("Unset as template") : t("Make template")}
+              </Menu.Item>
+
               <Menu.Divider />
               <Menu.Item
                 c="red"
@@ -224,9 +255,7 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  openDeleteModal({
-                    onConfirm: () => handleDelete(node.id),
-                  });
+                  handleDelete(node.id);
                 }}
               >
                 {t("Move to trash")}

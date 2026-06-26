@@ -10,6 +10,7 @@ import { SessionActivityService } from '../../session/session-activity.service';
 import { FastifyRequest } from 'fastify';
 import { extractBearerTokenFromHeader, isUserDisabled } from '../../../common/helpers';
 import { ModuleRef } from '@nestjs/core';
+import { resolveProvenance } from '../../../common/decorators/auth-provenance.decorator';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -55,7 +56,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!workspace) {
       throw new UnauthorizedException();
     }
-    const user = await this.userRepo.findById(payload.sub, payload.workspaceId);
+    const user = await this.userRepo.findById(payload.sub, payload.workspaceId, {
+      includeIsAgent: true,
+    });
 
     if (!user || isUserDisabled(user)) {
       throw new UnauthorizedException();
@@ -71,14 +74,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       this.sessionActivityService.trackActivity(sessionId, payload.sub, payload.workspaceId);
     }
 
-    // Propagate the signed agent-edit provenance claim onto the request so REST
-    // services/controllers can set the 'agent' marker off it. A normal user
-    // token carries no actor claim and resolves to 'user' (unchanged behaviour);
-    // only the internal agent's minted token sets actor='agent' + aiChatId. This
-    // is read server-side from the SIGNED token, never from a client body field,
-    // so a normal user cannot fake an 'agent' badge.
-    req.raw.actor = (payload as JwtPayload).actor ?? 'user';
-    req.raw.aiChatId = (payload as JwtPayload).aiChatId ?? null;
+    // Propagate the agent-edit provenance onto the request so REST
+    // services/controllers can set the 'agent' marker off it. Derived from the
+    // SIGNED server-side identity via the shared resolver (also used by the
+    // collab seam, so the two never drift), never from a client body field — so
+    // an is_agent service account stamps every REST write made with an access
+    // token, and a normal user cannot fake an 'agent' badge.
+    const provenance = resolveProvenance(user, payload as JwtPayload);
+    req.raw.actor = provenance.actor;
+    req.raw.aiChatId = provenance.aiChatId;
 
     return { user, workspace };
   }
