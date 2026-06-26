@@ -17,7 +17,9 @@ import { buildShareSystemPrompt } from './public-share-chat.prompt';
 import { roleModelOverride } from './roles/role-model-config';
 import {
   PublicShareWorkspaceLimiter,
+  PublicShareWorkspaceTokenBudget,
   createPublicShareWorkspaceLimiter,
+  createPublicShareWorkspaceTokenBudget,
 } from './public-share-workspace-limiter';
 import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import {
@@ -125,6 +127,16 @@ export class PublicShareChatService {
    */
   private readonly workspaceLimiter: PublicShareWorkspaceLimiter;
 
+  /**
+   * COST contour two: a per-workspace TOKEN budget over a rolling day. The
+   * request-count limiter above bounds how many anonymous calls run; this bounds
+   * how many provider TOKENS they spend (input re-sent per step + output),
+   * which is what the owner is actually billed for (issue #159, finding #5).
+   * Checked read-only before a turn streams; the real usage is recorded once the
+   * turn finishes (`onFinish`).
+   */
+  private readonly tokenBudget: PublicShareWorkspaceTokenBudget;
+
   constructor(
     private readonly ai: AiService,
     private readonly aiSettings: AiSettingsService,
@@ -133,6 +145,7 @@ export class PublicShareChatService {
     private readonly aiAgentRoleRepo: AiAgentRoleRepo,
   ) {
     this.workspaceLimiter = createPublicShareWorkspaceLimiter(redisService);
+    this.tokenBudget = createPublicShareWorkspaceTokenBudget(redisService);
   }
 
   /**
@@ -142,6 +155,25 @@ export class PublicShareChatService {
    */
   async tryConsumeWorkspaceQuota(workspaceId: string): Promise<boolean> {
     return this.workspaceLimiter.tryConsume(workspaceId);
+  }
+
+  /**
+   * Read-only pre-stream COST gate: true while the workspace is under its
+   * rolling-day token budget, false once the trailing-day token spend has
+   * reached it (the controller must then 429 BEFORE starting the stream). This
+   * bounds the owner's actual provider bill, which counting requests alone does
+   * not (issue #159, finding #5).
+   */
+  async withinShareTokenBudget(workspaceId: string): Promise<boolean> {
+    return this.tokenBudget.withinBudget(workspaceId);
+  }
+
+  /**
+   * Record a finished turn's real token spend against the rolling-day budget.
+   * Best-effort (the turn already ran): failures are swallowed by the budget.
+   */
+  async recordShareTokens(workspaceId: string, tokens: number): Promise<void> {
+    return this.tokenBudget.record(workspaceId, tokens);
   }
 
   /**
@@ -231,6 +263,18 @@ export class PublicShareChatService {
         // bill even if the per-IP throttle is evaded; worst case = steps × this.
         maxOutputTokens: resolveShareAiMaxOutputTokens(),
         abortSignal: signal,
+        onFinish: ({ totalUsage }) => {
+          // Account the turn's REAL token spend (input re-sent per step + output,
+          // summed across all steps) against the per-workspace rolling-day budget
+          // so a future turn over budget is rejected up front (issue #159 #5).
+          // totalUsage fields are `number | undefined`; fall back to the sum of
+          // input+output when the provider omits totalTokens. Fire-and-forget:
+          // the turn already streamed, so a record failure must not break it.
+          const u = totalUsage ?? ({} as typeof totalUsage);
+          const tokens =
+            u?.totalTokens ?? (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
+          void this.recordShareTokens(workspaceId, tokens);
+        },
         onError: ({ error }) => {
           // Reuse the shared formatter so provider error formatting stays
           // unified (statusCode + body) with the authenticated path.

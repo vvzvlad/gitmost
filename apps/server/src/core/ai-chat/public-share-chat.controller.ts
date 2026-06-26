@@ -151,6 +151,7 @@ export interface ShareAssistantDeps {
     | 'resolveShareRole'
     | 'getShareChatModel'
     | 'tryConsumeWorkspaceQuota'
+    | 'withinShareTokenBudget'
   >;
 }
 
@@ -267,9 +268,21 @@ export async function resolveShareAssistantRequest(
     throw new NotFoundException('Not found');
   }
 
-  // 5. Per-WORKSPACE anti-abuse cap (IP-independent; defense in depth). Checked
-  //    BEFORE res.hijack(), so an over-cap workspace gets a clean 429 and spends
-  //    nothing.
+  // 5a. Per-WORKSPACE rolling-day TOKEN budget (the COST backstop). Read-only and
+  //     checked FIRST so a workspace that has already burned its day's token
+  //     budget gets a clean 429 WITHOUT consuming a request slot, and spends
+  //     nothing. Counting requests alone does not bound the owner's provider
+  //     bill (issue #159, finding #5).
+  if (!(await deps.publicShareChat.withinShareTokenBudget(workspaceId))) {
+    throw new HttpException(
+      'This documentation assistant has reached its usage budget. Please try again later.',
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  // 5b. Per-WORKSPACE anti-abuse request cap (IP-independent; defense in depth).
+  //     Checked BEFORE res.hijack(), so an over-cap workspace gets a clean 429
+  //     and spends nothing.
   if (!(await deps.publicShareChat.tryConsumeWorkspaceQuota(workspaceId))) {
     throw new HttpException(
       'This documentation assistant is temporarily busy. Please try again later.',
