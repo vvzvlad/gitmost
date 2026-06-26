@@ -4,6 +4,7 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { EnvironmentService } from '../../../../integrations/environment/environment.service';
 import {
@@ -35,6 +36,8 @@ const MAX_BYTES = 1_000_000;
  */
 @Injectable()
 export class AiAgentRolesCatalogProvider {
+  private readonly logger = new Logger(AiAgentRolesCatalogProvider.name);
+
   constructor(private readonly environmentService: EnvironmentService) {}
 
   /** Read + validate the top-level index (`index.json`). */
@@ -79,9 +82,11 @@ export class AiAgentRolesCatalogProvider {
   private parseJson(raw: string, rel: string): unknown {
     try {
       return JSON.parse(raw);
-    } catch {
+    } catch (err) {
+      const reason = shortError(err);
+      this.logger.error(`Agent roles catalog JSON parse failed (${rel}): ${reason}`);
       throw new BadGatewayException(
-        `Agent roles catalog file is not valid JSON (${rel})`,
+        `Agent roles catalog file is not valid JSON (${rel}): ${reason}`,
       );
     }
   }
@@ -102,8 +107,14 @@ export class AiAgentRolesCatalogProvider {
   private async readLocal(dir: string, rel: string): Promise<string> {
     try {
       return await fs.readFile(path.join(dir, rel), 'utf8');
-    } catch {
-      throw new BadGatewayException('Agent roles catalog is unavailable');
+    } catch (err) {
+      const reason = shortError(err);
+      this.logger.error(
+        `Agent roles catalog local read failed (${path.join(dir, rel)}): ${reason}`,
+      );
+      throw new BadGatewayException(
+        `Agent roles catalog is unavailable: ${reason}`,
+      );
     }
   }
 
@@ -122,10 +133,19 @@ export class AiAgentRolesCatalogProvider {
       let response: Response;
       try {
         response = await fetch(url, { signal: controller.signal });
-      } catch {
-        throw new BadGatewayException('Agent roles catalog is unavailable');
+      } catch (err) {
+        const reason = shortError(err);
+        this.logger.error(
+          `Agent roles catalog remote fetch failed (${rel}): ${reason}`,
+        );
+        throw new BadGatewayException(
+          `Agent roles catalog is unavailable: ${reason}`,
+        );
       }
       if (!response.ok) {
+        this.logger.error(
+          `Agent roles catalog remote returned ${response.status} (${rel})`,
+        );
         throw new BadGatewayException(
           `Agent roles catalog returned ${response.status}`,
         );
@@ -179,13 +199,28 @@ async function readStreamCapped(
     // Release the stream on both the normal and the too-large/abort paths.
     await reader.cancel().catch(() => undefined);
   }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * A short, non-sensitive error string for logging/propagation: only the first
+ * line of the message head is kept (upstream bodies / URLs are discarded).
+ */
+function shortError(err: unknown): string {
+  let message = '';
+  if (typeof err === 'string') {
+    message = err;
+  } else if (
+    err &&
+    typeof err === 'object' &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    // Read `.message` directly (works for Error instances and the realm-shifted
+    // Error-likes jest can hand back, where `instanceof Error` is false).
+    message = (err as { message: string }).message;
   }
-  return new TextDecoder('utf-8').decode(merged);
+  const head = (message || 'unknown error').split('\n')[0];
+  return head.length > 200 ? `${head.slice(0, 200)}…` : head;
 }
 
 // ---------------------------------------------------------------------------

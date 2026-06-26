@@ -509,16 +509,21 @@ export class AiAgentRolesService {
  * failures keep surfacing as 500s.
  */
 function rethrowDuplicateName(err: unknown, name: string): never {
-  if (
-    err &&
-    typeof err === 'object' &&
-    (err as { code?: unknown }).code === '23505'
-  ) {
+  if (isUniqueViolation(err)) {
     throw new ConflictException(
       `A role named "${name}" already exists in this workspace.`,
     );
   }
   throw err;
+}
+
+/** Whether `err` is a Postgres unique-violation (SQLSTATE 23505). */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === '23505'
+  );
 }
 
 /** '' / whitespace-only / undefined / null => null; otherwise the trimmed value. */
@@ -564,23 +569,20 @@ function localized(
  * `taken` after a successful insert.
  */
 function freeName(base: string, taken: Set<string>): string {
-  let n = 2;
-  // Cap the search defensively; the loop always terminates well before this.
-  while (n < 1000) {
+  // `taken` is finite, so within `taken.size + 2` iterations a candidate index
+  // is guaranteed free; the 1000 cap is a defensive upper bound far above any
+  // realistic per-name collision count. The throw below is therefore
+  // unreachable in practice and only satisfies the return-type checker.
+  for (let n = 2; n < 1000; n++) {
     const candidate = `${base} (${n})`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
-    n++;
   }
-  return `${base} (${Date.now()})`;
+  throw new BadRequestException(`Too many roles named "${base}"`);
 }
 
 /** A short, safe message for an import insert failure (409 vs other). */
 function importErrorMessage(err: unknown): string {
-  if (
-    err &&
-    typeof err === 'object' &&
-    (err as { code?: unknown }).code === '23505'
-  ) {
+  if (isUniqueViolation(err)) {
     return 'A role with this name already exists';
   }
   return 'Failed to import role';

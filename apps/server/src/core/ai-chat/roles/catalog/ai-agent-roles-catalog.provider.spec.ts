@@ -174,6 +174,24 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
       );
     });
 
+    it('fetch rejects (network failure) => BadGateway (unavailable)', async () => {
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNREFUSED')) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('non-ok response (503) => BadGateway carrying the status', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        mockResponse({ ok: false, status: 503, body: null }),
+      ) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toThrow(/503/);
+    });
+
     it('small streamed body parses normally (cap not hit)', async () => {
       const json = JSON.stringify({
         schemaVersion: 1,

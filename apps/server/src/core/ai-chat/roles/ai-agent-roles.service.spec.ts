@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { AiAgentRolesService } from './ai-agent-roles.service';
 import type { AiAgentRole } from '@docmost/db/types/entity.types';
 import type {
@@ -784,6 +788,222 @@ describe('AiAgentRolesService guards', () => {
       await service.updateFromCatalog('ws-1', { id: 'r1' } as never);
       // The colliding catalog name is dropped; the current name is kept.
       expect(repo.update.mock.calls[0][2].name).toBe('Researcher');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Catalog browse (getCatalog / getCatalogBundle) against a MOCKED provider.
+  // Covers the localized() three-tier fallback (requested lang -> en -> first ->
+  // null), the sorted union of bundle languages, the missing-bundle BadGateway,
+  // and the role-version default.
+  // ---------------------------------------------------------------------------
+  describe('getCatalog', () => {
+    function makeBrowseService(index: unknown) {
+      const repo = {
+        findById: jest.fn(),
+        insert: jest.fn(),
+        update: jest.fn(),
+        softDelete: jest.fn(),
+        listByWorkspace: jest.fn(),
+      };
+      const catalog = {
+        fetchIndex: jest.fn().mockResolvedValue(index),
+        fetchBundle: jest.fn(),
+      };
+      const service = new AiAgentRolesService(repo as never, catalog as never);
+      return { service, catalog };
+    }
+
+    it('returns the sorted union of every bundle language', async () => {
+      const { service } = makeBrowseService({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'a',
+            name: { en: 'A' },
+            languages: ['ru', 'en'],
+            roles: [],
+          },
+          {
+            id: 'b',
+            name: { en: 'B' },
+            languages: ['en', 'de'],
+            roles: [],
+          },
+        ],
+      });
+      const res = await service.getCatalog('en');
+      expect(res.languages).toEqual(['de', 'en', 'ru']);
+    });
+
+    it('localized name uses the requested language when present', async () => {
+      const { service } = makeBrowseService({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'a',
+            name: { en: 'General', ru: 'Общие' },
+            description: { en: 'desc-en', ru: 'desc-ru' },
+            languages: ['en', 'ru'],
+            roles: [{ slug: 'researcher', version: 2 }],
+          },
+        ],
+      });
+      const res = await service.getCatalog('ru');
+      expect(res.bundles[0]).toMatchObject({
+        id: 'a',
+        name: 'Общие',
+        description: 'desc-ru',
+        languages: ['en', 'ru'],
+        roles: [{ slug: 'researcher', version: 2 }],
+      });
+    });
+
+    it('localized name falls back to en when the requested language is missing', async () => {
+      const { service } = makeBrowseService({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'a',
+            name: { en: 'General', ru: 'Общие' },
+            languages: ['en', 'ru'],
+            roles: [],
+          },
+        ],
+      });
+      const res = await service.getCatalog('fr');
+      expect(res.bundles[0].name).toBe('General');
+    });
+
+    it('localized name falls back to the first available locale when en is absent', async () => {
+      const { service } = makeBrowseService({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'a',
+            name: { ru: 'Общие', de: 'Allgemein' },
+            languages: ['ru', 'de'],
+            roles: [],
+          },
+        ],
+      });
+      const res = await service.getCatalog('fr');
+      // Neither 'fr' nor 'en' is present -> first available value.
+      expect(res.bundles[0].name).toBe('Общие');
+    });
+
+    it('empty name map => falls back to the bundle id; absent description => null', async () => {
+      const { service } = makeBrowseService({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'a',
+            name: {},
+            languages: ['en'],
+            roles: [],
+          },
+        ],
+      });
+      const res = await service.getCatalog('en');
+      expect(res.bundles[0].name).toBe('a');
+      expect(res.bundles[0].description).toBeNull();
+    });
+  });
+
+  describe('getCatalogBundle', () => {
+    function makeBundleService(opts: {
+      index: unknown;
+      bundle: unknown;
+    }) {
+      const repo = {
+        findById: jest.fn(),
+        insert: jest.fn(),
+        update: jest.fn(),
+        softDelete: jest.fn(),
+        listByWorkspace: jest.fn(),
+      };
+      const catalog = {
+        fetchIndex: jest.fn().mockResolvedValue(opts.index),
+        fetchBundle: jest.fn().mockResolvedValue(opts.bundle),
+      };
+      const service = new AiAgentRolesService(repo as never, catalog as never);
+      return { service, catalog };
+    }
+
+    const index = {
+      schemaVersion: 1,
+      bundles: [
+        {
+          id: 'general',
+          name: { en: 'General' },
+          languages: ['en'],
+          roles: [{ slug: 'researcher', version: 4 }],
+        },
+      ],
+    };
+
+    it('missing bundle in the index => BadGateway', async () => {
+      const { service, catalog } = makeBundleService({
+        index,
+        bundle: { schemaVersion: 1, language: 'en', roles: [] },
+      });
+      await expect(
+        service.getCatalogBundle('ghost', 'en'),
+      ).rejects.toBeInstanceOf(BadGatewayException);
+      expect(catalog.fetchBundle).not.toHaveBeenCalled();
+    });
+
+    it('maps role content with the version taken from the index', async () => {
+      const { service } = makeBundleService({
+        index,
+        bundle: {
+          schemaVersion: 1,
+          language: 'en',
+          roles: [
+            {
+              slug: 'researcher',
+              name: 'Researcher',
+              instructions: 'be a researcher',
+              emoji: '🔬',
+              autoStart: false,
+              launchMessage: 'go',
+            },
+          ],
+        },
+      });
+      const res = await service.getCatalogBundle('general', 'en');
+      expect(res).toMatchObject({ bundleId: 'general', language: 'en' });
+      expect(res.roles[0]).toEqual({
+        slug: 'researcher',
+        emoji: '🔬',
+        name: 'Researcher',
+        description: null,
+        instructions: 'be a researcher',
+        autoStart: false,
+        launchMessage: 'go',
+        version: 4,
+      });
+    });
+
+    it('role absent from the index meta => version defaults to 1; autoStart defaults to true', async () => {
+      const { service } = makeBundleService({
+        index,
+        bundle: {
+          schemaVersion: 1,
+          language: 'en',
+          roles: [
+            { slug: 'newcomer', name: 'Newcomer', instructions: 'hi' },
+          ],
+        },
+      });
+      const res = await service.getCatalogBundle('general', 'en');
+      expect(res.roles[0]).toMatchObject({
+        slug: 'newcomer',
+        version: 1,
+        autoStart: true,
+        emoji: null,
+        launchMessage: null,
+      });
     });
   });
 });
