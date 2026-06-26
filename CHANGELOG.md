@@ -72,6 +72,12 @@ per-workspace rolling-day token budget.
 - **Footnote multi-backlinks.** A footnote referenced more than once now shows a
   back-link per reference (↩ a b c …), each scrolling to its own occurrence, like
   Pandoc/Wikipedia; a single-reference footnote keeps the plain ↩. (#168)
+- **Generate a page title from its content.** A "sparkles" button in the page
+  byline reads the live editor content (including unsaved edits), generates a
+  title via the workspace AI provider (`POST /ai-chat/generate-page-title`), and
+  applies it through the existing `/pages/update` route — reflecting it in the
+  title field and broadcasting to other clients. Gated by the `settings.ai.generative`
+  flag and throttled per user. (#199)
 
 ### Changed
 

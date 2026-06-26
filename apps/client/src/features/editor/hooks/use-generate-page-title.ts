@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useAtomValue } from "jotai";
 import { notifications } from "@mantine/notifications";
@@ -36,6 +37,14 @@ export function useGeneratePageTitle(pageId: string) {
   const { mutateAsync: updateTitle } = useUpdateTitlePageMutation();
   const emit = useQueryEmit();
 
+  // The page/title editors come from GLOBAL atoms that re-point when the user
+  // navigates to another page. The mutation below awaits the model for 1-3s, and
+  // its closure captures the editors from the render that started it. Keep a live
+  // reference so the post-generation write targets whatever page is on screen
+  // *now*, not the page the generation was started from.
+  const editorsRef = useRef({ pageEditor, titleEditor });
+  editorsRef.current = { pageEditor, titleEditor };
+
   return useMutation<void, Error, void>({
     mutationFn: async () => {
       if (!pageEditor || pageEditor.isDestroyed) return;
@@ -64,8 +73,29 @@ export function useGeneratePageTitle(pageId: string) {
       // Reflect the new title in the field immediately. The button lives in the
       // byline, so the title editor is not focused — setContent is safe and stays
       // undoable through its History extension (Ctrl/Cmd+Z reverts the change).
-      if (titleEditor && !titleEditor.isDestroyed && !titleEditor.isFocused) {
-        titleEditor.commands.setContent(page.title);
+      //
+      // Guard against navigation during generation: if the user switched pages
+      // while the model ran, the (persistent) title editor now shows ANOTHER
+      // page, so writing here would drop page A's title into page B's visible
+      // field. page-editor.tsx stamps the live page editor with its pageId
+      // (`editor.storage.pageId`), mirroring TitleEditor's `activePageId !==
+      // pageId` guard — bail the visible write unless that live editor still
+      // belongs to the page this title was generated for. The DB write above is
+      // already correct (keyed by the captured `pageId`), and the broadcast below
+      // still propagates page A's change to other clients.
+      const livePageEditor = editorsRef.current.pageEditor;
+      const liveTitleEditor = editorsRef.current.titleEditor;
+      // `storage.pageId` is stamped untyped in page-editor.tsx's onCreate.
+      const livePageId = (livePageEditor?.storage as { pageId?: string })
+        ?.pageId;
+      const stillOnPage = livePageId === pageId;
+      if (
+        stillOnPage &&
+        liveTitleEditor &&
+        !liveTitleEditor.isDestroyed &&
+        !liveTitleEditor.isFocused
+      ) {
+        liveTitleEditor.commands.setContent(page.title);
       }
 
       // Broadcast to other clients, mirroring TitleEditor.saveTitle's event shape.
