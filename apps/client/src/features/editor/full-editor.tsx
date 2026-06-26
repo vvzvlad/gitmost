@@ -26,6 +26,7 @@ import { FixedToolbar } from "@/features/editor/components/fixed-toolbar/fixed-t
 import { PageEditMode } from "@/features/user/types/user.types.ts";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
 import { DeletedPageBanner } from "@/features/page/trash/components/deleted-page-banner.tsx";
+import { TemporaryNoteBanner } from "@/features/page/components/temporary-note-banner.tsx";
 import clsx from "clsx";
 import {
   currentPageEditModeAtom,
@@ -37,6 +38,7 @@ const MemoizedTitleEditor = React.memo(TitleEditor);
 const MemoizedPageEditor = React.memo(PageEditor);
 const MemoizedFixedToolbar = React.memo(FixedToolbar);
 const MemoizedDeletedPageBanner = React.memo(DeletedPageBanner);
+const MemoizedTemporaryNoteBanner = React.memo(TemporaryNoteBanner);
 
 type PageUser = {
   id: string;
@@ -103,6 +105,7 @@ export function FullEditor({
         <MemoizedFixedToolbar />
       )}
       <MemoizedDeletedPageBanner slugId={slugId} />
+      <MemoizedTemporaryNoteBanner slugId={slugId} />
       <MemoizedTitleEditor
         pageId={pageId}
         slugId={slugId}

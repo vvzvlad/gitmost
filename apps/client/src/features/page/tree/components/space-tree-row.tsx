@@ -6,6 +6,7 @@ import { ActionIcon, rem, Tooltip } from "@mantine/core";
 import {
   IconChevronDown,
   IconChevronRight,
+  IconClockHour4,
   IconFileDescription,
   IconPlus,
   IconPointFilled,
@@ -186,6 +187,28 @@ export function SpaceTreeRow({
               color: "var(--mantine-color-dimmed)",
             }}
             aria-label={t("Template")}
+            role="img"
+          />
+        </Tooltip>
+      )}
+
+      {node.temporaryExpiresAt && (
+        <Tooltip
+          // Children ride along to trash with the note (recursive removePage).
+          label={t("Temporary note — moves to trash unless made permanent")}
+          withArrow
+        >
+          <IconClockHour4
+            size={14}
+            stroke={1.5}
+            // Same visual-only indicator pattern as the template icon, but
+            // orange to flag the impending death timer.
+            style={{
+              flexShrink: 0,
+              marginLeft: rem(4),
+              color: "var(--mantine-color-orange-6)",
+            }}
+            aria-label={t("Temporary note")}
             role="img"
           />
         </Tooltip>

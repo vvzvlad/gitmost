@@ -28,6 +28,8 @@ export interface IWorkspace {
   aiDictationStreaming?: boolean;
   aiPublicShareAssistant?: boolean;
   trashRetentionDays?: number;
+  // Default lifetime (HOURS) for new temporary notes; frozen per-note at creation.
+  temporaryNoteHours?: number;
   restrictApiToAdmins?: boolean;
   allowMemberTemplates?: boolean;
   isScimEnabled?: boolean;

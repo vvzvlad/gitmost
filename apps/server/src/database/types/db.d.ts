@@ -297,6 +297,7 @@ export interface Pages {
   position: string | null;
   slugId: string;
   spaceId: string;
+  temporaryExpiresAt: Timestamp | null;
   textContent: string | null;
   title: string | null;
   tsv: string | null;
@@ -419,6 +420,7 @@ export interface WorkspaceInvitations {
 export interface Workspaces {
   auditRetentionDays: Generated<number>;
   trashRetentionDays: Generated<number>;
+  temporaryNoteHours: Generated<number>;
   billingEmail: string | null;
   createdAt: Generated<Timestamp>;
   customDomain: string | null;

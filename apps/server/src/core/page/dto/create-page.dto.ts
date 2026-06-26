@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsOptional,
   IsString,
@@ -32,4 +33,10 @@ export class CreatePageDto {
   @Transform(({ value }) => value?.toLowerCase() ?? 'json')
   @IsIn(['json', 'markdown', 'html'])
   format?: ContentFormat;
+
+  // When true, create the page as a temporary note: arm its death timer
+  // (now + workspace temporaryNoteHours) at creation.
+  @IsOptional()
+  @IsBoolean()
+  temporary?: boolean;
 }

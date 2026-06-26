@@ -61,6 +61,7 @@ import {
   AuthProvenanceData,
   agentSourceFields,
 } from '../../../common/decorators/auth-provenance.decorator';
+import { DEFAULT_TEMPORARY_NOTE_HOURS } from '../constants/temporary-note.constants';
 
 // Hard upper bound on how deep the recursive page-tree CTEs (ancestor /
 // descendant traversals) may walk. Real page trees are only a handful of levels
@@ -140,6 +141,20 @@ export class PageService {
       parentPageId = parentPage.id;
     }
 
+    // Freeze the death timer here so later changes to the workspace setting
+    // never reschedule existing temporary notes. NULL => permanent page.
+    let temporaryExpiresAt: Date | undefined;
+    if (createPageDto.temporary) {
+      const workspace = await this.db
+        .selectFrom('workspaces')
+        .select(['temporaryNoteHours'])
+        .where('id', '=', workspaceId)
+        .executeTakeFirst();
+      const hours =
+        workspace?.temporaryNoteHours ?? DEFAULT_TEMPORARY_NOTE_HOURS;
+      temporaryExpiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+    }
+
     let content = undefined;
     let textContent = undefined;
     let ydoc = undefined;
@@ -172,6 +187,7 @@ export class PageService {
       // (creatorId/lastUpdatedById); these only annotate the source. A normal
       // user request leaves the column default ('user').
       ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
+      temporaryExpiresAt,
       content,
       textContent,
       ydoc,
@@ -356,6 +372,7 @@ export class PageService {
         'spaceId',
         'creatorId',
         'isTemplate',
+        'temporaryExpiresAt',
         'deletedAt',
       ])
       .select((eb) => this.pageRepo.withHasChildren(eb))
