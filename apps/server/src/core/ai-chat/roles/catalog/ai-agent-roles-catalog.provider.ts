@@ -156,15 +156,31 @@ export class AiAgentRolesCatalogProvider {
         throw new BadGatewayException('Agent roles catalog file is too large');
       }
       // Bound the actual read: a missing/lying Content-Length is caught here.
-      if (response.body) {
-        return await readStreamCapped(response.body, MAX_BYTES);
+      // The 10s timer aborts the WHOLE request, so a slow/dripping hostile
+      // source rejects reader.read() (or response.text()) with an AbortError
+      // mid-body. Map that — and any other read failure — to a logged
+      // BadGateway so the admin endpoint returns 502 (not a generic 500). The
+      // cap's own BadGateway is rethrown as-is (no double-wrap).
+      try {
+        if (response.body) {
+          return await readStreamCapped(response.body, MAX_BYTES);
+        }
+        // Edge: no readable stream — fall back to a buffered read + length check.
+        const text = await response.text();
+        if (text.length > MAX_BYTES) {
+          throw new BadGatewayException('Agent roles catalog file is too large');
+        }
+        return text;
+      } catch (err) {
+        if (err instanceof BadGatewayException) throw err;
+        const reason = shortError(err);
+        this.logger.error(
+          `Agent roles catalog body read failed (${rel}): ${reason}`,
+        );
+        throw new BadGatewayException(
+          `Agent roles catalog is unavailable: ${reason}`,
+        );
       }
-      // Edge: no readable stream — fall back to a buffered read + length check.
-      const text = await response.text();
-      if (text.length > MAX_BYTES) {
-        throw new BadGatewayException('Agent roles catalog file is too large');
-      }
-      return text;
     } finally {
       clearTimeout(timer);
     }

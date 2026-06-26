@@ -55,14 +55,16 @@ export default function AiAgentRolesCatalogModal({
 }: AiAgentRolesCatalogModalProps) {
   const { t, i18n } = useTranslation();
 
+  // The user's i18n base subtag (e.g. "ru-RU" => "ru"); the preferred catalog
+  // language both when seeding and when reconciling against offered languages.
+  const baseLang = (i18n.language || "en").split("-")[0].toLowerCase();
+
   // Fetch the catalog only while the modal is open. `language` drives both the
   // catalog query (bundle names) and bundle reads (role content). Seed it
-  // synchronously from the i18n base subtag (e.g. "ru-RU" => "ru") so the first
-  // fetch already uses the user's language; the effect below still reconciles
-  // against the catalog's offered languages once they load.
-  const [language, setLanguage] = useState<string>(
-    () => (i18n.language || "en").split("-")[0].toLowerCase(),
-  );
+  // synchronously from the base subtag so the first fetch already uses the
+  // user's language; the effect below still reconciles against the catalog's
+  // offered languages once they load.
+  const [language, setLanguage] = useState<string>(() => baseLang);
   const catalogQuery = useAiRoleCatalogQuery(language || "en", opened);
 
   // On name conflict: Skip (default) or Rename to a free " (N)" name.
@@ -82,9 +84,8 @@ export default function AiAgentRolesCatalogModal({
   useEffect(() => {
     if (!languages || languages.length === 0) return;
     if (language && languages.includes(language)) return;
-    const base = (i18n.language || "en").split("-")[0].toLowerCase();
-    const preferred = languages.includes(base)
-      ? base
+    const preferred = languages.includes(baseLang)
+      ? baseLang
       : languages.includes("en")
         ? "en"
         : languages[0];

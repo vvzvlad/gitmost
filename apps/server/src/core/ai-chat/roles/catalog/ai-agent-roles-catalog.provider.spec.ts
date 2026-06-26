@@ -131,18 +131,29 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
       });
     }
 
+    /** A ReadableStream whose first read rejects (e.g. a mid-body AbortError). */
+    function errorStream(err: Error): ReadableStream<Uint8Array> {
+      return new ReadableStream<Uint8Array>({
+        pull() {
+          throw err;
+        },
+        cancel() {},
+      });
+    }
+
     function mockResponse(opts: {
       ok?: boolean;
       status?: number;
       headers?: Record<string, string>;
       body: ReadableStream<Uint8Array> | null;
+      text?: string;
     }): Response {
       return {
         ok: opts.ok ?? true,
         status: opts.status ?? 200,
         headers: { get: (k: string) => opts.headers?.[k.toLowerCase()] ?? null },
         body: opts.body,
-        text: async () => 'unused',
+        text: async () => opts.text ?? 'unused',
       } as unknown as Response;
     }
 
@@ -211,6 +222,80 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
       const provider = makeProvider('https://catalog.example.com');
       const index = await provider.fetchIndex();
       expect(index.bundles[0].id).toBe('general');
+    });
+
+    it('body read aborts mid-stream (AbortError) => BadGateway (not a generic 500)', async () => {
+      // The 10s timer aborts the whole request; on a slow/dripping source the
+      // body read (reader.read()) rejects with an AbortError AFTER fetch()
+      // resolved. The provider must map that to BadGateway, not let it escape.
+      const abortErr = Object.assign(new Error('The operation was aborted'), {
+        name: 'AbortError',
+      });
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body: errorStream(abortErr) })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('null body (no readable stream) => response.text() fallback parses', async () => {
+      const json = JSON.stringify({
+        schemaVersion: 1,
+        bundles: [
+          {
+            id: 'general',
+            name: { en: 'General' },
+            languages: ['en'],
+            roles: [{ slug: 'researcher', version: 2 }],
+          },
+        ],
+      });
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body: null, text: json })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      const index = await provider.fetchIndex();
+      expect(index.bundles[0].id).toBe('general');
+    });
+
+    it('null body + text() over the cap => BadGateway (too large)', async () => {
+      const oversized = 'a'.repeat(1_000_001);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockResponse({ body: null, text: oversized }),
+        ) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('invalid JSON body => BadGateway (parse failure)', async () => {
+      const body = streamOf([new TextEncoder().encode('{not valid json')]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('malformed index.json (valid JSON, wrong shape) => BadGateway', async () => {
+      // Parses as JSON but fails isCatalogIndex (schemaVersion not a number).
+      const body = streamOf([
+        new TextEncoder().encode(
+          JSON.stringify({ schemaVersion: 'x', bundles: [] }),
+        ),
+      ]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toThrow(/malformed/i);
     });
   });
 

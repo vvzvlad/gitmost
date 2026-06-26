@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiAgentRole } from '@docmost/db/types/entity.types';
@@ -71,6 +72,8 @@ export interface AgentRolePickerView {
  */
 @Injectable()
 export class AiAgentRolesService {
+  private readonly logger = new Logger(AiAgentRolesService.name);
+
   constructor(
     private readonly repo: AiAgentRoleRepo,
     private readonly catalog: AiAgentRolesCatalogProvider,
@@ -264,12 +267,16 @@ export class AiAgentRolesService {
   }
 
   /**
-   * Import a bundle's roles into the workspace. Roles whose `source.slug` is
-   * already installed are skipped (updates are a separate action). A name
-   * collision with an existing role is either skipped or imported under a free
-   * " (N)" name, per `dto.conflict`. Inserts run sequentially (the repo exposes
-   * no batch insert and the volume is tiny); a unique-name race still surfaces
-   * as an error entry rather than aborting the whole import.
+   * Import a bundle's roles into the workspace. A role is "already installed"
+   * (and thus skipped — updates are a separate action) only when an existing
+   * role matches BOTH its `source.slug` AND `source.language`: this is a
+   * multilingual catalog, so a different language of the same slug (e.g. the
+   * `ru` variant of a slug already installed as `en`) is a SEPARATE install and
+   * still imports. A name collision with an existing role is either skipped or
+   * imported under a free " (N)" name, per `dto.conflict`. Inserts run
+   * sequentially (the repo exposes no batch insert and the volume is tiny); a
+   * unique-name race still surfaces as an error entry rather than aborting the
+   * whole import.
    */
   async importFromCatalog(
     workspaceId: string,
@@ -368,6 +375,15 @@ export class AiAgentRolesService {
         takenNames.add(name.toLowerCase());
         installedKeys.add(installKey);
       } catch (err) {
+        // A unique-name race is expected and self-explanatory (it becomes a
+        // friendly per-role error). Any OTHER insert failure is unexpected, so
+        // log the root cause with enough context to diagnose it — the
+        // user-facing message is deliberately generic.
+        if (!isUniqueViolation(err)) {
+          this.logger.error(
+            `Failed to import catalog role (workspaceId=${workspaceId} bundleId=${dto.bundleId} slug=${role.slug}): ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+          );
+        }
         errors.push({ slug: role.slug, message: importErrorMessage(err) });
       }
     }

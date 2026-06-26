@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { AiAgentRolesService } from './ai-agent-roles.service';
 import type { AiAgentRole } from '@docmost/db/types/entity.types';
@@ -644,6 +645,42 @@ describe('AiAgentRolesService guards', () => {
       expect(res.errors).toEqual([
         { slug: 'a', message: 'A role with this name already exists' },
       ]);
+    });
+
+    it('non-unique insert error => generic message, root cause logged, import continues', async () => {
+      const logSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        const { service, repo } = makeImportService({
+          bundleRoles: [
+            catalogRole({ slug: 'a', name: 'A' }),
+            catalogRole({ slug: 'b', name: 'B' }),
+          ],
+          indexRoles: [
+            { slug: 'a', version: 1 },
+            { slug: 'b', version: 1 },
+          ],
+        });
+        // A non-23505 failure (e.g. a not-null violation) on the first insert.
+        const boom = Object.assign(new Error('null value in column'), {
+          code: '23502',
+        });
+        repo.insert
+          .mockRejectedValueOnce(boom)
+          .mockImplementationOnce((v) => Promise.resolve(makeRow(v)));
+        const res = await service.importFromCatalog('ws-1', 'u1', dto());
+        // The generic (non-409) user-facing message; the second role still imports.
+        expect(res.created).toBe(1);
+        expect(res.errors).toEqual([
+          { slug: 'a', message: 'Failed to import role' },
+        ]);
+        // The root cause was logged with the slug for diagnosis.
+        expect(logSpy).toHaveBeenCalledTimes(1);
+        expect(String(logSpy.mock.calls[0][0])).toContain('slug=a');
+      } finally {
+        logSpy.mockRestore();
+      }
     });
   });
 
