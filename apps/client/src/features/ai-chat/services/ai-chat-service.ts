@@ -6,8 +6,13 @@ import {
   IAiChatMessageRow,
   IAiChatMessagesParams,
   IAiRole,
+  IAiRoleCatalog,
+  IAiRoleCatalogBundle,
   IAiRoleCreate,
+  IAiRoleImportPayload,
+  IAiRoleImportResult,
   IAiRoleUpdate,
+  IAiRoleUpdateFromCatalogResult,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 
 /**
@@ -110,5 +115,56 @@ export async function deleteAiRole(id: string): Promise<{ success: true }> {
   const req = await api.post<{ success: true }>("/ai-chat/roles/delete", {
     id,
   });
+  return req.data;
+}
+
+/**
+ * Role catalog API (`/ai-chat/roles/*`, admin-only — the server enforces this).
+ * Browse a curated catalog, import roles/bundles into the workspace, and update
+ * an imported role when the catalog ships a newer version. Same `{ data }`
+ * unwrap convention as above.
+ */
+
+/** Browse the catalog, optionally localized to `language`. */
+export async function getAiRoleCatalog(
+  language?: string,
+): Promise<IAiRoleCatalog> {
+  const req = await api.post<IAiRoleCatalog>("/ai-chat/roles/catalog", {
+    language,
+  });
+  return req.data;
+}
+
+/** Open one catalog bundle in a language (role content + versions). */
+export async function getAiRoleCatalogBundle(
+  bundleId: string,
+  language: string,
+): Promise<IAiRoleCatalogBundle> {
+  const req = await api.post<IAiRoleCatalogBundle>(
+    "/ai-chat/roles/catalog/bundle",
+    { bundleId, language },
+  );
+  return req.data;
+}
+
+/** Import roles from a catalog bundle into the workspace (admin). */
+export async function importAiRolesFromCatalog(
+  payload: IAiRoleImportPayload,
+): Promise<IAiRoleImportResult> {
+  const req = await api.post<IAiRoleImportResult>(
+    "/ai-chat/roles/import",
+    payload,
+  );
+  return req.data;
+}
+
+/** Update an already-imported role from its catalog source (admin). */
+export async function updateAiRoleFromCatalog(
+  id: string,
+): Promise<IAiRoleUpdateFromCatalogResult> {
+  const req = await api.post<IAiRoleUpdateFromCatalogResult>(
+    "/ai-chat/roles/update-from-catalog",
+    { id },
+  );
   return req.data;
 }

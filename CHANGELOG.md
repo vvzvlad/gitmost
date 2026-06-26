@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer was cut off and builds on it instead of restarting; the rest of the
   queue still flushes normally afterward. (#198)
 
+- **Importable multilingual agent-roles catalog.** Admins can browse a curated
+  catalog of agent roles, grouped into bundles and offered in several languages,
+  and import the ones they want into the workspace (with skip-or-rename handling
+  for name collisions); the same role in a different language imports as a
+  separate install. An imported role remembers its catalog origin and offers a
+  one-click update when the catalog ships a newer revision. Backed by four new
+  admin endpoints — `POST /ai-chat/roles/catalog` (browse bundles),
+  `/catalog/bundle` (read one bundle's roles), `/import`, and
+  `/update-from-catalog` — and a new `source` column linking a role to its
+  catalog slug/language/version. The catalog source is configurable via the new
+  `AI_AGENT_ROLES_CATALOG_URL` env var (an `http(s)://` base URL fetches it
+  remotely; otherwise a local directory; empty defaults to the in-repo
+  `agent-roles-catalog/` folder — see `.env.example`). (#222)
+
 ## [0.94.0] - 2026-06-26
 
 This release makes AI chat durable and fast: assistant turns are persisted to

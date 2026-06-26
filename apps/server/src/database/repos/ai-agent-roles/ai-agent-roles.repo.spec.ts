@@ -1,4 +1,4 @@
-import { AiAgentRoleRepo } from './ai-agent-roles.repo';
+import { AiAgentRoleRepo, parseSource } from './ai-agent-roles.repo';
 import type { KyselyDB } from '../../types/kysely.types';
 
 /**
@@ -131,5 +131,78 @@ describe('AiAgentRoleRepo insert/update auto-start columns', () => {
     await repo2.update('r-1', 'ws-1', { launchMessage: '' });
     expect(set2.mock.calls[0][0].launchMessage).toBeNull();
     expect('autoStart' in set2.mock.calls[0][0]).toBe(false);
+  });
+
+  it('insert binds `source` (jsonb); update sets it only when present', async () => {
+    const { repo, values } = makeInsertRepo();
+    await repo.insert({
+      workspaceId: 'ws-1',
+      name: 'R',
+      instructions: 'do',
+      source: { slug: 'researcher', language: 'en', version: 1 },
+    });
+    // jsonbBind returns a RawBuilder for a non-empty object (not null).
+    expect(values.mock.calls[0][0].source).not.toBeNull();
+
+    const { repo: repo2, set } = makeUpdateRepo();
+    await repo2.update('r-1', 'ws-1', { name: 'X' });
+    expect('source' in set.mock.calls[0][0]).toBe(false);
+
+    const { repo: repo3, set: set3 } = makeUpdateRepo();
+    await repo3.update('r-1', 'ws-1', {
+      source: { slug: 's', language: 'en', version: 2 },
+    });
+    expect('source' in set3.mock.calls[0][0]).toBe(true);
+  });
+});
+
+/**
+ * parseSource is THE single form validator for the `source` jsonb column: a
+ * JSON-string (legacy double-encoded) is parsed; a FULLY-VALID object
+ * ({ slug, language, version }) passes through as a typed RoleSource; anything
+ * partial or wrong-shaped degrades to null (= manual role). This is the
+ * stricter-than-before guard that closes the drift where a weak `{}`/`{slug:123}`
+ * value used to be stamped as a valid source by the read path.
+ */
+describe('parseSource', () => {
+  it('parses a legacy double-encoded JSON string into the typed source', () => {
+    expect(
+      parseSource('{"slug":"researcher","language":"en","version":1}'),
+    ).toEqual({ slug: 'researcher', language: 'en', version: 1 });
+  });
+
+  it('passes a fully-valid already-parsed object through', () => {
+    const obj = { slug: 's', language: 'en', version: 2 };
+    expect(parseSource(obj)).toEqual(obj);
+  });
+
+  it('returns the typed RoleSource (extra keys tolerated) for a valid shape', () => {
+    const src = parseSource({ slug: 's', language: 'ru', version: 3 });
+    expect(src).not.toBeNull();
+    // Narrowed to RoleSource: the fields are present and correctly typed.
+    expect(src?.slug).toBe('s');
+    expect(src?.language).toBe('ru');
+    expect(src?.version).toBe(3);
+  });
+
+  it('null / array / non-object / unparseable string => null', () => {
+    expect(parseSource(null)).toBeNull();
+    expect(parseSource([1, 2])).toBeNull();
+    expect(parseSource(42)).toBeNull();
+    expect(parseSource('not json')).toBeNull();
+  });
+
+  it('partial / wrong-typed shapes => null (no weak-but-typed-as-valid drift)', () => {
+    // Empty object: no slug/language/version.
+    expect(parseSource({})).toBeNull();
+    // slug present but not a string.
+    expect(parseSource({ slug: 123, language: 'en', version: 1 })).toBeNull();
+    // slug only, missing language + version.
+    expect(parseSource({ slug: 'a' })).toBeNull();
+    // empty-string slug / language are not valid catalog keys.
+    expect(parseSource({ slug: '', language: 'en', version: 1 })).toBeNull();
+    expect(parseSource({ slug: 'a', language: '', version: 1 })).toBeNull();
+    // version must be a number, not a numeric string.
+    expect(parseSource({ slug: 'a', language: 'en', version: '1' })).toBeNull();
   });
 });

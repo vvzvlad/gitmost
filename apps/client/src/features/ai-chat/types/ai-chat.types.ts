@@ -57,9 +57,78 @@ export interface IAiRole {
   autoStart: boolean;
   // Custom auto-start text; null/empty => the default launch message is sent.
   launchMessage: string | null;
+  // Catalog origin of an imported role, or null for a manually-created one.
+  // Admin-only (present only in the admin list view); the picker view omits it.
+  // The admin UI compares `version` against the catalog to offer an update.
+  source?: { slug: string; language: string; version: number } | null;
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** One bundle's summary in the catalog index (mirrors `getCatalog().bundles[]`). */
+export interface IAiRoleCatalogBundleSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  languages: string[];
+  roles: { slug: string; version: number }[];
+}
+
+/** The browsable catalog index (mirrors `getCatalog()`). */
+export interface IAiRoleCatalog {
+  languages: string[];
+  bundles: IAiRoleCatalogBundleSummary[];
+}
+
+/** A single role inside an opened catalog bundle (localized content + version). */
+export interface IAiRoleCatalogRole {
+  slug: string;
+  emoji: string | null;
+  name: string;
+  description: string | null;
+  instructions: string;
+  autoStart: boolean;
+  launchMessage: string | null;
+  version: number;
+}
+
+/** An opened catalog bundle (mirrors `getCatalogBundle()`). */
+export interface IAiRoleCatalogBundle {
+  bundleId: string;
+  language: string;
+  roles: IAiRoleCatalogRole[];
+}
+
+/** Import payload (mirrors the server `ImportFromCatalogDto`). */
+export interface IAiRoleImportPayload {
+  bundleId: string;
+  language: string;
+  // Omitted => import the whole bundle; otherwise only these slugs.
+  slugs?: string[];
+  conflict: "skip" | "rename";
+}
+
+/** Import result counts (mirrors `importFromCatalog()`). */
+export interface IAiRoleImportResult {
+  created: number;
+  skipped: number;
+  renamed: number;
+  errors: { slug: string; message: string }[];
+}
+
+/**
+ * Update-from-catalog result (mirrors the server `updateFromCatalog()`). A
+ * discriminated union on `updated`: a no-op carries a typed `reason` the UI maps
+ * to a specific message; a successful update carries the version bump + new role.
+ * Keeping the union (not a widened `reason?: string`) lets the consumer's literal
+ * comparisons be compiler-checked.
+ */
+export type IAiRoleUpdateFromCatalogResult =
+  | {
+      updated: false;
+      reason: "not-in-catalog" | "up-to-date" | "language-unavailable";
+    }
+  | { updated: true; fromVersion: number; toVersion: number; role: IAiRole };
 
 /** Admin create payload for a role. */
 export interface IAiRoleCreate {
