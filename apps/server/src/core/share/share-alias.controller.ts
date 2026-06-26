@@ -14,7 +14,6 @@ import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
 import { User, Workspace } from '@docmost/db/types/entity.types';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
-import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { PageAccessService } from '../page/page-access/page-access.service';
 import { ShareService } from './share.service';
 import { ShareAliasService } from './share-alias.service';
@@ -37,7 +36,6 @@ export class ShareAliasController {
     private readonly shareAliasService: ShareAliasService,
     private readonly shareService: ShareService,
     private readonly pageRepo: PageRepo,
-    private readonly pagePermissionRepo: PagePermissionRepo,
     private readonly pageAccessService: PageAccessService,
   ) {}
 

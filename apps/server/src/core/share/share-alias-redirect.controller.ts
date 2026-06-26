@@ -1,4 +1,4 @@
-import { Controller, Get, Logger, Param, Req, Res } from '@nestjs/common';
+import { Controller, Get, Param, Req, Res } from '@nestjs/common';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { join } from 'path';
 import * as fs from 'node:fs';
@@ -24,8 +24,6 @@ import { ShareAliasService } from './share-alias.service';
  */
 @Controller('l')
 export class ShareAliasRedirectController {
-  private readonly logger = new Logger(ShareAliasRedirectController.name);
-
   constructor(
     private readonly shareAliasService: ShareAliasService,
     private readonly workspaceRepo: WorkspaceRepo,

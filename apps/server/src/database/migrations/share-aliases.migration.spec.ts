@@ -13,11 +13,6 @@ import type {
  * the generated entity types line up with the column set.
  */
 describe('share-aliases migration', () => {
-  it('exports up and down functions', () => {
-    expect(typeof migration.up).toBe('function');
-    expect(typeof migration.down).toBe('function');
-  });
-
   it('up creates the table, the unique index and the page_id index', async () => {
     const calls: string[] = [];
 
@@ -76,7 +71,9 @@ describe('share-aliases migration', () => {
   });
 
   it('entity types expose the alias columns', () => {
-    // Compile-time + runtime sanity: a well-formed row/insert/update value.
+    // Compile-time only: these typed declarations fail `tsc` if the entity types
+    // drift (missing/renamed columns, wrong nullability). The runtime assertions
+    // would be tautological, so the value is purely in the type-check.
     const row: ShareAlias = {
       id: 'a-1',
       workspaceId: 'ws-1',
@@ -92,8 +89,6 @@ describe('share-aliases migration', () => {
     };
     const update: UpdatableShareAlias = { pageId: null };
 
-    expect(row.alias).toBe('foo');
-    expect(insert.workspaceId).toBe('ws-1');
-    expect(update.pageId).toBeNull();
+    expect([row, insert, update]).toHaveLength(3);
   });
 });

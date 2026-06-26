@@ -1315,5 +1315,15 @@
   "Protocol": "Protocol",
   "How chat requests are sent and how reasoning is surfaced": "How chat requests are sent and how reasoning is surfaced",
   "OpenAI-compatible (surfaces reasoning)": "OpenAI-compatible (surfaces reasoning)",
-  "OpenAI (official)": "OpenAI (official)"
+  "OpenAI (official)": "OpenAI (official)",
+  "Custom address": "Custom address",
+  "A short, memorable link you can point at any shared page.": "A short, memorable link you can point at any shared page.",
+  "Use 2-60 lowercase letters, digits and hyphens": "Use 2-60 lowercase letters, digits and hyphens",
+  "This address is already in use": "This address is already in use",
+  "Move custom address?": "Move custom address?",
+  "Move here": "Move here",
+  "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?": "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?",
+  "The address \"{{alias}}\" is already in use. Move it to this page?": "The address \"{{alias}}\" is already in use. Move it to this page?",
+  "Failed to set custom address": "Failed to set custom address",
+  "Failed to remove custom address": "Failed to remove custom address"
 }

@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Custom pretty-links for shared pages (`/l/:alias`).** A page editor can give
+  any publicly shared page a short, memorable, workspace-scoped vanity address
+  backed by a new `share_aliases` table. Hitting `/l/<alias>` issues a `302`
+  (never `301`, since the target is retargetable) to the canonical
+  `/share/<key>/p/<slug>` page; an unknown, dangling, or no-longer-readable alias
+  serves the plain SPA index so that the existence of a name never leaks. An
+  alias can be moved to another page (with a confirm-reassign guard) and the
+  foreign key is `ON DELETE SET NULL`, so deleting the target leaves a dangling
+  alias any workspace member can reclaim. (#205)
+
 - **Persistent AI-chat history as the source of truth + server-side export.**
   An assistant turn is now persisted to the database step by step: the row is
   inserted upfront as `streaming` and updated as each agent step finishes, then

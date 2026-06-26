@@ -1169,5 +1169,15 @@
   "Protocol": "Протокол",
   "How chat requests are sent and how reasoning is surfaced": "Как отправляются запросы чата и как показывается reasoning",
   "OpenAI-compatible (surfaces reasoning)": "OpenAI-совместимый (показывает reasoning)",
-  "OpenAI (official)": "OpenAI (официальный)"
+  "OpenAI (official)": "OpenAI (официальный)",
+  "Custom address": "Пользовательский адрес",
+  "A short, memorable link you can point at any shared page.": "Короткая запоминающаяся ссылка, которую можно направить на любую опубликованную страницу.",
+  "Use 2-60 lowercase letters, digits and hyphens": "Используйте 2–60 строчных букв, цифр и дефисов",
+  "This address is already in use": "Этот адрес уже занят",
+  "Move custom address?": "Переместить пользовательский адрес?",
+  "Move here": "Переместить сюда",
+  "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?": "Адрес «{{alias}}» сейчас указывает на «{{title}}». Переместить его на эту страницу?",
+  "The address \"{{alias}}\" is already in use. Move it to this page?": "Адрес «{{alias}}» уже используется. Переместить его на эту страницу?",
+  "Failed to set custom address": "Не удалось задать пользовательский адрес",
+  "Failed to remove custom address": "Не удалось удалить пользовательский адрес"
 }
