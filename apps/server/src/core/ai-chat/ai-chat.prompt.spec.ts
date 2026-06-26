@@ -239,3 +239,32 @@ describe('buildMcpToolingBlock', () => {
     expect(block).not.toContain('b_*');
   });
 });
+
+/**
+ * Interrupt-resume note (#198). The INTERRUPT_NOTE is injected into the system
+ * prompt ONLY when `interrupted: true` is passed (the server sets it only after
+ * confirming against history). It tells the model its previous answer was cut off
+ * by the user, so it treats the partial assistant message in history as
+ * incomplete. The note lives inside the safety sandwich (the context section).
+ */
+describe('buildSystemPrompt interrupt note (#198)', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+  const NOTE_MARKER = 'interrupted by the';
+  const SAFETY_MARKER = 'Operating rules (always in effect)';
+
+  it('injects the interrupt note when interrupted is true', () => {
+    const prompt = buildSystemPrompt({ workspace, interrupted: true });
+    expect(prompt).toContain(NOTE_MARKER);
+    // Still inside the safety sandwich: the trailing SAFETY block follows it.
+    expect(prompt.lastIndexOf(SAFETY_MARKER)).toBeGreaterThan(
+      prompt.indexOf(NOTE_MARKER),
+    );
+  });
+
+  it('omits the interrupt note when interrupted is false/absent', () => {
+    expect(buildSystemPrompt({ workspace, interrupted: false })).not.toContain(
+      NOTE_MARKER,
+    );
+    expect(buildSystemPrompt({ workspace })).not.toContain(NOTE_MARKER);
+  });
+});

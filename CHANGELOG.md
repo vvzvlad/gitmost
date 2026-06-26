@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interrupt the AI agent and send a queued message now.** A queued AI-chat
+  message gains a "send now" action that interrupts the streaming turn and
+  immediately sends that message, keeping the agent's partial output. The
+  follow-up turn is tagged as an interrupt so the model is told its previous
+  answer was cut off and builds on it instead of restarting; the rest of the
+  queue still flushes normally afterward. (#198)
+
 ## [0.94.0] - 2026-06-26
 
 This release makes AI chat durable and fast: assistant turns are persisted to

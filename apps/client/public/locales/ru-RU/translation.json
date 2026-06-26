@@ -734,6 +734,8 @@
   "Send when the agent finishes": "Отправить, когда агент закончит",
   "Queue message": "Поставить в очередь",
   "Remove queued message": "Убрать из очереди",
+  "Send now": "Отправить сейчас",
+  "Interrupt and send now": "Прервать и отправить сейчас",
   "Something went wrong": "Что-то пошло не так",
   "Stop": "Стоп",
   "The AI agent could not respond. Please try again.": "AI-агент не смог ответить. Попробуйте ещё раз.",

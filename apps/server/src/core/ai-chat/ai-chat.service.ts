@@ -76,6 +76,32 @@ export function prepareAgentStep(
 export { MAX_AGENT_STEPS, FINAL_STEP_INSTRUCTION };
 
 /**
+ * Pure, unit-testable (#198): decide whether THIS turn is an interrupt-resume,
+ * i.e. it directly follows a user interruption of the previous (still-partial)
+ * assistant turn. The client "send now" flag is only a HINT — confirm it against
+ * the just-loaded history so a spoofed/stale flag cannot inject the interrupt
+ * note onto an ordinary turn.
+ *
+ * `history` is the model history oldest -> newest, with the just-inserted user
+ * row as its tail; the turn before it is `history[len-2]`. We treat the new turn
+ * as an interrupt-resume only when the client said so AND the preceding assistant
+ * turn really ended unfinished: 'aborted' (onAbort already finalized it), or
+ * still 'streaming' (onAbort has not finalized yet — the abort/resend race; the
+ * partial output is already in history thanks to the step-granular write path).
+ */
+export function isInterruptResume(
+  history: Array<{ role: string; status?: string | null }>,
+  clientInterrupted: boolean | undefined,
+): boolean {
+  if (clientInterrupted !== true) return false;
+  const prev = history[history.length - 2];
+  return (
+    prev?.role === 'assistant' &&
+    (prev.status === 'aborted' || prev.status === 'streaming')
+  );
+}
+
+/**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
  * DTO (the global ValidationPipe whitelist would strip the useChat-specific
  * fields), so this is a loose shape parsed straight off `req.body`.
@@ -93,6 +119,11 @@ export interface AiChatStreamBody {
   // is attacker-controllable but harmless: the agent reads/writes via its
   // CASL-enforced page tools, which 403 on a page the user cannot access.
   openPage?: { id?: string; title?: string } | null;
+  // Set by the client "send now" action (#198): this turn immediately follows a
+  // user interruption of the previous turn. A hint only — the server re-confirms
+  // it against persisted history (`isInterruptResume`) before injecting the
+  // interrupt note, so a spoofed/stale flag on an ordinary turn is ignored.
+  interrupted?: boolean;
   // useChat sends the full UIMessage list; the last one is the new user turn.
   messages?: UIMessage[];
 }
@@ -333,6 +364,13 @@ export class AiChatService implements OnModuleInit {
     // convertToModelMessages is async in ai@6.0.134 (returns Promise<ModelMessage[]>).
     const messages = await convertToModelMessages(uiMessages);
 
+    // Interrupt-resume detection (#198): the client "send now" flag is only a
+    // hint — confirm it against the persisted history (the preceding assistant
+    // turn must really be aborted/streaming) so a spoofed flag cannot inject the
+    // interrupt note onto an ordinary turn. The partial output the model needs is
+    // already in `messages` (the aborted assistant row replays via findRecent).
+    const interrupted = isInterruptResume(history, body.interrupted);
+
     // The model is resolved by the controller before hijack (clean 503 path).
     // Here we only need the admin-configured system prompt.
     const resolved = await this.aiSettings.resolve(workspace.id);
@@ -404,6 +442,9 @@ export class AiChatService implements OnModuleInit {
         openedPage: openPageContext,
         // Guidance only for servers that connected and yielded ≥1 callable tool.
         mcpInstructions: external.instructions,
+        // History-confirmed interrupt-resume flag (#198): adds the interrupt note
+        // so the model treats the partial answer above as cut off, not finished.
+        interrupted,
       });
 
       // Pass the resolved chatId so the write tools can mint provenance tokens
