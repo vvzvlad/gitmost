@@ -14,6 +14,11 @@ import { PageRepo } from '@docmost/db/repos/page/page.repo';
 export class TemporaryNoteCleanupService {
   private readonly logger = new Logger(TemporaryNoteCleanupService.name);
 
+  // Cap a single sweep so a large backlog (e.g. many notes created during
+  // downtime under a short lifetime) is not loaded into memory at once. The
+  // remainder is drained on the next hourly run; sub-hour overshoot is fine.
+  private static readonly SWEEP_BATCH_LIMIT = 500;
+
   constructor(
     @InjectKysely() private readonly db: KyselyDB,
     private readonly pageRepo: PageRepo,
@@ -32,11 +37,37 @@ export class TemporaryNoteCleanupService {
         .where('temporaryExpiresAt', 'is not', null)
         .where('temporaryExpiresAt', '<', now)
         .where('deletedAt', 'is', null) // not already in trash
+        .limit(TemporaryNoteCleanupService.SWEEP_BATCH_LIMIT)
         .execute();
 
       let trashed = 0;
       for (const page of expired) {
         try {
+          // Re-check the deadline at deletion time. The SELECT above is not
+          // transactional, so a user may click "Make permanent"
+          // (toggleTemporary sets temporary_expires_at = null) in the window
+          // between the SELECT and this per-row removePage. removePage deletes
+          // by id with only a `deletedAt IS NULL` filter and never re-reads the
+          // deadline, so without this guard a concurrently-kept note would
+          // still be trashed. Re-read the row and skip it unless it is still
+          // armed AND still expired, so a concurrent make-permanent wins.
+          const current = await this.db
+            .selectFrom('pages')
+            .select(['temporaryExpiresAt', 'deletedAt'])
+            .where('id', '=', page.id)
+            .executeTakeFirst();
+
+          if (
+            !current ||
+            current.deletedAt !== null ||
+            current.temporaryExpiresAt === null ||
+            new Date(current.temporaryExpiresAt) >= now
+          ) {
+            // Made permanent, already trashed, or no longer expired since the
+            // SELECT — leave it alone.
+            continue;
+          }
+
           // Reuse the exact soft-delete path: recursive over children, removes
           // shares in a transaction, and emits PAGE_SOFT_DELETED (tree
           // invalidation + watcher notifications). Attribute the automatic

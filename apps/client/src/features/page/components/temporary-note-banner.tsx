@@ -3,8 +3,10 @@ import { IconClockHour4 } from "@tabler/icons-react";
 import { Trans, useTranslation } from "react-i18next";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
-import { useToggleTemporaryMutation } from "@/features/page-embed/queries/page-embed-query.ts";
-import { queryClient } from "@/main.tsx";
+import {
+  useToggleTemporaryMutation,
+  syncTemporaryExpiresInCache,
+} from "@/features/page-embed/queries/page-embed-query.ts";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
 import { useSpaceAbility } from "@/features/space/permissions/use-space-ability.ts";
 import {
@@ -42,19 +44,7 @@ export function TemporaryNoteBanner({ slugId }: TemporaryNoteBannerProps) {
         pageId: page.id,
         temporary: false,
       });
-      for (const key of [page.slugId, page.id]) {
-        const cached = queryClient.getQueryData<any>(["pages", key]);
-        if (cached) {
-          queryClient.setQueryData(["pages", key], {
-            ...cached,
-            temporaryExpiresAt: res.temporaryExpiresAt,
-          });
-        }
-      }
-      queryClient.invalidateQueries({
-        predicate: (item) =>
-          ["sidebar-pages"].includes(item.queryKey[0] as string),
-      });
+      syncTemporaryExpiresInCache(page, res.temporaryExpiresAt);
     } catch {
       // mutation surfaces the error via notifications
     }

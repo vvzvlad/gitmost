@@ -32,6 +32,16 @@ per-workspace rolling-day token budget.
   foreign key is `ON DELETE SET NULL`, so deleting the target leaves a dangling
   alias any workspace member can reclaim. (#205)
 
+- **Temporary notes — auto-move to Trash after a workspace lifetime.** A note can
+  be marked temporary so it auto-moves to Trash once a configurable workspace
+  lifetime elapses (default `DEFAULT_TEMPORARY_NOTE_HOURS` = 24h) unless made
+  permanent first. The deadline is frozen at creation time, so later changes to
+  the workspace setting never reschedule existing notes; an hourly background
+  sweep trashes notes past their deadline (children ride along). An open
+  temporary note shows a banner with a "Make permanent" rescue action; restoring
+  a note from Trash disarms the timer so it is not immediately re-trashed.
+  Operators configure the lifetime per workspace. (#201)
+
 - **Persistent AI-chat history as the source of truth + server-side export.**
   An assistant turn is now persisted to the database step by step: the row is
   inserted upfront as `streaming` and updated as each agent step finishes, then

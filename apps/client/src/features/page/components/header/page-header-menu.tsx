@@ -25,8 +25,10 @@ import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { useParams } from "react-router-dom";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
-import { useToggleTemporaryMutation } from "@/features/page-embed/queries/page-embed-query.ts";
-import { queryClient } from "@/main.tsx";
+import {
+  useToggleTemporaryMutation,
+  syncTemporaryExpiresInCache,
+} from "@/features/page-embed/queries/page-embed-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { notifications } from "@mantine/notifications";
 import { getAppUrl } from "@/lib/config.ts";
@@ -176,19 +178,7 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
       });
       // Reflect the new deadline in the page cache so the menu label flips and
       // any banner updates. The sidebar icon refreshes via its own query.
-      for (const key of [page.slugId, page.id]) {
-        const cached = queryClient.getQueryData<any>(["pages", key]);
-        if (cached) {
-          queryClient.setQueryData(["pages", key], {
-            ...cached,
-            temporaryExpiresAt: res.temporaryExpiresAt,
-          });
-        }
-      }
-      queryClient.invalidateQueries({
-        predicate: (item) =>
-          ["sidebar-pages"].includes(item.queryKey[0] as string),
-      });
+      syncTemporaryExpiresInCache(page, res.temporaryExpiresAt);
       notifications.show({
         message: next
           ? t("Note will move to trash unless made permanent")
