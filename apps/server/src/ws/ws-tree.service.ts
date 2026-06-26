@@ -5,6 +5,7 @@ import {
   PageMovedEvent,
   TreeNodeSnapshot,
   TreeUpdateSnapshot,
+  toTreeNodeSnapshot,
 } from '../database/listeners/page.listener';
 
 @Injectable()
@@ -28,20 +29,17 @@ export class WsTreeService {
         // Receivers place by `position` among already-loaded siblings, not by
         // this absolute index (sender's loaded set differs from receivers').
         index: 0,
+        // Built via the shared snapshot helper (same one page.repo uses to fill
+        // the event), then extended with the tree-only fields the client
+        // receiver consumes. The helper carries the death-timer deadline
+        // (normalised to null => permanent) so receivers — and the author, if
+        // this broadcast wins the race against the optimistic insert — render
+        // the temporary-note clock marker immediately, without it drifting from
+        // the event literal.
         data: {
-          id: page.id,
-          slugId: page.slugId,
+          ...toTreeNodeSnapshot(page),
           name: page.title ?? '',
-          title: page.title,
-          icon: page.icon,
-          position: page.position,
-          spaceId: page.spaceId,
-          parentPageId: page.parentPageId,
           hasChildren: false,
-          // Carry the death-timer deadline so receivers (and the author, if this
-          // broadcast wins the race against the optimistic insert) render the
-          // temporary-note clock marker immediately. null => permanent.
-          temporaryExpiresAt: page.temporaryExpiresAt ?? null,
           children: [],
         },
       },

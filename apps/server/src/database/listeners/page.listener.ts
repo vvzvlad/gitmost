@@ -28,6 +28,36 @@ export interface TreeNodeSnapshot {
   temporaryExpiresAt?: Date | string | null;
 }
 
+/**
+ * Single canonical builder for a `TreeNodeSnapshot` from a page-like row. Both
+ * the `PAGE_CREATED` event enrichment (`page.repo.insertPage`) and the
+ * `addTreeNode` broadcast (`WsTreeService.broadcastPageCreated`) build this same
+ * snapshot; routing both through here keeps the optional `temporaryExpiresAt`
+ * (and the `?? null` normalisation that pins a permanent note to an explicit
+ * null) from silently drifting between the two literals.
+ */
+export function toTreeNodeSnapshot(page: {
+  id: string;
+  slugId: string;
+  title: string | null;
+  icon: string | null;
+  position: string;
+  spaceId: string;
+  parentPageId: string | null;
+  temporaryExpiresAt?: Date | string | null;
+}): TreeNodeSnapshot {
+  return {
+    id: page.id,
+    slugId: page.slugId,
+    title: page.title,
+    icon: page.icon,
+    position: page.position,
+    spaceId: page.spaceId,
+    parentPageId: page.parentPageId,
+    temporaryExpiresAt: page.temporaryExpiresAt ?? null,
+  };
+}
+
 export class PageEvent {
   pageIds: string[];
   workspaceId: string;

@@ -83,6 +83,27 @@ describe('WsTreeService', () => {
     );
   });
 
+  it('broadcastPageCreated carries temporaryExpiresAt when the page is a temporary note', async () => {
+    const expiresAt = new Date('2026-07-01T00:00:00.000Z');
+    await service.broadcastPageCreated({ ...snapshot, temporaryExpiresAt: expiresAt });
+
+    const data =
+      wsService.emitTreeEvent.mock.calls[0][2].payload.data;
+    // The death-timer deadline reaches receivers so the clock marker renders
+    // immediately (incl. the author if this broadcast wins the optimistic race).
+    expect(data.temporaryExpiresAt).toBe(expiresAt);
+  });
+
+  it('broadcastPageCreated pins temporaryExpiresAt to null for a permanent page', async () => {
+    // Fixture omits temporaryExpiresAt; the `?? null` must send an explicit null
+    // (permanent) rather than undefined, so receivers clear any stale marker.
+    await service.broadcastPageCreated(snapshot);
+
+    const data =
+      wsService.emitTreeEvent.mock.calls[0][2].payload.data;
+    expect(data.temporaryExpiresAt).toBeNull();
+  });
+
   it('broadcastPageDeleted emits deleteTreeNode with the root node only', async () => {
     await service.broadcastPageDeleted({
       ...snapshot,

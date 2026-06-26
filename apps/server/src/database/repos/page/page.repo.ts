@@ -16,7 +16,10 @@ import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EventName } from '../../../common/events/event.contants';
-import { TreeUpdateSnapshot } from '../../listeners/page.listener';
+import {
+  TreeUpdateSnapshot,
+  toTreeNodeSnapshot,
+} from '../../listeners/page.listener';
 
 /**
  * Optional extras for the PAGE_UPDATED event emitted by updatePage(s). Lets the
@@ -200,20 +203,10 @@ export class PageRepo {
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: [result.id],
       workspaceId: result.workspaceId,
-      pages: [
-        {
-          id: result.id,
-          slugId: result.slugId,
-          title: result.title,
-          icon: result.icon,
-          position: result.position,
-          spaceId: result.spaceId,
-          parentPageId: result.parentPageId,
-          // Carry the death-timer deadline so a note created as temporary shows
-          // its sidebar clock marker on every client without a reload.
-          temporaryExpiresAt: result.temporaryExpiresAt,
-        },
-      ],
+      // Built via the shared snapshot helper so the field copy (and the
+      // death-timer deadline that shows the sidebar clock marker without a
+      // reload) can't drift from the `addTreeNode` broadcast literal.
+      pages: [toTreeNodeSnapshot(result)],
     });
 
     return result;

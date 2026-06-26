@@ -9,26 +9,45 @@ export function sortPositionKeys(keys: any[]) {
   });
 }
 
+/**
+ * Single canonical `IPage -> SpaceTreeNode` field mapper. Every place that
+ * materialises a tree node from a page (buildTree, the optimistic insert in
+ * handleCreate, restore, duplicate) routes through here so the field copy —
+ * crucially `temporaryExpiresAt` — can never silently drift between sites. The
+ * `overrides` cover the small per-site differences (e.g. `name: ""` for an
+ * optimistic create, `name: title || "Untitled"` for restore, `canEdit: true`
+ * for duplicate). The default `temporaryExpiresAt` comes straight off the page,
+ * so restore (which the server nulls) stays permanent and a temporary create
+ * keeps its clock marker without a reload.
+ */
+export function pageToTreeNode(
+  page: IPage,
+  overrides?: Partial<SpaceTreeNode>,
+): SpaceTreeNode {
+  return {
+    id: page.id,
+    slugId: page.slugId,
+    name: page.title,
+    icon: page.icon,
+    position: page.position,
+    hasChildren: page.hasChildren,
+    spaceId: page.spaceId,
+    parentPageId: page.parentPageId,
+    canEdit: page.canEdit ?? page.permissions?.canEdit,
+    isTemplate: page.isTemplate,
+    temporaryExpiresAt: page.temporaryExpiresAt,
+    children: [],
+    ...overrides,
+  };
+}
+
 export function buildTree(pages: IPage[]): SpaceTreeNode[] {
   const pageMap: Record<string, SpaceTreeNode> = {};
 
   const tree: SpaceTreeNode[] = [];
 
   pages.forEach((page) => {
-    pageMap[page.id] = {
-      id: page.id,
-      slugId: page.slugId,
-      name: page.title,
-      icon: page.icon,
-      position: page.position,
-      hasChildren: page.hasChildren,
-      spaceId: page.spaceId,
-      parentPageId: page.parentPageId,
-      canEdit: page.canEdit ?? page.permissions?.canEdit,
-      isTemplate: page.isTemplate,
-      temporaryExpiresAt: page.temporaryExpiresAt,
-      children: [],
-    };
+    pageMap[page.id] = pageToTreeNode(page);
   });
 
   // Defense-in-depth: a duplicate id in `pages` would push two references to the

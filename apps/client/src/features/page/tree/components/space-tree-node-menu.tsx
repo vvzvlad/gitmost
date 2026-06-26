@@ -37,6 +37,7 @@ import {
 } from "@/features/page-embed/queries/page-embed-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
+import { pageToTreeNode } from "@/features/page/tree/utils";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import classes from "@/features/page/tree/styles/tree.module.css";
@@ -130,18 +131,14 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
       const currentIndex = siblings?.index ?? 0;
       const newIndex = currentIndex + 1;
 
-      const treeNodeData: SpaceTreeNode = {
-        id: duplicatedPage.id,
-        slugId: duplicatedPage.slugId,
-        name: duplicatedPage.title,
-        position: duplicatedPage.position,
-        spaceId: duplicatedPage.spaceId,
-        parentPageId: duplicatedPage.parentPageId,
-        icon: duplicatedPage.icon,
-        hasChildren: duplicatedPage.hasChildren,
+      // Routed through the canonical mapper so the field copy stays in lockstep
+      // with buildTree. The server does NOT arm a death timer on duplicate (the
+      // copy's `temporaryExpiresAt` defaults to null = permanent), so the mapper
+      // carries that null through and the duplicated node correctly shows no
+      // clock marker — matching the server without a reload.
+      const treeNodeData: SpaceTreeNode = pageToTreeNode(duplicatedPage, {
         canEdit: true,
-        children: [],
-      };
+      });
 
       setData((prev) =>
         treeModel.insert(prev, parentId, treeNodeData, newIndex),

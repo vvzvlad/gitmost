@@ -32,7 +32,7 @@ import {
 import { notifications } from "@mantine/notifications";
 import { IPagination, QueryParams } from "@/lib/types.ts";
 import { queryClient } from "@/main.tsx";
-import { buildTree } from "@/features/page/tree/utils";
+import { buildTree, pageToTreeNode } from "@/features/page/tree/utils";
 import { useEffect } from "react";
 import { validate as isValidUuid } from "uuid";
 import { useTranslation } from "react-i18next";
@@ -210,18 +210,15 @@ export function useRestorePageMutation() {
 
       // Check if the page already exists in the tree (it shouldn't)
       if (!treeModel.find(currentTree, restoredPage.id)) {
-        // Create the tree node data with hasChildren from backend
-        const nodeData: SpaceTreeNode = {
-          id: restoredPage.id,
-          slugId: restoredPage.slugId,
+        // Create the tree node data with hasChildren from backend. Routed
+        // through the canonical mapper so the field copy stays in lockstep with
+        // buildTree. The server NULLS `temporaryExpiresAt` on restore (a restored
+        // page is made permanent), so the mapper carries that null through and
+        // the node correctly shows no clock marker.
+        const nodeData: SpaceTreeNode = pageToTreeNode(restoredPage, {
           name: restoredPage.title || "Untitled",
-          icon: restoredPage.icon,
-          position: restoredPage.position,
-          spaceId: restoredPage.spaceId,
-          parentPageId: restoredPage.parentPageId,
           hasChildren: restoredPage.hasChildren || false,
-          children: [],
-        };
+        });
 
         // Determine the parent and index
         const parentId = restoredPage.parentPageId || null;

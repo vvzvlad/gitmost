@@ -9,6 +9,7 @@ import { treeModel } from "@/features/page/tree/model/tree-model";
 import type { DropOp } from "@/features/page/tree/model/tree-model.types";
 import { dropOpToMovePayload } from "./drop-op-to-move-payload";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
+import { pageToTreeNode } from "@/features/page/tree/utils";
 import { IPage } from "@/features/page/types/page.types.ts";
 import {
   useCreatePageMutation,
@@ -139,18 +140,15 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
         throw new Error("Failed to create page");
       }
 
-      const newNode: SpaceTreeNode = {
-        id: createdPage.id,
-        slugId: createdPage.slugId,
+      // Route through the canonical mapper so the field copy (esp.
+      // `temporaryExpiresAt`, which shows the temporary-note clock marker on
+      // optimistic insert) can't drift from buildTree. `name: ""` because a
+      // freshly created page is untitled; `hasChildren: false` because it has no
+      // children yet.
+      const newNode: SpaceTreeNode = pageToTreeNode(createdPage, {
         name: "",
-        position: createdPage.position,
-        spaceId: createdPage.spaceId,
-        parentPageId: createdPage.parentPageId,
         hasChildren: false,
-        // Show the temporary-note icon immediately on optimistic insert.
-        temporaryExpiresAt: createdPage.temporaryExpiresAt,
-        children: [],
-      };
+      });
 
       // Read latest tree at call time. Without this, callers that mutate the
       // tree (e.g. lazy-load children on expand) immediately before calling
