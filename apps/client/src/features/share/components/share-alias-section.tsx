@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Box,
   Button,
   Group,
   Modal,
@@ -7,7 +8,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { IconExternalLink } from "@tabler/icons-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CopyTextButton from "@/components/common/copy.tsx";
 import { getAppUrl } from "@/lib/config.ts";
@@ -122,12 +123,25 @@ export default function ShareAliasSection({
   const showTaken =
     isValid && !unchanged && availability && !availability.available;
 
+  // The slug prefix (e.g. "docs.example.com/l/") is static for the session.
+  const prefixLabel = aliasPrefixLabel();
+  const prefixRef = useRef<HTMLDivElement>(null);
+  const [prefixWidth, setPrefixWidth] = useState(0);
+
+  // Measure the real rendered width of the prefix so the slug input sits flush
+  // next to it, instead of after an over-estimated character-counted gap.
+  useLayoutEffect(() => {
+    if (prefixRef.current) {
+      setPrefixWidth(Math.ceil(prefixRef.current.scrollWidth) + 1);
+    }
+  }, [prefixLabel]);
+
   return (
     <>
       <Text size="sm" fw={500} mt="md">
         {t("Custom address")}
       </Text>
-      <Text size="xs" c="dimmed" mb={4}>
+      <Text size="xs" c="dimmed" mb={6}>
         {t("A short, memorable link you can point at any shared page.")}
       </Text>
 
@@ -159,11 +173,27 @@ export default function ShareAliasSection({
         // visibly to what gets stored.
         onBlur={() => setValue(normalized)}
         leftSection={
-          <Text size="xs" c="dimmed" pl={4} style={{ whiteSpace: "nowrap" }}>
-            {aliasPrefixLabel()}
-          </Text>
+          <Box
+            ref={prefixRef}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              width: "100%",
+              height: "100%",
+              paddingInline: "var(--mantine-spacing-xs)",
+              whiteSpace: "nowrap",
+              fontSize: "var(--mantine-font-size-xs)",
+              color: "var(--mantine-color-dimmed)",
+              backgroundColor: "var(--mantine-color-default-hover)",
+              borderRight: "1px solid var(--mantine-color-default-border)",
+              borderTopLeftRadius: "var(--input-radius)",
+              borderBottomLeftRadius: "var(--input-radius)",
+            }}
+          >
+            {prefixLabel}
+          </Box>
         }
-        leftSectionWidth={Math.min(aliasPrefixLabel().length * 7 + 12, 180)}
+        leftSectionWidth={prefixWidth || undefined}
         placeholder={t("my-page")}
         disabled={readOnly}
         error={
@@ -175,7 +205,7 @@ export default function ShareAliasSection({
         }
       />
 
-      <Group mt="xs" gap="xs">
+      <Group mt="sm" gap="xs">
         <Button
           size="compact-sm"
           onClick={() => handleSave(false)}
