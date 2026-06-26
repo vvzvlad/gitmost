@@ -33,6 +33,7 @@ import {
   pageEditorAtom,
 } from "@/features/editor/atoms/editor-atoms.ts";
 import { DictationGroup } from "@/features/editor/components/fixed-toolbar/groups/dictation-group";
+import { GenerateTitleGroup } from "@/features/editor/components/fixed-toolbar/groups/generate-title-group";
 
 const MemoizedTitleEditor = React.memo(TitleEditor);
 const MemoizedPageEditor = React.memo(PageEditor);
@@ -76,6 +77,9 @@ export function FullEditor({
   const [user] = useAtom(userAtom);
   const workspace = useAtomValue(workspaceAtom);
   const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
+  // AI title generation reuses the generative AI flag (same gate as the on-page
+  // generative menu); the server enforces it too (#199).
+  const isTitleGenEnabled = workspace?.settings?.ai?.generative === true;
   const fullPageWidth = user.settings?.preferences?.fullPageWidth;
   const editorToolbarEnabled =
     user.settings?.preferences?.editorToolbar ?? false;
@@ -114,11 +118,13 @@ export function FullEditor({
         editable={editable}
       />
       <PageByline
+        pageId={pageId}
         creator={creator}
         contributors={contributors}
         editable={editable}
         isEditMode={isEditMode}
         isDictationEnabled={isDictationEnabled}
+        isTitleGenEnabled={isTitleGenEnabled}
       />
       <MemoizedPageEditor
         pageId={pageId}
@@ -131,25 +137,32 @@ export function FullEditor({
 }
 
 type PageBylineProps = {
+  pageId: string;
   creator?: PageUser;
   contributors?: IContributor[];
   editable?: boolean;
   isEditMode?: boolean;
   isDictationEnabled?: boolean;
+  isTitleGenEnabled?: boolean;
 };
 
 function PageByline({
+  pageId,
   creator,
   contributors,
   editable,
   isEditMode,
   isDictationEnabled,
+  isTitleGenEnabled,
 }: PageBylineProps) {
   const { t } = useTranslation();
   const detailsTriggerProps = useAsideTriggerProps("details");
   const editor = useAtomValue(pageEditorAtom);
   const showDictation = Boolean(
     isDictationEnabled && editable && isEditMode && editor,
+  );
+  const showTitleGen = Boolean(
+    isTitleGenEnabled && editable && isEditMode && editor,
   );
 
   const otherContributors = (contributors ?? []).filter(
@@ -240,6 +253,11 @@ function PageByline({
             dictation stays reachable even when the fixed toolbar is hidden. */}
         {showDictation && editor && (
           <DictationGroup editor={editor} color="gray" iconSize={20} />
+        )}
+        {/* Shown only in edit mode when the workspace's generative AI flag is on,
+            so AI title generation stays reachable from the byline (#199). */}
+        {showTitleGen && (
+          <GenerateTitleGroup pageId={pageId} color="gray" iconSize={20} />
         )}
       </Group>
     </Group>

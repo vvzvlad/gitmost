@@ -17,6 +17,16 @@ export class RenameChatDto {
   title: string;
 }
 
+/** One-shot page-title generation from note content (#199). */
+export class GeneratePageTitleDto {
+  // Note body as markdown/plain text. Capped to bound the prompt cost and
+  // reject abusive payloads; the service truncates again before the model call.
+  @IsString()
+  @MinLength(1)
+  @MaxLength(20000)
+  content: string;
+}
+
 /** Optional chat id for listing messages of a specific chat. */
 export class GetChatMessagesDto {
   @IsString()

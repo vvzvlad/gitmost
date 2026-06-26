@@ -1341,5 +1341,13 @@
   "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?": "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?",
   "The address \"{{alias}}\" is already in use. Move it to this page?": "The address \"{{alias}}\" is already in use. Move it to this page?",
   "Failed to set custom address": "Failed to set custom address",
-  "Failed to remove custom address": "Failed to remove custom address"
+  "Failed to remove custom address": "Failed to remove custom address",
+  "Generate title with AI": "Generate title with AI",
+  "Title generated": "Title generated",
+  "Failed to generate title": "Failed to generate title",
+  "The note is empty": "The note is empty",
+  "Could not generate a title": "Could not generate a title",
+  "AI title generation is disabled": "AI title generation is disabled",
+  "AI is not configured": "AI is not configured",
+  "Too many requests, please try again later": "Too many requests, please try again later"
 }
