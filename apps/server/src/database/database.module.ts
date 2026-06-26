@@ -23,6 +23,7 @@ import { UserTokenRepo } from './repos/user-token/user-token.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
 import { BacklinkRepo } from '@docmost/db/repos/backlink/backlink.repo';
 import { ShareRepo } from '@docmost/db/repos/share/share.repo';
+import { ShareAliasRepo } from '@docmost/db/repos/share-alias/share-alias.repo';
 import { NotificationRepo } from '@docmost/db/repos/notification/notification.repo';
 import { WatcherRepo } from '@docmost/db/repos/watcher/watcher.repo';
 import { LabelRepo } from '@docmost/db/repos/label/label.repo';
@@ -96,6 +97,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     UserSessionRepo,
     BacklinkRepo,
     ShareRepo,
+    ShareAliasRepo,
     NotificationRepo,
     WatcherRepo,
     LabelRepo,
@@ -128,6 +130,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     UserSessionRepo,
     BacklinkRepo,
     ShareRepo,
+    ShareAliasRepo,
     NotificationRepo,
     WatcherRepo,
     LabelRepo,

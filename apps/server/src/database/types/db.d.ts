@@ -305,6 +305,16 @@ export interface Pages {
   ydoc: Buffer | null;
 }
 
+export interface ShareAliases {
+  alias: string;
+  createdAt: Generated<Timestamp>;
+  creatorId: string | null;
+  id: Generated<string>;
+  pageId: string | null;
+  updatedAt: Generated<Timestamp>;
+  workspaceId: string;
+}
+
 export interface Shares {
   createdAt: Generated<Timestamp>;
   creatorId: string | null;
@@ -674,6 +684,7 @@ export interface DB {
   pageVerifiers: PageVerifiers;
   pages: Pages;
   scimTokens: ScimTokens;
+  shareAliases: ShareAliases;
   shares: Shares;
   spaceMembers: SpaceMembers;
   spaces: Spaces;

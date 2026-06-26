@@ -10,6 +10,8 @@ import { useTranslation } from "react-i18next";
 import {
   ICreateShare,
   IShare,
+  IShareAlias,
+  ISetShareAlias,
   ISharedItem,
   ISharedPage,
   ISharedPageTree,
@@ -20,11 +22,14 @@ import {
 import {
   createShare,
   deleteShare,
+  getShareAliasForPage,
   getSharedPageTree,
   getShareForPage,
   getShareInfo,
   getSharePageInfo,
   getShares,
+  removeShareAlias,
+  setShareAlias,
   updateShare,
 } from "@/features/share/services/share-service.ts";
 import { IPagination, QueryParams } from "@/lib/types.ts";
@@ -164,6 +169,72 @@ export function useDeleteShareMutation() {
 
       notifications.show({
         message: error?.["response"]?.data?.message || "Failed to delete share",
+        color: "red",
+      });
+    },
+  });
+}
+
+export function useShareAliasForPageQuery(
+  pageId: string,
+): UseQueryResult<IShareAlias | null, Error> {
+  return useQuery({
+    // The endpoint resolves to null when the page has no alias; normalize the
+    // absence so React Query never sees `undefined`.
+    queryKey: ["share-alias-for-page", pageId],
+    queryFn: async () => (await getShareAliasForPage(pageId)) ?? null,
+    enabled: !!pageId,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+}
+
+export function useSetShareAliasMutation() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  return useMutation<IShareAlias, Error, ISetShareAlias>({
+    mutationFn: (data) => setShareAlias(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (item) =>
+          ["share-alias-for-page", "share-list"].includes(
+            item.queryKey[0] as string,
+          ),
+      });
+    },
+    onError: (error) => {
+      // A 409 reassign-required is handled inline by the modal (it shows the
+      // "move address here?" confirmation), so don't surface a generic toast.
+      if (error?.["status"] === 409) return;
+      notifications.show({
+        message:
+          error?.["response"]?.data?.message || t("Failed to set custom address"),
+        color: "red",
+      });
+    },
+  });
+}
+
+export function useRemoveShareAliasMutation() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  return useMutation<void, Error, string>({
+    mutationFn: (aliasId) => removeShareAlias(aliasId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (item) =>
+          ["share-alias-for-page", "share-list"].includes(
+            item.queryKey[0] as string,
+          ),
+      });
+    },
+    onError: (error) => {
+      notifications.show({
+        message:
+          error?.["response"]?.data?.message ||
+          t("Failed to remove custom address"),
         color: "red",
       });
     },
