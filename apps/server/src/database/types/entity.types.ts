@@ -81,6 +81,24 @@ export type UpdatableAiMcpServer = Updateable<Omit<AiMcpServersTable, 'id'>>;
 // A role replaces the persona layer of the system prompt (instructions) and may
 // optionally override the chat model (`modelConfig`). Soft-deletable.
 export type AiAgentRole = Selectable<AiAgentRoles>;
+
+/**
+ * The validated shape of the `source` jsonb column on ai_agent_roles: the
+ * catalog origin of an imported role. `version` lets the admin UI offer an
+ * UPDATE when the catalog ships a newer revision of the same slug; null `source`
+ * (not this type) means a manually-created role with no catalog provenance.
+ *
+ * THE single contract for that column, shared by the repo read-path
+ * (`parseSource`, the only form validator) and the service, so the persisted
+ * shape can never be validated weakly in one layer and strongly in another.
+ * Defined here (a leaf db-types module both already import `AiAgentRole` from) to
+ * avoid an import cycle between the repo and the service.
+ */
+export interface RoleSource {
+  slug: string;
+  language: string;
+  version: number;
+}
 export type InsertableAiAgentRole = Insertable<AiAgentRoles>;
 export type UpdatableAiAgentRole = Updateable<Omit<AiAgentRoles, 'id'>>;
 

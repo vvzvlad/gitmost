@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
 import { dbOrTx, jsonbBind, parseJsonbValue } from '../../utils';
-import { AiAgentRole } from '@docmost/db/types/entity.types';
+import { AiAgentRole, RoleSource } from '@docmost/db/types/entity.types';
 
 /** The jsonb shape persisted in `model_config` (loosely typed for the column). */
 type ModelConfigValue = Record<string, unknown> | null;
@@ -203,29 +203,45 @@ export function parseModelConfig(
 }
 
 /**
- * Parse the `source` jsonb value read from the DB into an object or null,
- * analogous to {@link parseModelConfig}. Same legacy double-encoding self-heal
- * (a JSON string is parsed once) and the same shape guard: not null, an object,
- * and not an array. A corrupt / wrong-shaped value degrades to null (= manually
- * created), so a bad row never breaks the read path.
+ * THE single form validator for the `source` jsonb column: parse the value read
+ * from the DB into a fully-valid {@link RoleSource} or null. Same legacy
+ * double-encoding self-heal as {@link parseModelConfig} (a JSON string is parsed
+ * once), then validates the FULL shape — `slug` and `language` non-empty
+ * strings, `version` a number. A null / corrupt / partially-shaped value (e.g.
+ * `{}`, `{ slug: 123 }`, `{ slug: 'a' }` missing language/version) degrades to
+ * null (= manually created, no catalog provenance), so a bad row never breaks
+ * the read path AND never stamps a half-built object as a valid `RoleSource`.
+ * Both the repo read-path and the service share this so the contract cannot
+ * drift between layers.
  */
-export function parseSource(value: unknown): Record<string, unknown> | null {
-  return parseJsonbValue(
-    value,
-    (v): v is Record<string, unknown> =>
-      v !== null && typeof v === 'object' && !Array.isArray(v),
+export function parseSource(value: unknown): RoleSource | null {
+  return parseJsonbValue(value, isRoleSource);
+}
+
+/** Full-shape guard for a persisted `source` jsonb value (see parseSource). */
+function isRoleSource(v: unknown): v is RoleSource {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const obj = v as Record<string, unknown>;
+  return (
+    typeof obj.slug === 'string' &&
+    obj.slug.length > 0 &&
+    typeof obj.language === 'string' &&
+    obj.language.length > 0 &&
+    typeof obj.version === 'number'
   );
 }
 
-/** Normalize a DB row so `modelConfig` and `source` are always an object or
- *  null. The casts bridge the concrete `Record | null` to the column's broad
- *  generated `JsonValue` type (an object is a valid JsonValue at runtime). */
+/** Normalize a DB row so `modelConfig` and `source` are always a valid object or
+ *  null. The casts bridge the concrete parsed types (`Record | null`,
+ *  `RoleSource | null`) to the column's broad generated `JsonValue` type — both
+ *  are valid JsonValues at runtime; RoleSource lacks the JsonObject index
+ *  signature so it routes through `unknown`. */
 function normalizeRow(row: AiAgentRole): AiAgentRole {
   return {
     ...row,
     modelConfig: parseModelConfig(
       row.modelConfig,
     ) as AiAgentRole['modelConfig'],
-    source: parseSource(row.source) as AiAgentRole['source'],
+    source: parseSource(row.source) as unknown as AiAgentRole['source'],
   };
 }

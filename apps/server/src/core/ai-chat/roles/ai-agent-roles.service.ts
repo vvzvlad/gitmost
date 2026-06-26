@@ -5,20 +5,16 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
-import { AiAgentRole } from '@docmost/db/types/entity.types';
+import {
+  AiAgentRoleRepo,
+  parseSource,
+} from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
+import { AiAgentRole, RoleSource } from '@docmost/db/types/entity.types';
 import { CreateAgentRoleDto, UpdateAgentRoleDto } from './dto/agent-role.dto';
 import { ImportFromCatalogDto, UpdateFromCatalogDto } from './dto/agent-role-catalog.dto';
 import { RoleModelConfig } from './role-model-config';
 import { AiAgentRolesCatalogProvider } from './catalog/ai-agent-roles-catalog.provider';
 import { CatalogBundleMeta } from './catalog/catalog-types';
-
-/** The `source` jsonb shape that links an imported role to its catalog origin. */
-interface RoleSource {
-  slug: string;
-  language: string;
-  version: number;
-}
 
 /**
  * Full (admin) view of an agent role. There are no secret columns on this table
@@ -39,7 +35,7 @@ export interface AgentRoleView {
   // Catalog origin of an imported role, or null for a manually-created one. The
   // admin UI uses `version` to offer an UPDATE when the catalog ships a newer
   // revision. Admin-only (deliberately absent from AgentRolePickerView).
-  source: { slug: string; language: string; version: number } | null;
+  source: RoleSource | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -318,7 +314,7 @@ export class AiAgentRolesService {
     // `ru` variant of a slug already installed as `en` is a separate install.
     const installedKeys = new Set(
       existingRoles
-        .map((r) => roleSource(r))
+        .map((r) => parseSource(r.source))
         .filter((s): s is RoleSource => s !== null)
         .map((s) => `${s.slug}:${s.language}`),
     );
@@ -375,10 +371,21 @@ export class AiAgentRolesService {
         takenNames.add(name.toLowerCase());
         installedKeys.add(installKey);
       } catch (err) {
-        // A unique-name race is expected and self-explanatory (it becomes a
-        // friendly per-role error). Any OTHER insert failure is unexpected, so
-        // log the root cause with enough context to diagnose it — the
-        // user-facing message is deliberately generic.
+        // A 23505 from the source-uniqueness index means a CONCURRENT import
+        // already installed this exact slug+language between our snapshot
+        // (installedKeys) and this insert: the in-process snapshot cannot see a
+        // sibling request's writes, so the partial unique index is the backstop.
+        // Outcome is identical to the snapshot-based skip above — count it as
+        // skipped (already installed) and continue; do NOT abort or error.
+        if (isSourceUniqueViolation(err)) {
+          skipped++;
+          installedKeys.add(installKey);
+          continue;
+        }
+        // Otherwise: a unique-NAME race (23505 on the name index) is expected and
+        // self-explanatory (it becomes a friendly per-role error). Any OTHER
+        // insert failure is unexpected, so log the root cause with enough context
+        // to diagnose it — the user-facing message is deliberately generic.
         if (!isUniqueViolation(err)) {
           this.logger.error(
             `Failed to import catalog role (workspaceId=${workspaceId} bundleId=${dto.bundleId} slug=${role.slug}): ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
@@ -408,7 +415,7 @@ export class AiAgentRolesService {
     const role = await this.repo.findById(dto.id, workspaceId);
     if (!role) throw new BadRequestException('Role not found');
 
-    const source = roleSource(role);
+    const source = parseSource(role.source);
     if (!source || !source.slug) {
       throw new BadRequestException('Role was not imported from the catalog');
     }
@@ -495,7 +502,9 @@ export class AiAgentRolesService {
       enabled: row.enabled,
       autoStart: row.autoStart,
       launchMessage: row.launchMessage ?? null,
-      source: (row.source ?? null) as AgentRoleView['source'],
+      // parseSource yields a fully-valid RoleSource | null (the row is already
+      // normalized; this also keeps the field type honest without a cast).
+      source: parseSource(row.source),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -542,22 +551,35 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+/**
+ * The partial unique index name from the
+ * 20260626T160000-ai-agent-roles-catalog-source-unique migration: unique on
+ * (workspace_id, source->>'slug', source->>'language') for catalog-imported,
+ * non-deleted rows. A 23505 carrying this constraint name is a source-collision
+ * (concurrent import of the same slug+language), distinct from a name-collision.
+ */
+const SOURCE_UNIQUE_CONSTRAINT = 'ai_agent_roles_workspace_source_unique';
+
+/**
+ * Whether `err` is the 23505 raised by the SOURCE-uniqueness index specifically
+ * (vs the name-uniqueness index). Postgres sets `constraint` to the violated
+ * index name on a unique violation; we key off that so a source race is skipped
+ * while a name race still surfaces as a friendly per-role error. A 23505 with no
+ * constraint name (e.g. a wrapped/test error) is NOT treated as a source
+ * collision, preserving the existing name-race behavior.
+ */
+function isSourceUniqueViolation(err: unknown): boolean {
+  return (
+    isUniqueViolation(err) &&
+    (err as { constraint?: unknown }).constraint === SOURCE_UNIQUE_CONSTRAINT
+  );
+}
+
 /** '' / whitespace-only / undefined / null => null; otherwise the trimmed value. */
 function emptyToNull(value: string | null | undefined): string | null {
   if (value === undefined || value === null) return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-/** Read + shape-check a role's `source` jsonb into a RoleSource, or null. */
-function roleSource(role: AiAgentRole): RoleSource | null {
-  const s = role.source as unknown;
-  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
-  const obj = s as Record<string, unknown>;
-  if (typeof obj.slug !== 'string') return null;
-  if (typeof obj.language !== 'string') return null;
-  if (typeof obj.version !== 'number') return null;
-  return { slug: obj.slug, language: obj.language, version: obj.version };
 }
 
 /** slug -> version map from a bundle's index metadata. */

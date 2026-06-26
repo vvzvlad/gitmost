@@ -647,6 +647,38 @@ describe('AiAgentRolesService guards', () => {
       ]);
     });
 
+    it('source-uniqueness 23505 (concurrent import of same slug+language) => skipped, NOT an error, batch continues', async () => {
+      // Two parallel imports of the same bundle each build installedKeys from a
+      // stale snapshot, so both reach the insert for slug 'a'. The DB partial
+      // unique index on (workspace, source->>slug, source->>language) rejects the
+      // loser with a 23505 carrying the source-index constraint name. That must
+      // be treated as "already installed" (skip), not a per-role error, and the
+      // rest of the batch (slug 'b') must still import.
+      const { service, repo } = makeImportService({
+        bundleRoles: [
+          catalogRole({ slug: 'a', name: 'A' }),
+          catalogRole({ slug: 'b', name: 'B' }),
+        ],
+        indexRoles: [
+          { slug: 'a', version: 1 },
+          { slug: 'b', version: 1 },
+        ],
+      });
+      const sourceRace = Object.assign(new Error('duplicate key'), {
+        code: '23505',
+        constraint: 'ai_agent_roles_workspace_source_unique',
+      });
+      repo.insert
+        .mockRejectedValueOnce(sourceRace)
+        .mockImplementationOnce((v) => Promise.resolve(makeRow(v)));
+      const res = await service.importFromCatalog('ws-1', 'u1', dto());
+      // 'a' converged on the concurrent install (skip); 'b' imported; no errors.
+      expect(res).toMatchObject({ created: 1, skipped: 1, renamed: 0 });
+      expect(res.errors).toEqual([]);
+      // Both inserts were attempted (the batch did not abort on the 23505).
+      expect(repo.insert).toHaveBeenCalledTimes(2);
+    });
+
     it('non-unique insert error => generic message, root cause logged, import continues', async () => {
       const logSpy = jest
         .spyOn(Logger.prototype, 'error')

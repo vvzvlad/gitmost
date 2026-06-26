@@ -157,19 +157,32 @@ describe('AiAgentRoleRepo insert/update auto-start columns', () => {
 });
 
 /**
- * parseSource: a JSON-string (legacy double-encoded) is parsed; a real object
- * passes through; null / a non-object / an array degrade to null (= manual role).
+ * parseSource is THE single form validator for the `source` jsonb column: a
+ * JSON-string (legacy double-encoded) is parsed; a FULLY-VALID object
+ * ({ slug, language, version }) passes through as a typed RoleSource; anything
+ * partial or wrong-shaped degrades to null (= manual role). This is the
+ * stricter-than-before guard that closes the drift where a weak `{}`/`{slug:123}`
+ * value used to be stamped as a valid source by the read path.
  */
 describe('parseSource', () => {
-  it('parses a legacy double-encoded JSON string into the object', () => {
+  it('parses a legacy double-encoded JSON string into the typed source', () => {
     expect(
       parseSource('{"slug":"researcher","language":"en","version":1}'),
     ).toEqual({ slug: 'researcher', language: 'en', version: 1 });
   });
 
-  it('passes an already-parsed object through', () => {
+  it('passes a fully-valid already-parsed object through', () => {
     const obj = { slug: 's', language: 'en', version: 2 };
     expect(parseSource(obj)).toEqual(obj);
+  });
+
+  it('returns the typed RoleSource (extra keys tolerated) for a valid shape', () => {
+    const src = parseSource({ slug: 's', language: 'ru', version: 3 });
+    expect(src).not.toBeNull();
+    // Narrowed to RoleSource: the fields are present and correctly typed.
+    expect(src?.slug).toBe('s');
+    expect(src?.language).toBe('ru');
+    expect(src?.version).toBe(3);
   });
 
   it('null / array / non-object / unparseable string => null', () => {
@@ -177,5 +190,19 @@ describe('parseSource', () => {
     expect(parseSource([1, 2])).toBeNull();
     expect(parseSource(42)).toBeNull();
     expect(parseSource('not json')).toBeNull();
+  });
+
+  it('partial / wrong-typed shapes => null (no weak-but-typed-as-valid drift)', () => {
+    // Empty object: no slug/language/version.
+    expect(parseSource({})).toBeNull();
+    // slug present but not a string.
+    expect(parseSource({ slug: 123, language: 'en', version: 1 })).toBeNull();
+    // slug only, missing language + version.
+    expect(parseSource({ slug: 'a' })).toBeNull();
+    // empty-string slug / language are not valid catalog keys.
+    expect(parseSource({ slug: '', language: 'en', version: 1 })).toBeNull();
+    expect(parseSource({ slug: 'a', language: '', version: 1 })).toBeNull();
+    // version must be a number, not a numeric string.
+    expect(parseSource({ slug: 'a', language: 'en', version: '1' })).toBeNull();
   });
 });
