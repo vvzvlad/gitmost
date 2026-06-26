@@ -132,7 +132,14 @@ export class AiAgentRolesCatalogProvider {
     try {
       let response: Response;
       try {
-        response = await fetch(url, { signal: controller.signal });
+        // `redirect: 'error'` hardens against redirect-SSRF: a
+        // compromised-but-trusted upstream cannot 3xx the fetch into the
+        // internal network (e.g. http://169.254.169.254/...). A redirect
+        // response rejects here and is mapped to BadGateway below.
+        response = await fetch(url, {
+          signal: controller.signal,
+          redirect: 'error',
+        });
       } catch (err) {
         const reason = shortError(err);
         this.logger.error(

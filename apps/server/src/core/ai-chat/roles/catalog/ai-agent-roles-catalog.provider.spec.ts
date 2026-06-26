@@ -195,6 +195,42 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
       );
     });
 
+    it('passes redirect:"error" to fetch (redirect-SSRF hardening)', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue(
+          mockResponse({ body: streamOf([new Uint8Array(0)]) }),
+        );
+      global.fetch = fetchMock as never;
+      const provider = makeProvider('https://catalog.example.com');
+      // Body shape is irrelevant; an empty stream parses to invalid JSON and
+      // throws, but the fetch call (with its init) still happened.
+      await expect(provider.fetchIndex()).rejects.toBeDefined();
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ redirect: 'error' }),
+      );
+    });
+
+    it('redirect response rejects (redirect:"error") => BadGateway', async () => {
+      // With redirect:"error", the platform fetch rejects on a 3xx instead of
+      // following it. Simulate that: the mock rejects when asked not to follow.
+      global.fetch = jest.fn().mockImplementation((_url, init) => {
+        if (init?.redirect === 'error') {
+          return Promise.reject(
+            new TypeError('fetch failed: unexpected redirect'),
+          );
+        }
+        return Promise.resolve(
+          mockResponse({ status: 302, body: null }),
+        );
+      }) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
     it('non-ok response (503) => BadGateway carrying the status', async () => {
       global.fetch = jest.fn().mockResolvedValue(
         mockResponse({ ok: false, status: 503, body: null }),
