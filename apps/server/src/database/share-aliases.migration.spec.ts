@@ -1,9 +1,9 @@
-import * as migration from './20260626T130000-share-aliases';
+import * as migration from './migrations/20260626T130000-share-aliases';
 import type {
   InsertableShareAlias,
   ShareAlias,
   UpdatableShareAlias,
-} from '../types/entity.types';
+} from './types/entity.types';
 
 /**
  * Sanity checks for the share_aliases migration + entity types. We don't run a
