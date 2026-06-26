@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button, Group } from "@mantine/core";
+import { Button, Stack } from "@mantine/core";
 import { IconHourglass, IconPlus } from "@tabler/icons-react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -45,12 +45,16 @@ export default function SpaceCreateNoteButtons() {
       .finally(() => setPending(null));
   };
 
+  // Two full-width, vertically stacked buttons: a neutral regular note and an
+  // orange-tinted temporary note. Stacking full-width keeps the longer "New
+  // temporary note" label from clipping on narrow mobile widths.
   return (
-    <Group grow gap="sm">
+    <Stack gap="sm">
       <Button
         size="md"
         variant="light"
         color="gray"
+        fullWidth
         leftSection={<IconPlus size={18} />}
         loading={pending === "regular"}
         disabled={pending !== null}
@@ -61,7 +65,8 @@ export default function SpaceCreateNoteButtons() {
       <Button
         size="md"
         variant="light"
-        color="gray"
+        color="orange"
+        fullWidth
         leftSection={<IconHourglass size={18} />}
         loading={pending === "temporary"}
         disabled={pending !== null}
@@ -69,6 +74,6 @@ export default function SpaceCreateNoteButtons() {
       >
         {t("New temporary note")}
       </Button>
-    </Group>
+    </Stack>
   );
 }

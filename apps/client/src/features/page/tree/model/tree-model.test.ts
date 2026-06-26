@@ -393,6 +393,101 @@ describe("handleCreate optimistic-insert idempotency (find-then-skip)", () => {
   });
 });
 
+// handleCreate race-guard temporaryExpiresAt patch: when the server's
+// addTreeNode broadcast wins the race and inserts the node BEFORE the optimistic
+// updater runs, the updater must not re-insert. Two sub-branches:
+//  (a) the node the broadcast inserted carries NO deadline (an older broadcast
+//      omitted it) while the authoritative create response DOES → patch the
+//      deadline on so the clock marker shows now, without a reload.
+//  (b) the existing node ALREADY has a deadline → do NOT overwrite it; return
+//      `prev` by reference (a no-op write).
+describe("handleCreate race-guard temporaryExpiresAt patch", () => {
+  type TN = TreeNode<{ name: string; temporaryExpiresAt?: string | null }>;
+
+  // Mirrors the setData updater in use-tree-mutation handleCreate.
+  const applyOptimisticInsert = (
+    tree: TN[],
+    parentId: string | null,
+    node: TN,
+    index: number,
+  ): TN[] => {
+    const existing = treeModel.find(tree, node.id) as TN | null;
+    if (existing) {
+      if (node.temporaryExpiresAt && !existing.temporaryExpiresAt) {
+        return treeModel.update(tree, node.id, {
+          temporaryExpiresAt: node.temporaryExpiresAt,
+        });
+      }
+      return tree;
+    }
+    return treeModel.insert(tree, parentId, node, index);
+  };
+
+  const fixtureTN: TN[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+
+  const deadline = "2026-07-01T00:00:00.000Z";
+
+  it("(a) patches temporaryExpiresAt when the existing node has none + the response carries a deadline", () => {
+    // Server broadcast won the race and inserted the node WITHOUT a deadline.
+    const afterServer = treeModel.insert(fixtureTN, null, {
+      id: "new",
+      name: "",
+    });
+    expect((treeModel.find(afterServer, "new") as TN).temporaryExpiresAt).toBe(
+      undefined,
+    );
+
+    // The authoritative create response carries the deadline.
+    const created: TN = { id: "new", name: "", temporaryExpiresAt: deadline };
+    const patched = applyOptimisticInsert(
+      afterServer,
+      null,
+      created,
+      afterServer.length,
+    );
+
+    // A new reference (the patch wrote) and the node now has the deadline...
+    expect(patched).not.toBe(afterServer);
+    expect((treeModel.find(patched, "new") as TN).temporaryExpiresAt).toBe(
+      deadline,
+    );
+    // ...and still exactly one node (no duplicate re-insert).
+    expect(patched.filter((n) => n.id === "new")).toHaveLength(1);
+  });
+
+  it("(b) does NOT overwrite an existing deadline; returns prev by reference", () => {
+    const existingDeadline = deadline;
+    // The node already exists WITH a deadline (the broadcast carried it).
+    const afterServer = treeModel.insert(fixtureTN, null, {
+      id: "new",
+      name: "",
+      temporaryExpiresAt: existingDeadline,
+    });
+
+    // The create response carries a DIFFERENT deadline; the guard must ignore it.
+    const created: TN = {
+      id: "new",
+      name: "",
+      temporaryExpiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    const after = applyOptimisticInsert(
+      afterServer,
+      null,
+      created,
+      afterServer.length,
+    );
+
+    // prev returned by reference (no write) and the original deadline is kept.
+    expect(after).toBe(afterServer);
+    expect((treeModel.find(after, "new") as TN).temporaryExpiresAt).toBe(
+      existingDeadline,
+    );
+  });
+});
+
 // moveTreeNode socket-handler semantics: the receiver must place the moved node
 // by `position` (NOT index 0) and apply the `pageData` the payload carries so a
 // moved node's title/icon/chevron stay correct. This mirrors the reducer in
