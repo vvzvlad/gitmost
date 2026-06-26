@@ -75,6 +75,30 @@ export interface IShareInfoInput {
   pageId: string;
 }
 
+// Vanity /l/:alias pointer.
+export interface IShareAlias {
+  id: string;
+  workspaceId: string;
+  alias: string;
+  pageId: string | null;
+  creatorId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ISetShareAlias {
+  pageId: string;
+  alias: string;
+  confirmReassign?: boolean;
+}
+
+export interface IShareAliasAvailability {
+  alias: string;
+  valid: boolean;
+  available: boolean;
+  currentPageId: string | null;
+}
+
 export interface ISharedPageTree {
   share: IShare;
   pageTree: Partial<IPage[]>;

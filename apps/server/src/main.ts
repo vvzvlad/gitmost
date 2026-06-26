@@ -40,7 +40,14 @@ async function bootstrap() {
   app.useLogger(app.get(PinoLogger));
 
   app.setGlobalPrefix('api', {
-    exclude: ['robots.txt', 'share/:shareId/p/:pageSlug', 'mcp'],
+    exclude: [
+      'robots.txt',
+      'share/:shareId/p/:pageSlug',
+      // Vanity link resolver lives outside /api so /l/<alias> is a clean
+      // public URL that 302s to the canonical share page.
+      'l/:alias',
+      'mcp',
+    ],
   });
 
   const reflector = app.get(Reflector);
