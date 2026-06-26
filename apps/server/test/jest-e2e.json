@@ -6,6 +6,9 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
+  ],
   "moduleNameMapper": {
     "^@docmost/db/(.*)$": "<rootDir>/../src/database/$1",
     "^@docmost/transactional/(.*)$": "<rootDir>/../src/integrations/transactional/$1",

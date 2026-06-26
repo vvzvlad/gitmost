@@ -104,7 +104,7 @@ async function main() {
       { find: "БУКВОЕД", replace: "КНИГОЛЮБ" },
       { find: "[1]", replace: "[42]" },
     ]);
-    check("edit_page_text: both edits applied", editRes.edits.every((e) => e.replacements === 1));
+    check("edit_page_text: both edits applied", editRes.applied.every((e) => e.replacements === 1));
     await new Promise((r) => setTimeout(r, 16000)); // wait for server persistence
     const pj2 = await client.getPageJson(pageId);
     const text2 = JSON.stringify(pj2.content);
