@@ -6,6 +6,7 @@ import MessageItem from "@/features/ai-chat/components/message-item.tsx";
 import TypingIndicator from "@/features/ai-chat/components/typing-indicator.tsx";
 import { isToolPart, toolRunState, ToolUiPart } from "@/features/ai-chat/utils/tool-parts.tsx";
 import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/message-content.ts";
+import { messageSignature } from "@/features/ai-chat/utils/message-signature.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageListProps {
@@ -196,9 +197,16 @@ export default function MessageList({
     <ScrollArea className={classes.messages} viewportRef={viewportRef} scrollbarSize={6} type="scroll">
       <Stack gap={0} pr="xs">
         {messages.map((message) => (
+          // `signature` is snapshotted HERE (parent render) into an immutable
+          // string and handed to MessageItem as its memo key. It must NOT be
+          // recomputed inside MessageItem's arePropsEqual: the AI SDK mutates the
+          // shared `parts` in place, so prev/next message objects both read the
+          // latest content there and the memo would skip every streamed update
+          // (freezing the row at its empty render). See message-item.tsx.
           <MessageItem
             key={message.id}
             message={message}
+            signature={messageSignature(message)}
             showCitations={showCitations}
             neutralizeInternalLinks={neutralizeInternalLinks}
             assistantName={assistantName}
