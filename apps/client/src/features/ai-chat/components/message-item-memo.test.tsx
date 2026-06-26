@@ -26,16 +26,20 @@ vi.mock("@/features/ai-chat/utils/markdown.ts", async () => {
 });
 
 import MessageItem from "./message-item";
+import { messageSignature } from "@/features/ai-chat/utils/message-signature.ts";
 
 // matchMedia (read by MantineProvider) is stubbed globally in vitest.setup.ts.
 
 const msg = (parts: UIMessage["parts"]): UIMessage =>
   ({ id: "m1", role: "assistant", parts }) as UIMessage;
 
+// Mirror MessageList: snapshot the signature at (parent) render time and pass it
+// as the memo key. The signature must NOT be recomputed inside the memo from the
+// live (mutable) message — see message-item.tsx.
 const renderRow = (message: UIMessage) =>
   render(
     <MantineProvider>
-      <MessageItem message={message} />
+      <MessageItem message={message} signature={messageSignature(message)} />
     </MantineProvider>,
   );
 
@@ -67,7 +71,7 @@ describe("MessageItem markdown memoization", () => {
     ]);
     rerender(
       <MantineProvider>
-        <MessageItem message={next} />
+        <MessageItem message={next} signature={messageSignature(next)} />
       </MantineProvider>,
     );
 
@@ -77,5 +81,36 @@ describe("MessageItem markdown memoization", () => {
     expect(callsFor("alpha")).toBe(1);
     expect(callsFor("beta")).toBe(1);
     expect(callsFor("gamm")).toBe(1);
+  });
+
+  // REGRESSION (empty-render bug): the AI SDK streams a turn by MUTATING the same
+  // `parts` IN PLACE and reusing the message object. A row that mounted empty
+  // (reasoning-first providers render nothing at first) must still stream its text
+  // in once the parent hands down a fresh signature snapshot. Before the fix the
+  // memo recomputed the signature from the (mutated) message — identical on both
+  // sides — and froze the row at its empty render, so the answer never appeared.
+  it("streams text in after the row mounted empty and parts mutated in place", () => {
+    renderChatMarkdownSpy.mockClear();
+    // Reuse ONE message object across renders (as the SDK does).
+    const message = msg([{ type: "text", text: "" }]);
+    const { rerender, queryByText } = render(
+      <MantineProvider>
+        <MessageItem message={message} signature={messageSignature(message)} />
+      </MantineProvider>,
+    );
+    // Empty text part: nothing visible rendered yet.
+    expect(queryByText("streamed answer")).toBeNull();
+
+    // SDK delta: mutate the SAME part in place, then re-render with a NEW snapshot.
+    (message.parts[0] as { text: string }).text = "streamed answer";
+    rerender(
+      <MantineProvider>
+        <MessageItem message={message} signature={messageSignature(message)} />
+      </MantineProvider>,
+    );
+
+    // The grown text now renders (the memo did NOT freeze the empty mount).
+    expect(callsFor("streamed answer")).toBe(1);
+    expect(queryByText("streamed answer")).not.toBeNull();
   });
 });

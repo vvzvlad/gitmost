@@ -11,12 +11,30 @@ import { assistantMessageHasVisibleContent } from "@/features/ai-chat/utils/mess
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
 import { resolveAssistantName } from "@/features/ai-chat/utils/assistant-name.ts";
 import { reasoningTokensForPart } from "@/features/ai-chat/utils/reasoning-tokens.ts";
-import { messageSignature } from "@/features/ai-chat/utils/message-signature.ts";
 import { describeChatError } from "@/features/ai-chat/utils/error-message.ts";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface MessageItemProps {
   message: UIMessage;
+  /**
+   * Immutable content signature for `message`, computed by the PARENT
+   * (MessageList) during its render via `messageSignature(message)`. This is the
+   * memo key (see `arePropsEqual`): it MUST be a snapshot captured at render time,
+   * NOT recomputed from `message` inside `arePropsEqual`.
+   *
+   * WHY (load-bearing): the AI SDK streams deltas by mutating the SAME `parts`
+   * array/objects in place and handing back a message wrapper that SHARES those
+   * mutated parts. So inside `arePropsEqual`, `prev.message` and `next.message`
+   * both reflect the CURRENT (latest) parts — `messageSignature(prev.message) ===
+   * messageSignature(next.message)` is therefore ALWAYS true, the memo skips every
+   * post-mount render, and the assistant row freezes at its initial empty (null)
+   * render — i.e. the streamed answer + tool cards never appear (reasoning-first
+   * providers start empty, so NOTHING shows). Snapshotting the signature into this
+   * immutable string prop in the parent fixes that: `prev.signature` holds the
+   * value from the previous render (old content) and `next.signature` the new
+   * content, so they differ as the turn streams in and the row re-renders.
+   */
+  signature: string;
   /**
    * Forwarded to ToolCallCard: whether tool cards render page citation links.
    * Defaults to true (internal chat). The public share passes false.
@@ -88,6 +106,8 @@ function MessageItem({
   neutralizeInternalLinks = false,
   assistantName,
 }: MessageItemProps) {
+  // `signature` is intentionally not read in the body — it exists solely as the
+  // memo key (see arePropsEqual). The render reads `message` directly.
   const { t } = useTranslation();
   const isUser = message.role === "user";
 
@@ -203,24 +223,30 @@ function MessageItem({
 }
 
 /** Skip re-rendering a message whose visible content is unchanged. The streaming
- *  TAIL message gets a fresh object whose signature changes each delta, so it
- *  still re-renders and streams in; every FINALIZED message is skipped, turning a
- *  per-token whole-transcript re-render into a tail-only one. */
+ *  TAIL message gets a fresh `signature` snapshot each delta (computed by the
+ *  parent), so it still re-renders and streams in; every FINALIZED message keeps
+ *  the same signature and is skipped, turning a per-token whole-transcript
+ *  re-render into a tail-only one.
+ *
+ *  CRITICAL: compare the `signature` PROP (an immutable snapshot the parent took
+ *  at its own render), NEVER `messageSignature(prev.message)` vs
+ *  `messageSignature(next.message)`. The AI SDK mutates the shared `parts` in
+ *  place, so both `prev.message` and `next.message` reflect the latest content
+ *  here — recomputing the signature from them yields equal strings every time and
+ *  freezes the row at its initial empty render (the bug this guards against). See
+ *  the `signature` prop doc. Likewise there is NO `prev.message === next.message`
+ *  fast path: same-reference-but-mutated must still re-render when the snapshot
+ *  signature changed. */
 export function arePropsEqual(
   prev: MessageItemProps,
   next: MessageItemProps,
 ): boolean {
-  if (
-    prev.showCitations !== next.showCitations ||
-    prev.neutralizeInternalLinks !== next.neutralizeInternalLinks ||
-    prev.assistantName !== next.assistantName
-  ) {
-    return false;
-  }
-  // Fast path: identical message object (finalized rows keep their identity
-  // across deltas) — skip without building signatures.
-  if (prev.message === next.message) return true;
-  return messageSignature(prev.message) === messageSignature(next.message);
+  return (
+    prev.signature === next.signature &&
+    prev.showCitations === next.showCitations &&
+    prev.neutralizeInternalLinks === next.neutralizeInternalLinks &&
+    prev.assistantName === next.assistantName
+  );
 }
 
 export default memo(MessageItem, arePropsEqual);
