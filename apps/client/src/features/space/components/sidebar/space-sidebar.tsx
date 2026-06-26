@@ -13,6 +13,7 @@ import {
   IconEye,
   IconEyeOff,
   IconFileExport,
+  IconHourglass,
   IconPlus,
   IconSettings,
   IconStar,
@@ -71,6 +72,10 @@ export function SpaceSidebar() {
     handleCreate(null);
   }
 
+  function handleCreateTemporaryPage() {
+    handleCreate(null, { temporary: true });
+  }
+
   return (
     <>
       <div className={classes.navbar}>
@@ -111,16 +116,39 @@ export function SpaceSidebar() {
                 SpaceCaslAction.Manage,
                 SpaceCaslSubject.Page,
               ) && (
-                <Tooltip label={t("Create page")} withArrow position="right">
-                  <ActionIcon
-                    variant="default"
-                    size={18}
-                    onClick={handleCreatePage}
-                    aria-label={t("Create page")}
+                <>
+                  <Tooltip
+                    label={t("Create page")}
+                    withArrow
+                    position="right"
                   >
-                    <IconPlus />
-                  </ActionIcon>
-                </Tooltip>
+                    <ActionIcon
+                      variant="default"
+                      size={18}
+                      onClick={handleCreatePage}
+                      aria-label={t("Create page")}
+                    >
+                      <IconPlus />
+                    </ActionIcon>
+                  </Tooltip>
+
+                  {/* Standalone second button: a "temporary note" auto-moves to
+                      trash after the workspace lifetime unless made permanent. */}
+                  <Tooltip
+                    label={t("New temporary note")}
+                    withArrow
+                    position="right"
+                  >
+                    <ActionIcon
+                      variant="default"
+                      size={18}
+                      onClick={handleCreateTemporaryPage}
+                      aria-label={t("New temporary note")}
+                    >
+                      <IconHourglass />
+                    </ActionIcon>
+                  </Tooltip>
+                </>
               )}
             </Group>
           </Group>

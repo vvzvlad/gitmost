@@ -84,6 +84,13 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @Min(1)
   trashRetentionDays: number;
 
+  // Default lifetime for new temporary notes, in HOURS. Frozen per-note at
+  // creation, so changing this never reschedules existing notes.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  temporaryNoteHours: number;
+
   @IsOptional()
   @IsBoolean()
   allowMemberTemplates: boolean;

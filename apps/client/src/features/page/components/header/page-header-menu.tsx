@@ -2,6 +2,7 @@ import { ActionIcon, Button, Group, Menu, Text, ThemeIcon, Tooltip } from "@mant
 import {
   IconArrowRight,
   IconArrowsHorizontal,
+  IconClockHour4,
   IconDots,
   IconEye,
   IconEyeOff,
@@ -24,6 +25,10 @@ import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { useParams } from "react-router-dom";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import {
+  useToggleTemporaryMutation,
+  syncTemporaryExpiresInCache,
+} from "@/features/page-embed/queries/page-embed-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { notifications } from "@mantine/notifications";
 import { getAppUrl } from "@/lib/config.ts";
@@ -160,6 +165,29 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
   const { data: watchStatus } = useWatchStatusQuery(page?.id);
   const watchPage = useWatchPageMutation();
   const unwatchPage = useUnwatchPageMutation();
+  const toggleTemporary = useToggleTemporaryMutation();
+  const isTemporary = !!page?.temporaryExpiresAt;
+
+  const handleToggleTemporary = async () => {
+    if (!page?.id) return;
+    const next = !isTemporary;
+    try {
+      const res = await toggleTemporary.mutateAsync({
+        pageId: page.id,
+        temporary: next,
+      });
+      // Reflect the new deadline in the page cache so the menu label flips and
+      // any banner updates. The sidebar icon refreshes via its own query.
+      syncTemporaryExpiresInCache(page, res.temporaryExpiresAt);
+      notifications.show({
+        message: next
+          ? t("Note will move to trash unless made permanent")
+          : t("Note is now permanent"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
 
   const handleCopyLink = () => {
     const pageUrl =
@@ -309,6 +337,12 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
           {!readOnly && (
             <>
               <Menu.Divider />
+              <Menu.Item
+                leftSection={<IconClockHour4 size={16} />}
+                onClick={handleToggleTemporary}
+              >
+                {isTemporary ? t("Make permanent") : t("Make temporary")}
+              </Menu.Item>
               <Menu.Item
                 color={"red"}
                 leftSection={<IconTrash size={16} />}

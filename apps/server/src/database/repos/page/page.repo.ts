@@ -51,6 +51,7 @@ export class PageRepo {
     'workspaceId',
     'isLocked',
     'isTemplate',
+    'temporaryExpiresAt',
     'createdAt',
     'updatedAt',
     'deletedAt',
@@ -425,7 +426,10 @@ export class PageRepo {
     // Restore all pages, but only detach the root page if its parent is deleted
     await this.db
       .updateTable('pages')
-      .set({ deletedById: null, deletedAt: null })
+      // On restore, disarm the death timer: pulling a note out of trash means
+      // "keep it". Otherwise a deadline now in the past would re-trash it on the
+      // next cleanup sweep.
+      .set({ deletedById: null, deletedAt: null, temporaryExpiresAt: null })
       .where('id', 'in', pageIds)
       .execute();
 

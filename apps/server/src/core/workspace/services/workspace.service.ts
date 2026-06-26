@@ -330,6 +330,7 @@ export class WorkspaceService {
     if (
       typeof updateWorkspaceDto.disablePublicSharing !== 'undefined' ||
       typeof updateWorkspaceDto.trashRetentionDays !== 'undefined' ||
+      typeof updateWorkspaceDto.temporaryNoteHours !== 'undefined' ||
       typeof updateWorkspaceDto.mcpEnabled !== 'undefined' ||
       typeof updateWorkspaceDto.restrictApiToAdmins !== 'undefined' ||
       typeof updateWorkspaceDto.allowMemberTemplates !== 'undefined' ||
@@ -337,7 +338,13 @@ export class WorkspaceService {
     ) {
       const ws = await this.db
         .selectFrom('workspaces')
-        .select(['id', 'licenseKey', 'plan', 'trashRetentionDays'])
+        .select([
+          'id',
+          'licenseKey',
+          'plan',
+          'trashRetentionDays',
+          'temporaryNoteHours',
+        ])
         .where('id', '=', workspaceId)
         .executeTakeFirst();
 
@@ -377,6 +384,14 @@ export class WorkspaceService {
       ) {
         before.trashRetentionDays = ws.trashRetentionDays;
         after.trashRetentionDays = updateWorkspaceDto.trashRetentionDays;
+      }
+
+      if (
+        typeof updateWorkspaceDto.temporaryNoteHours !== 'undefined' &&
+        updateWorkspaceDto.temporaryNoteHours !== ws.temporaryNoteHours
+      ) {
+        before.temporaryNoteHours = ws.temporaryNoteHours;
+        after.temporaryNoteHours = updateWorkspaceDto.temporaryNoteHours;
       }
     }
 

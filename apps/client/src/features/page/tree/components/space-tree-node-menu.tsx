@@ -6,6 +6,7 @@ import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import {
   IconArrowRight,
+  IconClockHour4,
   IconCopy,
   IconDotsVertical,
   IconFileExport,
@@ -30,7 +31,10 @@ import {
   useRemoveFavoriteMutation,
 } from "@/features/favorite/queries/favorite-query";
 
-import { useToggleTemplateMutation } from "@/features/page-embed/queries/page-embed-query";
+import {
+  useToggleTemplateMutation,
+  useToggleTemporaryMutation,
+} from "@/features/page-embed/queries/page-embed-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
@@ -65,6 +69,8 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const isFavorited = favoriteIds.has(node.id);
   const toggleTemplate = useToggleTemplateMutation();
   const isTemplate = !!node.isTemplate;
+  const toggleTemporary = useToggleTemporaryMutation();
+  const isTemporary = !!node.temporaryExpiresAt;
 
   const handleToggleTemplate = async () => {
     const next = !isTemplate;
@@ -78,6 +84,29 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
         message: next
           ? t("Page marked as template")
           : t("Page is no longer a template"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
+
+  const handleToggleTemporary = async () => {
+    const next = !isTemporary;
+    try {
+      const res = await toggleTemporary.mutateAsync({
+        pageId: node.id,
+        temporary: next,
+      });
+      // Reflect the new deadline locally so the icon/menu update immediately.
+      setData((prev) =>
+        treeModel.update(prev, node.id, {
+          temporaryExpiresAt: res.temporaryExpiresAt,
+        } as any),
+      );
+      notifications.show({
+        message: next
+          ? t("Note will move to trash unless made permanent")
+          : t("Note is now permanent"),
       });
     } catch {
       // mutation surfaces the error via notifications
@@ -246,6 +275,17 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 }}
               >
                 {isTemplate ? t("Unset as template") : t("Make template")}
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={<IconClockHour4 size={16} />}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleToggleTemporary();
+                }}
+              >
+                {isTemporary ? t("Make permanent") : t("Make temporary")}
               </Menu.Item>
 
               <Menu.Divider />

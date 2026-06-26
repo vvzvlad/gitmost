@@ -22,7 +22,10 @@ import { getSpaceUrl } from "@/lib/config.ts";
 
 export type UseTreeMutation = {
   handleMove: (sourceId: string, op: DropOp) => Promise<void>;
-  handleCreate: (parentId: string | null) => Promise<void>;
+  handleCreate: (
+    parentId: string | null,
+    opts?: { temporary?: boolean },
+  ) => Promise<void>;
   handleRename: (id: string, name: string) => Promise<void>;
   handleDelete: (id: string) => Promise<void>;
 };
@@ -119,9 +122,15 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
   );
 
   const handleCreate = useCallback(
-    async (parentId: string | null) => {
-      const payload: { spaceId: string; parentPageId?: string } = { spaceId };
+    async (parentId: string | null, opts?: { temporary?: boolean }) => {
+      const payload: {
+        spaceId: string;
+        parentPageId?: string;
+        temporary?: boolean;
+      } = { spaceId };
       if (parentId) payload.parentPageId = parentId;
+      // Ask the server to arm the death timer for a "temporary note".
+      if (opts?.temporary) payload.temporary = true;
 
       let createdPage: IPage;
       try {
@@ -138,6 +147,8 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
         spaceId: createdPage.spaceId,
         parentPageId: createdPage.parentPageId,
         hasChildren: false,
+        // Show the temporary-note icon immediately on optimistic insert.
+        temporaryExpiresAt: createdPage.temporaryExpiresAt,
         children: [],
       };
 
