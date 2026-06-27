@@ -32,6 +32,7 @@ export interface ImageOptions extends DefaultImageOptions {
 export interface ImageAttributes {
   src?: string;
   alt?: string;
+  caption?: string;
   align?: string;
   attachmentId?: string;
   size?: number;
@@ -54,6 +55,7 @@ declare module "@tiptap/core" {
       setImageAlign: (
         align: "left" | "center" | "right" | "floatLeft" | "floatRight",
       ) => ReturnType;
+      setImageCaption: (caption: string | undefined) => ReturnType;
       setImageWidth: (width: number) => ReturnType;
       setImageSize: (width: number, height: number) => ReturnType;
     };
@@ -125,6 +127,13 @@ export const TiptapImage = Image.extend<ImageOptions>({
           alt: attributes.alt,
         }),
       },
+      caption: {
+        default: undefined,
+        parseHTML: (element) => element.getAttribute("data-caption") || undefined,
+        // Emit data-caption only when set, so caption-less images stay clean.
+        renderHTML: (attributes: ImageAttributes) =>
+          attributes.caption ? { "data-caption": attributes.caption } : {},
+      },
       attachmentId: {
         default: undefined,
         parseHTML: (element) => element.getAttribute("data-attachment-id"),
@@ -184,6 +193,11 @@ export const TiptapImage = Image.extend<ImageOptions>({
         (align) =>
         ({ commands }) =>
           commands.updateAttributes("image", { align }),
+
+      setImageCaption:
+        (caption) =>
+        ({ commands }) =>
+          commands.updateAttributes("image", { caption }),
 
       setImageWidth:
         (width) =>
@@ -304,6 +318,10 @@ export const TiptapImage = Image.extend<ImageOptions>({
             el.alt = updatedNode.attrs.alt || "";
           }
 
+          if (updatedNode.attrs.caption !== currentNode.attrs.caption) {
+            applyCaption(updatedNode.attrs.caption);
+          }
+
           const w = updatedNode.attrs.width;
           const h = updatedNode.attrs.height;
           if (w != null) {
@@ -334,6 +352,28 @@ export const TiptapImage = Image.extend<ImageOptions>({
       });
 
       const dom = nodeView.dom as HTMLElement;
+
+      // Re-parent the resizable wrapper into a <figure> so the caption sits BELOW
+      // the image, OUTSIDE nodeView.wrapper. onCommit measures the img's
+      // offsetHeight for the persisted height/aspectRatio, and the left/right
+      // resize handles span the wrapper — both must cover the image only. The
+      // <figure> stays the single flex child of the container, so applyAlignment
+      // and the float modes keep working. This path also drives read-only/share.
+      const figure = document.createElement("figure");
+      figure.style.margin = "0";
+      figure.style.display = "inline-block"; // shrink-to-fit to image width
+      figure.appendChild(nodeView.wrapper);
+      dom.appendChild(figure);
+
+      const figcaption = document.createElement("figcaption");
+      figcaption.className = "image-caption";
+      const applyCaption = (text?: string) => {
+        const value = (text || "").trim();
+        figcaption.textContent = value;
+        figcaption.style.display = value ? "block" : "none";
+      };
+      applyCaption(node.attrs.caption);
+      figure.appendChild(figcaption);
 
       // Apply initial alignment
       applyAlignment(dom, node.attrs.align || "center");

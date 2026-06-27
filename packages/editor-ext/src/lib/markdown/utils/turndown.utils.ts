@@ -12,6 +12,14 @@ function sanitizeMdLinkText(value: string): string {
     .replace(/[\r\n]+/g, ' ');
 }
 
+// Escape a value placed inside a double-quoted HTML attribute (img src/alt/
+// data-caption in the raw-HTML image fallback). Only & and " are special in
+// that context; escaping them is idempotent because parse5/marked decode them
+// back on re-import.
+function escapeHtmlAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
 // Tags turndown treats as void (self-closing). Footnote references render as an
 // empty <sup data-footnote-ref> whose meaning lives entirely in its data-id;
 // without marking it void, turndown's blank-node removal drops it before our
@@ -258,6 +266,17 @@ function image(turndownService: _TurndownService) {
     replacement: function (_content: string, node: HTMLInputElement) {
       const src = node.getAttribute('src') || '';
       if (!src) return '';
+      const caption = node.getAttribute('data-caption') || '';
+      if (caption) {
+        // ![]() can't carry a caption, so emit a raw <img> wrapped in a block
+        // <div> (like the video rule). marked passes it through and the image
+        // extension's parseHTML restores the caption from data-caption.
+        const parts = [`src="${escapeHtmlAttr(src)}"`];
+        const alt = node.getAttribute('alt') || '';
+        if (alt) parts.push(`alt="${escapeHtmlAttr(alt)}"`);
+        parts.push(`data-caption="${escapeHtmlAttr(caption)}"`);
+        return `<div><img ${parts.join(' ')}></div>`;
+      }
       const alt = sanitizeMdLinkText(node.getAttribute('alt') || '');
       const title = node.getAttribute('title') || '';
       const titlePart = title ? ' "' + title.replace(/"/g, '\\"') + '"' : '';

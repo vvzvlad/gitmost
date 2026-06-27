@@ -33,6 +33,15 @@
     }
   }
 
+  .image-caption {
+    text-align: center;
+    font-size: 0.875em;
+    color: var(--mantine-color-dimmed);
+    margin-top: 0.4em;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
   .uploading-text {
     font-size: var(--mantine-font-size-md);
     line-height: var(--mantine-line-height-md);
