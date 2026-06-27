@@ -11,6 +11,7 @@ import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
 import { lexFootnoteLines } from "./footnote-lex.js";
+import { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
 
 /**
@@ -400,7 +401,12 @@ export async function markdownToProseMirror(
   const { body, section } = extractFootnotes(withCallouts);
   const html = (await marked.parse(body)) + section;
   const bridged = bridgeTaskLists(html);
-  return generateJSON(bridged, docmostExtensions);
+  const json = generateJSON(bridged, docmostExtensions);
+  // Canonicalize footnotes on EVERY import: the section above is built in
+  // definition order, but numbering is derived from REFERENCE order — so without
+  // this the bottom list renders out of order (`1, 4, 2, 3, …`). Idempotent, so
+  // it is a no-op when the footnotes are already canonical.
+  return canonicalizeFootnotes(json);
 }
 
 /**

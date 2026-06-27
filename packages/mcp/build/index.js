@@ -637,8 +637,12 @@ export function createDocmostMcpServer(config) {
             "mark-safe), setCalloutRange(doc, n) (sync a [1]…[K] callout range to " +
             "[1]…[n]), noteItem(inlineNodes) (wrap inline nodes in a listItem with a " +
             "fresh id), mdToInlineNodes(markdown) (comment markdown -> inline nodes), " +
-            "and commentsToFootnotes(doc, comments, {notesHeading}) (turn inline " +
-            "comments into numbered footnotes). Footnote convention: markers are " +
+            "commentsToFootnotes(doc, comments, {notesHeading}) (turn inline " +
+            "comments into numbered footnotes), canonicalizeFootnotes(doc) (derive " +
+            "footnote numbering + the single bottom list from reference order, drop " +
+            "orphans/duplicates — runs automatically after every transform too), and " +
+            "insertInlineFootnote(doc, {anchorText, text}) (author-inline footnote: " +
+            "marker + dedup'd definition, list derived). Footnote convention: markers are " +
             "plain '[N]' text in the body; the notes are an orderedList under a " +
             "heading whose text is 'Примечания переводчика'. The transform runs " +
             "sandboxed (no require/process/fs/network, 5s timeout) and must return a " +
@@ -670,6 +674,33 @@ export function createDocmostMcpServer(config) {
             dryRun,
             deleteComments,
         });
+        return jsonContent(result);
+    });
+    // Tool: insert_footnote
+    server.registerTool("insert_footnote", {
+        description: "Insert an AUTHOR-INLINE footnote: you specify only WHERE (anchorText) " +
+            "and WHAT (text). The footnote marker is placed right after anchorText in " +
+            "the body, and the bottom footnotes list + the numbering are derived " +
+            "deterministically server-side. You do NOT assign a number, and you " +
+            "never see or edit the footnotes list — so footnotes cannot end up out " +
+            "of order, orphaned, or as a raw '[^id]' block. If a footnote with the " +
+            "SAME text already exists, its number is REUSED (one definition, several " +
+            "references). The write is atomic and won't clobber concurrent edits; if " +
+            "anchorText is not found, nothing is written and an error is returned.",
+        inputSchema: {
+            pageId: z.string().min(1),
+            anchorText: z
+                .string()
+                .min(1)
+                .describe("A snippet of existing body text; the footnote marker is inserted " +
+                "immediately after its first occurrence (mark-safe)."),
+            text: z
+                .string()
+                .min(1)
+                .describe("The footnote content as markdown (becomes the definition)."),
+        },
+    }, async ({ pageId, anchorText, text }) => {
+        const result = await docmostClient.insertFootnote(pageId, anchorText, text);
         return jsonContent(result);
     });
     // Tool: diff_page_versions

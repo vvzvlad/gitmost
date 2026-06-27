@@ -17,7 +17,7 @@ import { applyTextEdits, } from "./lib/json-edit.js";
 import { getCollabToken, performLogin } from "./lib/auth-utils.js";
 import { diffDocs, summarizeChange } from "./lib/diff.js";
 import { applyAnchorInDoc, canAnchorInDoc } from "./lib/comment-anchor.js";
-import { blockText, walk, getList, insertMarkerAfter, setCalloutRange, noteItem, mdToInlineNodes, commentsToFootnotes, } from "./lib/transforms.js";
+import { blockText, walk, getList, insertMarkerAfter, setCalloutRange, noteItem, mdToInlineNodes, commentsToFootnotes, canonicalizeFootnotes, insertInlineFootnote, } from "./lib/transforms.js";
 import vm from "node:vm";
 // Supported image types, kept as two lookup tables so both a local file
 // extension and a remote Content-Type can be mapped to the same canonical set.
@@ -1063,6 +1063,11 @@ export class DocmostClient {
         // the markdown link path (which TipTap sanitizes), raw JSON could otherwise
         // inject javascript:/data: link hrefs or media srcs straight into the doc.
         this.validateDocUrls(doc);
+        // Canonicalize footnotes (idempotent): an agent-authored JSON doc cannot
+        // leave footnotes out of order, orphaned, or in multiple lists — the bottom
+        // list + numbering are always derived from reference order. No-op when the
+        // footnotes are already canonical.
+        doc = canonicalizeFootnotes(doc);
         // Write the BODY first, then the title (#159 split-brain): a failed body
         // write (e.g. persist timeout) must not leave a new title over the old body.
         const collabToken = await this.getCollabTokenWithReauth();
@@ -1076,6 +1081,49 @@ export class DocmostClient {
             modified: true,
             message: "Page content replaced from ProseMirror JSON.",
             pageId,
+            verify: mutation.verify,
+        };
+    }
+    /**
+     * AUTHOR-INLINE footnote insertion. The agent supplies only WHERE
+     * (`anchorText`, a snippet of body text to attach the marker after) and WHAT
+     * (`text`, the footnote content as markdown). Numbering and the bottom
+     * `footnotesList` are derived deterministically server-side
+     * (`insertInlineFootnote` -> `canonicalizeFootnotes`): the agent never sees,
+     * assigns, or edits a footnote number or the list, so it CANNOT desync.
+     *
+     * Content DEDUP: when an existing definition has the same content, its id is
+     * reused (one number, one definition, several references). The write is atomic
+     * via `mutatePageContent` (single-writer, page-locked); if the anchor text is
+     * not found the transform aborts with a clear error and no write happens.
+     */
+    async insertFootnote(pageId, anchorText, text) {
+        await this.ensureAuthenticated();
+        if (!anchorText || !anchorText.trim()) {
+            throw new Error("insert_footnote: anchorText is required");
+        }
+        if (text == null || `${text}`.trim() === "") {
+            throw new Error("insert_footnote: text is required");
+        }
+        const collabToken = await this.getCollabTokenWithReauth();
+        let result = null;
+        const mutation = await mutatePageContent(pageId, collabToken, this.apiUrl, (liveDoc) => {
+            const r = insertInlineFootnote(liveDoc, { anchorText, text });
+            if (!r.inserted) {
+                throw new Error(`insert_footnote: anchor text not found: ${JSON.stringify(anchorText.slice(0, 80))}`);
+            }
+            result = { footnoteId: r.footnoteId, reused: r.reused };
+            return r.doc;
+        });
+        return {
+            success: true,
+            modified: true,
+            pageId,
+            footnoteId: result ? result.footnoteId : undefined,
+            reused: result ? result.reused : undefined,
+            message: result && result.reused
+                ? "Footnote inserted (reused an existing same-content definition)."
+                : "Footnote inserted.",
             verify: mutation.verify,
         };
     }
@@ -2422,6 +2470,8 @@ export class DocmostClient {
                 noteItem,
                 mdToInlineNodes,
                 commentsToFootnotes,
+                canonicalizeFootnotes,
+                insertInlineFootnote,
             },
         };
         // Captured oldDoc / newDoc for the diff (set inside runTransform).
@@ -2455,13 +2505,18 @@ export class DocmostClient {
             if (typeof fn !== "function") {
                 throw new Error("transform must evaluate to a function (doc, ctx) => doc");
             }
-            const result = vm.runInNewContext("f(d, c)", { f: fn, d: sandbox.doc, c: ctx }, { timeout: 5000 });
-            if (!result ||
-                typeof result !== "object" ||
-                result.type !== "doc" ||
-                !Array.isArray(result.content)) {
+            const raw = vm.runInNewContext("f(d, c)", { f: fn, d: sandbox.doc, c: ctx }, { timeout: 5000 });
+            if (!raw ||
+                typeof raw !== "object" ||
+                raw.type !== "doc" ||
+                !Array.isArray(raw.content)) {
                 throw new Error('transform must return a ProseMirror doc node ({ type:"doc", content:[...] })');
             }
+            // Auto-canonicalize footnotes after the transform (idempotent): no write
+            // path can leave footnotes out of order / orphaned / in a raw `[^id]`
+            // block. In a dryRun preview this may surface footnote edits the script
+            // author did not write (the canonicalizer tidied them) — that is expected.
+            const result = canonicalizeFootnotes(raw);
             // Validate the returned doc before it can be written.
             this.validateDocStructure(result);
             this.validateDocUrls(result);

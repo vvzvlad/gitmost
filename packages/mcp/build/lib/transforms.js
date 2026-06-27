@@ -14,6 +14,8 @@
  *  - `marks` arrays are preserved verbatim when fragments are split/reordered.
  */
 import { blockPlainText } from "./node-ops.js";
+import { canonicalizeFootnotes, footnoteContentKey, makeFootnoteDefinition, generateFootnoteId, } from "./footnote-canonicalize.js";
+export { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 /** Deep-clone a JSON-serializable value without mutating the original. */
 function clone(value) {
     if (typeof structuredClone === "function") {
@@ -470,4 +472,122 @@ export function commentsToFootnotes(doc, comments, opts = {}) {
     // Sync the disclaimer callout range to the new note count.
     const synced = setCalloutRange(working, definitions.length);
     return { doc: synced.doc, consumed };
+}
+/** A NUL-delimited sentinel that cannot occur in real prose. */
+const INLINE_FOOTNOTE_SENTINEL = "\u0000IFN\u0000";
+/**
+ * AUTHOR-INLINE footnote insertion. The caller supplies WHERE (anchorText) and
+ * WHAT (markdown text); numbering and the bottom list are derived server-side by
+ * `canonicalizeFootnotes`. The caller never sees or edits `footnotesList`, never
+ * assigns a number, and cannot desync — orphans / out-of-order lists / raw
+ * `[^id]` markdown are structurally impossible.
+ *
+ * Content DEDUP (#3 in the issue): if an existing definition has the SAME
+ * normalized content key, its id is REUSED (the new reference points at it: one
+ * number, one definition, several references). Otherwise a fresh uuid id is
+ * minted and a new definition added. Conservative — only an exact content match
+ * merges.
+ *
+ * Mechanics: the marker is inserted with the same mark-safe `insertMarkerAfter`
+ * split used elsewhere, via a sentinel that is then replaced by a real
+ * `footnoteReference` node (dropping the inserted leading space so the marker
+ * attaches to the preceding word). The whole document is then canonicalized.
+ *
+ * Operates on a clone of `doc`. When the anchor is not found, returns the input
+ * unchanged with `inserted:false`.
+ */
+export function insertInlineFootnote(doc, opts) {
+    const inline = mdToInlineNodes(opts.text ?? "");
+    const key = footnoteContentKey(makeFootnoteDefinition("", inline));
+    // Content dedup: reuse an existing definition's id when its key matches.
+    let footnoteId = null;
+    let reused = false;
+    if (key !== "") {
+        walk(doc, (n) => {
+            if (footnoteId == null &&
+                isObject(n) &&
+                n.type === "footnoteDefinition" &&
+                n.attrs &&
+                typeof n.attrs.id === "string" &&
+                n.attrs.id !== "" &&
+                footnoteContentKey(n) === key) {
+                footnoteId = n.attrs.id;
+                reused = true;
+            }
+        });
+    }
+    if (footnoteId == null)
+        footnoteId = generateFootnoteId();
+    // Insert a sentinel marker after the anchor (mark-safe split).
+    const r = insertMarkerAfter(doc, (opts.anchorText ?? "").trimEnd(), INLINE_FOOTNOTE_SENTINEL);
+    if (!r.inserted) {
+        return { doc: clone(doc), inserted: false, footnoteId, reused };
+    }
+    let working = r.doc;
+    // Replace the sentinel run with a real footnoteReference node.
+    replaceSentinelWithReference(working, footnoteId);
+    // Add a NEW definition (canonicalize will order/place it); a reused id needs
+    // no new definition (the existing one is shared).
+    if (!reused) {
+        appendDefinition(working, makeFootnoteDefinition(footnoteId, inline));
+    }
+    // Derive numbering + the single bottom list deterministically.
+    working = canonicalizeFootnotes(working);
+    return { doc: working, inserted: true, footnoteId, reused };
+}
+/**
+ * Replace the lone sentinel text run (created by insertMarkerAfter as
+ * `" " + sentinel`) with a footnoteReference node, dropping the leading space so
+ * the marker attaches to the preceding word. Mutates `doc` in place.
+ */
+function replaceSentinelWithReference(doc, footnoteId) {
+    let done = false;
+    const visit = (container) => {
+        if (done || !isObject(container) || !Array.isArray(container.content))
+            return;
+        const arr = container.content;
+        for (let i = 0; i < arr.length; i++) {
+            const n = arr[i];
+            if (isObject(n) &&
+                n.type === "text" &&
+                typeof n.text === "string" &&
+                n.text.includes(INLINE_FOOTNOTE_SENTINEL)) {
+                const idx = n.text.indexOf(INLINE_FOOTNOTE_SENTINEL);
+                // Text before the sentinel, with a single trailing space (the one
+                // insertMarkerAfter prepended) stripped so the ref hugs the word.
+                const before = n.text.slice(0, idx).replace(/ $/, "");
+                const after = n.text.slice(idx + INLINE_FOOTNOTE_SENTINEL.length);
+                const marks = Array.isArray(n.marks) ? n.marks : [];
+                const parts = [];
+                if (before.length > 0)
+                    parts.push({ ...n, text: before, marks: [...marks] });
+                parts.push({ type: "footnoteReference", attrs: { id: footnoteId } });
+                if (after.length > 0)
+                    parts.push({ ...n, text: after, marks: [...marks] });
+                arr.splice(i, 1, ...parts);
+                done = true;
+                return;
+            }
+        }
+        for (const child of arr) {
+            visit(child);
+            if (done)
+                return;
+        }
+    };
+    visit(doc);
+}
+/**
+ * Append a definition node so the canonicalizer can order/place it: into the
+ * first existing footnotesList, or a new trailing list when none exists.
+ */
+function appendDefinition(doc, defNode) {
+    const existingList = getList(doc, (n) => isObject(n) && n.type === "footnotesList");
+    if (existingList && Array.isArray(existingList.content)) {
+        existingList.content.push(defNode);
+        return;
+    }
+    if (Array.isArray(doc.content)) {
+        doc.content.push({ type: "footnotesList", content: [defNode] });
+    }
 }
