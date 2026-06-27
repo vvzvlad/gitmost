@@ -23,7 +23,7 @@ agent-roles-catalog/
 Currently shipped bundles:
 
 - `editorial` — the editorial suite (structural-editor, line-editor,
-  copy-editor, fact-checker, proofreader, narrator), languages `ru`, `en`.
+  fact-checker, proofreader, narrator), languages `ru`, `en`.
 - `research` — a single `researcher` role, languages `ru`, `en`.
 
 ## How it's served

@@ -5,16 +5,15 @@
       "id": "editorial",
       "name": { "ru": "Редакторский набор", "en": "Editorial suite" },
       "description": {
-        "ru": "Полный цикл редактуры статьи: структура, стиль, грамматика, факты, корректура и нарратив.",
-        "en": "The full article-editing cycle: structure, style, grammar, facts, proofreading, and narrative."
+        "ru": "Полный цикл редактуры статьи: структура, стиль, корректура, факты и нарратив.",
+        "en": "The full article-editing cycle: structure, style, copyediting, facts, and narrative."
       },
       "languages": ["ru", "en"],
       "roles": [
-        { "slug": "structural-editor", "version": 1 },
-        { "slug": "line-editor", "version": 1 },
-        { "slug": "copy-editor", "version": 1 },
-        { "slug": "fact-checker", "version": 1 },
-        { "slug": "proofreader", "version": 1 },
+        { "slug": "structural-editor", "version": 2 },
+        { "slug": "line-editor", "version": 2 },
+        { "slug": "fact-checker", "version": 2 },
+        { "slug": "proofreader", "version": 2 },
         { "slug": "narrator", "version": 1 }
       ]
     },
