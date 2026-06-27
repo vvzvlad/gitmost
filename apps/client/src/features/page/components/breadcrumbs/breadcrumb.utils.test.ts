@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { resolveBreadcrumbNodes } from "./breadcrumb.utils";
+import {
+  computeBreadcrumbState,
+  resolveBreadcrumbNodes,
+} from "./breadcrumb.utils";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { IPage } from "@/features/page/types/page.types.ts";
 
@@ -77,5 +80,35 @@ describe("resolveBreadcrumbNodes", () => {
     expect(resolveBreadcrumbNodes([], [], "x")).toBeNull();
     expect(resolveBreadcrumbNodes(undefined, undefined, "x")).toBeNull();
     expect(resolveBreadcrumbNodes(null, null, "x")).toBeNull();
+  });
+});
+
+describe("computeBreadcrumbState (stale-chain clearing on navigation)", () => {
+  it("uses a freshly resolved chain when available", () => {
+    const child = treeNode("B");
+    const root = treeNode("root", { hasChildren: true, children: [child] });
+    const next = computeBreadcrumbState([root], null, "B", null);
+    expect(next!.map((n) => n.id)).toEqual(["root", "B"]);
+  });
+
+  it("navigating A->B to a page absent from treeData clears the previous A chain (no stale trail)", () => {
+    // Previous chain ends at page A; we are now on page B, which is not yet in
+    // the lazily-built tree and whose ancestors have not loaded.
+    const previous = [treeNode("rootA"), treeNode("A")];
+    const next = computeBreadcrumbState([treeNode("unrelated")], undefined, "B", previous);
+    // Must NOT keep showing A's (clickable) chain.
+    expect(next).toBeNull();
+  });
+
+  it("keeps a chain that already ends at the current page through a transient miss", () => {
+    // We already resolved B once (chain ends at B); a transient miss must not
+    // blank it.
+    const previous = [treeNode("rootB"), treeNode("B")];
+    const next = computeBreadcrumbState([], undefined, "B", previous);
+    expect(next).toBe(previous);
+  });
+
+  it("returns null when nothing resolves and there is no previous chain", () => {
+    expect(computeBreadcrumbState([], undefined, "B", null)).toBeNull();
   });
 });

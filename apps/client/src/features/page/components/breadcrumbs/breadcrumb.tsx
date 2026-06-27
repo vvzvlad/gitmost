@@ -1,7 +1,7 @@
 import { useAtomValue } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import React, { useCallback, useEffect, useState } from "react";
-import { resolveBreadcrumbNodes } from "./breadcrumb.utils";
+import { computeBreadcrumbState } from "./breadcrumb.utils";
 import {
   Button,
   Anchor,
@@ -51,17 +51,19 @@ export default function Breadcrumb() {
   useEffect(() => {
     if (!currentPage) return;
 
-    // Selection/mapping lives in a pure, unit-tested helper (#218). Only update
-    // when it resolves nodes so a transient miss keeps the prior breadcrumb
-    // rather than blanking it.
-    const nodes = resolveBreadcrumbNodes(
-      treeData,
-      ancestors as IPage[] | undefined,
-      currentPage.id,
+    // Selection/mapping + stale-clearing live in a pure, unit-tested helper
+    // (#218). It resolves the correct chain when possible and, on a transient
+    // miss, clears a chain left over from a previously-viewed page instead of
+    // showing the wrong trail — while keeping a chain already resolved for THIS
+    // page to avoid a blank flash.
+    setBreadcrumbNodes((previous) =>
+      computeBreadcrumbState(
+        treeData,
+        ancestors as IPage[] | undefined,
+        currentPage.id,
+        previous,
+      ),
     );
-    if (nodes) {
-      setBreadcrumbNodes(nodes);
-    }
   }, [currentPage?.id, treeData, ancestors]);
 
   const HiddenNodesTooltipContent = () =>

@@ -1222,5 +1222,6 @@
   "Already up to date": "Уже актуальна",
   "Updated to the latest version": "Обновлено до последней версии",
   "This role is no longer in the catalog": "Эта роль больше не представлена в каталоге",
-  "This language is no longer available in the catalog": "Этот язык больше не доступен в каталоге"
+  "This language is no longer available in the catalog": "Этот язык больше не доступен в каталоге",
+  "Connecting… (read-only)": "Подключение… (только чтение)"
 }

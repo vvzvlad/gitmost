@@ -215,9 +215,11 @@ export class ShareService {
     // the access secret there — an inherited Docmost design we don't widen.
     // FUTURE: this ancestor-aware match could fold INTO resolveReadableSharePage
     // (so the boundary's narrow `share.id === shareId` gate isn't effectively
-    // dead). Deferred — it widens the contract for the 4 other callers that pass
-    // no shareId, so kept here as a local post-check until that's worth the blast
-    // radius.
+    // dead). Deferred — it widens the contract for the 3 other callers that pass
+    // no shareId (share-alias.controller, share-alias.service, share-seo.controller);
+    // the two ai-chat callers (public-share-chat.controller,
+    // public-share-chat-tools.service) already pass a real shareId. Kept here as
+    // a local post-check until that consolidation is worth the blast radius.
     if (dto.shareId) {
       const reachable = await this.isPageReachableThroughShare(
         dto.shareId,
@@ -409,7 +411,14 @@ export class ShareService {
         .limit(1)
         .executeTakeFirst();
     } catch (err) {
-      // empty
+      // Fail closed (return null -> caller 404s), but never silently: this is
+      // now a live public-share path (isPageReachableThroughShare), so a
+      // transient DB error here would otherwise turn a legitimate viewer of an
+      // includeSubPages descendant into a misleading "not found" with no trace.
+      this.logger.error(
+        `getShareAncestorPage failed (ancestorPageId=${ancestorPageId}, childPageId=${childPageId})`,
+        err instanceof Error ? err.stack : String(err),
+      );
     }
 
     return ancestor;

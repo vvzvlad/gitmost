@@ -42,8 +42,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   catalog's raw files; the image ships a per-branch default baked in CI, and it
   can be overridden at runtime via the env var (see `.env.example`). (#222)
 
+### Changed
+
+- **Enabling a public share no longer auto-shares the whole sub-tree.** Turning
+  a page "Shared to web" now defaults to the page alone; descendant pages become
+  public only when you explicitly turn on the dedicated "Include sub-pages"
+  toggle. Previously the create call defaulted to including sub-pages, silently
+  exposing every child of a freshly shared page. (#216)
+
 ### Fixed
 
+- **Internal links in exported Markdown no longer lose their visible text.** A
+  link whose target page name had no file extension (e.g. a bare title) was
+  collapsed to empty text during export, producing an unclickable, label-less
+  link; the page name is now preserved. (#204)
+- **Deep pages no longer render a blank breadcrumb while the sidebar tree loads.**
+  The breadcrumb now falls back to the page's own ancestor chain (fetched
+  independently of the lazily-built sidebar tree) so a deep page resolves its
+  trail immediately; navigating away no longer leaves the previously-viewed
+  page's breadcrumb showing until the new one resolves. (#206, #218)
+- **Pasted GitHub-style callouts (`> [!NOTE]` …) now convert to real callouts.**
+  GitHub admonition blocks pasted as Markdown are recognized and rendered as
+  callout blocks instead of plain block-quotes. (#192)
+- **The editor stays read-only until collaboration has synced.** While a page is
+  connecting, the body is shown as a non-editable static view with a
+  "Connecting… (read-only)" banner, so edits typed before the document finishes
+  syncing can no longer be silently dropped. (#218)
 - **A shared page now keeps EXACTLY ONE custom address (`/l/:alias`).** Editing a
   page's vanity slug previously inserted a second `share_aliases` row instead of
   renaming the existing one, leaving the old `/l/<old>` link live forever and
@@ -62,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "This address is in use. Saving will move it to this page." — and keeps Save
   enabled, so the existing reassign-confirm flow (`409 ALIAS_REASSIGN_REQUIRED` →
   "Move custom address?") is discoverable instead of reading as terminal. (#227)
+
+### Security
+
+- **The anonymous public-share page payload is trimmed to an explicit allowlist.**
+  The `/shares/page-info` route (the only unauthenticated path serializing a
+  page + its share) now returns only the fields the public renderer needs;
+  internal metadata — creator/last-updater/contributor ids, space/workspace ids,
+  AI/source bookkeeping, lock/template flags, parent/position and raw timestamps
+  — is no longer exposed to anonymous viewers. (#218)
+- **A forged or mismatched share id can no longer render a page off its slug
+  alone.** When the public URL carries a share id/key, the page must be reachable
+  through that exact share (its own share or an ancestor `includeSubPages`
+  share); any other value now returns the generic "not found" instead of
+  serving the page. (#218)
 
 ## [0.94.0] - 2026-06-26
 
