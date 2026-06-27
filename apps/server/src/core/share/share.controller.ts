@@ -36,6 +36,7 @@ import {
   IAuditService,
 } from '../../integrations/audit/audit.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
+import { toPublicSharePayload } from './share-public-payload';
 
 @UseGuards(JwtAuthGuard)
 @Controller('shares')
@@ -93,30 +94,13 @@ export class ShareController {
       ? await this.aiSettings.resolvePublicShareAssistantName(workspace.id)
       : null;
 
-    // Trim the public payload to what the anonymous renderer actually needs
-    // (#218). Internal metadata — creatorId/lastUpdatedById/contributorIds,
-    // spaceId/workspaceId, AI/source bookkeeping, lock/template flags,
-    // parent/position, raw timestamps — must not leak to anonymous viewers.
+    // Trim the public payload to the explicit allowlist the anonymous renderer
+    // needs (#218); the PublicSharePayload type + mapper guarantee internal
+    // metadata can never leak to anonymous viewers (see share-public-payload.ts).
     const { page, share } = shareData;
-    const publicPage = {
-      id: page.id,
-      slugId: page.slugId,
-      title: page.title,
-      icon: page.icon,
-      content: page.content,
-    };
-    const publicShare = {
-      id: share.id,
-      key: share.key,
-      includeSubPages: share.includeSubPages,
-      searchIndexing: share.searchIndexing,
-      level: share.level,
-      sharedPage: share.sharedPage,
-    };
 
     return {
-      page: publicPage,
-      share: publicShare,
+      ...toPublicSharePayload(page, share),
       aiAssistant,
       aiAssistantName,
       features: this.licenseCheckService.resolveFeatures(

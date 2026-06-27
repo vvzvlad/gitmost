@@ -1,7 +1,7 @@
 import { useAtomValue } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import React, { useCallback, useEffect, useState } from "react";
-import { findBreadcrumbPath } from "@/features/page/tree/utils";
+import { resolveBreadcrumbNodes } from "./breadcrumb.utils";
 import {
   Button,
   Anchor,
@@ -15,6 +15,7 @@ import { IconCornerDownRightDouble, IconDots } from "@tabler/icons-react";
 import { Link, useParams } from "react-router-dom";
 import classes from "./breadcrumb.module.css";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
+import { IPage } from "@/features/page/types/page.types.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import {
   usePageQuery,
@@ -50,32 +51,16 @@ export default function Breadcrumb() {
   useEffect(() => {
     if (!currentPage) return;
 
-    // Prefer the sidebar tree once it actually contains this page's ancestor
-    // chain — it stays live with renames/moves happening in the sidebar.
-    if (treeData?.length > 0) {
-      const breadcrumb = findBreadcrumbPath(treeData, currentPage.id);
-      if (breadcrumb) {
-        setBreadcrumbNodes(breadcrumb);
-        return;
-      }
-    }
-
-    // Otherwise fall back to the page's own ancestor data so the breadcrumb
-    // resolves immediately instead of staying blank.
-    if (ancestors?.length) {
-      setBreadcrumbNodes(
-        (ancestors as any[]).map((node) => ({
-          id: node.id,
-          slugId: node.slugId,
-          name: node.title,
-          icon: node.icon,
-          position: node.position,
-          spaceId: node.spaceId,
-          parentPageId: node.parentPageId,
-          hasChildren: node.hasChildren ?? false,
-          children: [],
-        })) as SpaceTreeNode[],
-      );
+    // Selection/mapping lives in a pure, unit-tested helper (#218). Only update
+    // when it resolves nodes so a transient miss keeps the prior breadcrumb
+    // rather than blanking it.
+    const nodes = resolveBreadcrumbNodes(
+      treeData,
+      ancestors as IPage[] | undefined,
+      currentPage.id,
+    );
+    if (nodes) {
+      setBreadcrumbNodes(nodes);
     }
   }, [currentPage?.id, treeData, ancestors]);
 

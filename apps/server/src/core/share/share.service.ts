@@ -213,6 +213,11 @@ export class ShareService {
     // request with no shareId keeps the legacy slug-capability behavior (the
     // `/share/p/:slug` route + internal title look-ups); the slug nanoid stays
     // the access secret there — an inherited Docmost design we don't widen.
+    // FUTURE: this ancestor-aware match could fold INTO resolveReadableSharePage
+    // (so the boundary's narrow `share.id === shareId` gate isn't effectively
+    // dead). Deferred — it widens the contract for the 4 other callers that pass
+    // no shareId, so kept here as a local post-check until that's worth the blast
+    // radius.
     if (dto.shareId) {
       const reachable = await this.isPageReachableThroughShare(
         dto.shareId,
