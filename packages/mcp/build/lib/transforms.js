@@ -261,14 +261,16 @@ export function noteItem(inlineNodes) {
  * Wrap inline ProseMirror nodes in a real footnoteDefinition node keyed by id:
  *   { type:"footnoteDefinition", attrs:{id}, content:[{ type:"paragraph", content }] }
  * (mirrors the editor-ext / docmost-schema FootnoteDefinition node).
+ *
+ * Built on the shared `makeFootnoteDefinition` factory (footnote-authoring.ts);
+ * the only extra is a fresh block id on the inner paragraph (Docmost stamps one,
+ * and the canonicalizer preserves attrs as-is). Single factory, one place to
+ * change the definition shape.
  */
 export function footnoteDefinition(id, inlineNodes) {
-    const content = Array.isArray(inlineNodes) ? clone(inlineNodes) : [];
-    return {
-        type: "footnoteDefinition",
-        attrs: { id },
-        content: [{ type: "paragraph", attrs: { id: freshId() }, content }],
-    };
+    const node = makeFootnoteDefinition(id, inlineNodes);
+    node.content[0].attrs = { id: freshId() };
+    return node;
 }
 /**
  * Replace every `[N]` body marker and `\u0000FN<i>\u0000` comment placeholder in

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { canonicalizeFootnotes } from "../../build/lib/footnote-canonicalize.js";
 import { footnoteContentKey } from "../../build/lib/footnote-authoring.js";
 import { insertInlineFootnote } from "../../build/lib/transforms.js";
-import { markdownToProseMirror } from "../../build/lib/collaboration.js";
+import { markdownToProseMirrorCanonical } from "../../build/lib/collaboration.js";
 
 function findAll(node, type, acc = []) {
   if (!node || typeof node !== "object") return acc;
@@ -190,10 +190,12 @@ test("insertInlineFootnote: codeBlock match is skipped, a later body paragraph s
   assert.equal(findAll(r.doc, "footnoteReference").length, 1);
 });
 
-test("markdown import: out-of-order definitions render as a reference-ordered list", async () => {
+test("markdown import (page path): out-of-order definitions render as a reference-ordered list", async () => {
   // References appear b, a, c in the body; definitions are written in a, b, c
-  // order (the import order). After canonicalization the bottom list follows
-  // REFERENCE order so the numbers read 1, 2, 3 down the list.
+  // order (the import order). The PAGE import path (markdownToProseMirrorCanonical)
+  // canonicalizes so the bottom list follows REFERENCE order — numbers read 1, 2,
+  // 3 down the list. (The non-canonicalizing markdownToProseMirror, used for
+  // comment bodies, would keep the import order; see collaboration.test.mjs.)
   const md = [
     "See[^b] then[^a] then[^c].",
     "",
@@ -201,7 +203,7 @@ test("markdown import: out-of-order definitions render as a reference-ordered li
     "[^b]: bravo",
     "[^c]: charlie",
   ].join("\n");
-  const json = await markdownToProseMirror(md);
+  const json = await markdownToProseMirrorCanonical(md);
   assert.deepEqual(defIds(json), ["b", "a", "c"]);
   assert.equal(findAll(json, "footnotesList").length, 1);
 });

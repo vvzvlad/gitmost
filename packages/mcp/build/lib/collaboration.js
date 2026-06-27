@@ -347,24 +347,37 @@ function extractFootnotes(markdown) {
 /**
  * Convert markdown to a ProseMirror doc using the full Docmost schema.
  *
- * NOTE: besides the page-import write paths, this is also reused for comment
- * bodies (createComment / updateComment). For an ordinary comment the
- * canonicalize call below is a no-op (a comment carries no footnotes), so the
- * reuse is safe; the only theoretical effect is if footnote markup were ever
- * authored INSIDE a comment — a narrow case where canonicalizing the comment's
- * own (self-contained) footnotes is still the correct behaviour.
+ * This conversion does NOT canonicalize footnotes — it is the shared, content-
+ * preserving primitive used by BOTH page write paths and COMMENT bodies
+ * (createComment / updateComment). Canonicalization MUST NOT run on a comment
+ * body: a comment may legitimately contain a footnote-definition line
+ * (`[^1]: text`) with no matching reference, and the canonicalizer drops a
+ * reference-less footnotesList — which would silently delete the comment's text.
+ *
+ * Page write paths that DO need the canonical footnote topology call
+ * `markdownToProseMirrorCanonical` instead (markdown import, update_page markdown
+ * path). Keep this function reference-loss-free.
  */
 export async function markdownToProseMirror(markdownContent) {
     const withCallouts = await preprocessCallouts(markdownContent);
     const { body, section } = extractFootnotes(withCallouts);
     const html = (await marked.parse(body)) + section;
     const bridged = bridgeTaskLists(html);
-    const json = generateJSON(bridged, docmostExtensions);
-    // Canonicalize footnotes on EVERY import: the section above is built in
-    // definition order, but numbering is derived from REFERENCE order — so without
-    // this the bottom list renders out of order (`1, 4, 2, 3, …`). Idempotent, so
-    // it is a no-op when the footnotes are already canonical.
-    return canonicalizeFootnotes(json);
+    return generateJSON(bridged, docmostExtensions);
+}
+/**
+ * Page-write variant of `markdownToProseMirror`: converts markdown then enforces
+ * the canonical footnote topology. The footnote `section` markdown is emitted in
+ * DEFINITION order, but numbering derives from REFERENCE order, so without this
+ * the bottom list renders out of order (`1, 4, 2, 3, …`); orphan definitions and
+ * duplicate lists are also normalized. Idempotent — a no-op once canonical, and a
+ * no-op for footnote-free content.
+ *
+ * Use this ONLY for full-document PAGE writes (never for comment bodies, where it
+ * would drop a reference-less footnote definition — see `markdownToProseMirror`).
+ */
+export async function markdownToProseMirrorCanonical(markdownContent) {
+    return canonicalizeFootnotes(await markdownToProseMirror(markdownContent));
 }
 /**
  * Build the collaboration WebSocket URL from an API base URL:
@@ -723,6 +736,8 @@ export async function replacePageContent(pageId, prosemirrorDoc, collabToken, ba
  * Tables and :::callout::: blocks survive thanks to the full schema.
  */
 export async function updatePageContentRealtime(pageId, markdownContent, collabToken, baseUrl) {
-    const tiptapJson = await markdownToProseMirror(markdownContent);
+    // PAGE write: canonicalize footnotes (markdown import builds the bottom list in
+    // definition order; numbering is reference-ordered).
+    const tiptapJson = await markdownToProseMirrorCanonical(markdownContent);
     return await mutatePageContent(pageId, collabToken, baseUrl, () => tiptapJson);
 }

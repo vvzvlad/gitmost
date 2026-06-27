@@ -49,12 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit the list, or desync, and a same-content note reuses one definition. Under
   the hood, the editor's footnote-integrity invariant (one trailing list,
   numbering by first reference, no orphans/duplicates, no raw `[^id]`) is now
-  enforced as a pure `canonicalizeFootnotes(doc)` on the write paths that bypass
-  the editor's plugins: server markdown/HTML import, `PageService` create and
-  full-document (`replace`) updates, the client markdown paste, and the MCP
-  `markdownToProseMirror` / `update_page_json` / `docmost_transform` /
-  `insert_footnote` paths. It is idempotent (a no-op once canonical) and is
-  deliberately NOT applied to append/prepend fragments. (#228)
+  enforced as a pure `canonicalizeFootnotes(doc)` on the FULL-document write paths
+  that bypass the editor's plugins: server markdown/HTML import, `PageService`
+  create and full-document (`replace`) updates, the client markdown paste, and the
+  MCP markdown page-import / `update_page` (markdown) / `update_page_json` /
+  `docmost_transform` / `insert_footnote` / `copy_page_content` paths. It is
+  idempotent (a no-op once canonical) and is deliberately NOT applied to
+  append/prepend fragments, nor to COMMENT bodies — a comment may legitimately
+  contain a standalone footnote definition, which canonicalization would drop.
+  (#228)
 
 ### Fixed
 

@@ -7,7 +7,7 @@ import { TiptapTransformer } from "@hocuspocus/transformer";
 import * as Y from "yjs";
 import WebSocket from "ws";
 import { convertProseMirrorToMarkdown } from "./lib/markdown-converter.js";
-import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, applyDocToFragment, } from "./lib/collaboration.js";
+import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, markdownToProseMirrorCanonical, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, applyDocToFragment, } from "./lib/collaboration.js";
 import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
 import { serializeDocmostMarkdown, parseDocmostMarkdown, } from "./lib/markdown-document.js";
@@ -1180,7 +1180,8 @@ export class DocmostClient {
     async importPageMarkdown(pageId, fullMarkdown) {
         await this.ensureAuthenticated();
         const { meta, body, comments } = parseDocmostMarkdown(fullMarkdown);
-        const doc = await markdownToProseMirror(body);
+        // PAGE import: canonicalize footnotes (see markdownToProseMirrorCanonical).
+        const doc = await markdownToProseMirrorCanonical(body);
         const collabToken = await this.getCollabTokenWithReauth();
         const mutation = await replacePageContent(pageId, doc, collabToken, this.apiUrl);
         // Collect distinct comment ids that actually became comment marks in the doc.
@@ -1260,13 +1261,18 @@ export class DocmostClient {
         // uses, so copying never lands a javascript:/data: href/src on the target
         // (parity with updatePageJson; harmless for already-stored source content).
         this.validateDocUrls(content);
+        // Defense-in-depth (#228): this is a FULL-document write, so canonicalize
+        // footnotes before copying — a no-op on already-canonical source content, but
+        // it guarantees a copy can never propagate a non-canonical footnote topology
+        // to the target (parity with the other full-doc write paths).
+        const canonical = canonicalizeFootnotes(content);
         const collabToken = await this.getCollabTokenWithReauth();
-        const mutation = await replacePageContent(targetPageId, content, collabToken, this.apiUrl);
+        const mutation = await replacePageContent(targetPageId, canonical, collabToken, this.apiUrl);
         return {
             success: true,
             sourcePageId,
             targetPageId,
-            copiedNodes: content.content.length,
+            copiedNodes: canonical.content.length,
             verify: mutation.verify,
         };
     }
@@ -1673,7 +1679,10 @@ export class DocmostClient {
                 }
             }
         }
-        // Convert through the full Docmost schema (consistent with page paths)
+        // Convert through the full Docmost schema. Deliberately the NON-canonicalizing
+        // variant: a comment body may carry a footnote definition with no matching
+        // reference, and canonicalization would drop it (data loss). See
+        // markdownToProseMirror vs markdownToProseMirrorCanonical.
         const jsonContent = await markdownToProseMirror(content);
         const payload = {
             pageId,
@@ -1761,6 +1770,7 @@ export class DocmostClient {
     }
     async updateComment(commentId, content) {
         await this.ensureAuthenticated();
+        // NON-canonicalizing on purpose (comment body — see createComment).
         const jsonContent = await markdownToProseMirror(content);
         await this.client.post("/comments/update", {
             commentId,
