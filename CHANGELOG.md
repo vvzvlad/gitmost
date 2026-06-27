@@ -67,6 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toggle. Previously the create call defaulted to including sub-pages, silently
   exposing every child of a freshly shared page. (#216)
 
+### Changed
+
+- **The agent-roles catalog is now stored as YAML instead of JSON.** Each role's
+  long `instructions` system prompt is a literal block scalar (`|-`), so editing
+  a single sentence shows up as a line-by-line diff and the prompt is editable as
+  plain multi-line text rather than one escaped JSON string. The catalog content
+  files become `index.yaml` and `bundles/<id>/<lang>.yaml` (old `.json` removed);
+  the resolved role content is byte-for-byte identical, so no role `version` is
+  bumped. The server fetches `<base>/index.yaml` and
+  `<base>/bundles/<id>/<lang>.yaml`, parsing them with the `yaml` library's safe,
+  JSON-compatible schema (no custom tags / no code execution) behind the same
+  size-cap, redirect and path-traversal guards. The `AI_AGENT_ROLES_CATALOG_URL`
+  base-URL contract is unchanged. (#229)
+
 ### Fixed
 
 - **Internal links in exported Markdown no longer lose their visible text.** A

@@ -1,12 +1,16 @@
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
+import { stringify as stringifyYaml } from 'yaml';
 import { AiAgentRolesCatalogProvider } from './ai-agent-roles-catalog.provider';
 
 /**
  * Provider tests against a mocked remote source (no network). They cover the
- * happy read path (fetchIndex / fetchBundle), the malformed-shape rejection,
- * rejection of non-http(s) sources (local sources are gone), and — most
- * importantly — the `^[a-z0-9-]+$` path-traversal guard that runs BEFORE any
- * path/URL is built.
+ * happy read path (fetchIndex / fetchBundle) over the YAML catalog format, the
+ * block-scalar `instructions` round-trip, the malformed-shape rejection, the
+ * malformed-YAML rejection, rejection of non-http(s) sources (local sources are
+ * gone), and — most importantly — the `^[a-z0-9-]+$` path-traversal guard that
+ * runs BEFORE any path/URL is built. Fixtures are serialized with the same
+ * `yaml` library the provider parses with (`stringifyYaml`), so the tests
+ * exercise real YAML, not the JSON subset.
  */
 describe('AiAgentRolesCatalogProvider', () => {
   function makeProvider(source: string) {
@@ -71,7 +75,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     }
 
     it('fetchBundle remote happy path => parses + validates', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         language: 'en',
         roles: [
@@ -82,7 +86,7 @@ describe('AiAgentRolesCatalogProvider', () => {
           },
         ],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -92,12 +96,12 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('fetchBundle remote malformed (role missing instructions) => BadGateway', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         language: 'fr',
         roles: [{ slug: 'researcher', name: 'Chercheur' }],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -153,8 +157,9 @@ describe('AiAgentRolesCatalogProvider', () => {
         );
       global.fetch = fetchMock as never;
       const provider = makeProvider('https://catalog.example.com');
-      // Body shape is irrelevant; an empty stream parses to invalid JSON and
-      // throws, but the fetch call (with its init) still happened.
+      // Body shape is irrelevant; an empty stream parses to an empty YAML doc
+      // (null), fails the shape guard and throws, but the fetch call (with its
+      // init) still happened.
       await expect(provider.fetchIndex()).rejects.toBeDefined();
       expect(fetchMock).toHaveBeenCalledWith(
         expect.any(String),
@@ -190,7 +195,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('small streamed body parses normally (cap not hit)', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         bundles: [
           {
@@ -201,7 +206,7 @@ describe('AiAgentRolesCatalogProvider', () => {
           },
         ],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -227,7 +232,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('null body (no readable stream) => response.text() fallback parses', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         bundles: [
           {
@@ -240,7 +245,7 @@ describe('AiAgentRolesCatalogProvider', () => {
       });
       global.fetch = jest
         .fn()
-        .mockResolvedValue(mockResponse({ body: null, text: json })) as never;
+        .mockResolvedValue(mockResponse({ body: null, text: yaml })) as never;
       const provider = makeProvider('https://catalog.example.com');
       const index = await provider.fetchIndex();
       expect(index.bundles[0].id).toBe('general');
@@ -259,8 +264,12 @@ describe('AiAgentRolesCatalogProvider', () => {
       );
     });
 
-    it('invalid JSON body => BadGateway (parse failure)', async () => {
-      const body = streamOf([new TextEncoder().encode('{not valid json')]);
+    it('invalid YAML body => BadGateway (parse failure)', async () => {
+      // An unterminated flow mapping is not valid YAML, so YAML.parse throws and
+      // the provider maps it to BadGateway (not a generic 500).
+      const body = streamOf([
+        new TextEncoder().encode('schemaVersion: {not: closed'),
+      ]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -270,11 +279,28 @@ describe('AiAgentRolesCatalogProvider', () => {
       );
     });
 
-    it('malformed index.json (valid JSON, wrong shape) => BadGateway', async () => {
-      // Parses as JSON but fails isCatalogIndex (schemaVersion not a number).
+    it('YAML with a duplicate key (strict) => BadGateway (parse failure)', async () => {
+      // strict:true rejects duplicate mapping keys rather than last-wins coercing
+      // them — a defensive parse on untrusted input.
       const body = streamOf([
         new TextEncoder().encode(
-          JSON.stringify({ schemaVersion: 'x', bundles: [] }),
+          'schemaVersion: 1\nbundles: []\nschemaVersion: 2\n',
+        ),
+      ]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('malformed index.yaml (valid YAML, wrong shape) => BadGateway', async () => {
+      // Parses as YAML but fails isCatalogIndex (schemaVersion not a number).
+      const body = streamOf([
+        new TextEncoder().encode(
+          stringifyYaml({ schemaVersion: 'x', bundles: [] }),
         ),
       ]);
       global.fetch = jest
@@ -282,6 +308,36 @@ describe('AiAgentRolesCatalogProvider', () => {
         .mockResolvedValue(mockResponse({ body })) as never;
       const provider = makeProvider('https://catalog.example.com');
       await expect(provider.fetchIndex()).rejects.toThrow(/malformed/i);
+    });
+
+    it('block-scalar instructions round-trips to the exact multi-line string', async () => {
+      // The whole point of the YAML migration: a long `instructions` prompt is
+      // stored as a literal block scalar (|-) for line-by-line diffs, and must
+      // resolve byte-for-byte to the original multi-line string.
+      const instructions = [
+        'Line one of the prompt.',
+        '',
+        '  Indented bullet that must survive.',
+        'Final line, no trailing newline.',
+      ].join('\n');
+      const yaml = stringifyYaml(
+        {
+          schemaVersion: 1,
+          language: 'en',
+          roles: [{ slug: 'researcher', name: 'Researcher', instructions }],
+        },
+        { lineWidth: 0 },
+      );
+      // Sanity: the fixture really uses a literal block scalar (|, optionally
+      // with an indentation indicator), not a flow/quoted string.
+      expect(yaml).toMatch(/instructions: \|/);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      const bundle = await provider.fetchBundle('research', 'en');
+      expect(bundle.roles[0].instructions).toBe(instructions);
     });
   });
 
