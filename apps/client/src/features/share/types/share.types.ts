@@ -35,9 +35,17 @@ export interface ISharedItem extends IShare {
   };
 }
 
-export interface ISharedPage extends IShare {
-  page: IPage;
-  share: IShare & {
+// The `/shares/page-info` (anonymous) response. Mirrors the server-side
+// PublicSharePayload allowlist (#218): the server trims `page`/`share` to these
+// fields exactly, so the client type must not over-declare internal metadata it
+// will never receive. Keep this in sync with share-public-payload.ts.
+export interface ISharedPage {
+  page: Pick<IPage, "id" | "slugId" | "title" | "icon" | "content">;
+  share: {
+    id: string;
+    key: string;
+    includeSubPages: boolean;
+    searchIndexing: boolean;
     level: number;
     sharedPage: { id: string; slugId: string; title: string; icon: string };
   };
@@ -73,6 +81,10 @@ export type IUpdateShare = ICreateShare & { shareId: string; pageId?: string };
 
 export interface IShareInfoInput {
   pageId: string;
+  // The share id/key from the `/share/:shareId/p/:slug` URL. When present the
+  // server binds content access to this exact share (#218): a forged/mismatched
+  // shareId 404s instead of rendering the page off its slug alone.
+  shareId?: string;
 }
 
 // Vanity /l/:alias pointer.

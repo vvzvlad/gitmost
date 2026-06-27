@@ -1364,5 +1364,6 @@
   "Already up to date": "Already up to date",
   "Updated to the latest version": "Updated to the latest version",
   "This role is no longer in the catalog": "This role is no longer in the catalog",
-  "This language is no longer available in the catalog": "This language is no longer available in the catalog"
+  "This language is no longer available in the catalog": "This language is no longer available in the catalog",
+  "Connecting… (read-only)": "Connecting… (read-only)"
 }

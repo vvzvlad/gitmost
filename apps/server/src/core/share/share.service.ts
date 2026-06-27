@@ -189,9 +189,9 @@ export class ShareService {
   }
 
   async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
-    // Resolve via the single canonical boundary. There is no independent
-    // requested shareId here (the share is resolved FROM the page), so no
-    // share-id match is performed.
+    // Resolve via the single canonical boundary. The share is resolved FROM the
+    // page (the request carries the page slug), so the boundary itself performs
+    // no share-id match here.
     const resolved = await this.resolveReadableSharePage(
       null,
       dto.pageId,
@@ -205,9 +205,83 @@ export class ShareService {
 
     const { share, page } = resolved;
 
+    // Bind content to the requested share (#218). When the caller supplies a
+    // shareId/key (the `/share/:shareId/p/:slug` route now forwards it), the
+    // page must be reachable THROUGH that exact share — a forged or mismatched
+    // shareId must 404 instead of rendering the page off its slug alone, and it
+    // must not be answerable with the page's real (canonical) share key. A
+    // request with no shareId keeps the legacy slug-capability behavior (the
+    // `/share/p/:slug` route + internal title look-ups); the slug nanoid stays
+    // the access secret there — an inherited Docmost design we don't widen.
+    // FUTURE: this ancestor-aware match could fold INTO resolveReadableSharePage
+    // (so the boundary's narrow `share.id === shareId` gate isn't effectively
+    // dead). Deferred — it widens the contract for the 3 other callers that pass
+    // no shareId (share-alias.controller, share-alias.service, share-seo.controller);
+    // the two ai-chat callers (public-share-chat.controller,
+    // public-share-chat-tools.service) already pass a real shareId. Kept here as
+    // a local post-check until that consolidation is worth the blast radius.
+    if (dto.shareId) {
+      const reachable = await this.isPageReachableThroughShare(
+        dto.shareId,
+        share,
+        page.id,
+        workspaceId,
+      );
+      if (!reachable) {
+        throw new NotFoundException('Shared page not found');
+      }
+    }
+
     page.content = await this.updatePublicAttachments(page);
 
     return { page, share };
+  }
+
+  /**
+   * Does `requestedShareId` (a share id OR key) legitimately grant access to
+   * `pageId`? True when it names the page's own resolved share, or an ancestor
+   * share with `includeSubPages` that contains the page. Any other value
+   * (unknown key, wrong workspace, a sibling share that doesn't cover the page)
+   * is false, so a guessed slug paired with a forged shareId can't render.
+   */
+  private async isPageReachableThroughShare(
+    requestedShareId: string,
+    resolvedShare: NonNullable<
+      Awaited<ReturnType<ShareService['getShareForPage']>>
+    >,
+    pageId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    // Fast path: the request names the page's own resolved share.
+    if (this.shareIdGrantsAccess(requestedShareId, resolvedShare)) {
+      return true;
+    }
+
+    // Otherwise it may name an includeSubPages ANCESTOR share: the page has its
+    // own closer share but is also served under the ancestor's public tree.
+    const requested = await this.shareRepo.findById(requestedShareId);
+    if (!requested || requested.workspaceId !== workspaceId) return false;
+    if (!requested.includeSubPages) return false;
+
+    const ancestor = await this.getShareAncestorPage(requested.pageId, pageId);
+    return !!ancestor;
+  }
+
+  /**
+   * Does the requested share id/key directly name `resolvedShare` — by id, or
+   * by key (case-insensitive)? This is the "names the page's OWN share" half of
+   * the access concept; ancestor includeSubPages shares are matched separately.
+   * Intentionally narrower than `resolveReadableSharePage`'s id-only gate, which
+   * keeps its own contract for the callers that pass a shareId there.
+   */
+  private shareIdGrantsAccess(
+    requestedShareId: string,
+    resolvedShare: { id: string; key?: string | null },
+  ): boolean {
+    return (
+      requestedShareId === resolvedShare.id ||
+      requestedShareId.toLowerCase() === resolvedShare.key?.toLowerCase()
+    );
   }
 
   async getShareForPage(pageId: string, workspaceId: string) {
@@ -351,7 +425,14 @@ export class ShareService {
         .limit(1)
         .executeTakeFirst();
     } catch (err) {
-      // empty
+      // Fail closed (return null -> caller 404s), but never silently: this is
+      // now a live public-share path (isPageReachableThroughShare), so a
+      // transient DB error here would otherwise turn a legitimate viewer of an
+      // includeSubPages descendant into a misleading "not found" with no trace.
+      this.logger.error(
+        `getShareAncestorPage failed (ancestorPageId=${ancestorPageId}, childPageId=${childPageId})`,
+        err instanceof Error ? err.stack : String(err),
+      );
     }
 
     return ancestor;

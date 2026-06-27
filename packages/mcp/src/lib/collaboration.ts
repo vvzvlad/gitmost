@@ -11,6 +11,7 @@ import { docmostExtensions, docmostSchema } from "./docmost-schema.js";
 import { withPageLock } from "./page-lock.js";
 import { sanitizeForYjs, findUnstorableAttr } from "./node-ops.js";
 import { lexFootnoteLines } from "./footnote-lex.js";
+import { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 import { summarizeChange, VerifyReport } from "./diff.js";
 
 /**
@@ -392,7 +393,20 @@ function extractFootnotes(markdown: string): {
   };
 }
 
-/** Convert markdown to a ProseMirror doc using the full Docmost schema. */
+/**
+ * Convert markdown to a ProseMirror doc using the full Docmost schema.
+ *
+ * This conversion does NOT canonicalize footnotes — it is the shared, content-
+ * preserving primitive used by BOTH page write paths and COMMENT bodies
+ * (createComment / updateComment). Canonicalization MUST NOT run on a comment
+ * body: a comment may legitimately contain a footnote-definition line
+ * (`[^1]: text`) with no matching reference, and the canonicalizer drops a
+ * reference-less footnotesList — which would silently delete the comment's text.
+ *
+ * Page write paths that DO need the canonical footnote topology call
+ * `markdownToProseMirrorCanonical` instead (markdown import, update_page markdown
+ * path). Keep this function reference-loss-free.
+ */
 export async function markdownToProseMirror(
   markdownContent: string,
 ): Promise<any> {
@@ -401,6 +415,23 @@ export async function markdownToProseMirror(
   const html = (await marked.parse(body)) + section;
   const bridged = bridgeTaskLists(html);
   return generateJSON(bridged, docmostExtensions);
+}
+
+/**
+ * Page-write variant of `markdownToProseMirror`: converts markdown then enforces
+ * the canonical footnote topology. The footnote `section` markdown is emitted in
+ * DEFINITION order, but numbering derives from REFERENCE order, so without this
+ * the bottom list renders out of order (`1, 4, 2, 3, …`); orphan definitions and
+ * duplicate lists are also normalized. Idempotent — a no-op once canonical, and a
+ * no-op for footnote-free content.
+ *
+ * Use this ONLY for full-document PAGE writes (never for comment bodies, where it
+ * would drop a reference-less footnote definition — see `markdownToProseMirror`).
+ */
+export async function markdownToProseMirrorCanonical(
+  markdownContent: string,
+): Promise<any> {
+  return canonicalizeFootnotes(await markdownToProseMirror(markdownContent));
 }
 
 /**
@@ -801,7 +832,9 @@ export async function updatePageContentRealtime(
   collabToken: string,
   baseUrl: string,
 ): Promise<MutationResult> {
-  const tiptapJson = await markdownToProseMirror(markdownContent);
+  // PAGE write: canonicalize footnotes (markdown import builds the bottom list in
+  // definition order; numbering is reference-ordered).
+  const tiptapJson = await markdownToProseMirrorCanonical(markdownContent);
   return await mutatePageContent(
     pageId,
     collabToken,

@@ -1,7 +1,7 @@
 import { useAtomValue } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import React, { useCallback, useEffect, useState } from "react";
-import { findBreadcrumbPath } from "@/features/page/tree/utils";
+import { computeBreadcrumbState } from "./breadcrumb.utils";
 import {
   Button,
   Anchor,
@@ -15,8 +15,12 @@ import { IconCornerDownRightDouble, IconDots } from "@tabler/icons-react";
 import { Link, useParams } from "react-router-dom";
 import classes from "./breadcrumb.module.css";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
+import { IPage } from "@/features/page/types/page.types.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import {
+  usePageQuery,
+  usePageBreadcrumbsQuery,
+} from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
 import { useMediaQuery } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
@@ -38,14 +42,29 @@ export default function Breadcrumb() {
   const { data: currentPage } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
   });
+  // The page's own ancestor chain, fetched independently of the lazily-built
+  // sidebar tree so a deep page doesn't render a blank breadcrumb for seconds
+  // while the tree backfills (#218).
+  const { data: ancestors } = usePageBreadcrumbsQuery(currentPage?.id);
   const isMobile = useMediaQuery("(max-width: 48em)");
 
   useEffect(() => {
-    if (treeData?.length > 0 && currentPage) {
-      const breadcrumb = findBreadcrumbPath(treeData, currentPage.id);
-      setBreadcrumbNodes(breadcrumb || null);
-    }
-  }, [currentPage?.id, treeData]);
+    if (!currentPage) return;
+
+    // Selection/mapping + stale-clearing live in a pure, unit-tested helper
+    // (#218). It resolves the correct chain when possible and, on a transient
+    // miss, clears a chain left over from a previously-viewed page instead of
+    // showing the wrong trail — while keeping a chain already resolved for THIS
+    // page to avoid a blank flash.
+    setBreadcrumbNodes((previous) =>
+      computeBreadcrumbState(
+        treeData,
+        ancestors as IPage[] | undefined,
+        currentPage.id,
+        previous,
+      ),
+    );
+  }, [currentPage?.id, treeData, ancestors]);
 
   const HiddenNodesTooltipContent = () =>
     breadcrumbNodes?.slice(1, -1).map((node) => (
