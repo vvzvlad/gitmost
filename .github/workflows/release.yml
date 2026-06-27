@@ -57,6 +57,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             APP_VERSION=${{ env.VERSION }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,scope=${{ matrix.suffix }},mode=max,ignore-error=true
@@ -85,6 +86,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             APP_VERSION=${{ env.VERSION }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
           push: false
           tags: |
             ${{ env.IMAGE }}:latest

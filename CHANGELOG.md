@@ -37,10 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admin endpoints — `POST /ai-chat/roles/catalog` (browse bundles),
   `/catalog/bundle` (read one bundle's roles), `/import`, and
   `/update-from-catalog` — and a new `source` column linking a role to its
-  catalog slug/language/version. The catalog source is configurable via the new
-  `AI_AGENT_ROLES_CATALOG_URL` env var (an `http(s)://` base URL fetches it
-  remotely; otherwise a local directory; empty defaults to the in-repo
-  `agent-roles-catalog/` folder — see `.env.example`). (#222)
+  catalog slug/language/version. The catalog source is configured via the
+  `AI_AGENT_ROLES_CATALOG_URL` env var — an `http(s)://` base URL to the
+  catalog's raw files, baked into the image at build time and set per branch in
+  CI (see `.env.example`). (#222)
 
 ## [0.94.0] - 2026-06-26
 

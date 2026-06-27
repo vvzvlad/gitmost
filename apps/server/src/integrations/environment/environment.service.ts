@@ -290,11 +290,12 @@ export class EnvironmentService {
   // ai_provider_credentials, with no env fallback. APP_SECRET stays (getAppSecret).
 
   getAiAgentRolesCatalogSource(): string {
-    // Catalog location. http(s):// URL => fetched remotely; anything else => a
-    // local filesystem directory. Defaults to the in-repo folder (dev). In prod
-    // set this to the raw GitHub base URL of the catalog repo. Unlike the AI_*
-    // getters above this is INFRA config (where the catalog lives), not
-    // provider/model config — so an env var here is appropriate.
+    // Catalog location: an http(s):// base URL the catalog is fetched from.
+    // The value is baked into the image at build time (Dockerfile ARG
+    // AI_AGENT_ROLES_CATALOG_URL, set per-branch in CI); local-filesystem
+    // sources are no longer supported. Empty/unset => the catalog is
+    // unavailable (the provider returns 502). This is INFRA config (where the
+    // catalog lives), not provider/model config, so an env var is appropriate.
     return this.configService.get<string>('AI_AGENT_ROLES_CATALOG_URL', '');
   }
 

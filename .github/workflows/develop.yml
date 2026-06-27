@@ -52,6 +52,7 @@ jobs:
           platforms: linux/amd64
           build-args: |
             APP_VERSION=${{ steps.version.outputs.value }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/develop/agent-roles-catalog
           push: true
           tags: ${{ env.IMAGE }}:develop
           cache-from: type=gha,scope=develop-amd64

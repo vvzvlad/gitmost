@@ -23,6 +23,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Agent-roles catalog base URL, baked at build time (set per-branch in CI).
+ARG AI_AGENT_ROLES_CATALOG_URL=""
+ENV AI_AGENT_ROLES_CATALOG_URL=$AI_AGENT_ROLES_CATALOG_URL
+
 # Copy apps
 COPY --from=builder /app/apps/server/dist /app/apps/server/dist
 COPY --from=builder /app/apps/client/dist /app/apps/client/dist

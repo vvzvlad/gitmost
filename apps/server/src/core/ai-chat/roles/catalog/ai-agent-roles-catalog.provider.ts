@@ -1,5 +1,3 @@
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
 import {
   BadGatewayException,
   BadRequestException,
@@ -26,9 +24,9 @@ const MAX_BYTES = 1_000_000;
 
 /**
  * Fetches + validates the agent-roles catalog from its configured source. The
- * source location (EnvironmentService.getAiAgentRolesCatalogSource()) is either
- * an http(s):// base URL (REMOTE) or a local filesystem directory (LOCAL; the
- * empty default resolves to the in-repo `agent-roles-catalog/` folder).
+ * source (EnvironmentService.getAiAgentRolesCatalogSource()) is an http(s)://
+ * base URL — REMOTE only; local-filesystem sources are no longer supported. The
+ * value is baked into the Docker image at build time (set per-branch in CI).
  *
  * The catalog is UNTRUSTED input: every file is JSON-parsed and run through a
  * hand-written type guard before any field is exposed, and every dynamic path
@@ -91,31 +89,20 @@ export class AiAgentRolesCatalogProvider {
     }
   }
 
-  /** Read a relative catalog path as text from the configured source. */
+  /** Read a relative catalog path as text from the configured remote source. */
   private async readRelative(rel: string): Promise<string> {
     const source = this.environmentService
       .getAiAgentRolesCatalogSource()
       .trim();
-    if (/^https?:\/\//i.test(source)) {
-      return this.fetchRemote(source, rel);
-    }
-    const dir = source || path.join(process.cwd(), 'agent-roles-catalog');
-    return this.readLocal(dir, rel);
-  }
-
-  /** Read a local catalog file. Missing => the catalog is unavailable. */
-  private async readLocal(dir: string, rel: string): Promise<string> {
-    try {
-      return await fs.readFile(path.join(dir, rel), 'utf8');
-    } catch (err) {
-      const reason = shortError(err);
+    if (!/^https?:\/\//i.test(source)) {
       this.logger.error(
-        `Agent roles catalog local read failed (${path.join(dir, rel)}): ${reason}`,
+        'Agent roles catalog source is not configured (expected an http(s):// base URL)',
       );
       throw new BadGatewayException(
-        `Agent roles catalog is unavailable: ${reason}`,
+        'Agent roles catalog is unavailable: source is not configured',
       );
     }
+    return this.fetchRemote(source, rel);
   }
 
   /**

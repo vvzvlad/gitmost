@@ -30,20 +30,19 @@ Currently shipped bundles:
 
 The server does not bundle this data; it reads it at request time from a single
 configured location, the `AI_AGENT_ROLES_CATALOG_URL` env var
-(`EnvironmentService.getAiAgentRolesCatalogSource()`). The value selects one of
-three sources:
+(`EnvironmentService.getAiAgentRolesCatalogSource()`), an `http(s)://` base URL
+to the catalog's raw files. The server fetches `<base>/index.json` for the
+manifest and `<base>/bundles/<bundle-id>/<lang>.json` for each opened bundle
+file (REMOTE only).
 
-- **`http(s)://…`** — a REMOTE base URL. The server fetches `<base>/index.json`
-  for the manifest and `<base>/bundles/<bundle-id>/<lang>.json` for each opened
-  bundle file (e.g. the raw GitHub base of the catalog repo in production).
-- **any other non-empty value** — a LOCAL filesystem directory; the same
-  `index.json` / `bundles/<id>/<lang>.json` paths are read from disk.
-- **empty / unset** (the default) — the in-repo `agent-roles-catalog/` folder
-  (this directory), i.e. local dev reads these files directly.
+That base URL is baked into the Docker image at build time and set per branch in
+CI: a `develop` build points at the `develop` raw URL, a release build at the
+`main` raw URL. Local-filesystem sources are no longer supported; if the value
+is unset the catalog is unavailable.
 
-In every case the layout below is what the server expects, and the fetched JSON
-is re-validated server-side (the catalog is treated as untrusted input). See
-`.env.example` for the variable and the CHANGELOG for the rollout.
+The fetched JSON is re-validated server-side (the catalog is treated as
+untrusted input). See `.env.example` for the variable and the CHANGELOG for the
+rollout.
 
 ## `index.json` schema
 

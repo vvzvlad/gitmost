@@ -1,18 +1,14 @@
-import { promises as fs } from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
 import { AiAgentRolesCatalogProvider } from './ai-agent-roles-catalog.provider';
 
 /**
- * Provider tests against a LOCAL fixture directory (no network). They cover the
- * happy read path (fetchIndex / fetchBundle), the malformed-shape rejection, a
- * missing file => unavailable, and — most importantly — the `^[a-z0-9-]+$`
- * path-traversal guard that runs BEFORE any path is built.
+ * Provider tests against a mocked remote source (no network). They cover the
+ * happy read path (fetchIndex / fetchBundle), the malformed-shape rejection,
+ * rejection of non-http(s) sources (local sources are gone), and — most
+ * importantly — the `^[a-z0-9-]+$` path-traversal guard that runs BEFORE any
+ * path/URL is built.
  */
-describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
-  let dir: string;
-
+describe('AiAgentRolesCatalogProvider', () => {
   function makeProvider(source: string) {
     const env = {
       getAiAgentRolesCatalogSource: () => source,
@@ -20,96 +16,13 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
     return new AiAgentRolesCatalogProvider(env as never);
   }
 
-  beforeAll(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-roles-catalog-'));
-    await fs.writeFile(
-      path.join(dir, 'index.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        bundles: [
-          {
-            id: 'general',
-            name: { en: 'General', ru: 'Общие' },
-            languages: ['en'],
-            roles: [{ slug: 'researcher', version: 2 }],
-          },
-        ],
-      }),
-      'utf8',
-    );
-    await fs.mkdir(path.join(dir, 'bundles', 'general'), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, 'bundles', 'general', 'en.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        language: 'en',
-        roles: [
-          {
-            slug: 'researcher',
-            name: 'Researcher',
-            instructions: 'be a researcher',
-          },
-        ],
-      }),
-      'utf8',
-    );
-    // A malformed bundle (a role missing `instructions`) to test rejection.
-    await fs.writeFile(
-      path.join(dir, 'bundles', 'general', 'fr.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        language: 'fr',
-        roles: [{ slug: 'researcher', name: 'Chercheur' }],
-      }),
-      'utf8',
-    );
-  });
-
-  afterAll(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  it('fetchIndex reads + validates index.json', async () => {
-    const provider = makeProvider(dir);
-    const index = await provider.fetchIndex();
-    expect(index.schemaVersion).toBe(1);
-    expect(index.bundles[0].id).toBe('general');
-    expect(index.bundles[0].roles[0]).toEqual({
-      slug: 'researcher',
-      version: 2,
-    });
-  });
-
-  it('fetchBundle reads + validates a language file', async () => {
-    const provider = makeProvider(dir);
-    const bundle = await provider.fetchBundle('general', 'en');
-    expect(bundle.language).toBe('en');
-    expect(bundle.roles[0].slug).toBe('researcher');
-    expect(bundle.roles[0].instructions).toBe('be a researcher');
-  });
-
-  it('malformed bundle (missing instructions) => BadGateway', async () => {
-    const provider = makeProvider(dir);
-    await expect(provider.fetchBundle('general', 'fr')).rejects.toBeInstanceOf(
-      BadGatewayException,
-    );
-  });
-
-  it('missing file => BadGateway (unavailable)', async () => {
-    const provider = makeProvider(dir);
-    await expect(
-      provider.fetchBundle('general', 'de'),
-    ).rejects.toBeInstanceOf(BadGatewayException);
-  });
-
-  it('empty source resolves to the in-repo folder (no throw building the path)', async () => {
-    // With an empty source the provider targets ./agent-roles-catalog under the
-    // cwd; that folder is created by a separate task, so a read here surfaces as
-    // BadGateway (unavailable) rather than a path-build error.
-    const provider = makeProvider('');
-    await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
-      BadGatewayException,
-    );
+  it('non-http(s) source => BadGateway (local sources removed)', async () => {
+    for (const source of ['', '/var/lib/agent-roles-catalog', './agent-roles-catalog']) {
+      const provider = makeProvider(source);
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    }
   });
 
   describe('remote fetch streaming size cap', () => {
@@ -156,6 +69,43 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
         text: async () => opts.text ?? 'unused',
       } as unknown as Response;
     }
+
+    it('fetchBundle remote happy path => parses + validates', async () => {
+      const json = JSON.stringify({
+        schemaVersion: 1,
+        language: 'en',
+        roles: [
+          {
+            slug: 'researcher',
+            name: 'Researcher',
+            instructions: 'be a researcher',
+          },
+        ],
+      });
+      const body = streamOf([new TextEncoder().encode(json)]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      const bundle = await provider.fetchBundle('general', 'en');
+      expect(bundle.roles[0].slug).toBe('researcher');
+    });
+
+    it('fetchBundle remote malformed (role missing instructions) => BadGateway', async () => {
+      const json = JSON.stringify({
+        schemaVersion: 1,
+        language: 'fr',
+        roles: [{ slug: 'researcher', name: 'Chercheur' }],
+      });
+      const body = streamOf([new TextEncoder().encode(json)]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchBundle('general', 'fr')).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
 
     it('declared Content-Length over the cap => BadGateway before reading the body', async () => {
       global.fetch = jest.fn().mockResolvedValue(
@@ -340,14 +290,14 @@ describe('AiAgentRolesCatalogProvider (local fixtures)', () => {
 
     for (const value of bad) {
       it(`rejects bundleId="${value}" with BadRequest`, async () => {
-        const provider = makeProvider(dir);
+        const provider = makeProvider('https://catalog.example.com');
         await expect(
           provider.fetchBundle(value, 'en'),
         ).rejects.toBeInstanceOf(BadRequestException);
       });
 
       it(`rejects language="${value}" with BadRequest`, async () => {
-        const provider = makeProvider(dir);
+        const provider = makeProvider('https://catalog.example.com');
         await expect(
           provider.fetchBundle('general', value),
         ).rejects.toBeInstanceOf(BadRequestException);
