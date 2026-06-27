@@ -18,7 +18,7 @@ import { generateSlugId } from '../../../common/helpers';
 import { v7 } from 'uuid';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { FileTask, InsertablePage } from '@docmost/db/types/entity.types';
-import { markdownToHtml } from '@docmost/editor-ext';
+import { markdownToHtml, canonicalizeFootnotes } from '@docmost/editor-ext';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
 import { formatImportHtml } from '../utils/import-formatter';
 import {
@@ -496,8 +496,15 @@ export class FileImportTaskService {
               await this.importService.processHTML(html),
             );
 
-            const { title, prosemirrorJson } =
+            const { title, prosemirrorJson: extractedJson } =
               this.importService.extractTitleAndRemoveHeading(pmState);
+
+            // Canonicalize footnote topology on this non-editor write path
+            // (markdownToHtml/processHTML never runs footnoteSyncPlugin), so a
+            // zip-imported page's footnotes are reference-ordered, deduped, and
+            // orphan-free like the editor's invariant (issue #228). Pure +
+            // idempotent + shape-safe; a footnote-free doc is unchanged.
+            const prosemirrorJson = canonicalizeFootnotes(extractedJson);
 
             const insertablePage: InsertablePage = {
               id: page.id,

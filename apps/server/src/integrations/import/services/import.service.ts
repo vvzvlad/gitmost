@@ -17,7 +17,7 @@ import {
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { TiptapTransformer } from '@hocuspocus/transformer';
 import * as Y from 'yjs';
-import { markdownToHtml } from '@docmost/editor-ext';
+import { markdownToHtml, canonicalizeFootnotes } from '@docmost/editor-ext';
 import {
   FileTaskStatus,
   FileTaskType,
@@ -85,7 +85,13 @@ export class ImportService {
 
     const extracted = this.extractTitleAndRemoveHeading(prosemirrorState);
     const title = extracted.title;
-    const prosemirrorJson = extracted.prosemirrorJson;
+    // Imported markdown/HTML is built via markdownToHtml -> htmlToJson, which
+    // never runs the editor's footnoteSyncPlugin, so the footnote topology keeps
+    // the source's PHYSICAL definition order (out of order vs. references),
+    // retains orphan definitions, and is not deduped. Canonicalize before
+    // persisting so the stored page matches the editor's invariant (issue #228).
+    // Pure + idempotent + shape-safe: a doc with no footnotes is unchanged.
+    const prosemirrorJson = canonicalizeFootnotes(extracted.prosemirrorJson);
 
     const pageTitle = title || fileName;
 

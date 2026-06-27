@@ -52,7 +52,7 @@ import {
   INTERNAL_LINK_REGEX,
   extractPageSlugId,
 } from '../../../integrations/export/utils';
-import { markdownToHtml } from '@docmost/editor-ext';
+import { markdownToHtml, canonicalizeFootnotes } from '@docmost/editor-ext';
 import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
@@ -1300,6 +1300,14 @@ export class PageService {
         break;
       }
     }
+
+    // markdown/html are converted via markdownToHtml -> htmlToJson and json may
+    // be written programmatically (API createPage/updatePageContent) — none of
+    // these run the editor's footnoteSyncPlugin, so footnotes keep the source's
+    // physical order, orphans survive, and reused references aren't collapsed.
+    // Canonicalize to the editor's invariant before persisting (issue #228).
+    // Pure + idempotent + shape-safe: a doc with no footnotes is unchanged.
+    prosemirrorJson = canonicalizeFootnotes(prosemirrorJson);
 
     try {
       jsonToNode(prosemirrorJson);

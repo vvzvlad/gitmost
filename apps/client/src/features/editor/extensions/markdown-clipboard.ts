@@ -3,7 +3,13 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { DOMParser, DOMSerializer, Fragment, Slice } from "@tiptap/pm/model";
 import { find } from "linkifyjs";
-import { markdownToHtml, htmlToMarkdown } from "@docmost/editor-ext";
+import {
+  markdownToHtml,
+  htmlToMarkdown,
+  canonicalizeFootnotes,
+  FOOTNOTES_LIST_NAME,
+} from "@docmost/editor-ext";
+import type { Schema } from "@tiptap/pm/model";
 
 export const MarkdownClipboard = Extension.create({
   name: "markdownClipboard",
@@ -83,11 +89,24 @@ export const MarkdownClipboard = Extension.create({
             const body = elementFromString(parsed);
             normalizeTableColumnWidths(body);
 
-            const contentNodes = DOMParser.fromSchema(
+            const parsedSlice = DOMParser.fromSchema(
               this.editor.schema,
             ).parseSlice(body, {
               preserveWhitespace: true,
             });
+
+            // A markdown paste builds its ProseMirror fragment directly (DOM ->
+            // parseSlice), bypassing the editor's footnoteSyncPlugin, which never
+            // reorders an existing list. So a pasted markdown block whose footnote
+            // definitions are out of order (or contains orphan defs) would be
+            // stored out of order. Canonicalize the self-contained pasted block so
+            // its footnotes come out reference-ordered, deduped and orphan-free
+            // (issue #228). See canonicalizePastedFootnotes for why this is scoped
+            // to whole-block pastes that carry their own footnotesList.
+            const contentNodes = canonicalizePastedFootnotes(
+              parsedSlice,
+              this.editor.schema,
+            );
 
             tr.replaceRange(from, to, contentNodes);
             const insertEnd = tr.mapping.map(from, 1);
@@ -132,6 +151,39 @@ export const MarkdownClipboard = Extension.create({
     ];
   },
 });
+
+/**
+ * Reorder/dedup the footnotes of a SELF-CONTAINED pasted markdown block to the
+ * canonical invariant (the live footnoteSyncPlugin never reorders an existing
+ * list, so an out-of-order pasted block would otherwise persist out of order).
+ *
+ * Scoped deliberately to whole-block pastes (openStart/openEnd === 0) that carry
+ * their OWN footnotesList: canonicalizeFootnotes would synthesize empty
+ * definitions for any reference lacking a definition, which is correct for a
+ * standalone block but would be wrong for a reference-only paste that REUSES a
+ * footnote already defined in the target document — so those are left untouched
+ * for the paste/sync plugins to merge. Residual: when the pasted block is merged
+ * into a doc that already has footnotes, ordering RELATIVE to the pre-existing
+ * footnotes is still governed by the sync plugin (which does not reorder).
+ */
+export function canonicalizePastedFootnotes(slice: Slice, schema: Schema): Slice {
+  if (slice.openStart !== 0 || slice.openEnd !== 0) return slice;
+
+  let hasFootnotesList = false;
+  slice.content.forEach((node) => {
+    if (node.type.name === FOOTNOTES_LIST_NAME) hasFootnotesList = true;
+  });
+  if (!hasFootnotesList) return slice;
+
+  const content = slice.content.toJSON();
+  if (!Array.isArray(content)) return slice;
+
+  const canonical = canonicalizeFootnotes({ type: "doc", content }) as {
+    content?: unknown[];
+  };
+  const fragment = Fragment.fromJSON(schema, canonical.content ?? []);
+  return new Slice(fragment, 0, 0);
+}
 
 function elementFromString(value) {
   // add a wrapper to preserve leading and trailing whitespace
