@@ -33,6 +33,35 @@ export function dbOrTx(
   }
 }
 
+/** Postgres `unique_violation` SQLSTATE — raised when a write hits a UNIQUE index. */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Whether `err` is a Postgres unique-violation (SQLSTATE `23505`). THE single
+ * check so repos/services stop re-hardcoding the magic code.
+ *
+ * NOTE (#222): `core/ai-chat/roles/ai-agent-roles.service.ts` still carries its
+ * own inline `23505` check on a separate, unmerged branch; it should adopt this
+ * helper (and {@link violatedConstraint}) after #227 lands.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: unknown } | null | undefined)?.code === PG_UNIQUE_VIOLATION;
+}
+
+/**
+ * The name of the UNIQUE index/constraint a `23505` error violated, or
+ * undefined. The `kysely-postgres-js` / `postgres@3.x` driver surfaces it as
+ * `err.constraint_name` (NOT `.constraint`); `.constraint` is kept only as a
+ * defensive fallback for other drivers.
+ */
+export function violatedConstraint(err: unknown): string | undefined {
+  const e = err as
+    | { constraint_name?: string; constraint?: string }
+    | null
+    | undefined;
+  return e?.constraint_name ?? e?.constraint;
+}
+
 /**
  * Bind a JS array/object as a `jsonb` column value, working around a postgres
  * driver double-encoding quirk. THE single implementation — repos that persist
