@@ -344,7 +344,16 @@ function extractFootnotes(markdown) {
         section: `<section data-footnotes>${inner}</section>`,
     };
 }
-/** Convert markdown to a ProseMirror doc using the full Docmost schema. */
+/**
+ * Convert markdown to a ProseMirror doc using the full Docmost schema.
+ *
+ * NOTE: besides the page-import write paths, this is also reused for comment
+ * bodies (createComment / updateComment). For an ordinary comment the
+ * canonicalize call below is a no-op (a comment carries no footnotes), so the
+ * reuse is safe; the only theoretical effect is if footnote markup were ever
+ * authored INSIDE a comment — a narrow case where canonicalizing the comment's
+ * own (self-contained) footnotes is still the correct behaviour.
+ */
 export async function markdownToProseMirror(markdownContent) {
     const withCallouts = await preprocessCallouts(markdownContent);
     const { body, section } = extractFootnotes(withCallouts);

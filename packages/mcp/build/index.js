@@ -656,7 +656,8 @@ export function createDocmostMcpServer(config) {
                 "parenthesized function). It receives a clone of the live doc and " +
                 "ctx (comments, log, consume(id), helpers: blockText/walk/getList/" +
                 "insertMarkerAfter/setCalloutRange/noteItem/mdToInlineNodes/" +
-                "commentsToFootnotes) and must return a {type:'doc'} node."),
+                "commentsToFootnotes/canonicalizeFootnotes/insertInlineFootnote) " +
+                "and must return a {type:'doc'} node."),
             dryRun: z
                 .boolean()
                 .optional()

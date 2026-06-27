@@ -1,5 +1,5 @@
 /**
- * Server-side footnote canonicalizer + inline authoring helper (MCP mirror).
+ * Server-side footnote canonicalizer (MCP mirror — PURE).
  *
  * `canonicalizeFootnotes(doc)` is a pure ProseMirror-JSON port of the editor's
  * `footnoteSyncPlugin` end-state, identical in behaviour to
@@ -8,7 +8,13 @@
  * `docmost-schema.ts` nodes are mirrored: the MCP package is deliberately
  * decoupled from the browser/React-heavy editor barrel and operates on plain
  * JSON. The editor-ext copy owns the golden test against the live plugin; this
- * copy must stay behaviourally identical.
+ * copy must stay behaviourally identical (a SHARED golden corpus, exercised by
+ * both test suites, pins that — see `test/unit/footnote-corpus.mjs`).
+ *
+ * This module is the pure MIRROR only. The inline-authoring helpers
+ * (`footnoteContentKey`, `makeFootnoteDefinition`, `generateFootnoteId`) used by
+ * `insertInlineFootnote` live in the sibling `footnote-authoring.ts`, so this
+ * file is compositionally symmetric to the editor-ext copy.
  *
  * Why it exists: every NON-editor write path (markdown import, update_page_json,
  * docmost_transform, insert_footnote) builds ProseMirror JSON directly, so the
@@ -25,32 +31,6 @@ function cloneJson(v) {
     if (typeof structuredClone === "function")
         return structuredClone(v);
     return JSON.parse(JSON.stringify(v));
-}
-/**
- * Deterministic unique id for the k-th (k >= 2) duplicate of an id during
- * collision resolution. Pure function of (originalId, occurrence, taken) — no
- * Math.random/Date.now — mirroring editor-ext's `deriveFootnoteId`. Kept local
- * (the importer's first-wins de-dup means duplicates are rare here, but the
- * canonicalizer must still resolve them deterministically).
- */
-export function deriveFootnoteId(originalId, occurrence, taken) {
-    let candidate = `${originalId}__${occurrence}`;
-    let n = 0;
-    while (taken.has(candidate)) {
-        n += 1;
-        candidate = `${originalId}__${occurrence}${suffix(n)}`;
-    }
-    return candidate;
-}
-function suffix(n) {
-    let out = "";
-    let x = n;
-    while (x > 0) {
-        const rem = (x - 1) % 25;
-        out = String.fromCharCode(98 + rem) + out; // 98 = 'b'
-        x = Math.floor((x - 1) / 25);
-    }
-    return out;
 }
 function isEmptyParagraph(node) {
     return (!!node &&
@@ -90,6 +70,41 @@ function emptyDefinition(id) {
     };
 }
 /**
+ * Order-insensitive deep equality over plain JSON (objects/arrays/primitives).
+ * Used to detect an already-canonical footnotesList so its physical position is
+ * preserved (placement parity with the live plugin).
+ */
+function deepEqualJson(a, b) {
+    if (a === b)
+        return true;
+    if (a == null || b == null || typeof a !== typeof b)
+        return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+            return false;
+        }
+        for (let i = 0; i < a.length; i++) {
+            if (!deepEqualJson(a[i], b[i]))
+                return false;
+        }
+        return true;
+    }
+    if (typeof a === "object") {
+        const ka = Object.keys(a);
+        const kb = Object.keys(b);
+        if (ka.length !== kb.length)
+            return false;
+        for (const k of ka) {
+            if (!Object.prototype.hasOwnProperty.call(b, k))
+                return false;
+            if (!deepEqualJson(a[k], b[k]))
+                return false;
+        }
+        return true;
+    }
+    return false;
+}
+/**
  * Canonicalize footnotes in a ProseMirror-JSON document. See the file header and
  * the editor-ext twin for the full contract. Pure (deep-clones input,
  * deterministic, idempotent).
@@ -101,126 +116,61 @@ export function canonicalizeFootnotes(doc) {
         return doc;
     }
     const out = cloneJson(doc);
+    // 1) Distinct reference ids in document order (deep — refs can live in
+    //    callouts, tables, list items, ...). The ordering/numbering truth.
     const referenceIds = [];
     collectReferenceIds(out, referenceIds, new Set());
+    // 2) Every definition node in document order (deep).
     const defNodes = [];
     collectDefinitions(out, defNodes);
-    const taken = new Set(referenceIds);
+    // 3) First definition per id wins; later duplicates carry the SAME id, so they
+    //    cannot be referenced separately and would be orphans — they are dropped.
+    const defById = new Map();
     for (const d of defNodes) {
         const id = d?.attrs?.id;
-        if (id)
-            taken.add(id);
+        if (id && !defById.has(id))
+            defById.set(id, d);
     }
-    const occurrenceOf = new Map();
-    const seenDefIds = new Set();
-    const defByFinalId = new Map();
-    for (const d of defNodes) {
-        const origId = d?.attrs?.id;
-        if (!origId)
-            continue;
-        if (!seenDefIds.has(origId)) {
-            seenDefIds.add(origId);
-            defByFinalId.set(origId, d);
-        }
-        else {
-            const next = (occurrenceOf.get(origId) ?? 1) + 1;
-            occurrenceOf.set(origId, next);
-            const newId = deriveFootnoteId(origId, next, taken);
-            taken.add(newId);
-            defByFinalId.set(newId, d);
-        }
-    }
+    // 4) Build the ordered definition list: one per referenced id, in REFERENCE
+    //    order, reusing the existing node (shallow-copied, id normalized — `out` is
+    //    already deep-cloned and the old lists are cut) or synthesizing an empty
+    //    one. Definitions whose id is not referenced are orphans and never added.
     const orderedDefs = [];
     for (const id of referenceIds) {
-        const existing = defByFinalId.get(id);
+        const existing = defById.get(id);
         if (existing) {
-            const node = cloneJson(existing);
-            node.attrs = { ...(node.attrs ?? {}), id };
-            orderedDefs.push(node);
+            orderedDefs.push({
+                ...existing,
+                attrs: { ...(existing.attrs ?? {}), id },
+            });
         }
         else {
             orderedDefs.push(emptyDefinition(id));
         }
     }
-    const top = out.content.filter((n) => !(n && n.type === FOOTNOTES_LIST_NAME));
+    // 5) No references -> there must be NO list at all.
     if (referenceIds.length === 0) {
-        out.content = top;
+        out.content = out.content.filter((n) => !(n && n.type === FOOTNOTES_LIST_NAME));
         return out;
     }
+    // 6) Placement parity with the live plugin: when the document is ALREADY in the
+    //    canonical single-list state, leave that list exactly where it sits rather
+    //    than cutting and re-inserting it at the end (the plugin never repositions a
+    //    sole correct list, so moving it would silently reorder any content that
+    //    follows the list on the first write).
+    const topLevelLists = out.content.filter((n) => n && n.type === FOOTNOTES_LIST_NAME);
+    if (topLevelLists.length === 1 &&
+        defNodes.length === orderedDefs.length &&
+        deepEqualJson(topLevelLists[0].content, orderedDefs)) {
+        return out;
+    }
+    // 7) Otherwise rebuild: strip every footnotesList and re-insert exactly one
+    //    after the last meaningful (non-empty paragraph) block.
+    const top = out.content.filter((n) => !(n && n.type === FOOTNOTES_LIST_NAME));
     let insertAt = top.length;
     while (insertAt > 0 && isEmptyParagraph(top[insertAt - 1]))
         insertAt--;
     top.splice(insertAt, 0, { type: FOOTNOTES_LIST_NAME, content: orderedDefs });
     out.content = top;
     return out;
-}
-/**
- * Normalized content key for de-duplicating footnote DEFINITIONS by their text.
- *
- * Two definitions with the same key are the SAME footnote — so the inline
- * authoring tool reuses one id (one number, one definition, several references)
- * instead of minting a second definition. Key = plaintext (whitespace-collapsed,
- * trimmed) PLUS a signature of the inline mark types in order, so two notes that
- * read the same but differ in formatting (one bold, one plain) are NOT merged.
- * Conservative: only an exact match merges.
- */
-export function footnoteContentKey(defNode) {
-    const parts = [];
-    const visit = (n) => {
-        if (!n || typeof n !== "object")
-            return;
-        if (n.type === "text" && typeof n.text === "string") {
-            const marks = Array.isArray(n.marks)
-                ? n.marks.map((m) => m?.type).filter(Boolean).sort().join(",")
-                : "";
-            parts.push(`${n.text}${marks}`);
-        }
-        if (Array.isArray(n.content))
-            for (const c of n.content)
-                visit(c);
-    };
-    visit(defNode);
-    // Collapse the assembled text's whitespace and trim, keeping the mark
-    // signature attached so formatting differences still distinguish notes.
-    return parts
-        .join("")
-        .replace(/[ \t\r\n]+/g, " ")
-        .trim();
-}
-/**
- * Build a footnoteDefinition node from inline ProseMirror nodes, keyed by id.
- */
-export function makeFootnoteDefinition(id, inlineNodes) {
-    const content = Array.isArray(inlineNodes) ? cloneJson(inlineNodes) : [];
-    return {
-        type: FOOTNOTE_DEFINITION_NAME,
-        attrs: { id },
-        content: [{ type: "paragraph", content }],
-    };
-}
-/**
- * Generate a uuidv7-style id (time-ordered), matching editor-ext's
- * `generateFootnoteId`. Used for a genuinely-new inline footnote id.
- */
-export function generateFootnoteId() {
-    const now = Date.now();
-    const timeHex = now.toString(16).padStart(12, "0");
-    const rand = (length) => {
-        let s = "";
-        for (let i = 0; i < length; i++)
-            s += Math.floor(Math.random() * 16).toString(16);
-        return s;
-    };
-    const versioned = "7" + rand(3);
-    const variantNibble = (8 + Math.floor(Math.random() * 4)).toString(16);
-    const variant = variantNibble + rand(3);
-    return (timeHex.slice(0, 8) +
-        "-" +
-        timeHex.slice(8, 12) +
-        "-" +
-        versioned +
-        "-" +
-        variant +
-        "-" +
-        rand(12));
 }

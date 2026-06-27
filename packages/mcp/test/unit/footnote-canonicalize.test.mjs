@@ -1,10 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  canonicalizeFootnotes,
-  footnoteContentKey,
-} from "../../build/lib/footnote-canonicalize.js";
+import { canonicalizeFootnotes } from "../../build/lib/footnote-canonicalize.js";
+import { footnoteContentKey } from "../../build/lib/footnote-authoring.js";
 import { insertInlineFootnote } from "../../build/lib/transforms.js";
 import { markdownToProseMirror } from "../../build/lib/collaboration.js";
 

@@ -91,6 +91,10 @@ export class ImportService {
     // retains orphan definitions, and is not deduped. Canonicalize before
     // persisting so the stored page matches the editor's invariant (issue #228).
     // Pure + idempotent + shape-safe: a doc with no footnotes is unchanged.
+    // (Future consolidation, architecture B: this import path persists directly
+    // via pageRepo.insertPage rather than through PageService.createPage, so the
+    // canonicalize call lives here; folding both into one "prepare JSON for
+    // persist" helper is a sensible follow-up.)
     const prosemirrorJson = canonicalizeFootnotes(extracted.prosemirrorJson);
 
     const pageTitle = title || fileName;

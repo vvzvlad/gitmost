@@ -2,7 +2,6 @@ import {
   FOOTNOTE_REFERENCE_NAME,
   FOOTNOTES_LIST_NAME,
   FOOTNOTE_DEFINITION_NAME,
-  deriveFootnoteId,
 } from './footnote-util';
 
 /**
@@ -11,14 +10,20 @@ import {
  * `appendTransaction` that only runs inside a ProseMirror `EditorView`, this is
  * a PURE function over ProseMirror JSON: `canonicalizeFootnotes(doc) -> doc`.
  *
- * It exists because every NON-editor write path (the MCP `markdownToProseMirror`
- * importer, `update_page_json`, `docmost_transform`, the future git-sync writer)
- * builds ProseMirror JSON directly via `TiptapTransformer`/`updateYFragment`,
- * which NEVER runs the editor's plugins — so the canonical footnote topology was
- * never enforced on those writes. That is the root cause of the symptom in the
- * issue: footnotes rendered out of order (`1, 4, 2, 3, …`), a raw trailing
- * `[^id]: …` block, and orphan definitions, all of which are simply the result
- * of content written PAST the canonicalizer.
+ * It exists because the NON-editor write paths served by THIS copy build
+ * ProseMirror JSON directly (never running the editor's plugins), so the
+ * canonical footnote topology was never enforced on those writes. The consumers
+ * of this editor-ext copy are: the server markdown/HTML import
+ * (`markdownToHtml -> htmlToJson` in import.service / file-import-task.service),
+ * `PageService` create/update (`parseProsemirrorContent` for the JSON/markdown/
+ * HTML REST write paths), and the client markdown PASTE path
+ * (`markdown-clipboard.ts`). (The MCP package mirrors this canonicalizer in
+ * `packages/mcp/src/lib/footnote-canonicalize.ts` for its own write paths —
+ * `markdownToProseMirror`, `update_page_json`, `docmost_transform`,
+ * `insert_footnote` — see that file's header.) All of these are the root cause
+ * of the symptom in the issue: footnotes rendered out of order (`1, 4, 2, 3, …`),
+ * a raw trailing `[^id]: …` block, and orphan definitions, all of which are
+ * simply the result of content written PAST the canonicalizer.
  *
  * The desired end-state (identical to the plugin's) is:
  *
@@ -31,12 +36,14 @@ import {
  *      or synthesizing an empty one when missing. The list sits after the last
  *      meaningful block (only trailing empty paragraphs may follow it).
  *   3. Orphan definitions (no matching reference) are dropped.
- *   4. Duplicate DEFINITIONS (two nodes sharing an id) are resolved
- *      deterministically: the first keeps the id; each later duplicate is re-id'd
- *      via `deriveFootnoteId` (never random) so it is never silently lost — and,
- *      lacking a matching reference, it then falls under the orphan policy and is
- *      dropped. This matches the editor's never-lose-by-collision rule and the
- *      importer's first-wins rule (both converge to "one definition per id").
+ *   4. Duplicate DEFINITIONS (two nodes sharing an id) are resolved first-wins:
+ *      the first definition for an id is kept; later duplicates carry the SAME
+ *      id, so they can never be referenced separately and are simply dropped.
+ *      This matches the importer's first-wins rule ("one definition per id").
+ *      (The LIVE editor instead re-id's a duplicate definition so a paste/collab
+ *      merge cannot silently lose live user data; the artifacts this copy
+ *      sanitizes are agent/import-authored, so first-wins is the right policy —
+ *      see footnote-sync.ts `resolveCollisions`.)
  *   5. Idempotent: a document that already satisfies the invariant is returned
  *      structurally unchanged (the existing definition/list nodes are reused
  *      verbatim), so re-running the canonicalizer — or running it on a write that
@@ -47,10 +54,18 @@ import {
  * PHYSICAL order of existing definition nodes to keep their Yjs/CRDT subtree
  * identity stable across collaborators (numbering is decoration-derived, so the
  * displayed numbers are correct regardless of physical order). This function has
- * no live CRDT to protect, so it physically REORDERS the list into reference
- * order — which is exactly the repair the out-of-order import needs. On every
- * editor-reachable steady state (where the list is already reference-ordered) the
- * two agree byte-for-byte; see the golden test.
+ * no live CRDT to protect, so when a REPAIR is needed it physically REORDERS the
+ * list into reference order — which is exactly the fix the out-of-order import
+ * needs.
+ *
+ * Placement PARITY with the plugin: when the document is already in the canonical
+ * single-list state, this function leaves that list EXACTLY where it sits (it
+ * does not move it to the end). The plugin behaves the same — it treats one
+ * footnotesList holding the canonical definition set as canonical regardless of
+ * whether content follows it (footnote-sync.ts: `primaryList` falls back to the
+ * last list and `noChangeNeeded` stays true). So on every editor-reachable steady
+ * state the two agree byte-for-byte, including when non-empty content follows the
+ * list; see the golden parity test and the shared corpus.
  *
  * Pure: deep-clones its input, never mutates the caller's object, and is
  * deterministic (no `Math.random`/`Date.now`).
@@ -76,67 +91,104 @@ export function canonicalizeFootnotes<T = any>(doc: T): T {
   const defNodes: any[] = [];
   collectDefinitions(out, defNodes);
 
-  // 3) Resolve the id topology deterministically. The first definition for an id
-  //    keeps it; a later duplicate is re-id'd to a fresh derived id (never lost),
-  //    which — having no matching reference — is dropped as an orphan in step 4.
-  const taken = new Set<string>(referenceIds);
+  // 3) First definition per id wins. Later duplicates carry the SAME id, so they
+  //    can never be referenced separately and would be orphans — they are simply
+  //    dropped (first-wins; see the file header, item 4).
+  const defById = new Map<string, any>();
   for (const d of defNodes) {
     const id = d?.attrs?.id;
-    if (id) taken.add(id);
-  }
-  const occurrenceOf = new Map<string, number>();
-  const seenDefIds = new Set<string>();
-  // finalId -> definition node (the node reference inside `out`).
-  const defByFinalId = new Map<string, any>();
-  for (const d of defNodes) {
-    const origId = d?.attrs?.id;
-    if (!origId) continue;
-    if (!seenDefIds.has(origId)) {
-      seenDefIds.add(origId);
-      defByFinalId.set(origId, d);
-    } else {
-      const next = (occurrenceOf.get(origId) ?? 1) + 1;
-      occurrenceOf.set(origId, next);
-      const newId = deriveFootnoteId(origId, next, taken);
-      taken.add(newId);
-      defByFinalId.set(newId, d);
-    }
+    if (id && !defById.has(id)) defById.set(id, d);
   }
 
   // 4) Build the ordered definition list: one per referenced id, in REFERENCE
   //    order, reusing the existing node (content preserved, id normalized) or
-  //    synthesizing an empty definition. Definitions whose final id is NOT
-  //    referenced are orphans and are simply never added.
+  //    synthesizing an empty definition. Definitions whose id is NOT referenced
+  //    are orphans and are simply never added. The reused node is SHALLOW-copied
+  //    (id normalized): `out` is already a deep clone and the old lists are cut,
+  //    so a second per-definition deep clone is needless.
   const orderedDefs: any[] = [];
   for (const id of referenceIds) {
-    const existing = defByFinalId.get(id);
+    const existing = defById.get(id);
     if (existing) {
-      const node = cloneJson(existing);
-      node.attrs = { ...(node.attrs ?? {}), id };
-      orderedDefs.push(node);
+      orderedDefs.push({
+        ...existing,
+        attrs: { ...(existing.attrs ?? {}), id },
+      });
     } else {
       orderedDefs.push(emptyDefinition(id));
     }
   }
 
-  // 5) Strip every existing top-level footnotesList; we rebuild a single one.
-  const top: any[] = out.content.filter(
-    (n: any) => !(n && n.type === FOOTNOTES_LIST_NAME),
-  );
-
-  // 6) No references -> there must be NO list at all.
+  // 5) No references -> there must be NO list at all.
   if (referenceIds.length === 0) {
-    out.content = top;
+    out.content = out.content.filter(
+      (n: any) => !(n && n.type === FOOTNOTES_LIST_NAME),
+    );
     return out;
   }
 
-  // 7) Insert exactly one footnotesList after the last meaningful (non-empty
-  //    paragraph) block, so it coexists with a trailing-node empty paragraph.
+  // 6) Placement parity with the live plugin: when the document is ALREADY in the
+  //    canonical single-list state, leave that list exactly where it sits instead
+  //    of cutting and re-inserting it at the end. The plugin never repositions a
+  //    sole correct list (footnote-sync.ts), so moving it here would silently
+  //    reorder any user content that follows the list on the first write. The doc
+  //    is in that state when there is exactly one top-level footnotesList, every
+  //    definition in the doc is referenced (no orphans / duplicates: the def count
+  //    equals the canonical count), and the list already holds exactly the
+  //    canonical definitions in reference order.
+  const topLevelLists = out.content.filter(
+    (n: any) => n && n.type === FOOTNOTES_LIST_NAME,
+  );
+  if (
+    topLevelLists.length === 1 &&
+    defNodes.length === orderedDefs.length &&
+    deepEqualJson(topLevelLists[0].content, orderedDefs)
+  ) {
+    return out;
+  }
+
+  // 7) Otherwise rebuild: strip every footnotesList and re-insert exactly one
+  //    after the last meaningful (non-empty paragraph) block, so it coexists with
+  //    a trailing-node empty paragraph. This both repairs a non-canonical doc and
+  //    (in the import case) physically reorders the list into reference order.
+  const top: any[] = out.content.filter(
+    (n: any) => !(n && n.type === FOOTNOTES_LIST_NAME),
+  );
   let insertAt = top.length;
   while (insertAt > 0 && isEmptyParagraph(top[insertAt - 1])) insertAt--;
   top.splice(insertAt, 0, { type: FOOTNOTES_LIST_NAME, content: orderedDefs });
   out.content = top;
   return out;
+}
+
+/**
+ * Order-insensitive deep equality over plain JSON (objects/arrays/primitives).
+ * Used to detect an already-canonical footnotesList so its physical position is
+ * preserved (placement parity with the live plugin).
+ */
+function deepEqualJson(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (a == null || b == null || typeof a !== typeof b) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqualJson(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (typeof a === 'object') {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) {
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!deepEqualJson(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 /** A fresh empty definition node for a referenced id with no definition. */

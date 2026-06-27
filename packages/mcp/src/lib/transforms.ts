@@ -15,12 +15,12 @@
  */
 
 import { blockPlainText } from "./node-ops.js";
+import { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 import {
-  canonicalizeFootnotes,
   footnoteContentKey,
   makeFootnoteDefinition,
   generateFootnoteId,
-} from "./footnote-canonicalize.js";
+} from "./footnote-authoring.js";
 
 export { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 
@@ -114,6 +114,30 @@ export function insertMarkerAfter(
   marker: string,
   opts: InsertMarkerOptions = {},
 ): { doc: any; inserted: boolean } {
+  // A plain marker is a leading-space-padded unmarked text run.
+  return insertNodesAfterAnchor(
+    doc,
+    anchor,
+    () => [{ type: "text", text: " " + marker }],
+    opts,
+  );
+}
+
+/**
+ * Mark-safe insertion CORE: split the inline text run that holds the END of
+ * `anchor` (preserving the surrounding marks) and splice the nodes produced by
+ * `makeMiddle()` in at the split point. `insertMarkerAfter` (plain text marker)
+ * and `insertInlineFootnote` (a `footnoteReference` node) are both thin callers —
+ * the only difference is WHAT is inserted (a space-padded text run vs. a node
+ * that should hug the preceding word), which is exactly what `makeMiddle`
+ * decides. Operates on a clone; returns `{ doc, inserted }`.
+ */
+function insertNodesAfterAnchor(
+  doc: any,
+  anchor: string,
+  makeMiddle: () => any[],
+  opts: InsertMarkerOptions = {},
+): { doc: any; inserted: boolean } {
   const out = clone(doc);
   if (!isObject(out) || !Array.isArray(out.content) || !anchor) {
     return { doc: out, inserted: false };
@@ -174,8 +198,9 @@ export function insertMarkerAfter(
             if (before.length > 0) {
               parts.push({ ...n, text: before, marks: [...marks] });
             }
-            // Marker is a PLAIN run: no marks copied. Leading space separates it.
-            parts.push({ type: "text", text: " " + marker });
+            // The inserted nodes are caller-decided (a space-padded marker run,
+            // or a node that hugs the word). They carry no copied marks.
+            parts.push(...makeMiddle());
             if (after.length > 0) {
               parts.push({ ...n, text: after, marks: [...marks] });
             }
@@ -587,9 +612,6 @@ export interface InsertInlineFootnoteResult {
   reused: boolean;
 }
 
-/** A NUL-delimited sentinel that cannot occur in real prose. */
-const INLINE_FOOTNOTE_SENTINEL = "\u0000IFN\u0000";
-
 /**
  * AUTHOR-INLINE footnote insertion. The caller supplies WHERE (anchorText) and
  * WHAT (markdown text); numbering and the bottom list are derived server-side by
@@ -603,10 +625,10 @@ const INLINE_FOOTNOTE_SENTINEL = "\u0000IFN\u0000";
  * minted and a new definition added. Conservative — only an exact content match
  * merges.
  *
- * Mechanics: the marker is inserted with the same mark-safe `insertMarkerAfter`
- * split used elsewhere, via a sentinel that is then replaced by a real
- * `footnoteReference` node (dropping the inserted leading space so the marker
- * attaches to the preceding word). The whole document is then canonicalized.
+ * Mechanics: the `footnoteReference` node is inserted DIRECTLY at the anchor via
+ * the same mark-safe split as `insertMarkerAfter` (the shared
+ * `insertNodesAfterAnchor` core), so it hugs the preceding word with no text
+ * sentinel round-trip. The whole document is then canonicalized.
  *
  * Operates on a clone of `doc`. When the anchor is not found, returns the input
  * unchanged with `inserted:false`.
@@ -639,15 +661,17 @@ export function insertInlineFootnote(
   }
   if (footnoteId == null) footnoteId = generateFootnoteId();
 
-  // Insert a sentinel marker after the anchor (mark-safe split).
-  const r = insertMarkerAfter(doc, (opts.anchorText ?? "").trimEnd(), INLINE_FOOTNOTE_SENTINEL);
+  // Insert the footnoteReference node directly after the anchor (mark-safe
+  // split); it hugs the preceding word with no leading space.
+  const r = insertNodesAfterAnchor(
+    doc,
+    (opts.anchorText ?? "").trimEnd(),
+    () => [{ type: "footnoteReference", attrs: { id: footnoteId } }],
+  );
   if (!r.inserted) {
     return { doc: clone(doc), inserted: false, footnoteId, reused };
   }
   let working = r.doc;
-
-  // Replace the sentinel run with a real footnoteReference node.
-  replaceSentinelWithReference(working, footnoteId);
 
   // Add a NEW definition (canonicalize will order/place it); a reused id needs
   // no new definition (the existing one is shared).
@@ -658,47 +682,6 @@ export function insertInlineFootnote(
   // Derive numbering + the single bottom list deterministically.
   working = canonicalizeFootnotes(working);
   return { doc: working, inserted: true, footnoteId, reused };
-}
-
-/**
- * Replace the lone sentinel text run (created by insertMarkerAfter as
- * `" " + sentinel`) with a footnoteReference node, dropping the leading space so
- * the marker attaches to the preceding word. Mutates `doc` in place.
- */
-function replaceSentinelWithReference(doc: any, footnoteId: string): void {
-  let done = false;
-  const visit = (container: any): void => {
-    if (done || !isObject(container) || !Array.isArray(container.content)) return;
-    const arr = container.content;
-    for (let i = 0; i < arr.length; i++) {
-      const n = arr[i];
-      if (
-        isObject(n) &&
-        n.type === "text" &&
-        typeof n.text === "string" &&
-        n.text.includes(INLINE_FOOTNOTE_SENTINEL)
-      ) {
-        const idx = n.text.indexOf(INLINE_FOOTNOTE_SENTINEL);
-        // Text before the sentinel, with a single trailing space (the one
-        // insertMarkerAfter prepended) stripped so the ref hugs the word.
-        const before = n.text.slice(0, idx).replace(/ $/, "");
-        const after = n.text.slice(idx + INLINE_FOOTNOTE_SENTINEL.length);
-        const marks = Array.isArray(n.marks) ? n.marks : [];
-        const parts: any[] = [];
-        if (before.length > 0) parts.push({ ...n, text: before, marks: [...marks] });
-        parts.push({ type: "footnoteReference", attrs: { id: footnoteId } });
-        if (after.length > 0) parts.push({ ...n, text: after, marks: [...marks] });
-        arr.splice(i, 1, ...parts);
-        done = true;
-        return;
-      }
-    }
-    for (const child of arr) {
-      visit(child);
-      if (done) return;
-    }
-  };
-  visit(doc);
 }
 
 /**

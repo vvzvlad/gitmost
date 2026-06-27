@@ -160,9 +160,14 @@ export class PageService {
     let ydoc = undefined;
 
     if (createPageDto?.content && createPageDto?.format) {
-      const prosemirrorJson = await this.parseProsemirrorContent(
-        createPageDto.content,
-        createPageDto.format,
+      // createPage always writes a FULL document, so canonicalize footnotes to
+      // the editor's invariant before persisting (issue #228). Pure + idempotent
+      // + shape-safe: a doc with no footnotes is returned unchanged.
+      const prosemirrorJson = canonicalizeFootnotes(
+        await this.parseProsemirrorContent(
+          createPageDto.content,
+          createPageDto.format,
+        ),
       );
 
       content = prosemirrorJson;
@@ -343,7 +348,17 @@ export class PageService {
     format: ContentFormat,
     user: User,
   ): Promise<void> {
-    const prosemirrorJson = await this.parseProsemirrorContent(content, format);
+    let prosemirrorJson = await this.parseProsemirrorContent(content, format);
+
+    // Canonicalize footnotes ONLY for a full-document write ('replace'). For an
+    // append/prepend FRAGMENT, canonicalizing is semantically wrong (it would
+    // drop a definition-only fragment's list, or synthesize a duplicate empty
+    // definition for a fragment reusing an existing id) — the fragment merges
+    // into the live doc where the editor's footnoteSyncPlugin keeps the invariant
+    // (issue #228, must-fix #1).
+    if (operation === 'replace') {
+      prosemirrorJson = canonicalizeFootnotes(prosemirrorJson);
+    }
 
     const documentName = `page.${pageId}`;
     await this.collaborationGateway.handleYjsEvent(
@@ -1301,14 +1316,18 @@ export class PageService {
       }
     }
 
-    // markdown/html are converted via markdownToHtml -> htmlToJson and json may
-    // be written programmatically (API createPage/updatePageContent) — none of
-    // these run the editor's footnoteSyncPlugin, so footnotes keep the source's
-    // physical order, orphans survive, and reused references aren't collapsed.
-    // Canonicalize to the editor's invariant before persisting (issue #228).
-    // Pure + idempotent + shape-safe: a doc with no footnotes is unchanged.
-    prosemirrorJson = canonicalizeFootnotes(prosemirrorJson);
-
+    // NOTE: footnote canonicalization is intentionally NOT done here. This
+    // method serves BOTH full writes (createPage / updatePageContent with
+    // operation 'replace') AND fragment writes (append / prepend). Canonicalizing
+    // a FRAGMENT is semantically wrong — e.g. a definition-only fragment has no
+    // references, so the canonicalizer would drop its whole footnotesList (lost
+    // footnotes), and a fragment reusing an existing id would synthesize an empty
+    // duplicate definition. The canonicalizer therefore runs only at the
+    // FULL-DOCUMENT callers (createPage, and updatePageContent for 'replace'),
+    // never on a fragment (issue #228, must-fix #1).
+    // (Future consolidation, architecture B: the import services persist via a
+    // different path; folding all of these into one "prepare JSON for persist"
+    // helper would centralize the canonicalize call — left as follow-up.)
     try {
       jsonToNode(prosemirrorJson);
     } catch (err) {

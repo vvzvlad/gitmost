@@ -7,6 +7,7 @@ import { FootnoteReference } from './footnote-reference';
 import { FootnotesList } from './footnotes-list';
 import { FootnoteDefinition } from './footnote-definition';
 import { canonicalizeFootnotes } from './footnote-canonicalize';
+import { FOOTNOTE_CORPUS } from './footnote-corpus';
 import {
   collectReferenceIds,
   computeFootnoteNumbers,
@@ -324,4 +325,22 @@ describe('canonicalizeFootnotes golden parity with footnoteSyncPlugin', () => {
     expect(defOrder(canon)).toEqual(['x', 'y']);
     expect(new Set(defOrder(steady))).toEqual(new Set(defOrder(canon)));
   });
+});
+
+/**
+ * SHARED golden corpus: this editor-ext copy of `canonicalizeFootnotes` and the
+ * MCP mirror (`packages/mcp/src/lib/footnote-canonicalize.ts`) are BOTH run
+ * against the identical { input -> expected } corpus. Pinning the same expected
+ * outputs in both suites makes "the two pure copies behave identically" a
+ * checkable property without coupling the packages (architecture item A). The
+ * MCP mirror of these assertions lives in `test/unit/footnote-corpus.test.mjs`.
+ */
+describe('canonicalizeFootnotes shared golden corpus (editor-ext copy)', () => {
+  for (const { name, input, expected } of FOOTNOTE_CORPUS) {
+    it(`matches the corpus expected output: ${name}`, () => {
+      expect(canonicalizeFootnotes(input)).toEqual(expected);
+      // Idempotent on the corpus too.
+      expect(canonicalizeFootnotes(expected)).toEqual(expected);
+    });
+  }
 });

@@ -504,6 +504,9 @@ export class FileImportTaskService {
             // zip-imported page's footnotes are reference-ordered, deduped, and
             // orphan-free like the editor's invariant (issue #228). Pure +
             // idempotent + shape-safe; a footnote-free doc is unchanged.
+            // (Future consolidation, architecture B: like import.service, this
+            // path persists directly rather than via PageService — a shared
+            // "prepare JSON for persist" helper would centralize this call.)
             const prosemirrorJson = canonicalizeFootnotes(extractedJson);
 
             const insertablePage: InsertablePage = {
