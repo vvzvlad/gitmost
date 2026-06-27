@@ -106,7 +106,14 @@ export function replaceInternalLinks(
 }
 
 export function getInternalLinkPageName(path: string, currentFilePath?: string): string {
-  const name = path?.split('/').pop().split('.').slice(0, -1).join('.');
+  // Strip a trailing file extension from the basename, but only when there IS
+  // one: an extensionless link target (e.g. "My Page") has no extension to drop,
+  // so `split('.').slice(0,-1)` would otherwise collapse it to an empty string,
+  // producing an internal link with no visible text (#204 export bug). Dotted
+  // page names without an extension (e.g. "v1.2") keep their dots.
+  const base = path?.split('/').pop();
+  const parts = base?.split('.');
+  const name = parts && parts.length > 1 ? parts.slice(0, -1).join('.') : base;
   try {
     return decodeURIComponent(name);
   } catch (err) {

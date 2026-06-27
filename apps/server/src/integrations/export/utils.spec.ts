@@ -146,6 +146,19 @@ describe('getInternalLinkPageName', () => {
     expect(getInternalLinkPageName('Parent/My%20Page.md')).toBe('My Page');
   });
 
+  it('keeps the full basename when the path has no extension (#204)', () => {
+    // An extensionless link target must NOT be stripped to an empty string —
+    // there is no extension to drop. Previously `.split('.').slice(0,-1)`
+    // collapsed "My Page" to "" and the internal link rendered with no text.
+    expect(getInternalLinkPageName('Parent/My%20Page')).toBe('My Page');
+    expect(getInternalLinkPageName('Just A Name')).toBe('Just A Name');
+  });
+
+  it('preserves dots in a dotted name that has a real extension (#204)', () => {
+    // "v1.2.md" -> "v1.2": only the final ".md" segment is the extension.
+    expect(getInternalLinkPageName('docs/v1.2.md')).toBe('v1.2');
+  });
+
   it('falls back to the raw name without throwing on malformed encoding', () => {
     // "%E0%A4" is an incomplete escape; decodeURIComponent throws and the
     // helper returns the raw (still-encoded) name.

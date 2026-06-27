@@ -205,6 +205,32 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(historyQueue.add).toHaveBeenCalledTimes(1);
   });
 
+  // #206 persist-6 — RED (it.failing): a momentarily-empty live Y.Doc must not
+  // overwrite non-empty persisted content. `onStoreDocument` empty-guards the
+  // LOAD path but not the STORE path, so today an empty doc (a client/agent
+  // glitch, a bad merge, an emptying transclusion) is written straight over the
+  // page and the content is wiped silently. A store-side empty-guard is a real
+  // behaviour change (a deliberate "select-all + delete" is also empty), so it
+  // is left UNFIXED pending a product decision; this documents the data-loss
+  // path and flips to a normal passing test the moment the guard lands.
+  it.failing(
+    'does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)',
+    async () => {
+      const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+      const document = ydocFor(emptyDoc);
+      pageRepo.findById.mockResolvedValue({
+        ...persistedHumanPage('IGNORED'),
+        content: doc('IMPORTANT RICH CONTENT'),
+      });
+
+      await ext.onStoreDocument(buildData(document, 'user') as any);
+
+      // Desired contract: the empty incoming doc is rejected and the rich page
+      // survives. Today updatePage is called with the empty content (data loss).
+      expect(pageRepo.updatePage).not.toHaveBeenCalled();
+    },
+  );
+
   // persist-1 — when every attempt fails the hook must NOT report a phantom
   // success: no "page.updated" badge broadcast and no history snapshot for
   // content that was never written.
