@@ -15,6 +15,14 @@
  */
 
 import { blockPlainText } from "./node-ops.js";
+import { canonicalizeFootnotes } from "./footnote-canonicalize.js";
+import {
+  footnoteContentKey,
+  makeFootnoteDefinition,
+  generateFootnoteId,
+} from "./footnote-authoring.js";
+
+export { canonicalizeFootnotes } from "./footnote-canonicalize.js";
 
 /** Deep-clone a JSON-serializable value without mutating the original. */
 function clone<T>(value: T): T {
@@ -73,13 +81,61 @@ export function getList(
   return found;
 }
 
-/** Options for insertMarkerAfter. */
+/** Options for insertMarkerAfter / insertNodesAfterAnchor. */
 export interface InsertMarkerOptions {
   /**
    * Limit the search to TOP-LEVEL blocks with index < beforeBlock. Used to keep
    * footnote markers in the body and out of the notes section.
    */
   beforeBlock?: number;
+  /**
+   * Textblock node types that MUST NOT receive the inserted nodes. When the
+   * split point lands inside such a block it is refused (skipped), so an inline
+   * ATOM (e.g. footnoteReference) is never spliced into a block whose content
+   * spec forbids it — which would persist a schema-invalid doc. Plain-text
+   * markers leave this unset (text is valid inside a codeBlock).
+   */
+  forbidBlockTypes?: ReadonlySet<string>;
+  /**
+   * Node types whose ENTIRE subtree is skipped during the walk (never split into,
+   * at any depth). Used to keep the footnote inserter out of the notes section:
+   * splitting text inside an existing `footnoteDefinition` would glue a reference
+   * into a definition, which the canonicalizer then drops as an orphan together
+   * with the definition's prose — silent loss of an existing footnote. Skipped
+   * subtrees still advance the running offset so sibling text stays aligned.
+   */
+  skipSubtreeTypes?: ReadonlySet<string>;
+}
+
+/**
+ * Textblocks that hold raw text but do NOT accept inline atom nodes. A
+ * `footnoteReference` is `group:"inline", atom:true`; `codeBlock` is
+ * `content:"text*"` (text only), so splicing a footnoteReference into it yields
+ * an invalid document. (paragraph/heading/detailsSummary are `inline*` and DO
+ * accept it; footnote definitions live inside a footnotesList which the
+ * footnote inserter excludes via `beforeBlock`.)
+ */
+const INLINE_ATOM_FORBIDDEN_BLOCKS: ReadonlySet<string> = new Set(["codeBlock"]);
+
+/**
+ * Footnote-notes subtrees the inline footnote inserter must never split into (at
+ * any depth): a `footnotesList` and the `footnoteDefinition`s it holds. Anchoring
+ * a reference inside one of these would later be dropped as an orphan by the
+ * canonicalizer, taking the existing definition's text with it.
+ */
+const FOOTNOTE_NOTES_SUBTREES: ReadonlySet<string> = new Set([
+  "footnotesList",
+  "footnoteDefinition",
+]);
+
+/** True if `node` IS, or contains at any depth, a footnotesList/footnoteDefinition. */
+function containsFootnoteNotes(node: any): boolean {
+  if (!isObject(node)) return false;
+  if (FOOTNOTE_NOTES_SUBTREES.has(node.type)) return true;
+  if (Array.isArray(node.content)) {
+    return node.content.some((c: any) => containsFootnoteNotes(c));
+  }
+  return false;
 }
 
 /**
@@ -104,6 +160,30 @@ export function insertMarkerAfter(
   doc: any,
   anchor: string,
   marker: string,
+  opts: InsertMarkerOptions = {},
+): { doc: any; inserted: boolean } {
+  // A plain marker is a leading-space-padded unmarked text run.
+  return insertNodesAfterAnchor(
+    doc,
+    anchor,
+    () => [{ type: "text", text: " " + marker }],
+    opts,
+  );
+}
+
+/**
+ * Mark-safe insertion CORE: split the inline text run that holds the END of
+ * `anchor` (preserving the surrounding marks) and splice the nodes produced by
+ * `makeMiddle()` in at the split point. `insertMarkerAfter` (plain text marker)
+ * and `insertInlineFootnote` (a `footnoteReference` node) are both thin callers —
+ * the only difference is WHAT is inserted (a space-padded text run vs. a node
+ * that should hug the preceding word), which is exactly what `makeMiddle`
+ * decides. Operates on a clone; returns `{ doc, inserted }`.
+ */
+function insertNodesAfterAnchor(
+  doc: any,
+  anchor: string,
+  makeMiddle: () => any[],
   opts: InsertMarkerOptions = {},
 ): { doc: any; inserted: boolean } {
   const out = clone(doc);
@@ -137,12 +217,27 @@ export function insertMarkerAfter(
       if (inserted || !isObject(container) || !Array.isArray(container.content)) {
         return;
       }
+      // Skip a forbidden subtree entirely (e.g. footnotesList/footnoteDefinition):
+      // never split into it, but keep `offset` aligned for any sibling text after
+      // it within this block.
+      if (opts.skipSubtreeTypes && opts.skipSubtreeTypes.has(container.type)) {
+        offset += blockPlainText(container).length;
+        return;
+      }
       const inline = container.content;
       // Detect whether this array is an inline array (contains text nodes).
       const hasText = inline.some(
         (n: any) => isObject(n) && n.type === "text",
       );
       if (hasText) {
+        // Refuse a textblock whose content spec cannot hold the inserted nodes
+        // (e.g. a codeBlock for an inline atom). Keep `offset` aligned for any
+        // sibling textblocks in this same block, then bail so the search falls
+        // through to the next candidate block.
+        if (opts.forbidBlockTypes && opts.forbidBlockTypes.has(container.type)) {
+          offset += blockPlainText(container).length;
+          return;
+        }
         for (let i = 0; i < inline.length; i++) {
           const n = inline[i];
           const len = isObject(n) ? blockPlainText(n).length : 0;
@@ -166,8 +261,9 @@ export function insertMarkerAfter(
             if (before.length > 0) {
               parts.push({ ...n, text: before, marks: [...marks] });
             }
-            // Marker is a PLAIN run: no marks copied. Leading space separates it.
-            parts.push({ type: "text", text: " " + marker });
+            // The inserted nodes are caller-decided (a space-padded marker run,
+            // or a node that hugs the word). They carry no copied marks.
+            parts.push(...makeMiddle());
             if (after.length > 0) {
               parts.push({ ...n, text: after, marks: [...marks] });
             }
@@ -268,14 +364,16 @@ export function noteItem(inlineNodes: any[]): any {
  * Wrap inline ProseMirror nodes in a real footnoteDefinition node keyed by id:
  *   { type:"footnoteDefinition", attrs:{id}, content:[{ type:"paragraph", content }] }
  * (mirrors the editor-ext / docmost-schema FootnoteDefinition node).
+ *
+ * Built on the shared `makeFootnoteDefinition` factory (footnote-authoring.ts);
+ * the only extra is a fresh block id on the inner paragraph (Docmost stamps one,
+ * and the canonicalizer preserves attrs as-is). Single factory, one place to
+ * change the definition shape.
  */
 export function footnoteDefinition(id: string, inlineNodes: any[]): any {
-  const content = Array.isArray(inlineNodes) ? clone(inlineNodes) : [];
-  return {
-    type: "footnoteDefinition",
-    attrs: { id },
-    content: [{ type: "paragraph", attrs: { id: freshId() }, content }],
-  };
+  const node = makeFootnoteDefinition(id, inlineNodes);
+  node.content[0].attrs = { id: freshId() };
+  return node;
 }
 
 /**
@@ -558,4 +656,132 @@ export function commentsToFootnotes(
   const synced = setCalloutRange(working, definitions.length);
 
   return { doc: synced.doc, consumed };
+}
+
+/** Options for insertInlineFootnote. */
+export interface InsertInlineFootnoteOptions {
+  /** Body text after which the footnote marker is placed (mark-safe). */
+  anchorText: string;
+  /** Footnote content as markdown (converted to inline nodes). */
+  text: string;
+}
+
+/** Result of insertInlineFootnote. */
+export interface InsertInlineFootnoteResult {
+  doc: any;
+  /** False when the anchor text was not found (no write). */
+  inserted: boolean;
+  /** The footnote id used (new or reused). */
+  footnoteId: string;
+  /** True when an existing same-content definition was reused (content dedup). */
+  reused: boolean;
+}
+
+/**
+ * AUTHOR-INLINE footnote insertion. The caller supplies WHERE (anchorText) and
+ * WHAT (markdown text); numbering and the bottom list are derived server-side by
+ * `canonicalizeFootnotes`. The caller never sees or edits `footnotesList`, never
+ * assigns a number, and cannot desync — orphans / out-of-order lists / raw
+ * `[^id]` markdown are structurally impossible.
+ *
+ * Content DEDUP (#3 in the issue): if an existing definition has the SAME
+ * normalized content key, its id is REUSED (the new reference points at it: one
+ * number, one definition, several references). Otherwise a fresh uuid id is
+ * minted and a new definition added. Conservative — only an exact content match
+ * merges.
+ *
+ * Mechanics: the `footnoteReference` node is inserted DIRECTLY at the anchor via
+ * the same mark-safe split as `insertMarkerAfter` (the shared
+ * `insertNodesAfterAnchor` core), so it hugs the preceding word with no text
+ * sentinel round-trip. The whole document is then canonicalized.
+ *
+ * Operates on a clone of `doc`. When the anchor is not found, returns the input
+ * unchanged with `inserted:false`.
+ */
+export function insertInlineFootnote(
+  doc: any,
+  opts: InsertInlineFootnoteOptions,
+): InsertInlineFootnoteResult {
+  const inline = mdToInlineNodes(opts.text ?? "");
+  // footnoteContentKey only reads `.content`, so key off the inline array
+  // directly instead of building a throwaway definition node.
+  const key = footnoteContentKey({ content: inline });
+
+  // Content dedup: reuse an existing definition's id when its key matches.
+  let footnoteId: string | null = null;
+  let reused = false;
+  if (key !== "") {
+    walk(doc, (n) => {
+      if (
+        footnoteId == null &&
+        isObject(n) &&
+        n.type === "footnoteDefinition" &&
+        n.attrs &&
+        typeof n.attrs.id === "string" &&
+        n.attrs.id !== "" &&
+        footnoteContentKey(n) === key
+      ) {
+        footnoteId = n.attrs.id;
+        reused = true;
+      }
+    });
+  }
+  if (footnoteId == null) footnoteId = generateFootnoteId();
+
+  // Insert the footnoteReference node directly after the anchor (mark-safe
+  // split); it hugs the preceding word with no leading space. Two guards keep the
+  // inline atom out of the notes section and out of blocks that cannot hold it:
+  //  - beforeBlock bounds the search to the BODY, before the first top-level block
+  //    that IS or CONTAINS (at any depth) a footnotesList/footnoteDefinition — so
+  //    a NESTED list or a bare definition also bounds the search, not just a
+  //    top-level list;
+  //  - skipSubtreeTypes refuses to descend into any footnotesList/footnoteDefinition
+  //    subtree, so a reference is never glued inside an existing definition (which
+  //    the canonicalizer would then drop as an orphan, losing that definition's
+  //    prose); and forbidBlockTypes refuses codeBlocks (an inline atom there is a
+  //    schema-invalid doc; insert_footnote skips validateDocStructure).
+  // When the only anchor match is in such a place, the insert is refused and the
+  // write aborts cleanly (inserted:false) instead of destroying content.
+  const boundaryIdx = Array.isArray(doc?.content)
+    ? doc.content.findIndex((n: any) => containsFootnoteNotes(n))
+    : -1;
+  const r = insertNodesAfterAnchor(
+    doc,
+    (opts.anchorText ?? "").trimEnd(),
+    () => [{ type: "footnoteReference", attrs: { id: footnoteId } }],
+    {
+      ...(boundaryIdx >= 0 ? { beforeBlock: boundaryIdx } : {}),
+      forbidBlockTypes: INLINE_ATOM_FORBIDDEN_BLOCKS,
+      skipSubtreeTypes: FOOTNOTE_NOTES_SUBTREES,
+    },
+  );
+  if (!r.inserted) {
+    return { doc: clone(doc), inserted: false, footnoteId, reused };
+  }
+  let working = r.doc;
+
+  // Add a NEW definition (canonicalize will order/place it); a reused id needs
+  // no new definition (the existing one is shared).
+  if (!reused) {
+    appendDefinition(working, makeFootnoteDefinition(footnoteId, inline));
+  }
+
+  // Derive numbering + the single bottom list deterministically.
+  working = canonicalizeFootnotes(working);
+  return { doc: working, inserted: true, footnoteId, reused };
+}
+
+/**
+ * Append a definition node so the canonicalizer can order/place it: into the
+ * first existing footnotesList, or a new trailing list when none exists.
+ */
+function appendDefinition(doc: any, defNode: any): void {
+  const existingList = getList(doc, (n) => isObject(n) && n.type === "footnotesList");
+  if (existingList && Array.isArray(existingList.content)) {
+    existingList.content.push(defNode);
+    return;
+  }
+  if (Array.isArray(doc.content)) {
+    doc.content.push({ type: "footnotesList", content: [defNode] });
+  }
 }

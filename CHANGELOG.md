@@ -41,6 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AI_AGENT_ROLES_CATALOG_URL` env var — an `http(s)://` base URL to the
   catalog's raw files; the image ships a per-branch default baked in CI, and it
   can be overridden at runtime via the env var (see `.env.example`). (#222)
+- **Author footnotes inline from an agent, and deterministic server-side footnote
+  canonicalization on every non-editor write path.** A new MCP `insert_footnote`
+  tool places a footnote at a body anchor by content only — the agent supplies
+  WHERE (anchor text) and WHAT (markdown); the number and the bottom
+  `footnotesList` are derived server-side, so an agent can never assign a number,
+  edit the list, or desync, and a same-content note reuses one definition. Under
+  the hood, the editor's footnote-integrity invariant (one trailing list,
+  numbering by first reference, no orphans/duplicates, no raw `[^id]`) is now
+  enforced as a pure `canonicalizeFootnotes(doc)` on the FULL-document write paths
+  that bypass the editor's plugins: server markdown/HTML import, `PageService`
+  create and full-document (`replace`) updates, the client markdown paste, and the
+  MCP markdown page-import / `update_page` (markdown) / `update_page_json` /
+  `docmost_transform` / `insert_footnote` / `copy_page_content` paths. It is
+  idempotent (a no-op once canonical) and is deliberately NOT applied to
+  append/prepend fragments, nor to COMMENT bodies — a comment may legitimately
+  contain a standalone footnote definition, which canonicalization would drop.
+  (#228)
 
 ### Changed
 

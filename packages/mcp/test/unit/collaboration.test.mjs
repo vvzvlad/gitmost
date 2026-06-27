@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildCollabWsUrl,
   markdownToProseMirror,
+  markdownToProseMirrorCanonical,
 } from "../../build/lib/collaboration.js";
 
 /** Recursively find the first descendant node (or self) of the given type. */
@@ -123,4 +124,39 @@ test("markdownToProseMirror: an aligned GFM table maps header alignment", async 
     headers.map((h) => h.attrs.align),
     ["left", "center", "right"],
   );
+});
+
+// Comment-body data-loss guard (#228 review #4): markdownToProseMirror is reused
+// for COMMENT bodies (createComment/updateComment), so it must NOT canonicalize —
+// a comment may legitimately carry a standalone footnote definition with no
+// matching reference, and canonicalization would drop the whole list (the text
+// would vanish). The page-write variant DOES canonicalize.
+test("markdownToProseMirror (comment path) PRESERVES a reference-less footnote definition", async () => {
+  const md = "A comment.\n\n[^1]: a standalone footnote definition";
+  const doc = await markdownToProseMirror(md);
+  const defs = findAll(doc, "footnoteDefinition");
+  assert.equal(defs.length, 1, "the footnote definition must be preserved");
+  assert.match(
+    JSON.stringify(doc),
+    /a standalone footnote definition/,
+    "the definition text must survive the comment write path",
+  );
+});
+
+test("markdownToProseMirrorCanonical (page path) DROPS a reference-less footnote definition", async () => {
+  // Same input through the PAGE variant: with no reference, the canonical doc has
+  // no footnotesList (this is the page-side behavior the comment path must avoid).
+  const md = "A page.\n\n[^1]: a standalone footnote definition";
+  const doc = await markdownToProseMirrorCanonical(md);
+  assert.equal(findAll(doc, "footnotesList").length, 0);
+  assert.equal(findAll(doc, "footnoteDefinition").length, 0);
+});
+
+test("markdownToProseMirrorCanonical still canonicalizes a real page footnote (order)", async () => {
+  // Page path must STILL canonicalize: refs b,a -> definitions reorder to b,a.
+  const md = "See[^b] then[^a].\n\n[^a]: alpha\n[^b]: bravo";
+  const doc = await markdownToProseMirrorCanonical(md);
+  const defs = findAll(doc, "footnoteDefinition").map((d) => d.attrs.id);
+  assert.deepEqual(defs, ["b", "a"]);
+  assert.equal(findAll(doc, "footnotesList").length, 1);
 });

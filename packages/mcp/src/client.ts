@@ -17,6 +17,7 @@ import {
   updatePageContentRealtime,
   replacePageContent,
   markdownToProseMirror,
+  markdownToProseMirrorCanonical,
   mutatePageContent,
   buildCollabWsUrl,
   assertYjsEncodable,
@@ -60,6 +61,8 @@ import {
   noteItem,
   mdToInlineNodes,
   commentsToFootnotes,
+  canonicalizeFootnotes,
+  insertInlineFootnote,
 } from "./lib/transforms.js";
 import vm from "node:vm";
 
@@ -1344,10 +1347,16 @@ export class DocmostClient {
     // inject javascript:/data: link hrefs or media srcs straight into the doc.
     this.validateDocUrls(doc);
 
+    // Canonicalize footnotes (idempotent): an agent-authored JSON doc cannot
+    // leave footnotes out of order, orphaned, or in multiple lists — the bottom
+    // list + numbering are always derived from reference order. No-op when the
+    // footnotes are already canonical.
+    doc = canonicalizeFootnotes(doc);
+
     // Write the BODY first, then the title (#159 split-brain): a failed body
     // write (e.g. persist timeout) must not leave a new title over the old body.
     const collabToken = await this.getCollabTokenWithReauth();
-    const mutation = await replacePageContent(
+    const mutation = await this.replacePage(
       pageId,
       doc,
       collabToken,
@@ -1366,6 +1375,95 @@ export class DocmostClient {
       pageId,
       verify: mutation.verify,
     };
+  }
+
+  /**
+   * AUTHOR-INLINE footnote insertion. The agent supplies only WHERE
+   * (`anchorText`, a snippet of body text to attach the marker after) and WHAT
+   * (`text`, the footnote content as markdown). Numbering and the bottom
+   * `footnotesList` are derived deterministically server-side
+   * (`insertInlineFootnote` -> `canonicalizeFootnotes`): the agent never sees,
+   * assigns, or edits a footnote number or the list, so it CANNOT desync.
+   *
+   * Content DEDUP: when an existing definition has the same content, its id is
+   * reused (one number, one definition, several references). The write is atomic
+   * via `mutatePageContent` (single-writer, page-locked); if the anchor text is
+   * not found the transform aborts with a clear error and no write happens.
+   */
+  async insertFootnote(pageId: string, anchorText: string, text: string) {
+    await this.ensureAuthenticated();
+    if (!anchorText || !anchorText.trim()) {
+      throw new Error("insert_footnote: anchorText is required");
+    }
+    if (text == null || `${text}`.trim() === "") {
+      throw new Error("insert_footnote: text is required");
+    }
+    const collabToken = await this.getCollabTokenWithReauth();
+    let result: { footnoteId: string; reused: boolean } | null = null;
+    const mutation = await this.mutatePage(
+      pageId,
+      collabToken,
+      this.apiUrl,
+      (liveDoc: any) => {
+        const r = insertInlineFootnote(liveDoc, { anchorText, text });
+        if (!r.inserted) {
+          // Abort the page-locked write by throwing: mutatePageContent does not
+          // persist when the transform throws, so a missing anchor leaves the
+          // page untouched (no partial write).
+          throw new Error(
+            `insert_footnote: anchor text not found: ${JSON.stringify(
+              anchorText.slice(0, 80),
+            )}`,
+          );
+        }
+        result = { footnoteId: r.footnoteId, reused: r.reused };
+        return r.doc;
+      },
+    );
+    // The not-found path throws inside the transform (aborting mutatePage), so by
+    // here `result` is always set.
+    const r = result!;
+    return {
+      success: true,
+      modified: true,
+      pageId,
+      footnoteId: r.footnoteId,
+      reused: r.reused,
+      message: r.reused
+        ? "Footnote inserted (reused an existing same-content definition)."
+        : "Footnote inserted.",
+      verify: mutation.verify,
+    };
+  }
+
+  /**
+   * Page-locked write seam over collaboration.mutatePageContent. Production just
+   * delegates; it exists as an overridable method so the insert_footnote wrapper
+   * (transform abort-on-not-found + response shaping) can be unit-tested without
+   * standing up a live Hocuspocus collab socket.
+   */
+  protected mutatePage(
+    pageId: string,
+    collabToken: string,
+    apiUrl: string,
+    transform: (doc: any) => any,
+  ): Promise<{ doc?: any; verify?: any }> {
+    return mutatePageContent(pageId, collabToken, apiUrl, transform);
+  }
+
+  /**
+   * Full-document write seam over collaboration.replacePageContent. Production
+   * just delegates; it exists as an overridable method so the full-doc write
+   * tools (update_page_json, copy_page_content) can have their footnote-
+   * canonicalization binding unit-tested without a live Hocuspocus collab socket.
+   */
+  protected replacePage(
+    pageId: string,
+    doc: any,
+    collabToken: string,
+    apiUrl: string,
+  ): Promise<{ doc?: any; verify?: any }> {
+    return replacePageContent(pageId, doc, collabToken, apiUrl);
   }
 
   /**
@@ -1408,7 +1506,8 @@ export class DocmostClient {
   async importPageMarkdown(pageId: string, fullMarkdown: string): Promise<any> {
     await this.ensureAuthenticated();
     const { meta, body, comments } = parseDocmostMarkdown(fullMarkdown);
-    const doc = await markdownToProseMirror(body);
+    // PAGE import: canonicalize footnotes (see markdownToProseMirrorCanonical).
+    const doc = await markdownToProseMirrorCanonical(body);
     const collabToken = await this.getCollabTokenWithReauth();
     const mutation = await replacePageContent(
       pageId,
@@ -1503,10 +1602,16 @@ export class DocmostClient {
     // (parity with updatePageJson; harmless for already-stored source content).
     this.validateDocUrls(content);
 
+    // Defense-in-depth (#228): this is a FULL-document write, so canonicalize
+    // footnotes before copying — a no-op on already-canonical source content, but
+    // it guarantees a copy can never propagate a non-canonical footnote topology
+    // to the target (parity with the other full-doc write paths).
+    const canonical = canonicalizeFootnotes(content);
+
     const collabToken = await this.getCollabTokenWithReauth();
-    const mutation = await replacePageContent(
+    const mutation = await this.replacePage(
       targetPageId,
-      content,
+      canonical,
       collabToken,
       this.apiUrl,
     );
@@ -1515,7 +1620,7 @@ export class DocmostClient {
       success: true,
       sourcePageId,
       targetPageId,
-      copiedNodes: content.content.length,
+      copiedNodes: canonical.content.length,
       verify: mutation.verify,
     };
   }
@@ -2033,7 +2138,10 @@ export class DocmostClient {
       }
     }
 
-    // Convert through the full Docmost schema (consistent with page paths)
+    // Convert through the full Docmost schema. Deliberately the NON-canonicalizing
+    // variant: a comment body may carry a footnote definition with no matching
+    // reference, and canonicalization would drop it (data loss). See
+    // markdownToProseMirror vs markdownToProseMirrorCanonical.
     const jsonContent = await markdownToProseMirror(content);
     const payload: Record<string, any> = {
       pageId,
@@ -2136,6 +2244,7 @@ export class DocmostClient {
 
   async updateComment(commentId: string, content: string) {
     await this.ensureAuthenticated();
+    // NON-canonicalizing on purpose (comment body — see createComment).
     const jsonContent = await markdownToProseMirror(content);
     await this.client.post("/comments/update", {
       commentId,
@@ -2986,6 +3095,8 @@ export class DocmostClient {
         noteItem,
         mdToInlineNodes,
         commentsToFootnotes,
+        canonicalizeFootnotes,
+        insertInlineFootnote,
       },
     };
 
@@ -3022,24 +3133,33 @@ export class DocmostClient {
           "transform must evaluate to a function (doc, ctx) => doc",
         );
       }
-      const result = vm.runInNewContext(
+      const raw = vm.runInNewContext(
         "f(d, c)",
         { f: fn, d: sandbox.doc, c: ctx },
         { timeout: 5000 },
       );
       if (
-        !result ||
-        typeof result !== "object" ||
-        result.type !== "doc" ||
-        !Array.isArray(result.content)
+        !raw ||
+        typeof raw !== "object" ||
+        raw.type !== "doc" ||
+        !Array.isArray(raw.content)
       ) {
         throw new Error(
           'transform must return a ProseMirror doc node ({ type:"doc", content:[...] })',
         );
       }
-      // Validate the returned doc before it can be written.
-      this.validateDocStructure(result);
-      this.validateDocUrls(result);
+      // Validate the RAW transform output FIRST (structure — including the
+      // MAX_DEPTH guard — and URLs), mirroring updatePageJson. The canonicalizer
+      // recurses without a depth limiter, so validating after it would turn a
+      // too-deep doc into an opaque "Maximum call stack size exceeded" instead of
+      // the intended "nesting exceeds the maximum depth" error.
+      this.validateDocStructure(raw);
+      this.validateDocUrls(raw);
+      // Auto-canonicalize footnotes after the transform (idempotent): no write
+      // path can leave footnotes out of order / orphaned / in a raw `[^id]`
+      // block. In a dryRun preview this may surface footnote edits the script
+      // author did not write (the canonicalizer tidied them) — that is expected.
+      const result = canonicalizeFootnotes(raw);
       newDoc = result;
       return result;
     };
