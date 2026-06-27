@@ -179,7 +179,9 @@ export function canonicalizePastedFootnotes(slice: Slice, schema: Schema): Slice
   let hasReference = false;
   slice.content.forEach((node) => {
     if (node.type.name === FOOTNOTES_LIST_NAME) hasFootnotesList = true;
-    if (node.type.name === FOOTNOTE_REFERENCE_NAME) hasReference = true;
+    // footnoteReference is an inline atom, never a top-level slice child here
+    // (this function early-returns for open slices, so children are whole
+    // blocks), so it is only reachable by descending.
     node.descendants((child) => {
       if (child.type.name === FOOTNOTE_REFERENCE_NAME) hasReference = true;
     });

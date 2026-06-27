@@ -147,14 +147,17 @@ export function canonicalizeFootnotes<T = any>(doc: T): T {
     return out;
   }
 
-  // 7) Otherwise rebuild: strip every footnotesList at ANY depth (collectDefinitions
-  //    gathers defs recursively, so a list nested in a callout/blockquote would
-  //    otherwise have its defs copied into the new list while the original
-  //    survives — duplicates) and re-insert exactly one after the last meaningful
-  //    (non-empty paragraph) top-level block, so it coexists with a trailing-node
-  //    empty paragraph. This both repairs a non-canonical doc and (in the import
-  //    case) physically reorders the list into reference order.
+  // 7) Otherwise rebuild: strip every footnotesList AND every bare
+  //    footnoteDefinition at ANY depth (collectDefinitions gathers defs
+  //    recursively, so a list nested in a callout/blockquote — or a bare
+  //    definition outside any list — would otherwise have its defs copied into the
+  //    rebuilt list while the original survives in place → duplicates) and
+  //    re-insert exactly one list after the last meaningful (non-empty paragraph)
+  //    top-level block, so it coexists with a trailing-node empty paragraph. This
+  //    both repairs a non-canonical doc and (in the import case) physically
+  //    reorders the list into reference order.
   stripFootnotesListsDeep(out);
+  stripFootnoteDefinitionsDeep(out);
   const top: any[] = out.content;
   let insertAt = top.length;
   while (insertAt > 0 && isEmptyParagraph(top[insertAt - 1])) insertAt--;
@@ -170,6 +173,21 @@ function stripFootnotesListsDeep(node: any): void {
     (c: any) => !(c && c.type === FOOTNOTES_LIST_NAME),
   );
   for (const child of node.content) stripFootnotesListsDeep(child);
+}
+
+/**
+ * Remove every BARE `footnoteDefinition` node at ANY depth (mutates the given
+ * clone). Runs only in the rebuild path AFTER the lists are stripped, so it
+ * targets definitions that were sitting outside a list (e.g. hand-authored via a
+ * raw-JSON write path and nested in a callout); their content was already copied
+ * into the rebuilt list, so leaving the originals would duplicate them.
+ */
+function stripFootnoteDefinitionsDeep(node: any): void {
+  if (!node || typeof node !== 'object' || !Array.isArray(node.content)) return;
+  node.content = node.content.filter(
+    (c: any) => !(c && c.type === FOOTNOTE_DEFINITION_NAME),
+  );
+  for (const child of node.content) stripFootnoteDefinitionsDeep(child);
 }
 
 /**

@@ -1071,7 +1071,7 @@ export class DocmostClient {
         // Write the BODY first, then the title (#159 split-brain): a failed body
         // write (e.g. persist timeout) must not leave a new title over the old body.
         const collabToken = await this.getCollabTokenWithReauth();
-        const mutation = await replacePageContent(pageId, doc, collabToken, this.apiUrl);
+        const mutation = await this.replacePage(pageId, doc, collabToken, this.apiUrl);
         // Body persisted successfully — now it is safe to set the title.
         if (title) {
             await this.client.post("/pages/update", { pageId, title });
@@ -1141,6 +1141,15 @@ export class DocmostClient {
      */
     mutatePage(pageId, collabToken, apiUrl, transform) {
         return mutatePageContent(pageId, collabToken, apiUrl, transform);
+    }
+    /**
+     * Full-document write seam over collaboration.replacePageContent. Production
+     * just delegates; it exists as an overridable method so the full-doc write
+     * tools (update_page_json, copy_page_content) can have their footnote-
+     * canonicalization binding unit-tested without a live Hocuspocus collab socket.
+     */
+    replacePage(pageId, doc, collabToken, apiUrl) {
+        return replacePageContent(pageId, doc, collabToken, apiUrl);
     }
     /**
      * Export a page to a single self-contained Docmost-flavoured markdown file:
@@ -1270,7 +1279,7 @@ export class DocmostClient {
         // to the target (parity with the other full-doc write paths).
         const canonical = canonicalizeFootnotes(content);
         const collabToken = await this.getCollabTokenWithReauth();
-        const mutation = await replacePageContent(targetPageId, canonical, collabToken, this.apiUrl);
+        const mutation = await this.replacePage(targetPageId, canonical, collabToken, this.apiUrl);
         return {
             success: true,
             sourcePageId,

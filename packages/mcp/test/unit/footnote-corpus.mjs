@@ -1131,6 +1131,97 @@ export const FOOTNOTE_CORPUS = [
     }
   },
   {
+    "name": "bare footnoteDefinition nested in a callout is collected, NOT duplicated",
+    "input": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "see "
+            },
+            {
+              "type": "footnoteReference",
+              "attrs": {
+                "id": "a"
+              }
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "content": [
+            {
+              "type": "footnoteDefinition",
+              "attrs": {
+                "id": "a"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "note A"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "see "
+            },
+            {
+              "type": "footnoteReference",
+              "attrs": {
+                "id": "a"
+              }
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "content": []
+        },
+        {
+          "type": "footnotesList",
+          "content": [
+            {
+              "type": "footnoteDefinition",
+              "attrs": {
+                "id": "a"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "note A"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "name": "no footnotes at all is unchanged",
     "input": {
       "type": "doc",

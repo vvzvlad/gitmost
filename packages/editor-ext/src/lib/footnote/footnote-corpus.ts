@@ -7,12 +7,13 @@
  * Both the editor-ext copy and the MCP mirror of `canonicalizeFootnotes` are run
  * against this corpus by their respective test suites, which turns "the two
  * pure copies behave identically" into a checkable property without coupling the
- * packages at build time. When you change one corpus, change the other.
+ * packages. When you change one corpus, change the other.
  *
  * Coverage includes (besides ordering/orphan/reuse/dedup/synth/merge): a single
  * canonical list with NON-EMPTY content after it (must NOT be repositioned —
- * plugin placement parity, must-fix #2) and a reference nested inside a callout
- * (the recursive collection, test-coverage #14).
+ * plugin placement parity, must-fix #2), a reference nested inside a callout
+ * (the recursive collection, test-coverage #14), and a BARE footnoteDefinition
+ * nested in a callout (rebuild must strip the original so it is not duplicated).
  */
 export interface FootnoteCorpusCase {
   name: string;
@@ -1135,6 +1136,97 @@ export const FOOTNOTE_CORPUS: FootnoteCorpusCase[] = [
                     {
                       "type": "text",
                       "text": "note"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare footnoteDefinition nested in a callout is collected, NOT duplicated",
+    "input": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "see "
+            },
+            {
+              "type": "footnoteReference",
+              "attrs": {
+                "id": "a"
+              }
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "content": [
+            {
+              "type": "footnoteDefinition",
+              "attrs": {
+                "id": "a"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "note A"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "see "
+            },
+            {
+              "type": "footnoteReference",
+              "attrs": {
+                "id": "a"
+              }
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "content": []
+        },
+        {
+          "type": "footnotesList",
+          "content": [
+            {
+              "type": "footnoteDefinition",
+              "attrs": {
+                "id": "a"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "note A"
                     }
                   ]
                 }
