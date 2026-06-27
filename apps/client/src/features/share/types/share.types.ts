@@ -73,6 +73,10 @@ export type IUpdateShare = ICreateShare & { shareId: string; pageId?: string };
 
 export interface IShareInfoInput {
   pageId: string;
+  // The share id/key from the `/share/:shareId/p/:slug` URL. When present the
+  // server binds content access to this exact share (#218): a forged/mismatched
+  // shareId 404s instead of rendering the page off its slug alone.
+  shareId?: string;
 }
 
 // Vanity /l/:alias pointer.

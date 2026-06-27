@@ -93,8 +93,30 @@ export class ShareController {
       ? await this.aiSettings.resolvePublicShareAssistantName(workspace.id)
       : null;
 
+    // Trim the public payload to what the anonymous renderer actually needs
+    // (#218). Internal metadata — creatorId/lastUpdatedById/contributorIds,
+    // spaceId/workspaceId, AI/source bookkeeping, lock/template flags,
+    // parent/position, raw timestamps — must not leak to anonymous viewers.
+    const { page, share } = shareData;
+    const publicPage = {
+      id: page.id,
+      slugId: page.slugId,
+      title: page.title,
+      icon: page.icon,
+      content: page.content,
+    };
+    const publicShare = {
+      id: share.id,
+      key: share.key,
+      includeSubPages: share.includeSubPages,
+      searchIndexing: share.searchIndexing,
+      level: share.level,
+      sharedPage: share.sharedPage,
+    };
+
     return {
-      ...shareData,
+      page: publicPage,
+      share: publicShare,
       aiAssistant,
       aiAssistantName,
       features: this.licenseCheckService.resolveFeatures(

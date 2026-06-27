@@ -16,7 +16,10 @@ import { Link, useParams } from "react-router-dom";
 import classes from "./breadcrumb.module.css";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import {
+  usePageQuery,
+  usePageBreadcrumbsQuery,
+} from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
 import { useMediaQuery } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
@@ -38,14 +41,43 @@ export default function Breadcrumb() {
   const { data: currentPage } = usePageQuery({
     pageId: extractPageSlugId(pageSlug),
   });
+  // The page's own ancestor chain, fetched independently of the lazily-built
+  // sidebar tree so a deep page doesn't render a blank breadcrumb for seconds
+  // while the tree backfills (#218).
+  const { data: ancestors } = usePageBreadcrumbsQuery(currentPage?.id);
   const isMobile = useMediaQuery("(max-width: 48em)");
 
   useEffect(() => {
-    if (treeData?.length > 0 && currentPage) {
+    if (!currentPage) return;
+
+    // Prefer the sidebar tree once it actually contains this page's ancestor
+    // chain — it stays live with renames/moves happening in the sidebar.
+    if (treeData?.length > 0) {
       const breadcrumb = findBreadcrumbPath(treeData, currentPage.id);
-      setBreadcrumbNodes(breadcrumb || null);
+      if (breadcrumb) {
+        setBreadcrumbNodes(breadcrumb);
+        return;
+      }
     }
-  }, [currentPage?.id, treeData]);
+
+    // Otherwise fall back to the page's own ancestor data so the breadcrumb
+    // resolves immediately instead of staying blank.
+    if (ancestors?.length) {
+      setBreadcrumbNodes(
+        (ancestors as any[]).map((node) => ({
+          id: node.id,
+          slugId: node.slugId,
+          name: node.title,
+          icon: node.icon,
+          position: node.position,
+          spaceId: node.spaceId,
+          parentPageId: node.parentPageId,
+          hasChildren: node.hasChildren ?? false,
+          children: [],
+        })) as SpaceTreeNode[],
+      );
+    }
+  }, [currentPage?.id, treeData, ancestors]);
 
   const HiddenNodesTooltipContent = () =>
     breadcrumbNodes?.slice(1, -1).map((node) => (

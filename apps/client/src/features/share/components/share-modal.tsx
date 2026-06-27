@@ -73,7 +73,10 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
       if (value) {
         await createShareMutation.mutateAsync({
           pageId: pageId,
-          includeSubPages: true,
+          // Opt-in: enabling a share must NOT silently expose the whole
+          // sub-tree (#216). Sub-pages are shared only when the user turns on
+          // the dedicated "Include sub-pages" toggle.
+          includeSubPages: false,
           searchIndexing: false,
         });
       } else if (share && share.id) {

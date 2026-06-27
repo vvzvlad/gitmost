@@ -189,9 +189,9 @@ export class ShareService {
   }
 
   async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
-    // Resolve via the single canonical boundary. There is no independent
-    // requested shareId here (the share is resolved FROM the page), so no
-    // share-id match is performed.
+    // Resolve via the single canonical boundary. The share is resolved FROM the
+    // page (the request carries the page slug), so the boundary itself performs
+    // no share-id match here.
     const resolved = await this.resolveReadableSharePage(
       null,
       dto.pageId,
@@ -205,9 +205,62 @@ export class ShareService {
 
     const { share, page } = resolved;
 
+    // Bind content to the requested share (#218). When the caller supplies a
+    // shareId/key (the `/share/:shareId/p/:slug` route now forwards it), the
+    // page must be reachable THROUGH that exact share — a forged or mismatched
+    // shareId must 404 instead of rendering the page off its slug alone, and it
+    // must not be answerable with the page's real (canonical) share key. A
+    // request with no shareId keeps the legacy slug-capability behavior (the
+    // `/share/p/:slug` route + internal title look-ups); the slug nanoid stays
+    // the access secret there — an inherited Docmost design we don't widen.
+    if (dto.shareId) {
+      const reachable = await this.isPageReachableThroughShare(
+        dto.shareId,
+        share,
+        page.id,
+        workspaceId,
+      );
+      if (!reachable) {
+        throw new NotFoundException('Shared page not found');
+      }
+    }
+
     page.content = await this.updatePublicAttachments(page);
 
     return { page, share };
+  }
+
+  /**
+   * Does `requestedShareId` (a share id OR key) legitimately grant access to
+   * `pageId`? True when it names the page's own resolved share, or an ancestor
+   * share with `includeSubPages` that contains the page. Any other value
+   * (unknown key, wrong workspace, a sibling share that doesn't cover the page)
+   * is false, so a guessed slug paired with a forged shareId can't render.
+   */
+  private async isPageReachableThroughShare(
+    requestedShareId: string,
+    resolvedShare: NonNullable<
+      Awaited<ReturnType<ShareService['getShareForPage']>>
+    >,
+    pageId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    // Fast path: the request names the page's own resolved share.
+    if (
+      requestedShareId === resolvedShare.id ||
+      requestedShareId.toLowerCase() === resolvedShare.key?.toLowerCase()
+    ) {
+      return true;
+    }
+
+    // Otherwise it may name an includeSubPages ANCESTOR share: the page has its
+    // own closer share but is also served under the ancestor's public tree.
+    const requested = await this.shareRepo.findById(requestedShareId);
+    if (!requested || requested.workspaceId !== workspaceId) return false;
+    if (!requested.includeSubPages) return false;
+
+    const ancestor = await this.getShareAncestorPage(requested.pageId, pageId);
+    return !!ancestor;
   }
 
   async getShareForPage(pageId: string, workspaceId: string) {

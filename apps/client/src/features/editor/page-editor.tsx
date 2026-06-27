@@ -84,6 +84,10 @@ import { PageEmbedLookupProvider } from "@/features/editor/components/page-embed
 import { PageEmbedAncestryProvider } from "@/features/editor/components/page-embed/page-embed-ancestry-context";
 import PageEmbedPicker from "@/features/editor/components/page-embed/page-embed-picker";
 import { useTranslation } from "react-i18next";
+import {
+  isBodyEditable,
+  isCollabSynced,
+} from "@/features/editor/editor-sync-state";
 
 interface PageEditorProps {
   pageId: string;
@@ -440,6 +444,9 @@ export default function PageEditor({
 
   const isSynced = isLocalSynced && isRemoteSynced;
 
+  const hasConnectedOnceRef = useRef(false);
+  const [showStatic, setShowStatic] = useState(true);
+
   useEffect(() => {
     const timeout = setTimeout(() => {
       if (yjsConnectionStatus === WebSocketStatus.Connecting || !isSynced) {
@@ -451,17 +458,21 @@ export default function PageEditor({
   }, [yjsConnectionStatus, isSynced]);
   useEffect(() => {
     if (!editor) return;
-    editor.setEditable(editable && currentPageEditMode === PageEditMode.Edit);
-  }, [currentPageEditMode, editor, editable]);
-
-  const hasConnectedOnceRef = useRef(false);
-  const [showStatic, setShowStatic] = useState(true);
+    // Keep the body read-only until the collab doc has synced (showStatic), so
+    // early keystrokes on a freshly created page can't be lost (#218).
+    editor.setEditable(
+      isBodyEditable({
+        editable,
+        inEditMode: currentPageEditMode === PageEditMode.Edit,
+        showStatic,
+      }),
+    );
+  }, [currentPageEditMode, editor, editable, showStatic]);
 
   useEffect(() => {
     if (
       !hasConnectedOnceRef.current &&
-      yjsConnectionStatus === WebSocketStatus.Connected &&
-      isSynced
+      isCollabSynced(yjsConnectionStatus, isSynced)
     ) {
       hasConnectedOnceRef.current = true;
       setShowStatic(false);
@@ -473,17 +484,43 @@ export default function PageEditor({
       <PageEmbedLookupProvider>
         <PageEmbedAncestryProvider hostPageId={pageId}>
       {showStatic ? (
-        <EditorProvider
-          editable={false}
-          immediatelyRender={true}
-          extensions={mainExtensions}
-          content={content}
-          editorProps={{
-            attributes: {
-              "aria-label": t("Page content"),
-            },
-          }}
-        />
+        <div style={{ position: "relative" }}>
+          {/* Surface the pre-sync read-only window so edits typed before the
+              collab provider connects aren't silently swallowed (#218). Shown
+              only when the user is otherwise allowed to edit. */}
+          {editable && currentPageEditMode === PageEditMode.Edit && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="print-hide"
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                zIndex: 2,
+                padding: "2px 8px",
+                fontSize: "12px",
+                borderRadius: "4px",
+                background: "var(--mantine-color-gray-light)",
+                color: "var(--mantine-color-dimmed)",
+                pointerEvents: "none",
+              }}
+            >
+              {t("Connecting… (read-only)")}
+            </div>
+          )}
+          <EditorProvider
+            editable={false}
+            immediatelyRender={true}
+            extensions={mainExtensions}
+            content={content}
+            editorProps={{
+              attributes: {
+                "aria-label": t("Page content"),
+              },
+            }}
+          />
+        </div>
       ) : (
         <div className="editor-container" style={{ position: "relative" }}>
           <div ref={menuContainerRef}>

@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import { calloutExtension } from "./callout.marked";
+import { githubCalloutExtension } from "./github-callout.marked";
 import { mathBlockExtension } from "./math-block.marked";
 import { mathInlineExtension } from "./math-inline.marked";
 import {
@@ -41,6 +42,7 @@ marked.use({
 marked.use({
   extensions: [
     calloutExtension,
+    githubCalloutExtension,
     mathBlockExtension,
     mathInlineExtension,
     footnoteReferenceExtension,
