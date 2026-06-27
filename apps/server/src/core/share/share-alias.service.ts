@@ -11,21 +11,21 @@ import { Page, ShareAlias } from '@docmost/db/types/entity.types';
 import { isValidShareAlias, normalizeShareAlias } from './share-alias.util';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
-import { executeTx } from '@docmost/db/utils';
-
-/** Postgres unique_violation. Two unique indexes can raise it on this table. */
-const PG_UNIQUE_VIOLATION = '23505';
+import {
+  executeTx,
+  isUniqueViolation,
+  violatedConstraint,
+} from '@docmost/db/utils';
+import { NoResultError } from 'kysely';
 
 /**
- * Unique index names from the share_aliases migrations. The `postgres@3.x`
- * driver (kysely-postgres-js) surfaces the violated constraint as
- * `err.constraint_name` (NOT `.constraint`); we keep `.constraint` only as a
- * defensive fallback for other drivers.
- *   - ALIAS:  `(workspace_id, alias)`  -> the vanity NAME is taken.
+ * Unique index name from the share_aliases migrations whose violation we map to
+ * a DISTINCT, non-misleading outcome:
  *   - PAGE_ID: partial `(workspace_id, page_id) WHERE page_id IS NOT NULL`
  *             -> a concurrent writer already gave THIS page an alias.
+ * The `(workspace_id, alias)` index (the vanity NAME being taken) needs no
+ * constant: it is the default "Alias already taken" mapping.
  */
-const UNIQUE_ALIAS_INDEX = 'share_aliases_workspace_id_alias_unique';
 const UNIQUE_PAGE_ID_INDEX = 'share_aliases_workspace_id_page_id_unique';
 
 export interface ResolvedAliasTarget {
@@ -171,11 +171,23 @@ export class ShareAliasService {
       ) {
         throw err;
       }
+      // The row we read was deleted (concurrent `removeAlias`) before our UPDATE
+      // matched it, so `executeTakeFirstOrThrow` found no row. Surface a
+      // retryable conflict instead of a 200-without-alias (swap branch) or a
+      // generic 400 from dereferencing `undefined.id` (rename branch).
+      if (err instanceof NoResultError) {
+        this.logger.warn(
+          'share alias update matched no row (concurrent-delete race)',
+        );
+        throw new ConflictException({
+          message: 'The address changed concurrently, please retry',
+          code: 'ALIAS_PAGE_RACE',
+        });
+      }
       // A unique index fired. Which one decides the message — always log the
       // constraint so the race is diagnosable.
-      if (err?.code === PG_UNIQUE_VIOLATION) {
-        const constraint: string | undefined =
-          err?.constraint_name ?? err?.constraint;
+      if (isUniqueViolation(err)) {
+        const constraint = violatedConstraint(err);
         this.logger.warn(
           `share alias unique violation on ${constraint ?? '<unknown>'}`,
         );
@@ -189,13 +201,8 @@ export class ShareAliasService {
             code: 'ALIAS_PAGE_RACE',
           });
         }
-        // `(workspace_id, alias)` (UNIQUE_ALIAS_INDEX) or any other/unknown
-        // unique index: treat as the vanity name being claimed first.
-        if (constraint && constraint !== UNIQUE_ALIAS_INDEX) {
-          this.logger.warn(
-            `unexpected unique index ${constraint} mapped to "Alias already taken"`,
-          );
-        }
+        // `(workspace_id, alias)` or any other/unknown unique index: treat as
+        // the vanity name being claimed first.
         throw new ConflictException({ message: 'Alias already taken' });
       }
       this.logger.error(err);

@@ -94,7 +94,9 @@ describe('ShareAliasRepo', () => {
         return builder;
       }),
       returning: jest.fn(() => builder),
-      executeTakeFirst: jest.fn().mockResolvedValue({ id: 'a-1' }),
+      // Retarget uses executeTakeFirstOrThrow so a row reaped by a concurrent
+      // delete (0 rows matched) raises NoResultError instead of returning undefined.
+      executeTakeFirstOrThrow: jest.fn().mockResolvedValue({ id: 'a-1' }),
     };
     const db = { updateTable: jest.fn(() => builder) } as unknown as KyselyDB;
     const repo = new ShareAliasRepo(db);
@@ -121,7 +123,11 @@ describe('ShareAliasRepo', () => {
         return builder;
       }),
       returning: jest.fn(() => builder),
-      executeTakeFirst: jest.fn().mockResolvedValue({ id: 'a-1', alias: 'ted' }),
+      // Rename uses executeTakeFirstOrThrow so a row reaped by a concurrent
+      // delete (0 rows matched) raises NoResultError instead of returning undefined.
+      executeTakeFirstOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'a-1', alias: 'ted' }),
     };
     const db = { updateTable: jest.fn(() => builder) } as unknown as KyselyDB;
     const repo = new ShareAliasRepo(db);

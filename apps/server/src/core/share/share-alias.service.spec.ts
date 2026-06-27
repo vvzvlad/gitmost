@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { NoResultError } from 'kysely';
 import { ShareAliasService } from './share-alias.service';
 
 /**
@@ -349,6 +350,68 @@ describe('ShareAliasService', () => {
         });
         fail('expected ConflictException');
       } catch (err) {
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          code: 'ALIAS_PAGE_RACE',
+        });
+      }
+    });
+
+    it('maps a concurrent-delete race in the SWAP branch to a retryable 409 (not a 200-without-alias)', async () => {
+      const { service, shareAliasRepo } = makeService();
+      // Name points at another page; reassign confirmed -> swap branch.
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue({
+        id: 'a-1',
+        alias: 'foo',
+        pageId: 'p-other',
+      });
+      // A concurrent removeAlias deleted the row between read and UPDATE, so the
+      // repo's executeTakeFirstOrThrow finds 0 rows and throws NoResultError.
+      shareAliasRepo.updatePageId.mockRejectedValue(
+        new NoResultError({} as any),
+      );
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'foo',
+          confirmReassign: true,
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        // Crucially NOT a resolved 200 carrying `undefined` as the alias.
+        expect(err).toBeInstanceOf(ConflictException);
+        expect((err as ConflictException).getResponse()).toMatchObject({
+          code: 'ALIAS_PAGE_RACE',
+        });
+      }
+    });
+
+    it('maps a concurrent-delete race in the RENAME branch to a retryable 409 (not a generic 400)', async () => {
+      const { service, shareAliasRepo } = makeService();
+      // New slug is free, but the page already owns an alias we rename in place.
+      shareAliasRepo.findByAliasAndWorkspace.mockResolvedValue(undefined);
+      shareAliasRepo.findByPageId.mockResolvedValue({
+        id: 'a-1',
+        alias: 'te',
+        pageId: 'p-1',
+      });
+      // The row vanished before the UPDATE; repo throws NoResultError rather
+      // than returning undefined (which would dereference undefined.id -> 400).
+      shareAliasRepo.updateAlias.mockRejectedValue(new NoResultError({} as any));
+
+      try {
+        await service.setAlias({
+          workspaceId: 'ws-1',
+          pageId: 'p-1',
+          creatorId: 'u-1',
+          alias: 'ted',
+        });
+        fail('expected ConflictException');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConflictException);
+        expect(err).not.toBeInstanceOf(BadRequestException);
         expect((err as ConflictException).getResponse()).toMatchObject({
           code: 'ALIAS_PAGE_RACE',
         });

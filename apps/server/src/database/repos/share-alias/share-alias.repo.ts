@@ -92,6 +92,12 @@ export class ShareAliasRepo {
    * Rename an existing alias row in place (the vanity-slug edit, e.g.
    * `te` -> `ted`). Keeps the row's id/page_id/creator so the page's single
    * alias pointer is preserved — only the human-readable name changes.
+   *
+   * Uses `executeTakeFirstOrThrow`: if a concurrent `delete` reaps this row
+   * between the service's read and this UPDATE (READ COMMITTED), the UPDATE
+   * matches 0 rows and kysely throws `NoResultError` rather than returning
+   * `undefined` for a `Promise<ShareAlias>`. The service maps that to a
+   * retryable conflict instead of dereferencing `undefined.id`.
    */
   async updateAlias(
     id: string,
@@ -105,7 +111,7 @@ export class ShareAliasRepo {
       .where('id', '=', id)
       .where('workspaceId', '=', workspaceId)
       .returning(this.baseFields)
-      .executeTakeFirst();
+      .executeTakeFirstOrThrow();
   }
 
   /**
@@ -127,7 +133,15 @@ export class ShareAliasRepo {
       .execute();
   }
 
-  /** Retarget an existing alias to a new page (the "swap" operation). */
+  /**
+   * Retarget an existing alias to a new page (the "swap" operation).
+   *
+   * Uses `executeTakeFirstOrThrow`: if a concurrent `delete` reaps this row
+   * between the service's read and this UPDATE, the UPDATE matches 0 rows and
+   * kysely throws `NoResultError` instead of returning `undefined` into the 200
+   * response (a "success" with no alias). The service maps that to a retryable
+   * conflict.
+   */
   async updatePageId(
     id: string,
     pageId: string,
@@ -140,7 +154,7 @@ export class ShareAliasRepo {
       .where('id', '=', id)
       .where('workspaceId', '=', workspaceId)
       .returning(this.baseFields)
-      .executeTakeFirst();
+      .executeTakeFirstOrThrow();
   }
 
   async delete(
