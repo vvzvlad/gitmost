@@ -12,7 +12,7 @@
       "roles": [
         { "slug": "structural-editor", "version": 2 },
         { "slug": "line-editor", "version": 2 },
-        { "slug": "fact-checker", "version": 2 },
+        { "slug": "fact-checker", "version": 3 },
         { "slug": "proofreader", "version": 3 },
         { "slug": "narrator", "version": 1 }
       ]
