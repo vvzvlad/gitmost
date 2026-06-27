@@ -120,6 +120,13 @@ per-workspace rolling-day token budget.
   applies it through the existing `/pages/update` route — reflecting it in the
   title field and broadcasting to other clients. Gated by the `settings.ai.generative`
   flag and throttled per user. (#199)
+- **AI chat: header button auto-opens the chat bound to the current document.**
+  Clicking the AI-chat button in the header while viewing a page now reopens the
+  latest chat tied to that document instead of whatever chat was last active,
+  reusing the existing `ai_chats.page_id` provenance (no migration). The newest
+  chat you created on the page wins; with no bound chat — or off a page, or if
+  the lookup fails — it falls soft to a fresh chat and keeps the current
+  selection otherwise. (#191)
 
 ### Changed
 

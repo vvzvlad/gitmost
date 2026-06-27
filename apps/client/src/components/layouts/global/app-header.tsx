@@ -10,12 +10,12 @@ import classes from "./app-header.module.css";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
 import { Link } from "react-router-dom";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import {
   desktopSidebarAtom,
   mobileSidebarAtom,
 } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
-import { aiChatWindowOpenAtom } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import { useOpenAiChatForCurrentPage } from "@/features/ai-chat/hooks/use-open-ai-chat.ts";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 import SidebarToggle from "@/components/ui/sidebar-toggle-button.tsx";
@@ -38,7 +38,9 @@ export function AppHeader() {
   const toggleDesktop = useToggleSidebar(desktopSidebarAtom);
 
   const [workspace] = useAtom(workspaceAtom);
-  const setAiChatWindowOpen = useSetAtom(aiChatWindowOpenAtom);
+  // Opening from the header auto-opens the document's bound chat (last chat
+  // created on the current page); off a page it keeps the current selection.
+  const openAiChat = useOpenAiChatForCurrentPage();
   // AI chat entry point: only shown when the workspace enables it (A7 gate).
   const aiChatEnabled = workspace?.settings?.ai?.chat === true;
 
@@ -105,7 +107,7 @@ export function AppHeader() {
                 color="dark"
                 size="sm"
                 aria-label={t("AI chat")}
-                onClick={() => setAiChatWindowOpen((v) => !v)}
+                onClick={openAiChat}
               >
                 <IconMessage size={20} />
               </ActionIcon>
