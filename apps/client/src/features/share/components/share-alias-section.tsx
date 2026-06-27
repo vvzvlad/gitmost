@@ -120,8 +120,13 @@ export default function ShareAliasSection({
   };
 
   const showInvalid = normalized.length > 0 && !isValid;
-  const showTaken =
-    isValid && !unchanged && availability && !availability.available;
+  // The typed name is already in use by ANOTHER page. This is NOT a dead end:
+  // hitting Save triggers the server's 409 `ALIAS_REASSIGN_REQUIRED` and opens
+  // the "Move custom address?" confirm modal that retargets the address here.
+  // So surface it as an informational hint (not a terminal red error) and keep
+  // Save enabled, instead of looking like the address is unusable.
+  const reassignable =
+    isValid && !unchanged && !!availability && !availability.available;
 
   // The slug prefix (e.g. "docs.example.com/l/") is static for the session.
   const prefixLabel = aliasPrefixLabel();
@@ -198,9 +203,12 @@ export default function ShareAliasSection({
         error={
           showInvalid
             ? t("Use 2-60 lowercase letters, digits and hyphens")
-            : showTaken
-              ? t("This address is already in use")
-              : undefined
+            : undefined
+        }
+        description={
+          reassignable
+            ? t("This address is in use. Saving will move it to this page.")
+            : undefined
         }
       />
 

@@ -1333,6 +1333,7 @@
   "A short, memorable link you can point at any shared page.": "A short, memorable link you can point at any shared page.",
   "Use 2-60 lowercase letters, digits and hyphens": "Use 2-60 lowercase letters, digits and hyphens",
   "This address is already in use": "This address is already in use",
+  "This address is in use. Saving will move it to this page.": "This address is in use. Saving will move it to this page.",
   "Move custom address?": "Move custom address?",
   "Move here": "Move here",
   "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?": "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?",

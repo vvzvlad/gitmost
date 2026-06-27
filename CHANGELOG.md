@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page), so any previously-live duplicate `/l/<old>` link begins returning the
   generic 404 after upgrade — intended, but not undoable by `down()`. (#226,
   #227)
+- **Typing a custom address already used by another page no longer looks like a
+  dead end.** The share modal previously flagged such a name with a red "This
+  address is already in use" error, hiding the fact that saving offers to MOVE
+  the address to the current page. The field now shows an informational hint —
+  "This address is in use. Saving will move it to this page." — and keeps Save
+  enabled, so the existing reassign-confirm flow (`409 ALIAS_REASSIGN_REQUIRED` →
+  "Move custom address?") is discoverable instead of reading as terminal. (#227)
 
 ## [0.94.0] - 2026-06-26
 
