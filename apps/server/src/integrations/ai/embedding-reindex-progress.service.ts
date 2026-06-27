@@ -22,6 +22,12 @@ const KEY_PREFIX = 'ai:reindex:progress:';
  * reaches its `clear()` finally can still self-clean instead of leaving a stuck
  * "reindexing" state. Refreshed on every increment so a long run never expires
  * mid-flight; on a crash it disappears within TTL of the last processed page.
+ *
+ * INTENTIONALLY tied to WRITE progress (start/increment) only — never refreshed
+ * on get(). Refreshing on read would keep a dead worker's record alive forever
+ * as long as a client keeps polling (a permanently stuck reindexing:true). The
+ * clear() in the worker's finally handles normal completion; a dead worker's
+ * record expires after TTL, and the client's own poll cap stops polling anyway.
  */
 const TTL_SECONDS = 60 * 60; // 1h
 

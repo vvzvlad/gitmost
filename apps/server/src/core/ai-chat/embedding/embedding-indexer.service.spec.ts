@@ -14,7 +14,8 @@ import { AiEmbeddingNotConfiguredException } from '../../../integrations/ai/ai-e
  * reindexWorkspace actually touches:
  *   - aiService.getEmbeddingModel -> a model string so the up-front configured
  *     check passes,
- *   - pageRepo.getIdsByWorkspace -> three page ids,
+ *   - pageRepo.getEmbeddablePageIds -> three page ids (the embeddable set the
+ *     reindex iterates),
  *   - service.reindexPage -> spied per test to drive the per-page outcome.
  *
  * The point under test is the catch block: a FATAL provider error (auth/billing)
@@ -26,7 +27,7 @@ describe('EmbeddingIndexerService.reindexWorkspace fail-fast', () => {
 
   function makeService() {
     const pageRepo = {
-      getIdsByWorkspace: jest.fn().mockResolvedValue(['p1', 'p2', 'p3']),
+      getEmbeddablePageIds: jest.fn().mockResolvedValue(['p1', 'p2', 'p3']),
     };
     const pageEmbeddingRepo = {};
     const aiService = {
@@ -102,7 +103,7 @@ describe('EmbeddingIndexerService.reindexWorkspace progress', () => {
 
   function makeService(pageIds: string[] = ['p1', 'p2', 'p3']) {
     const pageRepo = {
-      getIdsByWorkspace: jest.fn().mockResolvedValue(pageIds),
+      getEmbeddablePageIds: jest.fn().mockResolvedValue(pageIds),
     };
     const pageEmbeddingRepo = {};
     const aiService = {

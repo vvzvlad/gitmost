@@ -278,6 +278,47 @@ export class PageRepo {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * IDs of the EMBEDDABLE page set for a workspace — the exact same set that
+   * `countEmbeddablePages` counts (a page qualifies if it has non-empty
+   * textContent OR already has a stored embedding row). The bulk reindex
+   * iterates THIS set so the live "done" counter reaches exactly
+   * `countEmbeddablePages` (the steady-state denominator), instead of iterating
+   * every non-deleted page (which would push the denominator above the
+   * steady-state value mid-run).
+   *
+   * IMPORTANT: the WHERE here MUST stay in lockstep with `countEmbeddablePages`
+   * — if one changes, change both, or the live total and steady-state total
+   * diverge again. Dropping text-less pages is correct: `reindexPage` no-ops on
+   * a page with no extractable content anyway, and a page that lost its text but
+   * still has stale embeddings IS in this set (the EXISTS clause), so it is still
+   * visited and its stale rows are cleared.
+   */
+  async getEmbeddablePageIds(workspaceId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('pages as p')
+      .select('p.id')
+      .where('p.workspaceId', '=', workspaceId)
+      .where('p.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          // Has extractable body text (mirrors countEmbeddablePages: any
+          // non-whitespace char; raw SQL -> snake_case column name).
+          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
+          // OR already has at least one (non-deleted) embedding row.
+          eb.exists(
+            eb
+              .selectFrom('pageEmbeddings as pe')
+              .select(sql`1`.as('one'))
+              .whereRef('pe.pageId', '=', 'p.id')
+              .where('pe.deletedAt', 'is', null),
+          ),
+        ]),
+      )
+      .execute();
+    return rows.map((r) => r.id);
+  }
+
   async deletePage(pageId: string): Promise<void> {
     let query = this.db.deleteFrom('pages');
 

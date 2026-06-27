@@ -215,12 +215,19 @@ export class EmbeddingIndexerService {
         throw err;
       }
 
-      const pageIds = await this.pageRepo.getIdsByWorkspace(workspaceId);
+      // Iterate the EMBEDDABLE set (same predicate as countEmbeddablePages), NOT
+      // every non-deleted page: this makes `total` here equal the steady-state
+      // denominator, so the live counter climbs 0 -> total and matches the
+      // before/after DB count exactly (no 478 -> 500 -> 478 denominator jump).
+      // Text-less pages are correctly skipped — reindexPage no-ops on them, and
+      // a page that lost its text but still has stale embeddings IS in this set
+      // (the EXISTS clause) so it is still visited and its stale rows cleared.
+      const pageIds = await this.pageRepo.getEmbeddablePageIds(workspaceId);
       const total = pageIds.length;
       const startedAt = Date.now();
-      // Publish the live run progress (overwrites the enqueue-time placeholder
-      // with the real page count, done back to 0) so the settings status can
-      // report done climbing 0 -> total while this reindex runs.
+      // Publish the live run progress over this same set (done reset to 0). The
+      // counter increments once per iterated page and reaches exactly `total`,
+      // which equals countEmbeddablePages — the steady-state denominator.
       await this.reindexProgress.start(workspaceId, total);
       this.logger.log(
         `reindexWorkspace: starting reindex of ${total} page(s) for workspace ${workspaceId}`,

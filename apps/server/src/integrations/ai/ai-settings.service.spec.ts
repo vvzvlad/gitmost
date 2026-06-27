@@ -95,17 +95,20 @@ describe('AiSettingsService.getMasked reindex progress', () => {
 
   it('reports the live run numbers when a reindex progress record is active', async () => {
     const { service, reindexProgress } = makeService();
-    // Mid-run: 120 of 478 pages processed.
+    // Use a progress.total (500) DISTINCT from the DB count (478) so the test
+    // actually pins the progress.total branch rather than coincidentally
+    // matching the DB fallback. With fix #1 the two sources agree in practice,
+    // but getMasked must still return progress.total when a record is active.
     reindexProgress.get.mockResolvedValue({
-      total: 478,
+      total: 500,
       done: 120,
       startedAt: Date.now(),
     });
 
     const masked = await service.getMasked(WORKSPACE_ID);
 
-    expect(masked.indexedPages).toBe(120);
-    expect(masked.totalPages).toBe(478);
+    expect(masked.indexedPages).toBe(120); // progress.done, not DB 478
+    expect(masked.totalPages).toBe(500); // progress.total, not DB 478
     expect(masked.reindexing).toBe(true);
   });
 
@@ -118,5 +121,75 @@ describe('AiSettingsService.getMasked reindex progress', () => {
     expect(masked.indexedPages).toBe(478);
     expect(masked.totalPages).toBe(478);
     expect(masked.reindexing).toBe(false);
+  });
+});
+
+/**
+ * reindex() must seed a live progress record (done=0) BEFORE enqueueing so the
+ * first status poll shows 0 — but ONLY when no run is already active, since
+ * aiQueue.add() de-duplicates a running reindex and a re-seed would reset the
+ * visible counter to 0 while the live worker keeps incrementing from its real
+ * position.
+ */
+describe('AiSettingsService.reindex progress seed', () => {
+  const WORKSPACE_ID = 'ws-1';
+
+  function makeService() {
+    const order: string[] = [];
+    const aiQueue = {
+      remove: jest.fn().mockResolvedValue(undefined),
+      add: jest.fn().mockImplementation(async () => {
+        order.push('add');
+      }),
+    };
+    const pageRepo = {
+      countEmbeddablePages: jest.fn().mockResolvedValue(478),
+    };
+    const reindexProgress = {
+      // Default: no active run -> seed should happen.
+      get: jest.fn().mockResolvedValue(null),
+      start: jest.fn().mockImplementation(async () => {
+        order.push('start');
+      }),
+    };
+
+    const service = new AiSettingsService(
+      {} as unknown as WorkspaceRepo,
+      {} as unknown as AiAgentRoleRepo,
+      {} as unknown as AiProviderCredentialsRepo,
+      {} as unknown as PageEmbeddingRepo,
+      pageRepo as unknown as PageRepo,
+      {} as unknown as SecretBoxService,
+      reindexProgress as unknown as EmbeddingReindexProgressService,
+      aiQueue as unknown as Queue,
+    );
+    return { service, aiQueue, pageRepo, reindexProgress, order };
+  }
+
+  it('seeds progress (workspace, count) BEFORE enqueue when no run is active', async () => {
+    const { service, aiQueue, reindexProgress, order } = makeService();
+
+    await service.reindex(WORKSPACE_ID);
+
+    expect(reindexProgress.start).toHaveBeenCalledWith(WORKSPACE_ID, 478);
+    expect(aiQueue.add).toHaveBeenCalledTimes(1);
+    // Seed must precede the enqueue so the first poll already reports done=0.
+    expect(order).toEqual(['start', 'add']);
+  });
+
+  it('does NOT re-seed when a run is already active (mid-run re-trigger)', async () => {
+    const { service, aiQueue, reindexProgress } = makeService();
+    // An active record exists -> a second click must not reset the counter.
+    reindexProgress.get.mockResolvedValue({
+      total: 478,
+      done: 120,
+      startedAt: Date.now(),
+    });
+
+    await service.reindex(WORKSPACE_ID);
+
+    expect(reindexProgress.start).not.toHaveBeenCalled();
+    // The enqueue still runs (and de-duplicates against the active job).
+    expect(aiQueue.add).toHaveBeenCalledTimes(1);
   });
 });

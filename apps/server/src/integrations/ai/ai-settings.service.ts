@@ -105,11 +105,19 @@ export class AiSettingsService {
     // Seed a live progress record BEFORE enqueueing so the very first status
     // poll already reports done=0 (the reindex POST returns the PRE-job counts,
     // so without this seed the first poll would still show "total of total").
-    // The worker overwrites `total` with the real page count, increments `done`
-    // as it runs, and clears the record in a finally. `totalPages` uses the same
-    // source the status endpoint reports, so the counter denominator matches.
-    const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
-    await this.reindexProgress.start(workspaceId, totalPages);
+    // `totalPages` uses countEmbeddablePages — the SAME set the worker iterates
+    // and the SAME denominator the status endpoint reports, so the live and
+    // steady-state totals match.
+    //
+    // ONLY seed when no run is active: aiQueue.add() de-duplicates an already-
+    // running reindex, so a mid-run re-trigger (second click / second admin /
+    // second tab) must NOT reset the visible counter to 0 — that would
+    // understate the live worker's real position for the rest of the run. The
+    // worker's own start() at run begin is the single authoritative reset.
+    if ((await this.reindexProgress.get(workspaceId)) === null) {
+      const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
+      await this.reindexProgress.start(workspaceId, totalPages);
+    }
 
     const jobId = `ai-reindex-${workspaceId}`;
     // Clear a prior non-active entry so a stale job can't block this reindex.
