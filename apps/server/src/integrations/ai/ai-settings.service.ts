@@ -8,6 +8,7 @@ import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { SecretBoxService } from '../crypto/secret-box';
+import { EmbeddingReindexProgressService } from './embedding-reindex-progress.service';
 import {
   AiDriver,
   AiProviderSettings,
@@ -74,6 +75,7 @@ export class AiSettingsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
     private readonly secretBox: SecretBoxService,
+    private readonly reindexProgress: EmbeddingReindexProgressService,
     @InjectQueue(QueueName.AI_QUEUE) private readonly aiQueue: Queue,
   ) {}
 
@@ -99,6 +101,15 @@ export class AiSettingsService {
     await this.aiQueue
       .remove(`ai-search-disabled-${workspaceId}`)
       .catch(() => undefined);
+
+    // Seed a live progress record BEFORE enqueueing so the very first status
+    // poll already reports done=0 (the reindex POST returns the PRE-job counts,
+    // so without this seed the first poll would still show "total of total").
+    // The worker overwrites `total` with the real page count, increments `done`
+    // as it runs, and clears the record in a finally. `totalPages` uses the same
+    // source the status endpoint reports, so the counter denominator matches.
+    const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
+    await this.reindexProgress.start(workspaceId, totalPages);
 
     const jobId = `ai-reindex-${workspaceId}`;
     // Clear a prior non-active entry so a stale job can't block this reindex.
@@ -261,6 +272,15 @@ export class AiSettingsService {
       this.pageRepo.countEmbeddablePages(workspaceId),
     ]);
 
+    // While a reindex run is active, report its LIVE progress (done climbs 0 ->
+    // total) so the settings UI can watch it advance. Without this the counter
+    // never drops: the per-page reindex hard-replaces rows in its own small
+    // transaction, so countIndexedPages stays ~= total for the whole run. With
+    // no active record we fall back to the steady-state DB coverage count, which
+    // preserves the existing display and the client's "done == total -> stop
+    // polling" condition (the run ends -> record cleared -> DB count == total).
+    const progress = await this.reindexProgress.get(workspaceId);
+
     return {
       driver: provider.driver,
       chatModel: provider.chatModel,
@@ -279,8 +299,10 @@ export class AiSettingsService {
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
-      indexedPages,
-      totalPages,
+      indexedPages: progress ? progress.done : indexedPages,
+      totalPages: progress ? progress.total : totalPages,
+      // Optional hint for the client: a reindex run is currently in progress.
+      reindexing: progress != null,
     };
   }
 

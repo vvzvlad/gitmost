@@ -9,6 +9,7 @@ import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { InjectKysely } from 'nestjs-kysely';
 import { executeTx } from '@docmost/db/utils';
 import { AiService } from '../../../integrations/ai/ai.service';
+import { EmbeddingReindexProgressService } from '../../../integrations/ai/embedding-reindex-progress.service';
 import { AiEmbeddingNotConfiguredException } from '../../../integrations/ai/ai-embedding-not-configured.exception';
 import {
   describeProviderError,
@@ -48,6 +49,7 @@ export class EmbeddingIndexerService {
     private readonly pageRepo: PageRepo,
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly aiService: AiService,
+    private readonly reindexProgress: EmbeddingReindexProgressService,
     @InjectKysely() private readonly db: KyselyDB,
   ) {}
 
@@ -194,69 +196,89 @@ export class EmbeddingIndexerService {
    * the batch.
    */
   async reindexWorkspace(workspaceId: string): Promise<void> {
+    // The whole run is wrapped so the per-workspace progress record is ALWAYS
+    // cleared in the finally — on success, on a fatal-provider abort, on an
+    // unconfigured early-return, or on any unexpected throw — so a failed run
+    // never leaves a stuck "reindexing" state (the status then falls back to the
+    // steady-state DB coverage count). A placeholder record may already exist
+    // (seeded at enqueue time); the finally cleans that too.
     try {
-      await this.aiService.getEmbeddingModel(workspaceId);
-    } catch (err) {
-      if (err instanceof AiEmbeddingNotConfiguredException) {
-        this.logger.log(
-          `reindexWorkspace: embeddings not configured for workspace ${workspaceId}, skipping`,
-        );
-        return;
-      }
-      throw err;
-    }
-
-    const pageIds = await this.pageRepo.getIdsByWorkspace(workspaceId);
-    const total = pageIds.length;
-    const startedAt = Date.now();
-    this.logger.log(
-      `reindexWorkspace: starting reindex of ${total} page(s) for workspace ${workspaceId}`,
-    );
-
-    let failed = 0;
-    for (let i = 0; i < total; i++) {
-      const pageId = pageIds[i];
-      const position = i + 1;
-      // Log BEFORE the await: if the embedding call hangs, this is the last line
-      // in the log and it names the exact page that is stuck.
-      this.logger.log(
-        `reindexWorkspace: [${position}/${total}] indexing page ${pageId} (workspace ${workspaceId})`,
-      );
-      const pageStartedAt = Date.now();
       try {
-        await this.reindexPage(pageId);
-        const elapsed = Date.now() - pageStartedAt;
-        if (elapsed >= SLOW_PAGE_MS) {
-          this.logger.warn(
-            `reindexWorkspace: [${position}/${total}] page ${pageId} took ${elapsed}ms`,
-          );
-        }
+        await this.aiService.getEmbeddingModel(workspaceId);
       } catch (err) {
-        // A fatal provider error (invalid/missing key, no credits) recurs
-        // identically on EVERY remaining page. Abort the whole batch instead of
-        // issuing hundreds of doomed requests against the provider.
-        if (isFatalProviderError(err)) {
-          this.logger.error(
-            `reindexWorkspace: aborting at [${position}/${total}] for workspace ` +
-              `${workspaceId} — fatal provider error, remaining pages would fail ` +
-              `identically: ${describeProviderError(err)}`,
+        if (err instanceof AiEmbeddingNotConfiguredException) {
+          this.logger.log(
+            `reindexWorkspace: embeddings not configured for workspace ${workspaceId}, skipping`,
           );
-          throw err;
+          return;
         }
-        // Per-page isolation: one non-fatal failure (incl. an embedding timeout)
-        // must not abort the whole batch.
-        failed++;
-        this.logger.error(
-          `reindexWorkspace: [${position}/${total}] failed to reindex page ${pageId} ` +
-            `after ${Date.now() - pageStartedAt}ms: ${describeProviderError(err)}`,
-        );
+        throw err;
       }
-    }
 
-    this.logger.log(
-      `reindexWorkspace: done for workspace ${workspaceId}: ` +
-        `${total - failed}/${total} indexed, ${failed} failed in ${Date.now() - startedAt}ms`,
-    );
+      const pageIds = await this.pageRepo.getIdsByWorkspace(workspaceId);
+      const total = pageIds.length;
+      const startedAt = Date.now();
+      // Publish the live run progress (overwrites the enqueue-time placeholder
+      // with the real page count, done back to 0) so the settings status can
+      // report done climbing 0 -> total while this reindex runs.
+      await this.reindexProgress.start(workspaceId, total);
+      this.logger.log(
+        `reindexWorkspace: starting reindex of ${total} page(s) for workspace ${workspaceId}`,
+      );
+
+      let failed = 0;
+      for (let i = 0; i < total; i++) {
+        const pageId = pageIds[i];
+        const position = i + 1;
+        // Log BEFORE the await: if the embedding call hangs, this is the last line
+        // in the log and it names the exact page that is stuck.
+        this.logger.log(
+          `reindexWorkspace: [${position}/${total}] indexing page ${pageId} (workspace ${workspaceId})`,
+        );
+        const pageStartedAt = Date.now();
+        try {
+          await this.reindexPage(pageId);
+          // Count this page as processed (matches the [position/total] log).
+          await this.reindexProgress.increment(workspaceId);
+          const elapsed = Date.now() - pageStartedAt;
+          if (elapsed >= SLOW_PAGE_MS) {
+            this.logger.warn(
+              `reindexWorkspace: [${position}/${total}] page ${pageId} took ${elapsed}ms`,
+            );
+          }
+        } catch (err) {
+          // A fatal provider error (invalid/missing key, no credits) recurs
+          // identically on EVERY remaining page. Abort the whole batch instead of
+          // issuing hundreds of doomed requests against the provider. Do NOT count
+          // it as processed — the run aborts here (the finally clears progress).
+          if (isFatalProviderError(err)) {
+            this.logger.error(
+              `reindexWorkspace: aborting at [${position}/${total}] for workspace ` +
+                `${workspaceId} — fatal provider error, remaining pages would fail ` +
+                `identically: ${describeProviderError(err)}`,
+            );
+            throw err;
+          }
+          // Per-page isolation: one non-fatal failure (incl. an embedding timeout)
+          // must not abort the whole batch. A handled failure still advances the
+          // counter (matches the [position/total] log, so done reaches total).
+          failed++;
+          await this.reindexProgress.increment(workspaceId);
+          this.logger.error(
+            `reindexWorkspace: [${position}/${total}] failed to reindex page ${pageId} ` +
+              `after ${Date.now() - pageStartedAt}ms: ${describeProviderError(err)}`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `reindexWorkspace: done for workspace ${workspaceId}: ` +
+          `${total - failed}/${total} indexed, ${failed} failed in ${Date.now() - startedAt}ms`,
+      );
+    } finally {
+      // Always remove the progress record so the status reverts to the DB count.
+      await this.reindexProgress.clear(workspaceId);
+    }
   }
 
   /** Purge ALL embeddings for a workspace (WORKSPACE_DELETE_EMBEDDINGS). */
