@@ -1328,6 +1328,12 @@ export class PageService {
     // (Future consolidation, architecture B: the import services persist via a
     // different path; folding all of these into one "prepare JSON for persist"
     // helper would centralize the canonicalize call — left as follow-up.)
+    //
+    // ENFORCEMENT RULE (#228): any NEW FULL-document persist path MUST call
+    // `canonicalizeFootnotes(json)` before writing (see createPage and
+    // updatePageContent 'replace'); append/prepend FRAGMENT writes MUST NOT (it
+    // would drop or duplicate footnotes — that is exactly why this is per-call-site
+    // rather than a single wrapper here).
     try {
       jsonToNode(prosemirrorJson);
     } catch (err) {

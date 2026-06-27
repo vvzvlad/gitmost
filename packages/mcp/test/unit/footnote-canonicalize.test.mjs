@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { canonicalizeFootnotes } from "../../build/lib/footnote-canonicalize.js";
-import { footnoteContentKey } from "../../build/lib/footnote-authoring.js";
+import {
+  footnoteContentKey,
+  generateFootnoteId,
+} from "../../build/lib/footnote-authoring.js";
 import { insertInlineFootnote } from "../../build/lib/transforms.js";
 import { markdownToProseMirrorCanonical } from "../../build/lib/collaboration.js";
 
@@ -190,6 +193,66 @@ test("insertInlineFootnote: codeBlock match is skipped, a later body paragraph s
   assert.equal(findAll(r.doc, "footnoteReference").length, 1);
 });
 
+test("insertInlineFootnote: anchor only inside a NESTED definition -> refused, definition preserved", () => {
+  // The footnotesList is nested in a callout (not top level) and the anchor text
+  // appears ONLY inside that definition. The search must be bounded past the
+  // notes subtree (recursive boundary) AND refuse to descend into the definition,
+  // so it aborts cleanly instead of gluing a reference into the definition (which
+  // canonicalize would then drop as an orphan, losing the definition's prose).
+  const doc = {
+    type: "doc",
+    content: [
+      para({ type: "text", text: "Body text here." }, ref("a")),
+      {
+        type: "callout",
+        content: [list(def("a", "the unique anchor lives here"))],
+      },
+    ],
+  };
+  const r = insertInlineFootnote(doc, {
+    anchorText: "unique anchor",
+    text: "new note",
+  });
+  assert.equal(r.inserted, false);
+  // The existing definition (and its text) is preserved untouched.
+  assert.equal(findAll(r.doc, "footnoteDefinition").length, 1);
+  assert.match(JSON.stringify(r.doc), /the unique anchor lives here/);
+  assert.equal(findAll(r.doc, "footnoteReference").length, 1); // only the original
+});
+
+test("insertInlineFootnote: anchor only inside a BARE definition (no list wrapper) -> refused", () => {
+  const doc = {
+    type: "doc",
+    content: [
+      para({ type: "text", text: "Some body." }),
+      {
+        type: "footnoteDefinition",
+        attrs: { id: "a" },
+        content: [{ type: "paragraph", content: [{ type: "text", text: "orphan anchor text" }] }],
+      },
+    ],
+  };
+  const r = insertInlineFootnote(doc, { anchorText: "orphan anchor", text: "x" });
+  assert.equal(r.inserted, false);
+  assert.equal(findAll(r.doc, "footnoteDefinition").length, 1);
+  assert.match(JSON.stringify(r.doc), /orphan anchor text/);
+});
+
+test("insertInlineFootnote: anchor in body BEFORE a nested list still inserts", () => {
+  const doc = {
+    type: "doc",
+    content: [
+      para({ type: "text", text: "The sky is blue." }, ref("a")),
+      { type: "callout", content: [list(def("a", "note a"))] },
+    ],
+  };
+  const r = insertInlineFootnote(doc, { anchorText: "blue", text: "Rayleigh." });
+  assert.equal(r.inserted, true);
+  // The new reference plus the original = two references; a single canonical list.
+  assert.equal(findAll(r.doc, "footnoteReference").length, 2);
+  assert.equal(findAll(r.doc, "footnotesList").length, 1);
+});
+
 test("markdown import (page path): out-of-order definitions render as a reference-ordered list", async () => {
   // References appear b, a, c in the body; definitions are written in a, b, c
   // order (the import order). The PAGE import path (markdownToProseMirrorCanonical)
@@ -206,4 +269,18 @@ test("markdown import (page path): out-of-order definitions render as a referenc
   const json = await markdownToProseMirrorCanonical(md);
   assert.deepEqual(defIds(json), ["b", "a", "c"]);
   assert.equal(findAll(json, "footnotesList").length, 1);
+});
+
+test("generateFootnoteId: valid uuidv7 shape (version 7, variant 8..b) and unique", () => {
+  // version nibble = 7; variant nibble in [8,9,a,b]; otherwise lowercase hex.
+  const re =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const ids = new Set();
+  for (let i = 0; i < 50; i++) {
+    const id = generateFootnoteId();
+    assert.match(id, re, `not a uuidv7: ${id}`);
+    ids.add(id);
+  }
+  // Distinct across calls (random component makes collisions astronomically rare).
+  assert.equal(ids.size, 50, "generated ids must be unique");
 });

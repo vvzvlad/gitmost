@@ -8,6 +8,7 @@ import {
   htmlToMarkdown,
   canonicalizeFootnotes,
   FOOTNOTES_LIST_NAME,
+  FOOTNOTE_REFERENCE_NAME,
 } from "@docmost/editor-ext";
 import type { Schema } from "@tiptap/pm/model";
 
@@ -165,15 +166,28 @@ export const MarkdownClipboard = Extension.create({
  * for the paste/sync plugins to merge. Residual: when the pasted block is merged
  * into a doc that already has footnotes, ordering RELATIVE to the pre-existing
  * footnotes is still governed by the sync plugin (which does not reorder).
+ *
+ * Also requires at least one footnoteReference in the selection: a definitions-ONLY
+ * paste (`[^a]: …` with no `[^a]` reference in the same block) has no references,
+ * so canonicalizeFootnotes would drop the whole list and the paste would come out
+ * EMPTY — losing the pasted text. Such a block is left as-is for the sync plugin.
  */
 export function canonicalizePastedFootnotes(slice: Slice, schema: Schema): Slice {
   if (slice.openStart !== 0 || slice.openEnd !== 0) return slice;
 
   let hasFootnotesList = false;
+  let hasReference = false;
   slice.content.forEach((node) => {
     if (node.type.name === FOOTNOTES_LIST_NAME) hasFootnotesList = true;
+    if (node.type.name === FOOTNOTE_REFERENCE_NAME) hasReference = true;
+    node.descendants((child) => {
+      if (child.type.name === FOOTNOTE_REFERENCE_NAME) hasReference = true;
+    });
   });
   if (!hasFootnotesList) return slice;
+  // No reference anywhere -> a definitions-only paste; canonicalizing would strip
+  // the reference-less list (empty paste). Leave it untouched.
+  if (!hasReference) return slice;
 
   const content = slice.content.toJSON();
   if (!Array.isArray(content)) return slice;

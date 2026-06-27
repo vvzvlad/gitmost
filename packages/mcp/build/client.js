@@ -1118,13 +1118,16 @@ export class DocmostClient {
             result = { footnoteId: r.footnoteId, reused: r.reused };
             return r.doc;
         });
+        // The not-found path throws inside the transform (aborting mutatePage), so by
+        // here `result` is always set.
+        const r = result;
         return {
             success: true,
             modified: true,
             pageId,
-            footnoteId: result ? result.footnoteId : undefined,
-            reused: result ? result.reused : undefined,
-            message: result && result.reused
+            footnoteId: r.footnoteId,
+            reused: r.reused,
+            message: r.reused
                 ? "Footnote inserted (reused an existing same-content definition)."
                 : "Footnote inserted.",
             verify: mutation.verify,
@@ -2534,14 +2537,18 @@ export class DocmostClient {
                 !Array.isArray(raw.content)) {
                 throw new Error('transform must return a ProseMirror doc node ({ type:"doc", content:[...] })');
             }
+            // Validate the RAW transform output FIRST (structure — including the
+            // MAX_DEPTH guard — and URLs), mirroring updatePageJson. The canonicalizer
+            // recurses without a depth limiter, so validating after it would turn a
+            // too-deep doc into an opaque "Maximum call stack size exceeded" instead of
+            // the intended "nesting exceeds the maximum depth" error.
+            this.validateDocStructure(raw);
+            this.validateDocUrls(raw);
             // Auto-canonicalize footnotes after the transform (idempotent): no write
             // path can leave footnotes out of order / orphaned / in a raw `[^id]`
             // block. In a dryRun preview this may surface footnote edits the script
             // author did not write (the canonicalizer tidied them) — that is expected.
             const result = canonicalizeFootnotes(raw);
-            // Validate the returned doc before it can be written.
-            this.validateDocStructure(result);
-            this.validateDocUrls(result);
             newDoc = result;
             return result;
         };

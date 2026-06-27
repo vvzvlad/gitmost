@@ -117,6 +117,32 @@ describe("canonicalizePastedFootnotes", () => {
     editor.destroy();
   });
 
+  it("leaves a definitions-ONLY paste untouched (no references -> no empty paste)", () => {
+    // A whole-block paste of ONLY definitions (a footnotesList with no matching
+    // footnoteReference anywhere in the selection). Canonicalizing it would strip
+    // the reference-less list -> an EMPTY paste, losing the pasted text. The hook
+    // must leave such a block untouched.
+    const { editor, schema } = makeSchema();
+    const slice = new Slice(
+      Fragment.fromArray([
+        schema.nodes[FOOTNOTES_LIST_NAME].create(null, [
+          schema.nodes[FOOTNOTE_DEFINITION_NAME].create({ id: "a" }, [
+            schema.nodes.paragraph.create(null, [schema.text("note A")]),
+          ]),
+          schema.nodes[FOOTNOTE_DEFINITION_NAME].create({ id: "b" }, [
+            schema.nodes.paragraph.create(null, [schema.text("note B")]),
+          ]),
+        ]),
+      ]),
+      0,
+      0,
+    );
+    const out = canonicalizePastedFootnotes(slice, schema);
+    expect(out).toBe(slice); // returned unchanged (same reference, content kept)
+    expect(listIds(out)).toEqual(["a", "b"]);
+    editor.destroy();
+  });
+
   it("leaves an open (partial) slice untouched even if it carries a list", () => {
     // An open slice (openStart/openEnd > 0) is a partial selection, not a
     // standalone block, so it is returned as-is BEFORE any footnote handling.

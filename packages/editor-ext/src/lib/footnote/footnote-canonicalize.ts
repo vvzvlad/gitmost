@@ -18,9 +18,11 @@ import {
  * `PageService` create/update (`parseProsemirrorContent` for the JSON/markdown/
  * HTML REST write paths), and the client markdown PASTE path
  * (`markdown-clipboard.ts`). (The MCP package mirrors this canonicalizer in
- * `packages/mcp/src/lib/footnote-canonicalize.ts` for its own write paths —
- * `markdownToProseMirror`, `update_page_json`, `docmost_transform`,
- * `insert_footnote` — see that file's header.) All of these are the root cause
+ * `packages/mcp/src/lib/footnote-canonicalize.ts` for its own FULL-document write
+ * paths — `markdownToProseMirrorCanonical` (the page markdown-import path; the
+ * plain `markdownToProseMirror` primitive used for COMMENT bodies does NOT
+ * canonicalize), `update_page_json`, `docmost_transform`, `insert_footnote`,
+ * `copy_page_content` — see that file's header.) All of these are the root cause
  * of the symptom in the issue: footnotes rendered out of order (`1, 4, 2, 3, …`),
  * a raw trailing `[^id]: …` block, and orphan definitions, all of which are
  * simply the result of content written PAST the canonicalizer.

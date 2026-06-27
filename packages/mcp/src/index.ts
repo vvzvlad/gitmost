@@ -895,7 +895,10 @@ server.registerTool(
       "commentsToFootnotes(doc, comments, {notesHeading}) (turn inline " +
       "comments into numbered footnotes), canonicalizeFootnotes(doc) (derive " +
       "footnote numbering + the single bottom list from reference order, drop " +
-      "orphans/duplicates — runs automatically after every transform too), and " +
+      "orphans/duplicates — runs AUTOMATICALLY on the transform RESULT, so the " +
+      "applied (and dryRun-previewed) doc is always footnote-canonical; a dryRun " +
+      "diff may therefore show footnote tidy-ups your script did not make, and " +
+      "it is idempotent after the first run), and " +
       "insertInlineFootnote(doc, {anchorText, text}) (author-inline footnote: " +
       "marker + dedup'd definition, list derived). Footnote convention: markers are " +
       "plain '[N]' text in the body; the notes are an orderedList under a " +

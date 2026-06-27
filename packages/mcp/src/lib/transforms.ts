@@ -96,6 +96,15 @@ export interface InsertMarkerOptions {
    * markers leave this unset (text is valid inside a codeBlock).
    */
   forbidBlockTypes?: ReadonlySet<string>;
+  /**
+   * Node types whose ENTIRE subtree is skipped during the walk (never split into,
+   * at any depth). Used to keep the footnote inserter out of the notes section:
+   * splitting text inside an existing `footnoteDefinition` would glue a reference
+   * into a definition, which the canonicalizer then drops as an orphan together
+   * with the definition's prose — silent loss of an existing footnote. Skipped
+   * subtrees still advance the running offset so sibling text stays aligned.
+   */
+  skipSubtreeTypes?: ReadonlySet<string>;
 }
 
 /**
@@ -107,6 +116,27 @@ export interface InsertMarkerOptions {
  * footnote inserter excludes via `beforeBlock`.)
  */
 const INLINE_ATOM_FORBIDDEN_BLOCKS: ReadonlySet<string> = new Set(["codeBlock"]);
+
+/**
+ * Footnote-notes subtrees the inline footnote inserter must never split into (at
+ * any depth): a `footnotesList` and the `footnoteDefinition`s it holds. Anchoring
+ * a reference inside one of these would later be dropped as an orphan by the
+ * canonicalizer, taking the existing definition's text with it.
+ */
+const FOOTNOTE_NOTES_SUBTREES: ReadonlySet<string> = new Set([
+  "footnotesList",
+  "footnoteDefinition",
+]);
+
+/** True if `node` IS, or contains at any depth, a footnotesList/footnoteDefinition. */
+function containsFootnoteNotes(node: any): boolean {
+  if (!isObject(node)) return false;
+  if (FOOTNOTE_NOTES_SUBTREES.has(node.type)) return true;
+  if (Array.isArray(node.content)) {
+    return node.content.some((c: any) => containsFootnoteNotes(c));
+  }
+  return false;
+}
 
 /**
  * Insert `marker` as a PLAIN (unmarked) text run right after the first
@@ -185,6 +215,13 @@ function insertNodesAfterAnchor(
     // anchorEnd receives the split + marker.
     const visit = (container: any): void => {
       if (inserted || !isObject(container) || !Array.isArray(container.content)) {
+        return;
+      }
+      // Skip a forbidden subtree entirely (e.g. footnotesList/footnoteDefinition):
+      // never split into it, but keep `offset` aligned for any sibling text after
+      // it within this block.
+      if (opts.skipSubtreeTypes && opts.skipSubtreeTypes.has(container.type)) {
+        offset += blockPlainText(container).length;
         return;
       }
       const inline = container.content;
@@ -692,24 +729,30 @@ export function insertInlineFootnote(
   if (footnoteId == null) footnoteId = generateFootnoteId();
 
   // Insert the footnoteReference node directly after the anchor (mark-safe
-  // split); it hugs the preceding word with no leading space. The search is
-  // bounded to the BODY (before the first footnotesList) and refuses codeBlocks,
-  // so the inline atom can never be spliced into a footnote definition or a code
-  // block — which would persist a schema-invalid doc (insert_footnote skips
-  // validateDocStructure). When the only match is in such a place the insert is
-  // refused and the write aborts cleanly (inserted:false).
-  const listIdx = Array.isArray(doc?.content)
-    ? doc.content.findIndex(
-        (n: any) => isObject(n) && n.type === "footnotesList",
-      )
+  // split); it hugs the preceding word with no leading space. Two guards keep the
+  // inline atom out of the notes section and out of blocks that cannot hold it:
+  //  - beforeBlock bounds the search to the BODY, before the first top-level block
+  //    that IS or CONTAINS (at any depth) a footnotesList/footnoteDefinition — so
+  //    a NESTED list or a bare definition also bounds the search, not just a
+  //    top-level list;
+  //  - skipSubtreeTypes refuses to descend into any footnotesList/footnoteDefinition
+  //    subtree, so a reference is never glued inside an existing definition (which
+  //    the canonicalizer would then drop as an orphan, losing that definition's
+  //    prose); and forbidBlockTypes refuses codeBlocks (an inline atom there is a
+  //    schema-invalid doc; insert_footnote skips validateDocStructure).
+  // When the only anchor match is in such a place, the insert is refused and the
+  // write aborts cleanly (inserted:false) instead of destroying content.
+  const boundaryIdx = Array.isArray(doc?.content)
+    ? doc.content.findIndex((n: any) => containsFootnoteNotes(n))
     : -1;
   const r = insertNodesAfterAnchor(
     doc,
     (opts.anchorText ?? "").trimEnd(),
     () => [{ type: "footnoteReference", attrs: { id: footnoteId } }],
     {
-      ...(listIdx >= 0 ? { beforeBlock: listIdx } : {}),
+      ...(boundaryIdx >= 0 ? { beforeBlock: boundaryIdx } : {}),
       forbidBlockTypes: INLINE_ATOM_FORBIDDEN_BLOCKS,
+      skipSubtreeTypes: FOOTNOTE_NOTES_SUBTREES,
     },
   );
   if (!r.inserted) {

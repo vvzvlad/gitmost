@@ -308,6 +308,31 @@ describe('canonicalizeFootnotes golden parity with footnoteSyncPlugin', () => {
     });
   }
 
+  it('placement parity: the LIVE plugin leaves a list with NON-EMPTY content after it in place, and canonicalize agrees', () => {
+    // Drives the real footnoteSyncPlugin (not a hand-authored expected): a single
+    // canonical list with body content AFTER it must NOT be repositioned by the
+    // plugin, and the server canonicalizer must agree (step-6 placement parity).
+    const content = {
+      type: 'doc',
+      content: [
+        para({ type: 'text', text: 'a' }, ref('x')),
+        list(def('x', 'X')),
+        para({ type: 'text', text: 'epilogue' }),
+      ],
+    };
+    const steady = pluginSteadyState(content);
+    // The plugin did NOT move the list to the end: a non-empty paragraph follows it.
+    const types = steady.content.map((n: any) => n.type);
+    const listPos = types.indexOf(FOOTNOTES_LIST_NAME);
+    expect(listPos).toBeGreaterThanOrEqual(0);
+    expect(listPos).toBeLessThan(types.length - 1);
+    const after = steady.content[listPos + 1];
+    expect(after.type).toBe('paragraph');
+    expect(JSON.stringify(after)).toContain('epilogue');
+    // The canonicalizer is a byte-for-byte no-op on that steady state (parity).
+    expect(canonicalizeFootnotes(steady)).toEqual(steady);
+  });
+
   it('the canonicalizer and the editor agree on reference order and definition set', () => {
     const content = {
       type: 'doc',

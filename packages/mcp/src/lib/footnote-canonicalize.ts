@@ -23,6 +23,15 @@
  * was never enforced. Running this at the end of every write path closes that
  * gap; because it is idempotent, it is a no-op when the footnotes are already
  * canonical (no spurious mutations / git-sync churn).
+ *
+ * ENFORCEMENT RULE (#228): any NEW FULL-document persist path MUST call
+ * `canonicalizeFootnotes(doc)` before writing — the current callers are
+ * `markdownToProseMirrorCanonical` (page markdown import/update; the plain
+ * `markdownToProseMirror` used for COMMENT bodies must NOT, or it would drop a
+ * reference-less definition), `update_page_json`, `docmost_transform`,
+ * `insert_footnote`, and `copy_page_content`. Append/prepend FRAGMENT writes MUST
+ * NOT canonicalize. This is deliberately per-call-site (the replace-vs-fragment
+ * and comment-vs-page nuances make a single naive wrapper unsafe).
  */
 
 const FOOTNOTE_REFERENCE_NAME = "footnoteReference";
