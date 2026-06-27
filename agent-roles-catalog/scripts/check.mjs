@@ -4,12 +4,22 @@
 // between a bundle's index roles[] and the slugs present in each language
 // file, a missing declared language file, or a role missing required fields.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const catalogDir = join(__dirname, "..");
+
+// `--update-hashes` (alias `--fix`) recomputes the content-hash lockfile from
+// the current catalog instead of just validating against it.
+const updateHashes =
+  process.argv.includes("--update-hashes") || process.argv.includes("--fix");
+
+// The content-hash lockfile lives under scripts/ and is a CHECK ARTIFACT only:
+// the server never fetches it, so it has zero impact on the served schema.
+const lockPath = join(__dirname, "content-hashes.json");
 
 const errors = [];
 
@@ -54,6 +64,17 @@ for (const bundle of bundles) {
   const indexSlugSet = new Set(indexSlugs);
   if (indexSlugSet.size !== indexSlugs.length) {
     errors.push(`Bundle "${bundleId}" index.json roles[] contains duplicate slugs`);
+  }
+
+  // Each index role must carry a finite numeric "version". The server requires
+  // this (see ai-agent-roles-catalog.provider.ts), and the content-hash guard
+  // below relies on it for the bump comparison, so enforce it here too.
+  for (const r of bundle.roles || []) {
+    if (typeof r.version !== "number" || !Number.isFinite(r.version)) {
+      errors.push(
+        `Bundle "${bundleId}" index.json role "${r.slug}" is missing a numeric "version"`
+      );
+    }
   }
 
   const languages = Array.isArray(bundle.languages) ? bundle.languages : [];
@@ -118,6 +139,208 @@ for (const bundle of bundles) {
         slugSeen.set(slug, where);
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Content-hash guard: detect "content changed without a version bump".
+//
+// check.mjs cannot use git history, so we maintain a lockfile
+// (scripts/content-hashes.json) mapping each role slug to its recorded
+// { version, hash }. On every run we recompute each role's content hash and
+// compare it against the lock; a content change is only allowed once the role's
+// version in index.json has been bumped and the lock refreshed.
+//
+// Known, accepted limitation: a deliberate prune-then-readd of a slug (remove
+// the role and run --update-hashes, then re-add it with changed content at the
+// same version) is NOT caught, because a brand-new slug has no lock baseline to
+// enforce a bump against. We document this rather than building tombstones.
+// ---------------------------------------------------------------------------
+
+// Content fields hashed for each role, in a fixed canonical order. `slug` is
+// identity (not content) and `version` lives in index.json, so neither is here.
+// `modelConfig` (an OPTIONAL role field the server also serves) is intentionally
+// EXCLUDED: no shipped role uses it today, and being an object it would need a
+// deterministic deep canonicalization (recursive key sort) before hashing —
+// otherwise JSON.stringify key-order would make the hash non-deterministic. If a
+// role ever gains a `modelConfig`, add it here WITH such canonicalization so a
+// change to it is still caught by the bump guard.
+const CONTENT_FIELDS = [
+  "emoji",
+  "autoStart",
+  "name",
+  "description",
+  "instructions",
+  "launchMessage",
+];
+
+// Build a map of slug -> { version, langRoles: { lang: roleObject } } from the
+// current catalog so we can compute hashes and read index versions.
+function collectCatalogRoles() {
+  const out = new Map(); // slug -> { version, langRoles: Map<lang, role> }
+  for (const bundle of bundles) {
+    const bundleId = bundle.id;
+    if (!bundleId) continue;
+    const languages = Array.isArray(bundle.languages) ? bundle.languages : [];
+    for (const r of bundle.roles || []) {
+      if (!r || !r.slug) continue;
+      if (!out.has(r.slug)) {
+        out.set(r.slug, { version: r.version, langRoles: new Map() });
+      } else {
+        // Same slug declared twice in index.json roles[]; already flagged above.
+        out.get(r.slug).version = r.version;
+      }
+    }
+    for (const lang of languages) {
+      const langPath = join(catalogDir, "bundles", bundleId, `${lang}.json`);
+      if (!existsSync(langPath)) continue;
+      const langFile = readJson(langPath);
+      if (!langFile) continue;
+      const roles = Array.isArray(langFile.roles) ? langFile.roles : [];
+      for (const role of roles) {
+        if (!role || !role.slug) continue;
+        const entry = out.get(role.slug);
+        if (!entry) continue; // role not declared in index.json; flagged above.
+        entry.langRoles.set(lang, role);
+      }
+    }
+  }
+  return out;
+}
+
+// Deterministic content hash for a role: languages sorted ascending, each
+// language's content fields taken in CONTENT_FIELDS order (null when absent).
+function contentHash(langRoles) {
+  const langs = [...langRoles.keys()].sort();
+  const canonical = langs.map((lang) => {
+    const role = langRoles.get(lang);
+    const fields = {};
+    for (const field of CONTENT_FIELDS) {
+      fields[field] = role && role[field] != null ? role[field] : null;
+    }
+    return [lang, fields];
+  });
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+// Compute current { version, hash } for every catalog role.
+const catalogRoles = collectCatalogRoles();
+const current = new Map(); // slug -> { version, hash }
+for (const [slug, entry] of catalogRoles) {
+  current.set(slug, {
+    version: entry.version,
+    hash: contentHash(entry.langRoles),
+  });
+}
+
+// Load the existing lock (may be absent on first run).
+let lock = {};
+if (existsSync(lockPath)) {
+  const parsed = readJson(lockPath);
+  if (parsed && typeof parsed === "object") lock = parsed;
+}
+
+if (updateHashes) {
+  // Refresh the lock from the current catalog, but refuse to write if any role's
+  // content changed without its version being bumped above the existing lock.
+  const blockers = [];
+  for (const [slug, cur] of current) {
+    const prev = lock[slug];
+    if (!prev) continue; // new role; nothing to enforce a bump against.
+    if (cur.hash === prev.hash) continue; // content unchanged.
+    // Defense-in-depth: a non-numeric version must never pass the bump check via
+    // `undefined <= N` (which is false). The standard checks already flag a
+    // missing numeric version, but guard here too before comparing.
+    if (typeof cur.version !== "number" || !Number.isFinite(cur.version)) {
+      blockers.push(
+        `role "${slug}" content changed but its index.json "version" is missing or not numeric; set a numeric "version" before refreshing the lock`
+      );
+    } else if (cur.version <= prev.version) {
+      blockers.push(
+        `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.json before refreshing the lock`
+      );
+    }
+  }
+  // Still honor the standard checks before allowing a write.
+  if (errors.length > 0) {
+    console.error("Catalog check FAILED:");
+    for (const e of errors) console.error(`  - ${e}`);
+    process.exit(1);
+  }
+  if (blockers.length > 0) {
+    console.error("Refusing to update content-hash lock:");
+    for (const b of blockers) console.error(`  - ${b}`);
+    process.exit(1);
+  }
+
+  // Compute the change summary relative to the old lock, pruning removed slugs.
+  const newLock = {};
+  const added = [];
+  const changed = [];
+  const removed = [];
+  for (const [slug, cur] of [...current].sort((a, b) => a[0].localeCompare(b[0]))) {
+    newLock[slug] = { version: cur.version, hash: cur.hash };
+    const prev = lock[slug];
+    if (!prev) added.push(slug);
+    else if (prev.hash !== cur.hash || prev.version !== cur.version) changed.push(slug);
+  }
+  for (const slug of Object.keys(lock)) {
+    if (!current.has(slug)) removed.push(slug);
+  }
+  writeFileSync(lockPath, JSON.stringify(newLock, null, 2) + "\n");
+  console.log(`Wrote ${lockPath}`);
+  if (added.length) console.log(`  added:   ${added.join(", ")}`);
+  if (changed.length) console.log(`  updated: ${changed.join(", ")}`);
+  if (removed.length) console.log(`  pruned:  ${removed.join(", ")}`);
+  if (!added.length && !changed.length && !removed.length) {
+    console.log("  (no changes; lock already up to date)");
+  }
+  console.log("OK");
+  process.exit(0);
+}
+
+// Normal run: validate current content against the lock.
+for (const [slug, cur] of current) {
+  const prev = lock[slug];
+  if (!prev) {
+    errors.push(
+      `role "${slug}" is not recorded in the content-hash lock; run: node scripts/check.mjs --update-hashes`
+    );
+    continue;
+  }
+  if (cur.hash === prev.hash) {
+    // Content unchanged; the lock version must still agree with index.json.
+    if (cur.version !== prev.version) {
+      errors.push(
+        `role "${slug}" content is unchanged but its index.json version (${cur.version}) differs from the lock (${prev.version}); run: node scripts/check.mjs --update-hashes`
+      );
+    }
+    continue;
+  }
+  // Content changed.
+  // Defense-in-depth: treat a non-numeric version as an error before the `<=`
+  // comparison, so a missing version can never silently pass the bump check
+  // (and we avoid a misleading "version bumped to undefined" message).
+  if (typeof cur.version !== "number" || !Number.isFinite(cur.version)) {
+    errors.push(
+      `role "${slug}" content changed but its index.json "version" is missing or not numeric; set a numeric "version", then run: node scripts/check.mjs --update-hashes`
+    );
+  } else if (cur.version <= prev.version) {
+    errors.push(
+      `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.json, then run: node scripts/check.mjs --update-hashes`
+    );
+  } else {
+    errors.push(
+      `role "${slug}" content changed and version bumped to ${cur.version}; record it by running: node scripts/check.mjs --update-hashes`
+    );
+  }
+}
+// Lock entries for slugs that no longer exist in the catalog.
+for (const slug of Object.keys(lock)) {
+  if (!current.has(slug)) {
+    errors.push(
+      `content-hash lock has entry for unknown role "${slug}" (no longer in the catalog); run: node scripts/check.mjs --update-hashes`
+    );
   }
 }
 

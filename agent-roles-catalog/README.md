@@ -16,6 +16,7 @@ agent-roles-catalog/
       <lang>.json             # one file per declared language (e.g. ru.json, en.json)
   scripts/
     check.mjs                 # validates the catalog (no dependencies)
+    content-hashes.json       # check artifact: per-role content-hash lock (NOT served)
   package.json                # defines the `check` script
   README.md
 ```
@@ -133,7 +134,10 @@ bundle. A slug appears once per language file of its bundle (same slug in
 ### Change a role's content
 
 Edit the role in the relevant `<lang>.json` file(s) and **bump that role's
-`version`** in `index.json`.
+`version`** in `index.json`. Then run `node scripts/check.mjs --update-hashes`
+to refresh the content-hash lock (`scripts/content-hashes.json`). `check.mjs`
+now **fails if a role's content changed but its `version` was not bumped**, so
+this step is mandatory — the lock can only be refreshed after the bump.
 
 ## Validating
 
@@ -147,3 +151,43 @@ It fails (exit code 1) if any slug is duplicated across the catalog, if a
 bundle's index `roles[]` don't match the slugs present in each language file, if
 a declared language file is missing, or if any role is missing a required field
 (`slug`, `name`, `instructions`). It prints `OK` on success.
+
+### Content-hash guard
+
+`check.mjs` also guards against changing a role's content without bumping its
+`version`. It keeps a lockfile, `scripts/content-hashes.json`, mapping each role
+`slug` to `{ version, hash }`, where `hash` is a SHA-256 over the role's
+content fields (`emoji`, `autoStart`, `name`, `description`, `instructions`,
+`launchMessage`) across all of its language files, in a deterministic canonical
+form. This lockfile is a **check artifact only** — the server fetches only
+`index.json` and the bundle `<lang>.json` files, never this file, so it has no
+effect on the served catalog or its schema.
+
+On a normal run, for every role the check recomputes the hash and compares it
+against the lock:
+
+- content unchanged and versions agree → OK;
+- content changed but `version` not bumped above the lock → **error** asking you
+  to bump and refresh;
+- content changed and `version` bumped → **error** asking you to record it by
+  refreshing the lock;
+- role missing from the lock, or a lock entry for a role that no longer exists →
+  **error** asking you to refresh.
+
+Refresh the lock with:
+
+```sh
+node scripts/check.mjs --update-hashes   # alias: --fix
+```
+
+This recomputes the lock from the current catalog, prunes entries for removed
+roles, and prints what changed — but it **refuses to write** (exit 1) if any
+role's content changed while its `index.json` version was not bumped, so the
+version bump is always enforced first. The check also requires every
+`index.json` role to carry a finite numeric `version` (the server requires the
+same).
+
+Known, accepted limitation: a deliberate prune-then-readd of a slug (remove the
+role and run `--update-hashes`, then re-add it with changed content at the same
+version) is **not** caught, because a brand-new slug has no lock baseline to
+enforce a bump against.
