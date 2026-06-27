@@ -17,6 +17,7 @@ permissions:
 env:
   VERSION: ${{ inputs.version || github.ref_name }}
   IMAGE: ghcr.io/vvzvlad/gitmost
+  AI_AGENT_ROLES_CATALOG_URL: https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
 
 jobs:
   # Run the reusable test suite first so a failing test blocks the image build.
@@ -57,7 +58,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             APP_VERSION=${{ env.VERSION }}
-            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
+            AI_AGENT_ROLES_CATALOG_URL=${{ env.AI_AGENT_ROLES_CATALOG_URL }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,scope=${{ matrix.suffix }},mode=max,ignore-error=true
@@ -86,7 +87,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             APP_VERSION=${{ env.VERSION }}
-            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
+            AI_AGENT_ROLES_CATALOG_URL=${{ env.AI_AGENT_ROLES_CATALOG_URL }}
           push: false
           tags: |
             ${{ env.IMAGE }}:latest

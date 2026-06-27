@@ -35,10 +35,11 @@ to the catalog's raw files. The server fetches `<base>/index.json` for the
 manifest and `<base>/bundles/<bundle-id>/<lang>.json` for each opened bundle
 file (REMOTE only).
 
-That base URL is baked into the Docker image at build time and set per branch in
+That base URL is provided as a per-branch default in the Docker image (set in
 CI: a `develop` build points at the `develop` raw URL, a release build at the
-`main` raw URL. Local-filesystem sources are no longer supported; if the value
-is unset the catalog is unavailable.
+`main` raw URL) and can be overridden at runtime via the
+`AI_AGENT_ROLES_CATALOG_URL` env var. Local-filesystem sources are no longer
+supported; if the value is unset the catalog is unavailable.
 
 The fetched JSON is re-validated server-side (the catalog is treated as
 untrusted input). See `.env.example` for the variable and the CHANGELOG for the

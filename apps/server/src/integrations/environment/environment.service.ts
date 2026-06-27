@@ -291,11 +291,13 @@ export class EnvironmentService {
 
   getAiAgentRolesCatalogSource(): string {
     // Catalog location: an http(s):// base URL the catalog is fetched from.
-    // The value is baked into the image at build time (Dockerfile ARG
-    // AI_AGENT_ROLES_CATALOG_URL, set per-branch in CI); local-filesystem
-    // sources are no longer supported. Empty/unset => the catalog is
-    // unavailable (the provider returns 502). This is INFRA config (where the
-    // catalog lives), not provider/model config, so an env var is appropriate.
+    // The image ships a per-branch default for this baked in at build time
+    // (Dockerfile ARG AI_AGENT_ROLES_CATALOG_URL, set per-branch in CI), but it
+    // is overridable at runtime via the env var (this getter returns that
+    // runtime value). Local-filesystem sources are no longer supported.
+    // Empty/unset => the catalog is unavailable (the provider returns 502).
+    // This is INFRA config (where the catalog lives), not provider/model
+    // config, so an env var is appropriate.
     return this.configService.get<string>('AI_AGENT_ROLES_CATALOG_URL', '');
   }
 

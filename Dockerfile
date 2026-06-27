@@ -23,7 +23,8 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Agent-roles catalog base URL, baked at build time (set per-branch in CI).
+# Agent-roles catalog base URL: per-branch default set at build time (CI);
+# overridable at runtime via the AI_AGENT_ROLES_CATALOG_URL env var.
 ARG AI_AGENT_ROLES_CATALOG_URL=""
 ENV AI_AGENT_ROLES_CATALOG_URL=$AI_AGENT_ROLES_CATALOG_URL
 

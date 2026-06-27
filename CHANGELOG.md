@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/update-from-catalog` — and a new `source` column linking a role to its
   catalog slug/language/version. The catalog source is configured via the
   `AI_AGENT_ROLES_CATALOG_URL` env var — an `http(s)://` base URL to the
-  catalog's raw files, baked into the image at build time and set per branch in
-  CI (see `.env.example`). (#222)
+  catalog's raw files; the image ships a per-branch default baked in CI, and it
+  can be overridden at runtime via the env var (see `.env.example`). (#222)
 
 ### Fixed
 
