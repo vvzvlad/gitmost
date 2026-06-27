@@ -1190,6 +1190,7 @@
   "A short, memorable link you can point at any shared page.": "Короткая запоминающаяся ссылка, которую можно направить на любую опубликованную страницу.",
   "Use 2-60 lowercase letters, digits and hyphens": "Используйте 2–60 строчных букв, цифр и дефисов",
   "This address is already in use": "Этот адрес уже занят",
+  "This address is in use. Saving will move it to this page.": "Этот адрес уже используется. При сохранении он будет перемещён на эту страницу.",
   "Move custom address?": "Переместить пользовательский адрес?",
   "Move here": "Переместить сюда",
   "The address \"{{alias}}\" currently points to \"{{title}}\". Move it to this page?": "Адрес «{{alias}}» сейчас указывает на «{{title}}». Переместить его на эту страницу?",
