@@ -253,10 +253,7 @@ export class ShareService {
     workspaceId: string,
   ): Promise<boolean> {
     // Fast path: the request names the page's own resolved share.
-    if (
-      requestedShareId === resolvedShare.id ||
-      requestedShareId.toLowerCase() === resolvedShare.key?.toLowerCase()
-    ) {
+    if (this.shareIdGrantsAccess(requestedShareId, resolvedShare)) {
       return true;
     }
 
@@ -268,6 +265,23 @@ export class ShareService {
 
     const ancestor = await this.getShareAncestorPage(requested.pageId, pageId);
     return !!ancestor;
+  }
+
+  /**
+   * Does the requested share id/key directly name `resolvedShare` — by id, or
+   * by key (case-insensitive)? This is the "names the page's OWN share" half of
+   * the access concept; ancestor includeSubPages shares are matched separately.
+   * Intentionally narrower than `resolveReadableSharePage`'s id-only gate, which
+   * keeps its own contract for the callers that pass a shareId there.
+   */
+  private shareIdGrantsAccess(
+    requestedShareId: string,
+    resolvedShare: { id: string; key?: string | null },
+  ): boolean {
+    return (
+      requestedShareId === resolvedShare.id ||
+      requestedShareId.toLowerCase() === resolvedShare.key?.toLowerCase()
+    );
   }
 
   async getShareForPage(pageId: string, workspaceId: string) {

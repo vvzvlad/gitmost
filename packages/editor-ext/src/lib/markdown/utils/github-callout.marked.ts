@@ -1,4 +1,5 @@
 import { Token, marked } from 'marked';
+import { renderCalloutHtml } from './callout-common.marked';
 
 interface GithubCalloutToken {
   type: 'githubCallout';
@@ -36,7 +37,7 @@ const GITHUB_ALERT_TYPE_MAP: Record<string, string> = {
  * Without this, the default blockquote tokenizer wins and the marker renders as
  * a literal `[!info]` inside a `<blockquote>`. The editor's paste path runs the
  * same `markdownToHtml`, so registering this here also fixes pasting the syntax
- * into the editor (issue #218), not just markdown import.
+ * into the editor (issue #192), not just markdown import.
  */
 export const githubCalloutExtension = {
   name: 'githubCallout',
@@ -72,7 +73,9 @@ export const githubCalloutExtension = {
   },
   renderer(token: Token) {
     const calloutToken = token as GithubCalloutToken;
-    const body = marked.parse(calloutToken.text);
-    return `<div data-type="callout" data-callout-type="${calloutToken.calloutType}">${body}</div>`;
+    return renderCalloutHtml(
+      calloutToken.calloutType,
+      marked.parse(calloutToken.text),
+    );
   },
 };

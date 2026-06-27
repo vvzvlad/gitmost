@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { markdownToHtml } from "./marked.utils";
 
 /**
- * Regression for issue #218: pasting a GitHub-style `> [!type]` alert produced a
+ * Regression for issue #192: pasting a GitHub-style `> [!type]` alert produced a
  * literal `<blockquote>` containing `[!info]` instead of a callout node, because
  * only the `:::type` form was tokenized. The editor paste path runs the same
  * `markdownToHtml`, so these assertions pin the conversion at the source.

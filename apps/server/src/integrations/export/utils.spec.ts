@@ -159,6 +159,14 @@ describe('getInternalLinkPageName', () => {
     expect(getInternalLinkPageName('docs/v1.2.md')).toBe('v1.2');
   });
 
+  it('documents current behavior: a leading-dot name collapses to empty text', () => {
+    // ".gitignore" -> base ".gitignore", parts ["", "gitignore"]: the leading
+    // dot is treated as a (empty) name + extension, so the name drops to "".
+    // Same bug class as #204, but unreachable via the sole caller (page titles
+    // never start with a dot), so we only pin the behavior — not fix it.
+    expect(getInternalLinkPageName('.gitignore')).toBe('');
+  });
+
   it('falls back to the raw name without throwing on malformed encoding', () => {
     // "%E0%A4" is an incomplete escape; decodeURIComponent throws and the
     // helper returns the raw (still-encoded) name.
