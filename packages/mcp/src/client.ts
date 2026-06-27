@@ -1399,13 +1399,16 @@ export class DocmostClient {
     }
     const collabToken = await this.getCollabTokenWithReauth();
     let result: { footnoteId: string; reused: boolean } | null = null;
-    const mutation = await mutatePageContent(
+    const mutation = await this.mutatePage(
       pageId,
       collabToken,
       this.apiUrl,
       (liveDoc: any) => {
         const r = insertInlineFootnote(liveDoc, { anchorText, text });
         if (!r.inserted) {
+          // Abort the page-locked write by throwing: mutatePageContent does not
+          // persist when the transform throws, so a missing anchor leaves the
+          // page untouched (no partial write).
           throw new Error(
             `insert_footnote: anchor text not found: ${JSON.stringify(
               anchorText.slice(0, 80),
@@ -1427,6 +1430,21 @@ export class DocmostClient {
         : "Footnote inserted.",
       verify: mutation.verify,
     };
+  }
+
+  /**
+   * Page-locked write seam over collaboration.mutatePageContent. Production just
+   * delegates; it exists as an overridable method so the insert_footnote wrapper
+   * (transform abort-on-not-found + response shaping) can be unit-tested without
+   * standing up a live Hocuspocus collab socket.
+   */
+  protected mutatePage(
+    pageId: string,
+    collabToken: string,
+    apiUrl: string,
+    transform: (doc: any) => any,
+  ): Promise<{ doc?: any; verify?: any }> {
+    return mutatePageContent(pageId, collabToken, apiUrl, transform);
   }
 
   /**

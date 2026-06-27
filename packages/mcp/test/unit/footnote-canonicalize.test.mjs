@@ -28,52 +28,10 @@ const def = (id, text) => ({
 const para = (...inline) => ({ type: "paragraph", content: inline });
 const list = (...defs) => ({ type: "footnotesList", content: defs });
 
-test("canonicalize orders definitions by first reference (out-of-order -> 1..N)", () => {
-  const doc = {
-    type: "doc",
-    content: [
-      para({ type: "text", text: "x" }, ref("b"), ref("a"), ref("d"), ref("c")),
-      list(def("a", "A"), def("c", "C"), def("b", "B"), def("d", "D")),
-    ],
-  };
-  const out = canonicalizeFootnotes(doc);
-  assert.deepEqual(defIds(out), ["b", "a", "d", "c"]);
-  assert.equal(findAll(out, "footnotesList").length, 1);
-});
-
-test("canonicalize drops orphan definitions", () => {
-  const doc = {
-    type: "doc",
-    content: [
-      para({ type: "text", text: "x" }, ref("a")),
-      list(def("a", "A"), def("orphan", "O")),
-    ],
-  };
-  assert.deepEqual(defIds(canonicalizeFootnotes(doc)), ["a"]);
-});
-
-test("canonicalize: no references -> no list", () => {
-  const doc = {
-    type: "doc",
-    content: [para({ type: "text", text: "x" }), list(def("o", "O"))],
-  };
-  const out = canonicalizeFootnotes(doc);
-  assert.equal(findAll(out, "footnotesList").length, 0);
-});
-
-test("canonicalize: duplicate definitions -> first wins, rest dropped", () => {
-  const doc = {
-    type: "doc",
-    content: [
-      para({ type: "text", text: "x" }, ref("d")),
-      list(def("d", "first"), def("d", "second")),
-    ],
-  };
-  const out = canonicalizeFootnotes(doc);
-  assert.deepEqual(defIds(out), ["d"]);
-  assert.match(JSON.stringify(out), /"first"/);
-  assert.doesNotMatch(JSON.stringify(out), /"second"/);
-});
+// The ordering / orphan-drop / no-refs / duplicate-first-wins cases are covered
+// (with full deepEqual on input -> expected) by the shared golden corpus in
+// footnote-corpus.test.mjs; only the input-immutability and idempotence
+// properties — which the corpus does not assert — are kept here.
 
 test("canonicalize is idempotent", () => {
   const doc = {
@@ -179,6 +137,57 @@ test("insertInlineFootnote: anchor not found -> inserted:false, no write", () =>
   const r = insertInlineFootnote(doc, { anchorText: "ZZZ", text: "x" });
   assert.equal(r.inserted, false);
   assert.equal(findAll(r.doc, "footnoteReference").length, 0);
+});
+
+test("insertInlineFootnote: anchor ONLY inside a codeBlock -> refused (no invalid doc)", () => {
+  // A footnoteReference is an inline atom; codeBlock content is text-only, so
+  // splicing one in would persist a schema-invalid doc. The insert must refuse.
+  const doc = {
+    type: "doc",
+    content: [{ type: "codeBlock", content: [{ type: "text", text: "const blue = 1;" }] }],
+  };
+  const r = insertInlineFootnote(doc, { anchorText: "blue", text: "Rayleigh." });
+  assert.equal(r.inserted, false);
+  assert.equal(findAll(r.doc, "footnoteReference").length, 0);
+  assert.equal(findAll(r.doc, "footnotesList").length, 0);
+  // The codeBlock text is untouched.
+  assert.deepEqual(r.doc, doc);
+});
+
+test("insertInlineFootnote: anchor ONLY inside an existing footnote definition -> refused", () => {
+  // The anchor text lives in a definition (inside the footnotesList). The search
+  // is bounded to the BODY (before the first list), so it is not matched there
+  // and the insert is refused rather than nesting a reference in a definition.
+  const doc = {
+    type: "doc",
+    content: [
+      para({ type: "text", text: "Hello world." }, ref("a")),
+      list(def("a", "the sky is blue")),
+    ],
+  };
+  const r = insertInlineFootnote(doc, { anchorText: "sky", text: "note" });
+  assert.equal(r.inserted, false);
+  // No EXTRA reference and still exactly one (the pre-existing) list/definition.
+  assert.equal(findAll(r.doc, "footnoteReference").length, 1);
+  assert.deepEqual(defIds(r.doc), ["a"]);
+});
+
+test("insertInlineFootnote: codeBlock match is skipped, a later body paragraph still anchors", () => {
+  // The anchor first appears in a codeBlock (refused) but also in a normal
+  // paragraph after it; the insert falls through to the valid block.
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "codeBlock", content: [{ type: "text", text: "let token = 1;" }] },
+      para({ type: "text", text: "The token is rotated daily." }),
+    ],
+  };
+  const r = insertInlineFootnote(doc, { anchorText: "token", text: "secret" });
+  assert.equal(r.inserted, true);
+  // The reference landed in the paragraph, NOT the codeBlock.
+  const code = findAll(r.doc, "codeBlock")[0];
+  assert.equal(findAll(code, "footnoteReference").length, 0);
+  assert.equal(findAll(r.doc, "footnoteReference").length, 1);
 });
 
 test("markdown import: out-of-order definitions render as a reference-ordered list", async () => {

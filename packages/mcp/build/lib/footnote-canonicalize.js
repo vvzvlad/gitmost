@@ -70,9 +70,10 @@ function emptyDefinition(id) {
     };
 }
 /**
- * Order-insensitive deep equality over plain JSON (objects/arrays/primitives).
- * Used to detect an already-canonical footnotesList so its physical position is
- * preserved (placement parity with the live plugin).
+ * Deep equality over plain JSON: arrays are compared POSITIONALLY
+ * (order-SENSITIVE), object keys order-insensitively. The array order-sensitivity
+ * is required for correctness here — a reordered `footnotesList.content` must
+ * compare UNEQUAL so the canonical rebuild fires instead of leaving it in place.
  */
 function deepEqualJson(a, b) {
     if (a === b)
@@ -148,9 +149,9 @@ export function canonicalizeFootnotes(doc) {
             orderedDefs.push(emptyDefinition(id));
         }
     }
-    // 5) No references -> there must be NO list at all.
+    // 5) No references -> there must be NO list at all (at any depth).
     if (referenceIds.length === 0) {
-        out.content = out.content.filter((n) => !(n && n.type === FOOTNOTES_LIST_NAME));
+        stripFootnotesListsDeep(out);
         return out;
     }
     // 6) Placement parity with the live plugin: when the document is ALREADY in the
@@ -164,13 +165,25 @@ export function canonicalizeFootnotes(doc) {
         deepEqualJson(topLevelLists[0].content, orderedDefs)) {
         return out;
     }
-    // 7) Otherwise rebuild: strip every footnotesList and re-insert exactly one
-    //    after the last meaningful (non-empty paragraph) block.
-    const top = out.content.filter((n) => !(n && n.type === FOOTNOTES_LIST_NAME));
+    // 7) Otherwise rebuild: strip every footnotesList at ANY depth (collectDefinitions
+    //    gathers defs recursively, so a list nested in a callout/blockquote would
+    //    otherwise have its defs copied into the new list while the original
+    //    survives — duplicates) and re-insert exactly one after the last meaningful
+    //    (non-empty paragraph) top-level block.
+    stripFootnotesListsDeep(out);
+    const top = out.content;
     let insertAt = top.length;
     while (insertAt > 0 && isEmptyParagraph(top[insertAt - 1]))
         insertAt--;
     top.splice(insertAt, 0, { type: FOOTNOTES_LIST_NAME, content: orderedDefs });
     out.content = top;
     return out;
+}
+/** Remove every `footnotesList` node at ANY depth (mutates the given clone). */
+function stripFootnotesListsDeep(node) {
+    if (!node || typeof node !== "object" || !Array.isArray(node.content))
+        return;
+    node.content = node.content.filter((c) => !(c && c.type === FOOTNOTES_LIST_NAME));
+    for (const child of node.content)
+        stripFootnotesListsDeep(child);
 }

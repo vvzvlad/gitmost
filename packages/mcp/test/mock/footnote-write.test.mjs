@@ -10,10 +10,11 @@
 // These stand a local http.createServer in for Docmost and only exercise plain
 // HTTP routes (login / comments / pages.info), deliberately avoiding the live
 // Hocuspocus collab WebSocket: the insertFootnote guards short-circuit before it,
-// and docmost_transform's dryRun preview never opens it. The full collab mutate
-// path (abort-via-throw on a missing anchor, the reused/message response branch)
-// is covered at the pure level by insertInlineFootnote in
-// test/unit/footnote-canonicalize.test.mjs.
+// and docmost_transform's dryRun preview never opens it. The collab mutate path
+// itself — abort-via-throw on a missing anchor with NO persisted write, and the
+// reused-vs-new response shaping — is covered in
+// test/mock/insert-footnote-wrapper.test.mjs (which overrides the mutatePage
+// seam to drive the transform), not here.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";

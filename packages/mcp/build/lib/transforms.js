@@ -68,6 +68,15 @@ export function getList(doc, predicate) {
     return found;
 }
 /**
+ * Textblocks that hold raw text but do NOT accept inline atom nodes. A
+ * `footnoteReference` is `group:"inline", atom:true`; `codeBlock` is
+ * `content:"text*"` (text only), so splicing a footnoteReference into it yields
+ * an invalid document. (paragraph/heading/detailsSummary are `inline*` and DO
+ * accept it; footnote definitions live inside a footnotesList which the
+ * footnote inserter excludes via `beforeBlock`.)
+ */
+const INLINE_ATOM_FORBIDDEN_BLOCKS = new Set(["codeBlock"]);
+/**
  * Insert `marker` as a PLAIN (unmarked) text run right after the first
  * occurrence of `anchor`.
  *
@@ -131,6 +140,14 @@ function insertNodesAfterAnchor(doc, anchor, makeMiddle, opts = {}) {
             // Detect whether this array is an inline array (contains text nodes).
             const hasText = inline.some((n) => isObject(n) && n.type === "text");
             if (hasText) {
+                // Refuse a textblock whose content spec cannot hold the inserted nodes
+                // (e.g. a codeBlock for an inline atom). Keep `offset` aligned for any
+                // sibling textblocks in this same block, then bail so the search falls
+                // through to the next candidate block.
+                if (opts.forbidBlockTypes && opts.forbidBlockTypes.has(container.type)) {
+                    offset += blockPlainText(container).length;
+                    return;
+                }
                 for (let i = 0; i < inline.length; i++) {
                     const n = inline[i];
                     const len = isObject(n) ? blockPlainText(n).length : 0;
@@ -511,7 +528,9 @@ export function commentsToFootnotes(doc, comments, opts = {}) {
  */
 export function insertInlineFootnote(doc, opts) {
     const inline = mdToInlineNodes(opts.text ?? "");
-    const key = footnoteContentKey(makeFootnoteDefinition("", inline));
+    // footnoteContentKey only reads `.content`, so key off the inline array
+    // directly instead of building a throwaway definition node.
+    const key = footnoteContentKey({ content: inline });
     // Content dedup: reuse an existing definition's id when its key matches.
     let footnoteId = null;
     let reused = false;
@@ -532,8 +551,19 @@ export function insertInlineFootnote(doc, opts) {
     if (footnoteId == null)
         footnoteId = generateFootnoteId();
     // Insert the footnoteReference node directly after the anchor (mark-safe
-    // split); it hugs the preceding word with no leading space.
-    const r = insertNodesAfterAnchor(doc, (opts.anchorText ?? "").trimEnd(), () => [{ type: "footnoteReference", attrs: { id: footnoteId } }]);
+    // split); it hugs the preceding word with no leading space. The search is
+    // bounded to the BODY (before the first footnotesList) and refuses codeBlocks,
+    // so the inline atom can never be spliced into a footnote definition or a code
+    // block — which would persist a schema-invalid doc (insert_footnote skips
+    // validateDocStructure). When the only match is in such a place the insert is
+    // refused and the write aborts cleanly (inserted:false).
+    const listIdx = Array.isArray(doc?.content)
+        ? doc.content.findIndex((n) => isObject(n) && n.type === "footnotesList")
+        : -1;
+    const r = insertNodesAfterAnchor(doc, (opts.anchorText ?? "").trimEnd(), () => [{ type: "footnoteReference", attrs: { id: footnoteId } }], {
+        ...(listIdx >= 0 ? { beforeBlock: listIdx } : {}),
+        forbidBlockTypes: INLINE_ATOM_FORBIDDEN_BLOCKS,
+    });
     if (!r.inserted) {
         return { doc: clone(doc), inserted: false, footnoteId, reused };
     }
