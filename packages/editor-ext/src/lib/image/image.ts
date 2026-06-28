@@ -55,7 +55,6 @@ declare module "@tiptap/core" {
       setImageAlign: (
         align: "left" | "center" | "right" | "floatLeft" | "floatRight",
       ) => ReturnType;
-      setImageCaption: (caption: string | undefined) => ReturnType;
       setImageWidth: (width: number) => ReturnType;
       setImageSize: (width: number, height: number) => ReturnType;
     };
@@ -193,11 +192,6 @@ export const TiptapImage = Image.extend<ImageOptions>({
         (align) =>
         ({ commands }) =>
           commands.updateAttributes("image", { align }),
-
-      setImageCaption:
-        (caption) =>
-        ({ commands }) =>
-          commands.updateAttributes("image", { caption }),
 
       setImageWidth:
         (width) =>
