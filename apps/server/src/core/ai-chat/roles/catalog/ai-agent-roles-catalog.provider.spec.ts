@@ -371,7 +371,9 @@ describe('AiAgentRolesCatalogProvider', () => {
   // ---------------------------------------------------------------------------
   // Pin the REAL shipped catalog files (not synthetic fixtures). The JSON->YAML
   // migration was a hand conversion, so the realistic failure is a hand-edit
-  // error in one of the 6 real files (a quote/colon in a description, a broken
+  // error in one of the 5 content YAML files (the index + the four per-bundle/
+  // lang files: index.yaml plus bundles/{editorial,research}/{en,ru}.yaml) — a
+  // quote/colon in a description, a broken
   // emoji/arrow, a block-scalar indent slip that silently changes or drops
   // instructions). Nothing else in CI parses these files — `scripts/check.mjs`
   // is not wired into any turbo/husky/CI step — so this is the only automated
@@ -394,38 +396,55 @@ describe('AiAgentRolesCatalogProvider', () => {
       return parseYaml(readFileSync(join(CATALOG_DIR, rel), 'utf8'), PARSE_OPTS);
     }
 
+    // Load + validate the real index lazily (only when a test runs), so a broken
+    // real file fails ONLY these catalog tests — not collection of the entire
+    // spec, which also holds the unrelated mocked-remote provider tests above.
+    function loadRealIndex() {
+      const parsed = readCatalogYaml('index.yaml');
+      if (!isCatalogIndex(parsed)) {
+        throw new Error('Real index.yaml is not a valid catalog index');
+      }
+      return parsed;
+    }
+
     it('index.yaml parses + validates with the provider guard', () => {
       expect(isCatalogIndex(readCatalogYaml('index.yaml'))).toBe(true);
     });
 
-    // Read the real index once to drive per-bundle/per-language assertions, so a
-    // bundle or language added later is automatically covered. A broken index
-    // fails the test above; here we only need its shape to enumerate files.
-    const parsedIndex = readCatalogYaml('index.yaml');
-    if (!isCatalogIndex(parsedIndex)) {
-      throw new Error('Real index.yaml is not a valid catalog index');
-    }
-
     it('editorial bundle still ships the fact-checker role', () => {
-      const editorial = parsedIndex.bundles.find((b) => b.id === 'editorial');
+      const editorial = loadRealIndex().bundles.find((b) => b.id === 'editorial');
       expect(editorial).toBeDefined();
       expect(editorial?.roles.map((r) => r.slug)).toContain('fact-checker');
     });
 
-    for (const bundle of parsedIndex.bundles) {
-      const declaredSlugs = bundle.roles.map((r) => r.slug);
-      for (const lang of bundle.languages) {
-        const rel = `bundles/${bundle.id}/${lang}.yaml`;
-        it(`${rel} parses, validates, and carries every declared role with non-empty instructions`, () => {
+    // Driven by the real index (read inside the test, so it's lazy): every
+    // declared bundle + language file must parse, validate, and be in EXACT slug
+    // correspondence with the index — every declared role present AND no
+    // undeclared extras — mirroring scripts/check.mjs, which requires both
+    // directions. A bundle or language added later is covered automatically.
+    it('every declared bundle/language file is valid and in exact slug correspondence', () => {
+      const index = loadRealIndex();
+      // Guard against an empty index silently passing the loops below.
+      expect(index.bundles.length).toBeGreaterThan(0);
+      for (const bundle of index.bundles) {
+        const declaredSlugs = bundle.roles.map((r) => r.slug);
+        expect(bundle.languages.length).toBeGreaterThan(0);
+        for (const lang of bundle.languages) {
+          const rel = `bundles/${bundle.id}/${lang}.yaml`;
           const file = readCatalogYaml(rel);
           expect(isCatalogBundleFile(file)).toBe(true);
           // Narrow for TS and access fields safely.
-          if (!isCatalogBundleFile(file)) return;
+          if (!isCatalogBundleFile(file)) continue;
           expect(file.language).toBe(lang);
           const fileSlugs = file.roles.map((r) => r.slug);
+          // Existing direction: every declared role is present in the file.
           for (const slug of declaredSlugs) {
             expect(fileSlugs).toContain(slug);
           }
+          // Symmetric direction: the file carries NO undeclared/extra roles, so
+          // file slugs and declared slugs must be the SAME set (exact match).
+          // Catches a hand-edit that copies a stray role into a bundle file.
+          expect([...fileSlugs].sort()).toEqual([...declaredSlugs].sort());
           expect(file.roles.length).toBeGreaterThan(0);
           for (const role of file.roles) {
             expect(isCatalogRole(role)).toBe(true);
@@ -433,8 +452,8 @@ describe('AiAgentRolesCatalogProvider', () => {
             expect(role.instructions.trim().length).toBeGreaterThan(0);
             expect(role.name.trim().length).toBeGreaterThan(0);
           }
-        });
+        }
       }
-    }
+    });
   });
 });
