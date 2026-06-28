@@ -46,10 +46,13 @@ describe("sanitizeCaption", () => {
   });
 
   it("collapses whitespace before applying the 500-char cap", () => {
-    // 250 "a b" groups => "a b a b ..." which after collapse is 499 chars,
-    // adding a trailing pair pushes past 500 and gets sliced.
+    // 120 "a  b " groups (600 raw chars) collapse to "a b a b ..." = 479 chars
+    // after trimming the trailing space, which stays under the 500 cap — so only
+    // the collapse is exercised here, no slice. (See the dedicated >500 test
+    // above for the slice boundary.)
     const input = "a  b ".repeat(120); // lots of double spaces
     const result = sanitizeCaption(input);
+    expect(result).toHaveLength(479);
     expect(result.length).toBeLessThanOrEqual(500);
     expect(result).not.toMatch(/\s{2,}/);
   });
