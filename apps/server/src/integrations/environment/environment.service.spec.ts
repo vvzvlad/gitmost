@@ -94,6 +94,46 @@ describe('EnvironmentService', () => {
     });
   });
 
+  // getPositiveIntEnv keeps a one-shot `invalidPositiveIntWarned` set so a bad
+  // value is logged ONCE per key (not on every getter call, which the sandbox
+  // hits per-put). These tests pin that dedup so a regression to per-call logging
+  // would fail loudly.
+  describe('invalid-value warn dedup', () => {
+    it('warns only once per key across repeated getter calls', () => {
+      const service = new EnvironmentService({
+        get: (k: string, d?: string) =>
+          k === 'SANDBOX_MAX_TOTAL_BYTES' ? '-5' : d,
+      } as any);
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+
+      service.getSandboxMaxTotalBytes();
+      service.getSandboxMaxTotalBytes();
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns independently per key (dedup is per-key, not global)', () => {
+      // Two DIFFERENT SANDBOX_* keys are both invalid -> each warns once, so two
+      // warns total. This proves the dedup set is keyed, not a single global flag.
+      const service = new EnvironmentService({
+        get: (k: string, d?: string) =>
+          k === 'SANDBOX_MAX_BYTES' || k === 'SANDBOX_MAX_TOTAL_BYTES'
+            ? '-5'
+            : d,
+      } as any);
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+
+      service.getSandboxMaxBytes();
+      service.getSandboxMaxTotalBytes();
+
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('getSandboxPublicUrl', () => {
     // Stub that resolves BOTH keys the public-url logic consults.
     const build = (vals: { sandboxUrl?: string; appUrl?: string }) =>
