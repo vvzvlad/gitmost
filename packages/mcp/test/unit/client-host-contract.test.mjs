@@ -15,15 +15,19 @@ import { DocmostClient } from "../../build/index.js";
 // the names against the real class — a rename/removal in client.ts would surface
 // only as a runtime "x is not a function" inside an agent tool call.
 //
-// This test pins the contract from the mcp side (ESM, where the real class is
-// directly importable): every method the embedding host depends on MUST exist as
-// a function on a real DocmostClient instance. If you rename/remove a client
-// method, this fails here AND you must update DocmostClientLike to match.
+// SCOPE: this guard checks the method-NAME set only, not signatures. It pins the
+// contract from the mcp side (ESM, where the real class is directly importable):
+// every method the embedding host depends on MUST exist as a function on a real
+// DocmostClient instance. If you rename/remove a client method, this fails here
+// AND you must update DocmostClientLike to match. It does NOT verify parameter or
+// return-type parity — signature drift between the hand-mirror and client.ts can
+// still ship silently; full signature/type parity is the deferred staged-plan
+// item below.
 //
-// Keep HOST_CONTRACT_METHODS in sync with the methods declared in the server's
-// DocmostClientLike interface (the in-app per-user tool adapter only — it is the
-// superset of what either transport calls). Full type-derivation of
-// DocmostClientLike from this class is deferred (see the staged plan in
+// Keep the HOST_CONTRACT_METHODS NAME list aligned with the method NAMES declared
+// in the server's DocmostClientLike interface (the in-app per-user tool adapter
+// only — it is the superset of what either transport calls). Full type-derivation
+// of DocmostClientLike from this class is deferred (see the staged plan in
 // docmost-client.loader.ts): the package emits no declarations and the real
 // (inferred, concrete) return types conflict with the host's loose
 // `Record<string,unknown>` + `as`-cast result handling.
@@ -91,7 +95,8 @@ test("DocmostClient implements every method the in-app DocmostClientLike mirror 
     `DocmostClient is missing host-contract method(s): ${missing.join(", ")}. ` +
       `Update packages/mcp/src/client.ts and/or the server's DocmostClientLike ` +
       `interface (apps/server/src/core/ai-chat/tools/docmost-client.loader.ts) ` +
-      `so the hand-mirrored signatures stay in sync.`,
+      `so the hand-mirrored method NAMES stay aligned (this guards names only, ` +
+      `not signatures).`,
   );
 });
 
@@ -116,7 +121,19 @@ function parseDocmostClientLikeMethods() {
     here,
     "../../../../apps/server/src/core/ai-chat/tools/docmost-client.loader.ts",
   );
-  const source = readFileSync(loaderPath, "utf8");
+  let source;
+  try {
+    source = readFileSync(loaderPath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(
+        `Expected monorepo layout; server tree at ${loaderPath} not found. ` +
+          `This drift-guard reads the server's DocmostClientLike interface via a ` +
+          `fixed relative path and must run from inside the monorepo checkout.`,
+      );
+    }
+    throw err;
+  }
   const lines = source.split(/\r?\n/);
 
   const startIdx = lines.findIndex((l) =>
@@ -131,13 +148,33 @@ function parseDocmostClientLikeMethods() {
 
   const methods = [];
   let closed = false;
+  // Track whether we are inside a `/* ... */` block comment. Inner lines of a
+  // block comment need NOT start with `*`, so a `name(` line inside one would be
+  // falsely parsed as an interface method without this. (`//` line comments can
+  // never match the method regex below since they start with `/`.)
+  let inBlockComment = false;
   for (let i = startIdx + 1; i < lines.length; i++) {
     const line = lines[i];
+    if (inBlockComment) {
+      // Stay in the block until we see its closing `*/`.
+      if (line.includes("*/")) inBlockComment = false;
+      continue;
+    }
+    // Enter a block comment only when it opens without closing on the same line;
+    // a self-contained `/* ... */` on one line cannot precede a method name we
+    // care about (such lines start with `/`, so the method regex won't match).
+    if (line.includes("/*") && !line.includes("*/")) {
+      inBlockComment = true;
+      continue;
+    }
     if (/^\}/.test(line)) {
       closed = true;
       break;
     }
-    const m = /^\s*([a-zA-Z]+)\(/.exec(line);
+    // Method-name match: a TS identifier (letters/digits/`_`/`$`, not starting
+    // with a digit) optionally followed by a generic clause (`method<T>(`), then
+    // the opening paren of the signature.
+    const m = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\(/.exec(line);
     if (m) methods.push(m[1]);
   }
   assert.ok(
