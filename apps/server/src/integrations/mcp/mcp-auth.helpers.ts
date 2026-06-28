@@ -131,10 +131,20 @@ export class FailedLoginLimiter {
 }
 
 // The per-session DocmostMcpConfig shape understood by @docmost/mcp: either the
-// service-account credentials variant OR the per-user getToken variant.
-export type DocmostMcpConfig =
+// service-account credentials variant OR the per-user getToken variant. The
+// optional `sandbox` sink (blob store for the stash tool) is common to both and
+// injected by McpService after the auth decision.
+export type DocmostMcpConfig = (
   | { apiUrl: string; email: string; password: string }
-  | { apiUrl: string; getToken: () => Promise<string> };
+  | { apiUrl: string; getToken: () => Promise<string> }
+) & {
+  sandbox?: {
+    put: (
+      buf: Buffer,
+      mime: string,
+    ) => { uri: string; sha256: string; size: number };
+  };
+};
 
 export interface ResolvedMcpAuth {
   config: DocmostMcpConfig;

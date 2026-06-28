@@ -7,6 +7,7 @@ import { TiptapTransformer } from "@hocuspocus/transformer";
 import * as Y from "yjs";
 import WebSocket from "ws";
 import { convertProseMirrorToMarkdown } from "./lib/markdown-converter.js";
+import { collectInternalFileNodes, normalizeFileUrl, } from "./lib/internal-file-urls.js";
 import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, markdownToProseMirrorCanonical, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, applyDocToFragment, } from "./lib/collaboration.js";
 import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
@@ -51,6 +52,8 @@ export class DocmostClient {
     // its token instead of calling POST /auth/collab-token; on a 401/403 it is
     // re-invoked once. Used by the internal agent to carry signed provenance.
     getCollabTokenFn = null;
+    // Optional blob-sandbox sink for the stash tool. Null when not configured.
+    sandboxPut = null;
     // In-flight login dedup: when the token expires, the 401 interceptor,
     // ensureAuthenticated, getCollabTokenWithReauth and the two multipart retries
     // can all call login() at once. Memoizing a single promise collapses that
@@ -76,6 +79,9 @@ export class DocmostClient {
         // their collab token from here instead of POST /auth/collab-token.
         if (config.getCollabToken) {
             this.getCollabTokenFn = config.getCollabToken;
+        }
+        if (config.sandbox) {
+            this.sandboxPut = config.sandbox.put;
         }
         this.client = axios.create({
             baseURL: this.apiUrl,
@@ -603,6 +609,106 @@ export class DocmostClient {
             spaceId: data.spaceId,
             updatedAt: data.updatedAt,
             content: data.content || { type: "doc", content: [] },
+        };
+    }
+    /**
+     * Fetch an INTERNAL Docmost file (authed loopback) for sandbox mirroring.
+     * `src` is normalized to `/api/files/<id>/<file>`; `this.client.baseURL`
+     * already ends in `/api`, so we strip the leading `/api` and request the
+     * relative path with the client's Authorization header. Returns the raw bytes
+     * and the response Content-Type (mime), defaulting to octet-stream.
+     *
+     * The fetch is size-bounded (hard 64 MiB ceiling) purely to protect memory;
+     * the authoritative per-blob cap is enforced by the sandbox `put`. The leading
+     * `/api` strip means this never escapes the Docmost API base.
+     */
+    async fetchInternalFile(src) {
+        const HARD_CEILING = 64 * 1024 * 1024; // 64 MiB memory guard
+        const relPath = src.replace(/^\/api/, "");
+        const response = await this.client.get(relPath, {
+            responseType: "arraybuffer",
+            timeout: 30000,
+            maxContentLength: HARD_CEILING,
+            maxBodyLength: HARD_CEILING,
+        });
+        const buffer = Buffer.from(response.data);
+        if (buffer.length === 0) {
+            throw new Error(`Empty file response from "${src}"`);
+        }
+        const rawCt = response.headers?.["content-type"];
+        const mime = typeof rawCt === "string" && rawCt.length > 0
+            ? rawCt.split(";")[0].trim().toLowerCase()
+            : "application/octet-stream";
+        return { buffer, mime };
+    }
+    /**
+     * Stash a page's full content into the in-RAM blob sandbox and return ONLY a
+     * short anonymous URL — the body never enters the model context (this is the
+     * whole point: ~30KB+ ProseMirror docs blow the model context if passed as a
+     * tool argument). Every INTERNAL file/image src (the type-agnostic criterion,
+     * so drawio/excalidraw/video/file nodes are covered too) is mirrored into the
+     * sandbox and its `src` rewritten to the sandbox URL, so an external consumer
+     * can fetch the images anonymously. External http(s) srcs are left untouched.
+     *
+     * Blobs live in RAM with a short TTL and are cleared on restart — consume the
+     * URLs within the TTL and one uptime. A failed image fetch never aborts the
+     * doc: the original src is kept and the failure counted.
+     *
+     * Returns { uri, sha256, size, images:{mirrored, failed} }. `uri` and `sha256`
+     * are for the document blob; `sha256` is also the blob's ETag (integrity).
+     */
+    async stashPage(pageId) {
+        if (!this.sandboxPut) {
+            throw new Error("stash_page is unavailable: the blob sandbox is not configured on this server");
+        }
+        await this.ensureAuthenticated();
+        // Stash the SAME shape get_page_json returns (id/title/.../content), with a
+        // deep clone so the rewrite never mutates anything shared.
+        const pageJson = await this.getPageJson(pageId);
+        const cloned = structuredClone(pageJson);
+        // Group internal-file nodes by normalized src so each unique resource is
+        // fetched + stored ONCE (dedup), and every node sharing that src points at
+        // the one sandbox blob.
+        const bySrc = new Map();
+        for (const node of collectInternalFileNodes(cloned.content)) {
+            const src = normalizeFileUrl(String(node.attrs.src));
+            const group = bySrc.get(src);
+            if (group)
+                group.push(node);
+            else
+                bySrc.set(src, [node]);
+        }
+        let mirrored = 0;
+        let failed = 0;
+        const MAX_CONCURRENCY = 5;
+        const groups = [...bySrc.entries()];
+        for (let i = 0; i < groups.length; i += MAX_CONCURRENCY) {
+            const batch = groups.slice(i, i + MAX_CONCURRENCY);
+            await Promise.all(batch.map(async ([src, nodes]) => {
+                try {
+                    const { buffer, mime } = await this.fetchInternalFile(src);
+                    // put may throw if the blob exceeds the per-blob/total caps.
+                    const stored = this.sandboxPut(buffer, mime);
+                    for (const node of nodes)
+                        node.attrs.src = stored.uri;
+                    mirrored++;
+                }
+                catch (err) {
+                    // One bad/oversized image must not abort the document.
+                    failed++;
+                    if (process.env.DEBUG) {
+                        console.error(`stash_page: failed to mirror "${src}":`, err);
+                    }
+                }
+            }));
+        }
+        const docBuf = Buffer.from(JSON.stringify(cloned), "utf8");
+        const stored = this.sandboxPut(docBuf, "application/json");
+        return {
+            uri: stored.uri,
+            sha256: stored.sha256,
+            size: stored.size,
+            images: { mirrored, failed },
         };
     }
     /**

@@ -30,6 +30,7 @@ import {
   DocmostMcpConfig,
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
+import { SandboxStore } from '../sandbox/sandbox.store';
 
 // Minimal shape of the embedded MCP HTTP handler exported by @docmost/mcp/http.
 interface McpHttpHandler {
@@ -99,6 +100,8 @@ export class McpService implements OnModuleDestroy {
     private readonly userRepo: UserRepo,
     private readonly userSessionRepo: UserSessionRepo,
     private readonly moduleRef: ModuleRef,
+    // Shared singleton in-RAM blob store backing the stash tool.
+    private readonly sandboxStore: SandboxStore,
   ) {
     this.sweepTimer = setInterval(() => {
       try {
@@ -113,6 +116,23 @@ export class McpService implements OnModuleDestroy {
 
   onModuleDestroy(): void {
     clearInterval(this.sweepTimer);
+  }
+
+  // Bind the stash tool to the shared in-RAM SandboxStore and compose the
+  // anonymous public URL (the MCP package owns neither env nor the store).
+  // put() returns the read URL + sha256/size; sha256 is also the blob ETag.
+  private buildSandboxConfig(): DocmostMcpConfig['sandbox'] {
+    return {
+      put: (buf: Buffer, mime: string) => {
+        const stored = this.sandboxStore.put(buf, mime);
+        const base = this.environmentService.getSandboxPublicUrl();
+        return {
+          uri: `${base}/api/sb/${stored.id}`,
+          sha256: stored.sha256,
+          size: stored.size,
+        };
+      },
+    };
   }
 
   // Service account the embedded MCP uses to talk back to this Docmost
@@ -326,7 +346,10 @@ export class McpService implements OnModuleDestroy {
               // Should never happen: handle() always stashes before delegating.
               throw new UnauthorizedException('MCP authentication missing.');
             }
-            return resolved.config;
+            // Inject the blob-sandbox sink after the auth decision so stash_page
+            // can store blobs in the shared in-RAM store regardless of which
+            // credential variant resolved.
+            return { ...resolved.config, sandbox: this.buildSandboxConfig() };
           },
           {
             identify: (req: IncomingMessage) => {

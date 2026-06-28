@@ -116,6 +116,7 @@ function makeService(opts: {
     undefined as never, // userRepo
     undefined as never, // userSessionRepo
     moduleRef as never, // moduleRef (read by the MFA branch)
+    undefined as never, // sandboxStore (unused by the login-gate path)
   );
   // Stop the constructor's unref'd sweep timer leaking across tests.
   service.onModuleDestroy();

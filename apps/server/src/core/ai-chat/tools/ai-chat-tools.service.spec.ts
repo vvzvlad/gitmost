@@ -63,6 +63,10 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
       {} as never,
       {} as never,
       {} as never,
+      // environmentService + sandboxStore (only used by the stash tool closure,
+      // which these tests do not execute).
+      {} as never,
+      {} as never,
     );
   });
 
@@ -173,6 +177,10 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
       tokenServiceStub as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      // environmentService + sandboxStore (only used by the stash tool closure,
+      // which these tests do not execute).
       {} as never,
       {} as never,
     );
@@ -288,6 +296,10 @@ describe('AiChatToolsService node-arg JSON-string coercion', () => {
       tokenServiceStub as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      // environmentService + sandboxStore (only used by the stash tool closure,
+      // which these tests do not execute).
       {} as never,
       {} as never,
     );
@@ -438,6 +450,10 @@ describe('AiChatToolsService model-friendly input validation (#190)', () => {
       tokenServiceStub as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      // environmentService + sandboxStore (only used by the stash tool closure,
+      // which these tests do not execute).
       {} as never,
       {} as never,
     );

@@ -16,6 +16,8 @@ import {
 import { resolveCurrentPageResult } from './current-page.util';
 import { parseNodeArg } from './parse-node-arg';
 import { modelFriendlyInput } from './model-friendly-input';
+import { EnvironmentService } from '../../../integrations/environment/environment.service';
+import { SandboxStore } from '../../../integrations/sandbox/sandbox.store';
 
 /**
  * Per-user, per-request adapter that exposes Docmost READ operations to the
@@ -41,6 +43,9 @@ export class AiChatToolsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly spaceMemberRepo: SpaceMemberRepo,
     private readonly pagePermissionRepo: PagePermissionRepo,
+    private readonly environmentService: EnvironmentService,
+    // Shared singleton in-RAM blob store backing the stash tool.
+    private readonly sandboxStore: SandboxStore,
   ) {}
 
   async forUser(
@@ -86,11 +91,22 @@ export class AiChatToolsService {
         aiChatId,
       });
 
+    // Bind the stash tool to the shared in-RAM SandboxStore and compose the
+    // anonymous public URL here (the MCP package never touches env or the
+    // store). put() returns the read URL + sha256/size; sha256 is also the
+    // blob's ETag for integrity.
+    const sandboxPut = (buf: Buffer, mime: string) => {
+      const stored = this.sandboxStore.put(buf, mime);
+      const base = this.environmentService.getSandboxPublicUrl();
+      return { uri: `${base}/api/sb/${stored.id}`, sha256: stored.sha256, size: stored.size };
+    };
+
     const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
     const client: DocmostClientLike = new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
+      sandbox: { put: sandboxPut },
     });
 
     // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the
@@ -623,6 +639,14 @@ export class AiChatToolsService {
       editPageText: sharedTool(
         sharedToolSpecs.editPageText,
         async ({ pageId, edits }) => await client.editPageText(pageId, edits),
+      ),
+
+      // Returns ONLY the short link object — never the document body — so a
+      // large page can be handed to an external consumer without bloating
+      // context.
+      stashPage: sharedTool(
+        sharedToolSpecs.stashPage,
+        async ({ pageId }) => await client.stashPage(pageId),
       ),
 
       patchNode: tool({

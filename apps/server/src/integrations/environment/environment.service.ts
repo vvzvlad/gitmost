@@ -332,4 +332,52 @@ export class EnvironmentService {
       .map((o) => o.trim())
       .filter(Boolean);
   }
+
+  // --- Blob sandbox (in-RAM ephemeral blob transfer; see SandboxModule) ---
+
+  // Base URL the sandbox `uri` is built from. It MUST be reachable over the
+  // network by the external consumer that fetches the blobs (not a loopback
+  // address if that consumer is remote). Falls back to APP_URL when unset so a
+  // single-host deployment works out of the box; set it explicitly when the
+  // consumer lives on another host.
+  getSandboxPublicUrl(): string {
+    const raw =
+      this.configService.get<string>('SANDBOX_PUBLIC_URL') || this.getAppUrl();
+    // Drop any trailing slash so `${base}/api/sb/${id}` never doubles up.
+    return raw.replace(/\/+$/, '');
+  }
+
+  // Blob time-to-live. Default 1h. The unguessable UUID + this short TTL + TLS
+  // are the whole capability model (no tokens).
+  getSandboxTtlMs(): number {
+    return parseInt(
+      this.configService.get<string>('SANDBOX_TTL_MS', '3600000'),
+      10,
+    );
+  }
+
+  // Per-blob cap for non-image blobs (the serialized document). Default 8 MiB.
+  getSandboxMaxBytes(): number {
+    return parseInt(
+      this.configService.get<string>('SANDBOX_MAX_BYTES', '8388608'),
+      10,
+    );
+  }
+
+  // Per-blob cap for mirrored image blobs. Default 20 MiB.
+  getSandboxMaxImageBytes(): number {
+    return parseInt(
+      this.configService.get<string>('SANDBOX_MAX_IMAGE_BYTES', '20971520'),
+      10,
+    );
+  }
+
+  // RAM guard: total bytes the whole store may hold. Default 128 MiB. On
+  // overflow the store evicts oldest entries to make room.
+  getSandboxMaxTotalBytes(): number {
+    return parseInt(
+      this.configService.get<string>('SANDBOX_MAX_TOTAL_BYTES', '134217728'),
+      10,
+    );
+  }
 }

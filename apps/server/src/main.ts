@@ -126,6 +126,10 @@ async function bootstrap() {
         '/api/workspace/create',
         '/api/workspace/joined',
         '/api/workspace/find-by-email',
+        // Anonymous in-RAM blob sandbox: a remote consumer fetches blobs by an
+        // unguessable UUID without any workspace host context, so the
+        // workspace-resolution gate must not apply.
+        '/api/sb',
       ];
 
       if (
