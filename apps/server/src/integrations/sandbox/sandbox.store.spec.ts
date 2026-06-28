@@ -130,4 +130,36 @@ describe('SandboxStore', () => {
       /total store cap/,
     );
   });
+
+  it('putAndLink composes the anonymous /api/sb/<id> url with matching integrity', () => {
+    store = new SandboxStore(makeEnv());
+    const buf = Buffer.from('hello link', 'utf8');
+    const expected = createHash('sha256').update(buf).digest('hex');
+
+    const res = store.putAndLink(buf, 'image/png');
+    expect(res.uri).toMatch(/^https:\/\/example\.test\/api\/sb\/[0-9a-f-]{36}$/);
+    expect(res.sha256).toBe(expected);
+    expect(res.size).toBe(buf.length);
+  });
+
+  it('has()/remove() report and free a blob by id', () => {
+    store = new SandboxStore(makeEnv());
+    const { id } = store.put(Buffer.from('x'), 'text/plain');
+
+    expect(store.has(id)).toBe(true);
+    store.remove(id);
+    expect(store.has(id)).toBe(false);
+    expect(store.bytes).toBe(0);
+  });
+
+  it('asSink() round-trips put/has/evict through the anonymous uri', () => {
+    store = new SandboxStore(makeEnv());
+    const sink = store.asSink();
+    const buf = Buffer.from('sink bytes', 'utf8');
+
+    const r = sink.put(buf, 'image/png');
+    expect(sink.has(r.uri)).toBe(true);
+    sink.evict(r.uri);
+    expect(sink.has(r.uri)).toBe(false);
+  });
 });

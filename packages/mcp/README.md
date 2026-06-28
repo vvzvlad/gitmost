@@ -16,7 +16,7 @@ license.
 > that interface. Other Docmost MCPs are human-shaped — they expose "open the page" and
 > "replace the page"; this one exposes the editing primitives a model is good at.
 
-It exposes **39 tools** built around three ideas that the other Docmost MCPs do not
+It exposes **40 tools** built around three ideas that the other Docmost MCPs do not
 combine:
 
 1. **Surgical, token-cheap edits.** Address a single block by id and patch it, or run
@@ -106,7 +106,7 @@ There are several Docmost MCPs. Here is a capability-by-capability comparison.
 
 ## Tools
 
-All 39 tools, grouped by what you'd reach for them.
+All 40 tools, grouped by what you'd reach for them.
 
 ### Exploration & retrieval
 

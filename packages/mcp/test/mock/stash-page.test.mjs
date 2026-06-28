@@ -285,6 +285,54 @@ test("stashPage reverts a FIFO-evicted image and counts it as failed (B1)", asyn
   assert.equal(reverted, 2);
 });
 
+test("stashPage reverts an image evicted by the DOC put itself (after-put reconcile, B1)", async () => {
+  // Both images (1000 bytes each) survive the image phase: total 2000 <= cap
+  // 2500. The doc, however, serializes large (a node with a ~700-byte string
+  // attr), so putting it (newest) tips total over the cap and FIFO-evicts the
+  // OLDEST image (img0) — an eviction caused by the doc put itself, which only
+  // the after-put reconciliation can catch. The loop then reverts img0, drops
+  // the stale doc blob, and re-puts the corrected doc (now total = img1 +
+  // docSize <= cap, so img1 survives).
+  const BIG = Buffer.alloc(1000, 0x41);
+  const sandbox = makeSandbox({ maxTotal: 2500 });
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "image", attrs: { src: "/api/files/att-0/pic.png", attachmentId: "att-0" } },
+      { type: "image", attrs: { src: "/api/files/att-1/pic.png", attachmentId: "att-1" } },
+      // Bulk the doc JSON up so the doc put crosses the cap on its own. Stays in
+      // the doc across reverts, so each re-serialization is similarly large.
+      { type: "paragraph", attrs: { filler: "x".repeat(700) }, content: [] },
+    ],
+  };
+  const client = await buildClient(sandbox, { doc, fileBytes: BIG });
+
+  const result = await client.stashPage("page-1");
+
+  // The doc put evicted exactly one image -> reverted + counted as failed.
+  assert.deepEqual(result.images, { mirrored: 1, failed: 1 });
+
+  // Use the LAST json put: the first (stale) doc referenced the now-dead blob
+  // and was itself evicted; the corrected re-put is the one that stands.
+  const docPut = sandbox.puts.filter((p) => p.mime === "application/json").at(-1);
+  const stashed = JSON.parse(docPut.buf.toString("utf8"));
+  const imgs = stashed.content.content.filter((n) => n.type === "image");
+  let live = 0;
+  let reverted = 0;
+  for (const img of imgs) {
+    const src = img.attrs.src;
+    if (src.startsWith("https://sb.test/api/sb/")) {
+      assert.ok(sandbox.has(src), `final doc references evicted blob ${src}`);
+      live++;
+    } else {
+      assert.match(src, /^\/api\/files\/att-\d+\/pic\.png$/);
+      reverted++;
+    }
+  }
+  assert.equal(live, 1);
+  assert.equal(reverted, 1);
+});
+
 test("stashPage frees image blobs when the doc put throws (B1)", async () => {
   // Two distinct images mirror fine; the final JSON doc put throws (doc exceeds
   // cap). stashPage must reject AND evict every image blob it stored this op.

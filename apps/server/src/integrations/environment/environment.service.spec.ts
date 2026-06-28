@@ -40,4 +40,29 @@ describe('EnvironmentService', () => {
       expect(build(undefined).getSandboxTtlMs()).toBe(3_600_000);
     });
   });
+
+  describe('getSandboxPublicUrl', () => {
+    // Stub that resolves BOTH keys the public-url logic consults.
+    const build = (vals: { sandboxUrl?: string; appUrl?: string }) =>
+      new EnvironmentService({
+        get: (key: string, def?: string) =>
+          key === 'SANDBOX_PUBLIC_URL'
+            ? (vals.sandboxUrl ?? def)
+            : key === 'APP_URL'
+              ? (vals.appUrl ?? def)
+              : def,
+      } as any);
+
+    it('uses SANDBOX_PUBLIC_URL and trims a trailing slash', () => {
+      expect(
+        build({ sandboxUrl: 'https://docs.example.com/' }).getSandboxPublicUrl(),
+      ).toBe('https://docs.example.com');
+    });
+
+    it('falls back to APP_URL (origin) when SANDBOX_PUBLIC_URL is unset', () => {
+      expect(
+        build({ appUrl: 'https://app.example.com' }).getSandboxPublicUrl(),
+      ).toBe('https://app.example.com');
+    });
+  });
 });

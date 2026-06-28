@@ -92,20 +92,14 @@ export class AiChatToolsService {
     // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
     // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
     // package needs to keep its mirror counts honest under FIFO eviction (the
-    // package never touches env or the store). The sink speaks `uri`s, so the
-    // probes map a uri back to its id (the last path segment).
-    const idOf = (uri: string) => uri.substring(uri.lastIndexOf('/') + 1);
-
+    // package never touches env or the store). asSink() centralizes the uri↔id
+    // mapping next to putAndLink, shared with the embedded-MCP wiring site.
     const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
     const client: DocmostClientLike = new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
-      sandbox: {
-        put: (buf, mime) => this.sandboxStore.putAndLink(buf, mime),
-        has: (uri) => this.sandboxStore.has(idOf(uri)),
-        evict: (uri) => this.sandboxStore.remove(idOf(uri)),
-      },
+      sandbox: this.sandboxStore.asSink(),
     });
 
     // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the

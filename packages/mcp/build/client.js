@@ -723,37 +723,68 @@ export class DocmostClient {
                 }
             }));
         }
-        // Reconcile against FIFO eviction: a heavy page can have a later image-put
-        // evict an EARLIER image stored in this SAME stash. The stored doc must not
-        // reference an evicted blob (consumer 404) and the counts must not lie, so
-        // for any mirror whose blob is gone, revert its nodes to their original
-        // internal srcs and re-count it as failed.
+        // Revert one mirror's nodes to their original internal srcs and re-count it
+        // as failed (its blob was FIFO-evicted before the doc could reference it
+        // safely).
+        const revertMirror = (mirror) => {
+            for (const entry of mirror.entries)
+                entry.node.attrs.src = entry.origSrc;
+            mirrored--;
+            failed++;
+            console.warn(`stash_page: mirrored blob ${mirror.uri} was evicted before the doc ` +
+                `could safely reference it; reverted its src and counted it as failed`);
+        };
+        // Pre-put reconciliation: an image put earlier in THIS stash can FIFO-evict
+        // an even-earlier image of the same stash. Drop those from the live set
+        // first so the first serialized doc is already mostly correct.
+        let liveMirrors = mirrors;
         if (this.sandboxHas) {
+            liveMirrors = [];
             for (const mirror of mirrors) {
-                if (!this.sandboxHas(mirror.uri)) {
-                    for (const entry of mirror.entries) {
-                        entry.node.attrs.src = entry.origSrc;
-                    }
-                    mirrored--;
-                    failed++;
-                    console.warn(`stash_page: mirrored blob ${mirror.uri} was evicted before ` +
-                        `the doc was stored; reverted its src and counted it as failed`);
-                }
+                if (this.sandboxHas(mirror.uri))
+                    liveMirrors.push(mirror);
+                else
+                    revertMirror(mirror);
             }
         }
-        const docBuf = Buffer.from(JSON.stringify(cloned), "utf8");
+        // Put the document, then reconcile against eviction caused by the doc put
+        // ITSELF (the doc is newest, FIFO drops oldest = this stash's images). Each
+        // iteration reverts >=1 mirror, so the loop terminates (worst case: all
+        // images reverted and the doc references no sandbox image URLs).
         let stored;
-        try {
-            stored = this.sandboxPut(docBuf, "application/json");
-        }
-        catch (err) {
-            // The doc put failed (e.g. doc exceeds the cap). Free this op's image
-            // blobs instead of leaking them in RAM for the whole TTL, then re-throw.
-            if (this.sandboxEvict) {
-                for (const mirror of mirrors)
-                    this.sandboxEvict(mirror.uri);
+        for (;;) {
+            const docBuf = Buffer.from(JSON.stringify(cloned), "utf8");
+            let docStored;
+            try {
+                docStored = this.sandboxPut(docBuf, "application/json");
             }
-            throw err;
+            catch (err) {
+                // The doc put failed (e.g. doc exceeds the cap). Free this op's image
+                // blobs instead of leaking them in RAM for the whole TTL, then
+                // re-throw.
+                if (this.sandboxEvict) {
+                    for (const mirror of liveMirrors)
+                        this.sandboxEvict(mirror.uri);
+                }
+                throw err;
+            }
+            if (!this.sandboxHas) {
+                stored = docStored;
+                break;
+            }
+            const evictedNow = liveMirrors.filter((m) => !this.sandboxHas(m.uri));
+            if (evictedNow.length === 0) {
+                stored = docStored;
+                break;
+            }
+            // The doc we just stored references now-dead blobs. Revert those nodes,
+            // drop the stale doc blob, and loop to re-serialize + re-put the
+            // corrected doc.
+            for (const mirror of evictedNow)
+                revertMirror(mirror);
+            liveMirrors = liveMirrors.filter((m) => this.sandboxHas(m.uri));
+            if (this.sandboxEvict)
+                this.sandboxEvict(docStored.uri);
         }
         return {
             uri: stored.uri,

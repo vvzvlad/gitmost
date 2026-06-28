@@ -119,15 +119,10 @@ export class McpService implements OnModuleDestroy {
   // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
   // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
   // package needs to keep its mirror counts honest under FIFO eviction; the
-  // package owns neither env nor the store. The sink speaks `uri`s, so the
-  // probes map a uri back to its id (the last path segment).
+  // package owns neither env nor the store. The uri↔id mapping now lives on the
+  // store (asSink), shared with the in-app agent-tools wiring site.
   private buildSandboxConfig(): DocmostMcpConfig['sandbox'] {
-    const idOf = (uri: string) => uri.substring(uri.lastIndexOf('/') + 1);
-    return {
-      put: (buf, mime) => this.sandboxStore.putAndLink(buf, mime),
-      has: (uri) => this.sandboxStore.has(idOf(uri)),
-      evict: (uri) => this.sandboxStore.remove(idOf(uri)),
-    };
+    return this.sandboxStore.asSink();
   }
 
   // Service account the embedded MCP uses to talk back to this Docmost

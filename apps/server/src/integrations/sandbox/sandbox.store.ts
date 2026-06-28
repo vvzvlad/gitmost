@@ -108,6 +108,26 @@ export class SandboxStore implements OnModuleDestroy {
     };
   }
 
+  /**
+   * Adapter to the package's blob-sandbox sink contract `{ put, has, evict }`.
+   * The sink speaks anonymous `uri`s while the store is keyed by `id`, so this is
+   * the ONE place that maps a sandbox uri back to its id (the last path segment).
+   * Both wiring sites (embedded MCP + in-app agent tools) use this so the uri↔id
+   * mapping and URL composition live next to putAndLink, not copy-pasted.
+   */
+  asSink(): {
+    put: (buf: Buffer, mime: string) => { uri: string; sha256: string; size: number };
+    has: (uri: string) => boolean;
+    evict: (uri: string) => void;
+  } {
+    const idOf = (uri: string) => uri.substring(uri.lastIndexOf('/') + 1);
+    return {
+      put: (buf, mime) => this.putAndLink(buf, mime),
+      has: (uri) => this.has(idOf(uri)),
+      evict: (uri) => this.remove(idOf(uri)),
+    };
+  }
+
   /** True if the blob is still live (not evicted/expired). */
   has(id: string): boolean {
     return this.get(id) !== undefined;

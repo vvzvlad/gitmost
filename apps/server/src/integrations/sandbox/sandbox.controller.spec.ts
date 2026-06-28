@@ -187,4 +187,76 @@ describe('SandboxController', () => {
     expect(maxAge).toBeGreaterThanOrEqual(0);
     expect(maxAge).toBeLessThanOrEqual(60);
   });
+
+  it('emits Cache-Control alongside ETag on the 304 branch', async () => {
+    const sha = '3'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('x'), 'application/json', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq({ 'if-none-match': `"${sha}"` }), res);
+
+    expect(res._sent.status).toBe(304);
+    expect(res._sent.headers['cache-control']).toMatch(
+      /^private, max-age=\d+, immutable$/,
+    );
+  });
+
+  it('sets nosniff + restrictive CSP and serves an allowlisted image inline', async () => {
+    const sha = '4'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('x'), 'image/png', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq(), res);
+
+    expect(res._sent.status).toBe(200);
+    expect(res._sent.headers['x-content-type-options']).toBe('nosniff');
+    expect(res._sent.headers['content-security-policy']).toBe(
+      "base-uri 'none'; object-src 'self'; default-src 'self';",
+    );
+    expect(res._sent.headers['content-disposition']).toBe('inline');
+  });
+
+  it('forces an SVG to download (attachment) while keeping nosniff + CSP', async () => {
+    const sha = '5'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('<svg/>'), 'image/svg+xml', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq(), res);
+
+    expect(res._sent.status).toBe(200);
+    expect(res._sent.headers['content-disposition']).toBe('attachment');
+    expect(res._sent.headers['x-content-type-options']).toBe('nosniff');
+    expect(res._sent.headers['content-security-policy']).toBe(
+      "base-uri 'none'; object-src 'self'; default-src 'self';",
+    );
+  });
+
+  it('forces text/html to download (attachment) while keeping nosniff + CSP', async () => {
+    const sha = '6'.repeat(64);
+    const store = {
+      get: jest
+        .fn()
+        .mockReturnValue(entry(Buffer.from('<h1>x</h1>'), 'text/html', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq(), res);
+
+    expect(res._sent.status).toBe(200);
+    expect(res._sent.headers['content-disposition']).toBe('attachment');
+    expect(res._sent.headers['x-content-type-options']).toBe('nosniff');
+    expect(res._sent.headers['content-security-policy']).toBe(
+      "base-uri 'none'; object-src 'self'; default-src 'self';",
+    );
+  });
 });
