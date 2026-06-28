@@ -185,9 +185,17 @@ export class EmbeddingIndexerService {
   }
 
   /**
-   * (Re)build embeddings for EVERY non-deleted page in a workspace. Used by the
-   * bulk reindex (WORKSPACE_CREATE_EMBEDDINGS, fired when AI Search is enabled
-   * and by the manual "Reindex now" action).
+   * (Re)build embeddings for the EMBEDDABLE page set of a workspace — the same
+   * set countEmbeddablePages counts (via getEmbeddablePageIds): non-deleted pages
+   * that have non-empty textContent OR already have a stored embedding row, NOT
+   * every non-deleted page. Iterating this set keeps the live `total` equal to
+   * the steady-state denominator, so the progress counter climbs 0 -> total and
+   * matches the before/after DB coverage exactly. Text-less pages are correctly
+   * skipped (reindexPage no-ops on them); a page that lost its text but still has
+   * stale embeddings stays in the set (the EXISTS clause) so it is visited and
+   * its stale rows are cleared. Used by the bulk reindex
+   * (WORKSPACE_CREATE_EMBEDDINGS, fired when AI Search is enabled and by the
+   * manual "Reindex now" action).
    *
    * Resolves the embeddings model once up front: if the workspace has no
    * embeddings provider configured, the whole batch is skipped (otherwise each

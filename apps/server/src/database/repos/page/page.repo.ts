@@ -12,6 +12,7 @@ import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagin
 import { validate as isValidUUID } from 'uuid';
 import { ExpressionBuilder, sql } from 'kysely';
 import { DB } from '@docmost/db/types/db';
+import { DbInterface } from '@docmost/db/types/db.interface';
 import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -243,25 +244,41 @@ export class PageRepo {
       .selectFrom('pages as p')
       .where('p.workspaceId', '=', workspaceId)
       .where('p.deletedAt', 'is', null)
-      .where((eb) =>
-        eb.or([
-          // Has extractable body text. The regex matches any non-whitespace
-          // character, mirroring the indexer's `text.trim().length === 0` check
-          // (raw SQL -> use the snake_case column name).
-          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
-          // OR already has at least one (non-deleted) embedding row.
-          eb.exists(
-            eb
-              .selectFrom('pageEmbeddings as pe')
-              .select(sql`1`.as('one'))
-              .whereRef('pe.pageId', '=', 'p.id')
-              .where('pe.deletedAt', 'is', null),
-          ),
-        ]),
-      )
+      .where((eb) => this.embeddablePredicate(eb))
       .select((eb) => eb.fn.countAll().as('count'))
       .executeTakeFirst();
     return Number(row?.count ?? 0);
+  }
+
+  /**
+   * The "embeddable content" qualifying predicate, shared verbatim by
+   * countEmbeddablePages (the steady-state denominator) and getEmbeddablePageIds
+   * (the set the bulk reindex iterates). Both MUST use the exact same condition
+   * or the live total and steady-state total diverge — extracting it here is what
+   * guarantees that, replacing the previous hand-duplicated copy. Callers supply
+   * the trivial workspaceId/deletedAt filters inline; this returns only the
+   * non-trivial OR clause, evaluated against the `p` alias of `pages`.
+   *
+   * A page qualifies if it has non-empty textContent OR already has a stored
+   * (non-deleted) embedding row.
+   */
+  private embeddablePredicate(
+    eb: ExpressionBuilder<DbInterface & { p: DbInterface['pages'] }, 'p'>,
+  ) {
+    return eb.or([
+      // Has extractable body text. The regex matches any non-whitespace
+      // character, mirroring the indexer's `text.trim().length === 0` check
+      // (raw SQL -> use the snake_case column name).
+      sql<boolean>`p.text_content ~ '[^[:space:]]'`,
+      // OR already has at least one (non-deleted) embedding row.
+      eb.exists(
+        eb
+          .selectFrom('pageEmbeddings as pe')
+          .select(sql`1`.as('one'))
+          .whereRef('pe.pageId', '=', 'p.id')
+          .where('pe.deletedAt', 'is', null),
+      ),
+    ]);
   }
 
   /**
@@ -273,9 +290,11 @@ export class PageRepo {
    * every non-deleted page (which would push the denominator above the
    * steady-state value mid-run).
    *
-   * IMPORTANT: the WHERE here MUST stay in lockstep with `countEmbeddablePages`
-   * — if one changes, change both, or the live total and steady-state total
-   * diverge again. Dropping text-less pages is correct: `reindexPage` no-ops on
+   * IMPORTANT: the qualifying WHERE is shared with `countEmbeddablePages` via the
+   * private `embeddablePredicate` helper, so the two can no longer drift — if the
+   * embeddable definition changes, change it once there and both stay in lockstep
+   * (else the live total and steady-state total diverge again). Dropping
+   * text-less pages is correct: `reindexPage` no-ops on
    * a page with no extractable content anyway, and a page that lost its text but
    * still has stale embeddings IS in this set (the EXISTS clause), so it is still
    * visited and its stale rows are cleared.
@@ -286,21 +305,7 @@ export class PageRepo {
       .select('p.id')
       .where('p.workspaceId', '=', workspaceId)
       .where('p.deletedAt', 'is', null)
-      .where((eb) =>
-        eb.or([
-          // Has extractable body text (mirrors countEmbeddablePages: any
-          // non-whitespace char; raw SQL -> snake_case column name).
-          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
-          // OR already has at least one (non-deleted) embedding row.
-          eb.exists(
-            eb
-              .selectFrom('pageEmbeddings as pe')
-              .select(sql`1`.as('one'))
-              .whereRef('pe.pageId', '=', 'p.id')
-              .where('pe.deletedAt', 'is', null),
-          ),
-        ]),
-      )
+      .where((eb) => this.embeddablePredicate(eb))
       .execute();
     return rows.map((r) => r.id);
   }

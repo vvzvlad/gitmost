@@ -1084,7 +1084,18 @@ export default function AiProviderSettings() {
               // background job keeps running, so also stay loading while the
               // server reports `reindexing` (this also blocks a redundant
               // re-trigger mid-run; the server de-dupes regardless).
-              loading={reindexMutation.isPending || settings?.reindexing === true}
+              //
+              // Gate the `reindexing` part on the active poll window
+              // (reindexDeadline !== null): once the 120s poll cap fires it nulls
+              // reindexDeadline and stops refetching, so `settings.reindexing`
+              // can be a stale `true` from the last poll. Without this gate the
+              // spinner would stay stuck (and the button disabled) forever for a
+              // run that outlives the cap — clearing it here lets the admin
+              // restart.
+              loading={
+                reindexMutation.isPending ||
+                (reindexDeadline !== null && settings?.reindexing === true)
+              }
               onClick={() =>
                 reindexMutation.mutate(undefined, {
                   // Begin bounded polling so the counter climbs as the async
