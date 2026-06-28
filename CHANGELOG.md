@@ -67,8 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toggle. Previously the create call defaulted to including sub-pages, silently
   exposing every child of a freshly shared page. (#216)
 
-### Changed
-
 - **The agent-roles catalog is now stored as YAML instead of JSON.** Each role's
   long `instructions` system prompt is a literal block scalar (`|-`), so editing
   a single sentence shows up as a line-by-line diff and the prompt is editable as
