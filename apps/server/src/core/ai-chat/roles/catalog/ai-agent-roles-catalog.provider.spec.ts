@@ -1,6 +1,13 @@
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
-import { stringify as stringifyYaml } from 'yaml';
-import { AiAgentRolesCatalogProvider } from './ai-agent-roles-catalog.provider';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import {
+  AiAgentRolesCatalogProvider,
+  isCatalogBundleFile,
+  isCatalogIndex,
+  isCatalogRole,
+} from './ai-agent-roles-catalog.provider';
 
 /**
  * Provider tests against a mocked remote source (no network). They cover the
@@ -358,6 +365,76 @@ describe('AiAgentRolesCatalogProvider', () => {
           provider.fetchBundle('general', value),
         ).rejects.toBeInstanceOf(BadRequestException);
       });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pin the REAL shipped catalog files (not synthetic fixtures). The JSON->YAML
+  // migration was a hand conversion, so the realistic failure is a hand-edit
+  // error in one of the 6 real files (a quote/colon in a description, a broken
+  // emoji/arrow, a block-scalar indent slip that silently changes or drops
+  // instructions). Nothing else in CI parses these files — `scripts/check.mjs`
+  // is not wired into any turbo/husky/CI step — so this is the only automated
+  // guard over the shipped content. We read them straight off disk, parse with
+  // the SAME options the provider uses (strict + maxAliasCount, see parseYaml in
+  // the provider), and run them through the provider's own type guards. A future
+  // edit that breaks a real file fails here.
+  // ---------------------------------------------------------------------------
+  describe('real shipped catalog files (the YAML migration must not break them)', () => {
+    // Spec lives at apps/server/src/core/ai-chat/roles/catalog/; the catalog
+    // ships at the repo root (agent-roles-catalog/) — seven levels up.
+    const CATALOG_DIR = join(
+      __dirname,
+      '../../../../../../../agent-roles-catalog',
+    );
+    // Match the provider's parseYaml exactly (untrusted-input parse options).
+    const PARSE_OPTS = { strict: true, maxAliasCount: 100 } as const;
+
+    function readCatalogYaml(rel: string): unknown {
+      return parseYaml(readFileSync(join(CATALOG_DIR, rel), 'utf8'), PARSE_OPTS);
+    }
+
+    it('index.yaml parses + validates with the provider guard', () => {
+      expect(isCatalogIndex(readCatalogYaml('index.yaml'))).toBe(true);
+    });
+
+    // Read the real index once to drive per-bundle/per-language assertions, so a
+    // bundle or language added later is automatically covered. A broken index
+    // fails the test above; here we only need its shape to enumerate files.
+    const parsedIndex = readCatalogYaml('index.yaml');
+    if (!isCatalogIndex(parsedIndex)) {
+      throw new Error('Real index.yaml is not a valid catalog index');
+    }
+
+    it('editorial bundle still ships the fact-checker role', () => {
+      const editorial = parsedIndex.bundles.find((b) => b.id === 'editorial');
+      expect(editorial).toBeDefined();
+      expect(editorial?.roles.map((r) => r.slug)).toContain('fact-checker');
+    });
+
+    for (const bundle of parsedIndex.bundles) {
+      const declaredSlugs = bundle.roles.map((r) => r.slug);
+      for (const lang of bundle.languages) {
+        const rel = `bundles/${bundle.id}/${lang}.yaml`;
+        it(`${rel} parses, validates, and carries every declared role with non-empty instructions`, () => {
+          const file = readCatalogYaml(rel);
+          expect(isCatalogBundleFile(file)).toBe(true);
+          // Narrow for TS and access fields safely.
+          if (!isCatalogBundleFile(file)) return;
+          expect(file.language).toBe(lang);
+          const fileSlugs = file.roles.map((r) => r.slug);
+          for (const slug of declaredSlugs) {
+            expect(fileSlugs).toContain(slug);
+          }
+          expect(file.roles.length).toBeGreaterThan(0);
+          for (const role of file.roles) {
+            expect(isCatalogRole(role)).toBe(true);
+            expect(typeof role.instructions).toBe('string');
+            expect(role.instructions.trim().length).toBeGreaterThan(0);
+            expect(role.name.trim().length).toBeGreaterThan(0);
+          }
+        });
+      }
     }
   });
 });
