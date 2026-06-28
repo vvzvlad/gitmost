@@ -26,7 +26,10 @@ import { DocmostClient } from "../../build/index.js";
 //
 // Keep the HOST_CONTRACT_METHODS NAME list aligned with the method NAMES declared
 // in the server's DocmostClientLike interface (the in-app per-user tool adapter
-// only — it is the superset of what either transport calls). Full type-derivation
+// only — it is a SUBSET of the DocmostClient surface — covers only what the in-app adapter
+// consumes; the standalone MCP transport (packages/mcp/src/index.ts) calls additional
+// client methods (insertImage/replaceImage/deleteComment/updateComment/insertFootnote/
+// uploadImage) that this guard does NOT track — the MCP transport's own typecheck covers those). Full type-derivation
 // of DocmostClientLike from this class is deferred (see the staged plan in
 // docmost-client.loader.ts): the package emits no declarations and the real
 // (inferred, concrete) return types conflict with the host's loose
