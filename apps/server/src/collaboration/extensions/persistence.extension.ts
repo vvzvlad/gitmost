@@ -210,6 +210,33 @@ export class PersistenceExtension implements Extension {
             return;
           }
 
+          // #206 persist-6 — store-side empty-guard. A momentarily-empty live
+          // Y.Doc (a client/agent glitch, a bad merge, a transclusion that
+          // emptied) must NOT overwrite non-empty persisted content. The LOAD
+          // path already guards emptiness (onLoadDocument only hydrates from db
+          // when the live doc isEmpty); the STORE path did not, so an empty
+          // serialization was written straight over the page, wiping it
+          // silently. Skip the write when the incoming doc is an empty
+          // paragraph doc AND the stored page is non-empty — unless the writer
+          // sends an explicit intentional-clear signal (a deliberate
+          // select-all + delete), the one case where emptying is the user's
+          // intent. New/empty pages are unaffected (stored content is already
+          // empty), and an unchanged doc was already short-circuited above.
+          const intentionalClear = context?.intentionalClear === true;
+          if (
+            !intentionalClear &&
+            isEmptyParagraphDoc(tiptapJson as any) &&
+            page.content &&
+            !isEmptyParagraphDoc(page.content as any)
+          ) {
+            this.logger.warn(
+              `Skipping store for ${pageId}: empty live doc would overwrite ` +
+                `non-empty persisted content (no intentional-clear signal)`,
+            );
+            page = null;
+            return;
+          }
+
           let contributorIds = undefined;
           try {
             const existingContributors = page.contributorIds || [];

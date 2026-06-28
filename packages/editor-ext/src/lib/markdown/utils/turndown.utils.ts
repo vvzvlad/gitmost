@@ -43,6 +43,54 @@ function fillEmptyFootnoteRefs(html: string): string {
   );
 }
 
+/**
+ * `pageBreak` and `transclusionReference` are childless atom <div>s. Like an
+ * empty footnote ref (see above), turndown treats a childless block as "blank"
+ * and replaces it with the blankRule BEFORE any custom rule can fire — so the
+ * node disappears from the export with no trace (#206 mdrt-2). Inject a
+ * zero-width space so the node is non-blank and our lossless rule runs; the
+ * rule rebuilds the tag from the element's attributes, so the injected char
+ * never reaches the output.
+ */
+function fillEmptyAtomBlocks(html: string): string {
+  return html.replace(
+    /<div\b([^>]*\bdata-type="(?:pageBreak|transclusionReference)"[^>]*)>\s*<\/div>/gi,
+    (_m, attrs) => `<div${attrs}>​</div>`,
+  );
+}
+
+/** HTML-escape an attribute value so a re-emitted raw-HTML tag is well-formed. */
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** HTML-escape text placed inside a re-emitted raw-HTML element. */
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Serialize ALL of an element's attributes back to a raw-HTML attribute string
+ * (leading space included). Generic on purpose: a custom node's identity lives
+ * entirely in its `data-*` attributes (data-id, data-color, data-source-page-id,
+ * data-transclusion-id, …), and serializing every attribute keeps the export
+ * lossless regardless of which attributes a given node carries.
+ */
+function serializeAttrs(node: any): string {
+  const attrs = node?.attributes;
+  if (!attrs) return '';
+  return Array.from(attrs as ArrayLike<{ name: string; value: string }>)
+    .map((attr) => ` ${attr.name}="${escapeHtmlAttr(attr.value ?? '')}"`)
+    .join('');
+}
+
 export function htmlToMarkdown(html: string): string {
   const turndownService = new TurndownService({
     headingStyle: 'atx',
@@ -69,10 +117,81 @@ export function htmlToMarkdown(html: string): string {
     video,
     footnoteReference,
     footnotesList,
+    pageBreak,
+    transclusionReference,
+    mention,
+    status,
   ]);
   return turndownService
-    .turndown(fillEmptyFootnoteRefs(html))
+    .turndown(fillEmptyAtomBlocks(fillEmptyFootnoteRefs(html)))
     .replaceAll('<br>', ' ');
+}
+
+/**
+ * Lossless export rules for custom nodes that have NO native Markdown syntax
+ * (#206 mdrt-2). Markdown cannot represent a page break, a transclusion
+ * reference, a mention's stable id, or a status chip's color — so rather than
+ * letting turndown silently drop them, each rule re-emits the node as raw HTML
+ * carrying every `data-*` attribute. Plain-Markdown viewers ignore the inert
+ * tag, and the import path round-trips it: `markdownToHtml` passes raw HTML
+ * through and each node's `parseHTML` (`div[data-type="…"]`, `span[…]`) rebuilds
+ * the ProseMirror node with its attributes intact.
+ */
+function pageBreak(turndownService: _TurndownService) {
+  turndownService.addRule('pageBreak', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'DIV' &&
+        node.getAttribute('data-type') === 'pageBreak'
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      return `\n\n<div${serializeAttrs(node)}></div>\n\n`;
+    },
+  });
+}
+
+function transclusionReference(turndownService: _TurndownService) {
+  turndownService.addRule('transclusionReference', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'DIV' &&
+        node.getAttribute('data-type') === 'transclusionReference'
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      return `\n\n<div${serializeAttrs(node)}></div>\n\n`;
+    },
+  });
+}
+
+function mention(turndownService: _TurndownService) {
+  turndownService.addRule('mention', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'SPAN' &&
+        node.getAttribute('data-type') === 'mention'
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      const text = escapeHtmlText(node.textContent || '');
+      return `<span${serializeAttrs(node)}>${text}</span>`;
+    },
+  });
+}
+
+function status(turndownService: _TurndownService) {
+  turndownService.addRule('status', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'SPAN' && node.getAttribute('data-type') === 'status'
+      );
+    },
+    replacement: function (_content: string, node: HTMLInputElement) {
+      const text = escapeHtmlText(node.textContent || '');
+      return `<span${serializeAttrs(node)}>${text}</span>`;
+    },
+  });
 }
 
 /**

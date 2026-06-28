@@ -205,31 +205,69 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(historyQueue.add).toHaveBeenCalledTimes(1);
   });
 
-  // #206 persist-6 — RED (it.failing): a momentarily-empty live Y.Doc must not
-  // overwrite non-empty persisted content. `onStoreDocument` empty-guards the
-  // LOAD path but not the STORE path, so today an empty doc (a client/agent
-  // glitch, a bad merge, an emptying transclusion) is written straight over the
-  // page and the content is wiped silently. A store-side empty-guard is a real
-  // behaviour change (a deliberate "select-all + delete" is also empty), so it
-  // is left UNFIXED pending a product decision; this documents the data-loss
-  // path and flips to a normal passing test the moment the guard lands.
-  it.failing(
-    'does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)',
-    async () => {
-      const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
-      const document = ydocFor(emptyDoc);
-      pageRepo.findById.mockResolvedValue({
-        ...persistedHumanPage('IGNORED'),
-        content: doc('IMPORTANT RICH CONTENT'),
-      });
+  // #206 persist-6 — FIXED: a momentarily-empty live Y.Doc must not overwrite
+  // non-empty persisted content. `onStoreDocument` empty-guarded the LOAD path
+  // but not the STORE path, so an empty doc (a client/agent glitch, a bad
+  // merge, an emptying transclusion) was written straight over the page and the
+  // content was wiped silently. The store-side empty-guard now skips the write
+  // when the incoming doc is empty and the stored page is non-empty, unless an
+  // explicit intentional-clear signal is present.
+  it('does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)', async () => {
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
 
-      await ext.onStoreDocument(buildData(document, 'user') as any);
+    await ext.onStoreDocument(buildData(document, 'user') as any);
 
-      // Desired contract: the empty incoming doc is rejected and the rich page
-      // survives. Today updatePage is called with the empty content (data loss).
-      expect(pageRepo.updatePage).not.toHaveBeenCalled();
-    },
-  );
+    // The empty incoming doc is rejected and the rich page survives.
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+    // No false-success side effects for a write that never happened.
+    expect((document as any).broadcastStateless).not.toHaveBeenCalled();
+    expect(historyQueue.add).not.toHaveBeenCalled();
+  });
+
+  // persist-6 — a legitimate clear is NOT broken: with the explicit
+  // intentional-clear signal, emptying a non-empty page still persists.
+  it('persists an intentional clear of a non-empty page (persist-6 escape hatch)', async () => {
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    await ext.onStoreDocument({
+      documentName: `page.${PAGE_ID}`,
+      document,
+      context: {
+        user: { id: USER_ID, name: 'Alice' },
+        actor: 'user',
+        intentionalClear: true,
+      },
+    } as any);
+
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+  });
+
+  // persist-6 — a brand-new / already-empty page is unaffected: an empty store
+  // over empty stored content is not blocked (it short-circuits as unchanged).
+  it('does not block an empty store over an already-empty page (persist-6)', async () => {
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    const normalized = TiptapTransformer.fromYdoc(document, 'default');
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: normalized,
+    });
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    // Unchanged empty-over-empty: short-circuits, no spurious write, no error.
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
 
   // persist-1 — when every attempt fails the hook must NOT report a phantom
   // success: no "page.updated" badge broadcast and no history snapshot for
