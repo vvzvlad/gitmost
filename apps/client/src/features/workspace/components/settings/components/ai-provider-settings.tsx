@@ -215,6 +215,26 @@ export function isReindexComplete(status?: ReindexStatus): boolean {
   );
 }
 
+/**
+ * Whether the reindex button should show its spinner (and stay disabled).
+ *
+ * Spins while the POST is in flight, and for the WHOLE background run while the
+ * server reports `reindexing === true`. The `deadline !== null` gate is the
+ * load-bearing part: once the 120s poll cap fires it nulls `reindexDeadline`
+ * and stops refetching, so `status` (settings?.reindexing) can be a stale
+ * `true` from the last poll. Without the gate the spinner would stick forever
+ * for a run that outlives the cap and block a restart; gating on the active
+ * poll window clears it so the admin can re-trigger.
+ */
+export function isReindexButtonLoading(args: {
+  mutationPending: boolean;
+  deadline: number | null;
+  status?: boolean;
+}): boolean {
+  const { mutationPending, deadline, status } = args;
+  return mutationPending || (deadline !== null && status === true);
+}
+
 // Translate the dot's tooltip label. Kept in one place so all three endpoint
 // cards share identical wording.
 function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
@@ -1083,19 +1103,14 @@ export default function AiProviderSettings() {
               // Spin for the WHOLE run: the POST resolves immediately, but the
               // background job keeps running, so also stay loading while the
               // server reports `reindexing` (this also blocks a redundant
-              // re-trigger mid-run; the server de-dupes regardless).
-              //
-              // Gate the `reindexing` part on the active poll window
-              // (reindexDeadline !== null): once the 120s poll cap fires it nulls
-              // reindexDeadline and stops refetching, so `settings.reindexing`
-              // can be a stale `true` from the last poll. Without this gate the
-              // spinner would stay stuck (and the button disabled) forever for a
-              // run that outlives the cap — clearing it here lets the admin
-              // restart.
-              loading={
-                reindexMutation.isPending ||
-                (reindexDeadline !== null && settings?.reindexing === true)
-              }
+              // re-trigger mid-run; the server de-dupes regardless). The
+              // deadline gate (and why it matters post-cap) lives in
+              // `isReindexButtonLoading`, which is unit-tested.
+              loading={isReindexButtonLoading({
+                mutationPending: reindexMutation.isPending,
+                deadline: reindexDeadline,
+                status: settings?.reindexing,
+              })}
               onClick={() =>
                 reindexMutation.mutate(undefined, {
                   // Begin bounded polling so the counter climbs as the async
