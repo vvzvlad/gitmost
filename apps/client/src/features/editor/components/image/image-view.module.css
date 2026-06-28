@@ -7,16 +7,6 @@
   overflow: hidden;
 }
 
-.imageCaption {
-  display: block;
-  text-align: center;
-  font-size: 0.875em;
-  color: var(--mantine-color-dimmed);
-  margin-top: 0.4em;
-  line-height: 1.35;
-  word-break: break-word;
-}
-
 .skeleton {
   animation: pulse 1.2s ease-in-out infinite;
 

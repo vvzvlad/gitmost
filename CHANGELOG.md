@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Editable captions for images.** Images gain an optional caption shown
+  below them, edited inline from the image bubble menu via a new
+  `setImageCaption` command and a `caption` attribute. Captions round-trip
+  losslessly through markdown as a `data-caption` attribute on the image, so
+  they survive export/import unchanged. (#221)
+
 - **Quick-create regular and temporary notes from the Home and Space screens.**
   The Home screen now shows a second action next to "New note" that creates a
   *temporary* note (one that auto-moves to Trash after the workspace lifetime),

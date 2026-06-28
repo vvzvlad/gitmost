@@ -17,7 +17,7 @@ const CAPTION_MAX_LENGTH = 500;
 // Caption is plain visible text (not a markdown link target like alt), so it is
 // sanitized more softly than alt: collapse runs of whitespace/newlines into a
 // single space and trim, keeping the limit generous.
-function sanitizeCaption(value: string): string {
+export function sanitizeCaption(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, CAPTION_MAX_LENGTH);
 }
 

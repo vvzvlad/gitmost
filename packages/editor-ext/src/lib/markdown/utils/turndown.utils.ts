@@ -269,8 +269,8 @@ function image(turndownService: _TurndownService) {
       const caption = node.getAttribute('data-caption') || '';
       if (caption) {
         // ![]() can't carry a caption, so emit a raw <img> wrapped in a block
-        // <div> (like the video rule). marked passes it through and the image
-        // extension's parseHTML restores the caption from data-caption.
+        // <div>. marked passes it through and the image extension's parseHTML
+        // restores the caption from data-caption.
         const parts = [`src="${escapeHtmlAttr(src)}"`];
         const alt = node.getAttribute('alt') || '';
         if (alt) parts.push(`alt="${escapeHtmlAttr(alt)}"`);

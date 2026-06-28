@@ -72,7 +72,7 @@ export default function ImageView(props: NodeViewProps) {
       {captionText && (
         <Text
           component="figcaption"
-          className={clsx(classes.imageCaption, "image-caption")}
+          className="image-caption"
         >
           {captionText}
         </Text>
