@@ -229,21 +229,36 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(historyQueue.add).not.toHaveBeenCalled();
   });
 
-  // persist-6 — a brand-new / already-empty page is unaffected: an empty store
-  // over empty stored content is not blocked (it short-circuits as unchanged).
+  // persist-6 — a legitimately-empty existing page must still be writable when
+  // the empty live doc actually DIFFERS from the stored content (so the
+  // unchanged short-circuit does NOT fire and execution reaches the empty-guard).
+  // This exercises the guard's third condition `!isEmptyParagraphDoc(page.content)`:
+  // because the stored page is ALSO empty, the guard must NOT block the write.
+  // The live doc normalizes to a paragraph carrying `attrs: { indent: 0 }` and no
+  // `content` key; the stored page is an empty paragraph with `content: []` —
+  // both empty per `isEmptyParagraphDoc`, but NOT `isDeepStrictEqual`, so the
+  // store passes the short-circuit (~line 208) and genuinely enters the guard
+  // (~line 229). If the `!isEmptyParagraphDoc(page.content)` condition were
+  // removed, the guard would block this write and updatePage would never run,
+  // failing this test.
   it('does not block an empty store over an already-empty page (persist-6)', async () => {
-    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
-    const document = ydocFor(emptyDoc);
-    const normalized = TiptapTransformer.fromYdoc(document, 'default');
+    const liveEmptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(liveEmptyDoc);
+    // Stored content is empty per isEmptyParagraphDoc (paragraph with content:[])
+    // but structurally NOT deep-equal to the normalized live doc — so execution
+    // skips the unchanged short-circuit and reaches the empty-guard.
+    const storedEmptyDoc = { type: 'doc', content: [{ type: 'paragraph', content: [] }] };
     pageRepo.findById.mockResolvedValue({
       ...persistedHumanPage('IGNORED'),
-      content: normalized,
+      content: storedEmptyDoc,
     });
 
     await ext.onStoreDocument(buildData(document, 'user') as any);
 
-    // Unchanged empty-over-empty: short-circuits, no spurious write, no error.
-    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+    // Empty-over-empty reaches the guard, which must let the write through
+    // (the stored page is empty, so the empty-overwrite protection does not
+    // apply). updatePage IS called — proving `!isEmptyParagraphDoc(page.content)`.
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
   });
 
   // persist-1 — when every attempt fails the hook must NOT report a phantom
