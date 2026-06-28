@@ -187,7 +187,7 @@ export class AiAgentRolesService {
   }
 
   // -------------------------------------------------------------------------
-  // Catalog (admin-only). The catalog is curated, untrusted JSON fetched +
+  // Catalog (admin-only). The catalog is curated, untrusted YAML fetched +
   // validated by AiAgentRolesCatalogProvider; this layer resolves localized
   // text and reconciles a bundle against the workspace's existing roles.
   // -------------------------------------------------------------------------

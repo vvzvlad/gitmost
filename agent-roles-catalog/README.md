@@ -10,16 +10,22 @@ executable application logic except the validation script.
 
 ```
 agent-roles-catalog/
-  index.json                  # the catalog manifest: bundles, languages, role versions
+  index.yaml                  # the catalog manifest: bundles, languages, role versions
   bundles/
     <bundle-id>/
-      <lang>.json             # one file per declared language (e.g. ru.json, en.json)
+      <lang>.yaml             # one file per declared language (e.g. ru.yaml, en.yaml)
   scripts/
-    check.mjs                 # validates the catalog (no dependencies)
+    check.mjs                 # validates the catalog (uses the `yaml` parser)
     content-hashes.json       # check artifact: per-role content-hash lock (NOT served)
   package.json                # defines the `check` script
   README.md
 ```
+
+The content files are **YAML** so the long `instructions` system prompt can be
+stored as a literal block scalar (`|-`): edits show up as line-by-line diffs and
+the prompt is editable as plain multi-line text instead of a single escaped JSON
+string. The `content-hashes.json` lockfile under `scripts/` stays JSON — it is a
+check artifact, never served.
 
 Currently shipped bundles:
 
@@ -32,8 +38,8 @@ Currently shipped bundles:
 The server does not bundle this data; it reads it at request time from a single
 configured location, the `AI_AGENT_ROLES_CATALOG_URL` env var
 (`EnvironmentService.getAiAgentRolesCatalogSource()`), an `http(s)://` base URL
-to the catalog's raw files. The server fetches `<base>/index.json` for the
-manifest and `<base>/bundles/<bundle-id>/<lang>.json` for each opened bundle
+to the catalog's raw files. The server fetches `<base>/index.yaml` for the
+manifest and `<base>/bundles/<bundle-id>/<lang>.yaml` for each opened bundle
 file (REMOTE only).
 
 That base URL is provided as a per-branch default in the Docker image (set in
@@ -42,53 +48,55 @@ CI: a `develop` build points at the `develop` raw URL, a release build at the
 `AI_AGENT_ROLES_CATALOG_URL` env var. Local-filesystem sources are no longer
 supported; if the value is unset the catalog is unavailable.
 
-The fetched JSON is re-validated server-side (the catalog is treated as
-untrusted input). See `.env.example` for the variable and the CHANGELOG for the
-rollout.
+The fetched YAML is parsed with a safe, JSON-compatible schema and re-validated
+server-side (the catalog is treated as untrusted input). See `.env.example` for
+the variable and the CHANGELOG for the rollout.
 
-## `index.json` schema
+## `index.yaml` schema
 
-```jsonc
-{
-  "schemaVersion": 1,
-  "bundles": [
-    {
-      "id": "editorial",                       // unique bundle id; matches bundles/<id>/
-      "name": { "ru": "...", "en": "..." },    // localized display name
-      "description": { "ru": "...", "en": "..." },
-      "languages": ["ru", "en"],               // which <lang>.json files must exist
-      "roles": [
-        { "slug": "structural-editor", "version": 1 }
-        // ...
-      ]
-    }
-  ]
-}
+```yaml
+schemaVersion: 1
+bundles:
+  - id: editorial # unique bundle id; matches bundles/<id>/
+    name: # localized display name
+      ru: "..."
+      en: "..."
+    description:
+      ru: "..."
+      en: "..."
+    languages: # which <lang>.yaml files must exist
+      - ru
+      - en
+    roles:
+      - slug: structural-editor
+        version: 1
+      # ...
 ```
 
-`version` lives **here, in index.json**, per role. Bump it whenever a role's
+`version` lives **here, in index.yaml**, per role. Bump it whenever a role's
 content (instructions, name, description, etc.) changes, so consumers can detect
 updates.
 
-## Bundle (`<lang>.json`) schema
+## Bundle (`<lang>.yaml`) schema
 
-```jsonc
-{
-  "schemaVersion": 1,
-  "language": "ru",
-  "roles": [
-    {
-      "slug": "structural-editor",   // REQUIRED, unique across the whole catalog
-      "emoji": "🧱",
-      "name": "...",                 // REQUIRED, localized
-      "description": "...",          // localized
-      "instructions": "...",         // REQUIRED, the system prompt, localized
-      "autoStart": true,             // whether the role starts working immediately
-      "launchMessage": "..."         // first message sent on launch (or null)
-    }
-  ]
-}
+```yaml
+schemaVersion: 1
+language: ru
+roles:
+  - slug: structural-editor # REQUIRED, unique across the whole catalog
+    emoji: "🧱"
+    name: "..." # REQUIRED, localized
+    description: "..." # localized
+    instructions: |- # REQUIRED, the system prompt, localized (literal block scalar)
+      First line of the prompt.
+      Second line.
+    autoStart: true # whether the role starts working immediately
+    launchMessage: "..." # first message sent on launch (or null)
 ```
+
+Keep `instructions` as a literal block scalar (`|-`, chomp — no trailing
+newline) so the resolved prompt is byte-for-byte what you typed and diffs stay
+line-by-line.
 
 Notes:
 
@@ -102,39 +110,39 @@ Notes:
 
 **Every `slug` must be UNIQUE ACROSS THE WHOLE CATALOG**, not just within a
 bundle. A slug appears once per language file of its bundle (same slug in
-`ru.json` and `en.json`), but no two different bundles may share a slug.
+`ru.yaml` and `en.yaml`), but no two different bundles may share a slug.
 `scripts/check.mjs` enforces this.
 
 ## How to add things
 
 ### Add a role to an existing bundle
 
-1. Add an entry to that bundle's `roles[]` in `index.json` with a new unique
+1. Add an entry to that bundle's `roles[]` in `index.yaml` with a new unique
    `slug` and `version: 1`.
-2. Add a role object with the same `slug` to **every** `<lang>.json` of the
+2. Add a role object with the same `slug` to **every** `<lang>.yaml` of the
    bundle, translating `name`, `description`, `instructions`, and
    `launchMessage`.
 3. Run the check (see below).
 
 ### Add a bundle
 
-1. Add a bundle object to `index.json` (`id`, `name`, `description`,
+1. Add a bundle object to `index.yaml` (`id`, `name`, `description`,
    `languages`, `roles`).
-2. Create `bundles/<id>/<lang>.json` for each declared language, with one role
+2. Create `bundles/<id>/<lang>.yaml` for each declared language, with one role
    object per `roles[]` entry.
 3. Run the check.
 
 ### Add a language to a bundle
 
-1. Add the language code to that bundle's `languages[]` in `index.json`.
-2. Create `bundles/<id>/<lang>.json` containing every role of the bundle,
+1. Add the language code to that bundle's `languages[]` in `index.yaml`.
+2. Create `bundles/<id>/<lang>.yaml` containing every role of the bundle,
    translated.
 3. Run the check.
 
 ### Change a role's content
 
-Edit the role in the relevant `<lang>.json` file(s) and **bump that role's
-`version`** in `index.json`. Then run `node scripts/check.mjs --update-hashes`
+Edit the role in the relevant `<lang>.yaml` file(s) and **bump that role's
+`version`** in `index.yaml`. Then run `node scripts/check.mjs --update-hashes`
 to refresh the content-hash lock (`scripts/content-hashes.json`). `check.mjs`
 now **fails if a role's content changed but its `version` was not bumped**, so
 this step is mandatory — the lock can only be refreshed after the bump.
@@ -160,7 +168,7 @@ a declared language file is missing, or if any role is missing a required field
 content fields (`emoji`, `autoStart`, `name`, `description`, `instructions`,
 `launchMessage`) across all of its language files, in a deterministic canonical
 form. This lockfile is a **check artifact only** — the server fetches only
-`index.json` and the bundle `<lang>.json` files, never this file, so it has no
+`index.yaml` and the bundle `<lang>.yaml` files, never this file, so it has no
 effect on the served catalog or its schema.
 
 On a normal run, for every role the check recomputes the hash and compares it
@@ -182,9 +190,9 @@ node scripts/check.mjs --update-hashes   # alias: --fix
 
 This recomputes the lock from the current catalog, prunes entries for removed
 roles, and prints what changed — but it **refuses to write** (exit 1) if any
-role's content changed while its `index.json` version was not bumped, so the
+role's content changed while its `index.yaml` version was not bumped, so the
 version bump is always enforced first. The check also requires every
-`index.json` role to carry a finite numeric `version` (the server requires the
+`index.yaml` role to carry a finite numeric `version` (the server requires the
 same).
 
 Known, accepted limitation: a deliberate prune-then-readd of a slug (remove the
