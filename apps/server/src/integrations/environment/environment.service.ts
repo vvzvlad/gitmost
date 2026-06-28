@@ -1,9 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import ms, { StringValue } from 'ms';
 
 @Injectable()
 export class EnvironmentService {
+  private readonly logger = new Logger(EnvironmentService.name);
+  // Env keys already warned about for an invalid value (one-shot per key, so a
+  // bad SANDBOX_* value is not logged on every blob put). Mirrors the original
+  // sandboxTtlWarned guard, generalized across the TTL + the three byte caps.
+  private readonly invalidPositiveIntWarned = new Set<string>();
+
   constructor(private configService: ConfigService) {}
 
   getNodeEnv(): string {
@@ -331,5 +337,64 @@ export class EnvironmentService {
       .split(',')
       .map((o) => o.trim())
       .filter(Boolean);
+  }
+
+  // --- Blob sandbox (in-RAM ephemeral blob transfer; see SandboxModule) ---
+
+  // Base URL the sandbox `uri` is built from. It MUST be reachable over the
+  // network by the external consumer that fetches the blobs (not a loopback
+  // address if that consumer is remote). Falls back to APP_URL when unset so a
+  // single-host deployment works out of the box; set it explicitly when the
+  // consumer lives on another host.
+  getSandboxPublicUrl(): string {
+    const raw =
+      this.configService.get<string>('SANDBOX_PUBLIC_URL') || this.getAppUrl();
+    // Drop any trailing slash so `${base}/api/sb/${id}` never doubles up.
+    return raw.replace(/\/+$/, '');
+  }
+
+  // Parse a REQUIRED positive-integer env (TTL in ms or a byte cap). A
+  // non-integer or <= 0 value would break the sandbox silently (instant expiry,
+  // or every put failing against a 0-byte cap), so warn once and fall back to
+  // the default instead. Blob bodies are never logged.
+  private getPositiveIntEnv(key: string, def: number): number {
+    const parsed = parseInt(
+      this.configService.get<string>(key, String(def)),
+      10,
+    );
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      if (!this.invalidPositiveIntWarned.has(key)) {
+        this.invalidPositiveIntWarned.add(key);
+        this.logger.warn(
+          `Invalid ${key} (must be a positive integer); falling back to the ${def} default`,
+        );
+      }
+      return def;
+    }
+    return parsed;
+  }
+
+  // Blob time-to-live. Default 1h. The unguessable UUID + this short TTL + TLS
+  // are the whole capability model (no tokens). A non-positive or non-integer
+  // value would make every blob expire instantly (silent 404s), so reject it and
+  // fall back to the 1h default (warned about once to avoid per-put log spam).
+  getSandboxTtlMs(): number {
+    return this.getPositiveIntEnv('SANDBOX_TTL_MS', 3_600_000);
+  }
+
+  // Per-blob cap for non-image blobs (the serialized document). Default 8 MiB.
+  getSandboxMaxBytes(): number {
+    return this.getPositiveIntEnv('SANDBOX_MAX_BYTES', 8_388_608);
+  }
+
+  // Per-blob cap for mirrored image blobs. Default 20 MiB.
+  getSandboxMaxImageBytes(): number {
+    return this.getPositiveIntEnv('SANDBOX_MAX_IMAGE_BYTES', 20_971_520);
+  }
+
+  // RAM guard: total bytes the whole store may hold. Default 128 MiB. On
+  // overflow the store evicts oldest entries to make room.
+  getSandboxMaxTotalBytes(): number {
+    return this.getPositiveIntEnv('SANDBOX_MAX_TOTAL_BYTES', 134_217_728);
   }
 }

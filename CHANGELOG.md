@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   append/prepend fragments, nor to COMMENT bodies — a comment may legitimately
   contain a standalone footnote definition, which canonicalization would drop.
   (#228)
+- **Out-of-band page transfer via an in-RAM blob sandbox (`stash_page`).** A
+  new MCP tool serializes a whole page (its full ProseMirror JSON, with every
+  internal image/file mirrored) into an ephemeral in-RAM blob and returns only
+  a short anonymous URL, so a large page can be handed to an external consumer
+  without flooding the model context. Blobs are served by unguessable UUID over
+  a new anonymous `GET /api/sb/:id` route (strong sha256 ETag, short TTL,
+  `nosniff` + restrictive CSP + attachment disposition for non-image mimes) and
+  are RAM-only, bound to the instance that created them. Tunable via five
+  `SANDBOX_*` env vars (see `.env.example`). (#243)
 
 ### Changed
 

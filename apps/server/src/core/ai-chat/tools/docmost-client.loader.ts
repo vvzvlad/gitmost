@@ -154,6 +154,14 @@ export interface DocmostClientLike {
     commentId: string,
     resolved: boolean,
   ): Promise<Record<string, unknown>>;
+  // Serialize a page + mirror its internal images into the blob sandbox; returns
+  // ONLY a short anonymous URL (the body never enters the model context).
+  stashPage(pageId: string): Promise<{
+    uri: string;
+    sha256: string;
+    size: number;
+    images: { mirrored: number; failed: number };
+  }>;
 }
 
 export type DocmostClientConfig = {
@@ -161,6 +169,18 @@ export type DocmostClientConfig = {
   getToken: () => Promise<string>;
   // Provenance collab-token provider for content mutations (signed agent claim).
   getCollabToken?: () => Promise<string>;
+  // Optional blob-sandbox sink for the stash tool. `put` stores a blob in the
+  // host's in-RAM SandboxStore and returns the anonymous read URL + integrity.
+  // The optional `has`/`evict` probes let stashPage keep its mirror counts
+  // honest under the store's FIFO eviction (mirror of the package's sink type).
+  sandbox?: {
+    put: (
+      buf: Buffer,
+      mime: string,
+    ) => { uri: string; sha256: string; size: number };
+    has?: (uri: string) => boolean;
+    evict?: (uri: string) => void;
+  };
 };
 
 export interface DocmostClientCtor {

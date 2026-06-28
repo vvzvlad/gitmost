@@ -8,7 +8,6 @@ import { ModuleRef } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
 import { IncomingMessage } from 'node:http';
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { EnvironmentService } from '../environment/environment.service';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
@@ -30,6 +29,7 @@ import {
   DocmostMcpConfig,
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
+import { SandboxStore } from '../sandbox/sandbox.store';
 
 // Minimal shape of the embedded MCP HTTP handler exported by @docmost/mcp/http.
 interface McpHttpHandler {
@@ -92,13 +92,14 @@ export class McpService implements OnModuleDestroy {
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(
-    private readonly environmentService: EnvironmentService,
     private readonly workspaceRepo: WorkspaceRepo,
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
     private readonly userRepo: UserRepo,
     private readonly userSessionRepo: UserSessionRepo,
     private readonly moduleRef: ModuleRef,
+    // Shared singleton in-RAM blob store backing the stash tool.
+    private readonly sandboxStore: SandboxStore,
   ) {
     this.sweepTimer = setInterval(() => {
       try {
@@ -326,7 +327,11 @@ export class McpService implements OnModuleDestroy {
               // Should never happen: handle() always stashes before delegating.
               throw new UnauthorizedException('MCP authentication missing.');
             }
-            return resolved.config;
+            // Inject the blob-sandbox sink after the auth decision so stash_page
+            // can store blobs in the shared in-RAM store regardless of which
+            // credential variant resolved. The sink (put/has/evict + uri↔id
+            // mapping) is owned by SandboxStore.asSink().
+            return { ...resolved.config, sandbox: this.sandboxStore.asSink() };
           },
           {
             identify: (req: IncomingMessage) => {

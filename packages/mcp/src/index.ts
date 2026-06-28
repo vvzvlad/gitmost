@@ -408,6 +408,43 @@ registerShared(SHARED_TOOL_SPECS.editPageText, async ({ pageId, edits }) => {
   return jsonContent(result);
 });
 
+// Tool: stash_page — returns a resource_link (NOT embedded text) so the doc
+// body never enters the model context. Registered directly (not via
+// registerShared) because that helper only emits text content. Also returns
+// `structuredContent` carrying the full documented `{uri, sha256, size, images}`
+// shape alongside the resource_link, so MCP clients receive the blob's sha256
+// (its ETag, for integrity) and mirror counts, not just the link.
+server.registerTool(
+  SHARED_TOOL_SPECS.stashPage.mcpName,
+  {
+    description: SHARED_TOOL_SPECS.stashPage.description,
+    inputSchema: SHARED_TOOL_SPECS.stashPage.buildShape!(z),
+  },
+  async ({ pageId }: { pageId: string }) => {
+    const result = await docmostClient.stashPage(pageId);
+    return {
+      content: [
+        {
+          type: "resource_link" as const,
+          uri: result.uri,
+          name: "page.json",
+          mimeType: "application/json",
+          size: result.size,
+        },
+      ],
+      // Mirror the full documented result shape ({ uri, size, sha256, images })
+      // as structuredContent so MCP clients get the blob's sha256 (its ETag, for
+      // integrity) and the mirror counts, not just the resource_link.
+      structuredContent: {
+        uri: result.uri,
+        sha256: result.sha256,
+        size: result.size,
+        images: result.images,
+      },
+    };
+  },
+);
+
 // Tool: patch_node
 server.registerTool(
   "patch_node",
