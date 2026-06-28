@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 import { DocmostClient } from "../../build/index.js";
 
@@ -96,5 +99,74 @@ test("HOST_CONTRACT_METHODS has no duplicates", () => {
   assert.equal(
     new Set(HOST_CONTRACT_METHODS).size,
     HOST_CONTRACT_METHODS.length,
+  );
+});
+
+// Parse the method names declared in the server's `DocmostClientLike` interface
+// body. We read the .ts source as plain text (no TS compiler dep, and the file
+// lives in the CJS server tree across the ESM boundary): scan from the
+// `export interface DocmostClientLike {` line to its closing brace at column 0,
+// matching member-signature lines like `  methodName(`. Nested param-object
+// braces (`opts: { ... }`) are indented, so only the interface's own closing
+// `}` (column 0) ends the scan.
+function parseDocmostClientLikeMethods() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // packages/mcp/test/unit -> repo root is four levels up.
+  const loaderPath = resolve(
+    here,
+    "../../../../apps/server/src/core/ai-chat/tools/docmost-client.loader.ts",
+  );
+  const source = readFileSync(loaderPath, "utf8");
+  const lines = source.split(/\r?\n/);
+
+  const startIdx = lines.findIndex((l) =>
+    /^export interface DocmostClientLike\s*\{/.test(l),
+  );
+  assert.notEqual(
+    startIdx,
+    -1,
+    `Could not find "export interface DocmostClientLike {" in ${loaderPath}. ` +
+      `If the interface was renamed/moved, update this drift-guard test.`,
+  );
+
+  const methods = [];
+  let closed = false;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\}/.test(line)) {
+      closed = true;
+      break;
+    }
+    const m = /^\s*([a-zA-Z]+)\(/.exec(line);
+    if (m) methods.push(m[1]);
+  }
+  assert.ok(
+    closed,
+    `Did not find the closing brace of DocmostClientLike in ${loaderPath}.`,
+  );
+  assert.ok(
+    methods.length > 0,
+    `Parsed zero methods from DocmostClientLike in ${loaderPath} — the parser ` +
+      `is likely out of date with the interface formatting.`,
+  );
+  return methods;
+}
+
+// The point of the guard is to protect the DocmostClientLike mirror <-> client.ts
+// link, but HOST_CONTRACT_METHODS is itself a HAND-COPY of that interface kept in
+// sync manually. The list<->interface link must be tested too: a method consumed
+// by the adapter and added to DocmostClientLike but forgotten here (or removed
+// from the interface but left here) would otherwise escape both the server
+// typecheck (pkg emits no .d.ts) and the first test above (name not in the list).
+// Assert the two agree BOTH ways.
+test("HOST_CONTRACT_METHODS exactly mirrors the server's DocmostClientLike interface", () => {
+  const interfaceMethods = parseDocmostClientLikeMethods();
+  assert.deepEqual(
+    [...HOST_CONTRACT_METHODS].sort(),
+    [...interfaceMethods].sort(),
+    `HOST_CONTRACT_METHODS has drifted from the DocmostClientLike interface in ` +
+      `apps/server/src/core/ai-chat/tools/docmost-client.loader.ts. Add/remove ` +
+      `method names in HOST_CONTRACT_METHODS so it lists EXACTLY the methods ` +
+      `declared in that interface (both directions are checked).`,
   );
 });
