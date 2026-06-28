@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Editable captions for images.** Images gain an optional caption shown
-  below them, edited inline from the image bubble menu stored as a `caption` attribute. Captions round-trip
+  below them, edited inline from the image bubble menu and stored as a `caption` attribute. Captions round-trip
   losslessly through markdown as a `data-caption` attribute on the image, so
   they survive export/import unchanged. (#221)
 
