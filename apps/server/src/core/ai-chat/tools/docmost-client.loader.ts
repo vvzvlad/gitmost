@@ -5,6 +5,34 @@ import { pathToFileURL } from 'node:url';
  * ESM-only `@docmost/mcp` package. We only need the constructor + the read/write
  * methods used by the per-user tool adapter; the full client surface lives in
  * `packages/mcp/src/client.ts`. Signatures here mirror that file exactly.
+ *
+ * DRIFT GUARD: the method NAMES below are runtime-checked against the real
+ * `DocmostClient` by `packages/mcp/test/unit/client-host-contract.test.mjs`
+ * (which can import the ESM class directly). If you rename/remove a method here
+ * or in client.ts, that test fails — so a stale mirror cannot silently ship a
+ * runtime "x is not a function" into an agent tool call. Keep the two in sync.
+ *
+ * STAGED PLAN — full derivation `DocmostClientLike = <real DocmostClient type>`
+ * (issue #193, layer 3) is intentionally NOT done; it stays a hand-mirror for
+ * now because of two verified blockers across the ESM(mcp)/CJS(server) boundary:
+ *   1. `@docmost/mcp` emits NO declaration files (its tsconfig has no
+ *      `declaration`, package.json has no `types`/types-export) and the server
+ *      tsconfig has no path mapping for it — the server only loads it via the
+ *      runtime `import()` trick below, so there is no type to import today.
+ *   2. The real client methods have inferred, CONCRETE return types; the in-app
+ *      tool adapter reads results through loose `Record<string,unknown>` returns
+ *      + `as` casts (e.g. `(result?.data ?? {}) as { title?: string }`).
+ *      Deriving the exact type would make those casts non-overlapping ("may be a
+ *      mistake") and break the build, and `Partial<DocmostClientLike>` test stubs
+ *      would have to satisfy the full concrete surface.
+ * To do it safely later (incrementally): (a) turn on `declaration: true` in
+ * packages/mcp/tsconfig.json + add a `types` export condition and commit the
+ * emitted `.d.ts`; (b) `import type { DocmostClient } from '@docmost/mcp'` here
+ * and replace this interface with a `Pick<DocmostClient, ...>` of the consumed
+ * methods; (c) audit every `as` cast in ai-chat-tools.service.ts against the now
+ * concrete return types (double-cast through `unknown` only where genuinely
+ * needed); (d) keep the runtime guard test as a belt-and-braces check. Until
+ * then the guard test above is the cheap, behaviour-neutral protection.
  */
 export interface DocmostClientLike {
   // --- read ---
