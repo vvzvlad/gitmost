@@ -210,8 +210,8 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
   // but not the STORE path, so an empty doc (a client/agent glitch, a bad
   // merge, an emptying transclusion) was written straight over the page and the
   // content was wiped silently. The store-side empty-guard now skips the write
-  // when the incoming doc is empty and the stored page is non-empty, unless an
-  // explicit intentional-clear signal is present.
+  // when the incoming doc is empty and the stored page is non-empty. A real
+  // intentional-clear UX is tracked separately in issue #251.
   it('does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)', async () => {
     const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
     const document = ydocFor(emptyDoc);
@@ -227,29 +227,6 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     // No false-success side effects for a write that never happened.
     expect((document as any).broadcastStateless).not.toHaveBeenCalled();
     expect(historyQueue.add).not.toHaveBeenCalled();
-  });
-
-  // persist-6 — a legitimate clear is NOT broken: with the explicit
-  // intentional-clear signal, emptying a non-empty page still persists.
-  it('persists an intentional clear of a non-empty page (persist-6 escape hatch)', async () => {
-    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
-    const document = ydocFor(emptyDoc);
-    pageRepo.findById.mockResolvedValue({
-      ...persistedHumanPage('IGNORED'),
-      content: doc('IMPORTANT RICH CONTENT'),
-    });
-
-    await ext.onStoreDocument({
-      documentName: `page.${PAGE_ID}`,
-      document,
-      context: {
-        user: { id: USER_ID, name: 'Alice' },
-        actor: 'user',
-        intentionalClear: true,
-      },
-    } as any);
-
-    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
   });
 
   // persist-6 — a brand-new / already-empty page is unaffected: an empty store
