@@ -265,20 +265,6 @@ export class PageRepo {
   }
 
   /**
-   * IDs of all non-deleted pages in a workspace. Used by the RAG bulk reindex to
-   * (re)build embeddings for every existing page.
-   */
-  async getIdsByWorkspace(workspaceId: string): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('pages')
-      .select('id')
-      .where('workspaceId', '=', workspaceId)
-      .where('deletedAt', 'is', null)
-      .execute();
-    return rows.map((r) => r.id);
-  }
-
-  /**
    * IDs of the EMBEDDABLE page set for a workspace — the exact same set that
    * `countEmbeddablePages` counts (a page qualifies if it has non-empty
    * textContent OR already has a stored embedding row). The bulk reindex

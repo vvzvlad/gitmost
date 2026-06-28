@@ -151,6 +151,7 @@ describe('AiSettingsService.reindex progress seed', () => {
       start: jest.fn().mockImplementation(async () => {
         order.push('start');
       }),
+      clear: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AiSettingsService(
@@ -191,5 +192,37 @@ describe('AiSettingsService.reindex progress seed', () => {
     expect(reindexProgress.start).not.toHaveBeenCalled();
     // The enqueue still runs (and de-duplicates against the active job).
     expect(aiQueue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the seed it just wrote and re-throws when enqueue fails', async () => {
+    const { service, aiQueue, reindexProgress } = makeService();
+    // This call seeds (get() is null) but the enqueue then blows up
+    // (Redis hiccup/shutdown) -> the worker never runs and never clear()s, so
+    // reindex() must roll back its own seed to avoid a 1h stuck "reindexing".
+    const boom = new Error('redis down');
+    aiQueue.add.mockRejectedValue(boom);
+
+    await expect(service.reindex(WORKSPACE_ID)).rejects.toBe(boom);
+
+    expect(reindexProgress.start).toHaveBeenCalledWith(WORKSPACE_ID, 478);
+    expect(reindexProgress.clear).toHaveBeenCalledWith(WORKSPACE_ID);
+  });
+
+  it('does NOT clear a concurrent active run when enqueue fails (no seed)', async () => {
+    const { service, aiQueue, reindexProgress } = makeService();
+    // A run is already active, so THIS call does not seed; if the enqueue then
+    // fails it must NOT wipe the live worker's record.
+    reindexProgress.get.mockResolvedValue({
+      total: 478,
+      done: 120,
+      startedAt: Date.now(),
+    });
+    const boom = new Error('redis down');
+    aiQueue.add.mockRejectedValue(boom);
+
+    await expect(service.reindex(WORKSPACE_ID)).rejects.toBe(boom);
+
+    expect(reindexProgress.start).not.toHaveBeenCalled();
+    expect(reindexProgress.clear).not.toHaveBeenCalled();
   });
 });

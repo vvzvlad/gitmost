@@ -114,9 +114,11 @@ export class AiSettingsService {
     // second tab) must NOT reset the visible counter to 0 — that would
     // understate the live worker's real position for the rest of the run. The
     // worker's own start() at run begin is the single authoritative reset.
+    let seeded = false;
     if ((await this.reindexProgress.get(workspaceId)) === null) {
       const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
       await this.reindexProgress.start(workspaceId, totalPages);
+      seeded = true;
     }
 
     const jobId = `ai-reindex-${workspaceId}`;
@@ -125,15 +127,27 @@ export class AiSettingsService {
     // de-duplicates against it, keeping the in-progress pass.
     await this.aiQueue.remove(jobId).catch(() => undefined);
 
-    await this.aiQueue.add(
-      QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
-      { workspaceId },
-      {
-        jobId,
-        removeOnComplete: true,
-        removeOnFail: true,
-      },
-    );
+    try {
+      await this.aiQueue.add(
+        QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
+        { workspaceId },
+        {
+          jobId,
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
+      );
+    } catch (err) {
+      // If the enqueue fails (Redis hiccup/shutdown) the worker never runs, so
+      // its finally->clear() never fires. Roll back the seed WE just wrote so
+      // the status endpoint doesn't report a stuck "reindexing: 0 of N" for the
+      // full TTL. Only clear when this call did the seed — never wipe a
+      // concurrent active run's record (get() was non-null, seeded=false).
+      if (seeded) {
+        await this.reindexProgress.clear(workspaceId);
+      }
+      throw err;
+    }
   }
 
   /**
