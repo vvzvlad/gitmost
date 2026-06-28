@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { validate as isValidUUID } from 'uuid';
 import { SandboxStore } from './sandbox.store';
 
 // Build a minimal EnvironmentService stub with overridable caps/TTL.
@@ -26,9 +27,6 @@ function makeEnv(
   } as any;
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
 describe('SandboxStore', () => {
   let store: SandboxStore;
 
@@ -43,7 +41,7 @@ describe('SandboxStore', () => {
     const buf = Buffer.from('{"type":"doc","content":[]}', 'utf8');
 
     const res = store.put(buf, 'application/json');
-    expect(res.id).toMatch(UUID_RE);
+    expect(isValidUUID(res.id)).toBe(true);
     expect(res.size).toBe(buf.length);
 
     const entry = store.get(res.id);

@@ -35,7 +35,10 @@ function makeReq(headers: Record<string, any> = {}) {
   return { headers } as any;
 }
 
-const VALID_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+// A syntactically valid v4 UUID (version nibble 4, variant nibble 8). The
+// shared `uuid` validator is stricter than a bare hex-shape regex, so the id
+// must carry a real version/variant.
+const VALID_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function entry(buf: Buffer, mime: string, sha256: string): SandboxEntry {
   return { buf, mime, sha256, expiresAt: Date.now() + 60_000 };

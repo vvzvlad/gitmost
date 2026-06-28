@@ -116,15 +116,6 @@ export class McpService implements OnModuleDestroy {
     clearInterval(this.sweepTimer);
   }
 
-  // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
-  // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
-  // package needs to keep its mirror counts honest under FIFO eviction; the
-  // package owns neither env nor the store. The uri↔id mapping now lives on the
-  // store (asSink), shared with the in-app agent-tools wiring site.
-  private buildSandboxConfig(): DocmostMcpConfig['sandbox'] {
-    return this.sandboxStore.asSink();
-  }
-
   // Service account the embedded MCP uses to talk back to this Docmost
   // instance over loopback REST + the collaboration WebSocket. Now OPTIONAL:
   // it is only a fallback when no per-user Basic/Bearer credentials are sent.
@@ -338,8 +329,9 @@ export class McpService implements OnModuleDestroy {
             }
             // Inject the blob-sandbox sink after the auth decision so stash_page
             // can store blobs in the shared in-RAM store regardless of which
-            // credential variant resolved.
-            return { ...resolved.config, sandbox: this.buildSandboxConfig() };
+            // credential variant resolved. The sink (put/has/evict + uri↔id
+            // mapping) is owned by SandboxStore.asSink().
+            return { ...resolved.config, sandbox: this.sandboxStore.asSink() };
           },
           {
             identify: (req: IncomingMessage) => {

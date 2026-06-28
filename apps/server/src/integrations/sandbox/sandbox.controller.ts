@@ -1,13 +1,8 @@
 import { Controller, Get, Param, Req, Res } from '@nestjs/common';
 import { FastifyReply, FastifyRequest } from 'fastify';
+import { validate as isValidUUID } from 'uuid';
 import { SandboxStore } from './sandbox.store';
 import { SANDBOX_ROUTE_SEGMENT } from './sandbox.constants';
-
-// Strict UUID v-agnostic shape. This is anti-traversal / input hygiene (so `:id`
-// can never be a path like `../...`), NOT authorization — the capability is the
-// unguessable id itself plus the short TTL plus TLS.
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // MIME types safe to render inline in a browser. SVG is deliberately EXCLUDED
 // (it can carry script), as are text/html and the JSON document blob — anything
@@ -51,9 +46,13 @@ export class SandboxController {
     @Req() req: FastifyRequest,
     @Res() res: FastifyReply,
   ): Promise<void> {
-    // Non-UUID id (including any traversal attempt) → 404 before touching the
-    // store. No stack trace leaks out.
-    if (!UUID_RE.test(id)) {
+    // Validate `:id` as a real UUID via the shared `uuid` validator (same as the
+    // attachment routes). This is anti-traversal / input hygiene (so `:id` can
+    // never be a path like `../...`), NOT authorization — the capability is the
+    // unguessable id itself plus the short TTL plus TLS. A non-UUID id (including
+    // any traversal attempt) → 404 before touching the store; no stack trace
+    // leaks out.
+    if (!isValidUUID(id)) {
       res.status(404).send();
       return;
     }

@@ -5,9 +5,10 @@ import ms, { StringValue } from 'ms';
 @Injectable()
 export class EnvironmentService {
   private readonly logger = new Logger(EnvironmentService.name);
-  // One-shot guard so an invalid SANDBOX_TTL_MS is warned about once, not on
-  // every getSandboxTtlMs() call (which runs per blob put).
-  private sandboxTtlWarned = false;
+  // Env keys already warned about for an invalid value (one-shot per key, so a
+  // bad SANDBOX_* value is not logged on every blob put). Mirrors the original
+  // sandboxTtlWarned guard, generalized across the TTL + the three byte caps.
+  private readonly invalidPositiveIntWarned = new Set<string>();
 
   constructor(private configService: ConfigService) {}
 
@@ -352,50 +353,48 @@ export class EnvironmentService {
     return raw.replace(/\/+$/, '');
   }
 
+  // Parse a REQUIRED positive-integer env (TTL in ms or a byte cap). A
+  // non-integer or <= 0 value would break the sandbox silently (instant expiry,
+  // or every put failing against a 0-byte cap), so warn once and fall back to
+  // the default instead. Blob bodies are never logged.
+  private getPositiveIntEnv(key: string, def: number): number {
+    const parsed = parseInt(
+      this.configService.get<string>(key, String(def)),
+      10,
+    );
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      if (!this.invalidPositiveIntWarned.has(key)) {
+        this.invalidPositiveIntWarned.add(key);
+        this.logger.warn(
+          `Invalid ${key} (must be a positive integer); falling back to the ${def} default`,
+        );
+      }
+      return def;
+    }
+    return parsed;
+  }
+
   // Blob time-to-live. Default 1h. The unguessable UUID + this short TTL + TLS
   // are the whole capability model (no tokens). A non-positive or non-integer
   // value would make every blob expire instantly (silent 404s), so reject it and
   // fall back to the 1h default (warned about once to avoid per-put log spam).
   getSandboxTtlMs(): number {
-    const parsed = parseInt(
-      this.configService.get<string>('SANDBOX_TTL_MS', '3600000'),
-      10,
-    );
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      if (!this.sandboxTtlWarned) {
-        this.sandboxTtlWarned = true;
-        this.logger.warn(
-          `Invalid SANDBOX_TTL_MS (must be a positive integer); ` +
-            `falling back to the 3600000 ms default`,
-        );
-      }
-      return 3_600_000;
-    }
-    return parsed;
+    return this.getPositiveIntEnv('SANDBOX_TTL_MS', 3_600_000);
   }
 
   // Per-blob cap for non-image blobs (the serialized document). Default 8 MiB.
   getSandboxMaxBytes(): number {
-    return parseInt(
-      this.configService.get<string>('SANDBOX_MAX_BYTES', '8388608'),
-      10,
-    );
+    return this.getPositiveIntEnv('SANDBOX_MAX_BYTES', 8_388_608);
   }
 
   // Per-blob cap for mirrored image blobs. Default 20 MiB.
   getSandboxMaxImageBytes(): number {
-    return parseInt(
-      this.configService.get<string>('SANDBOX_MAX_IMAGE_BYTES', '20971520'),
-      10,
-    );
+    return this.getPositiveIntEnv('SANDBOX_MAX_IMAGE_BYTES', 20_971_520);
   }
 
   // RAM guard: total bytes the whole store may hold. Default 128 MiB. On
   // overflow the store evicts oldest entries to make room.
   getSandboxMaxTotalBytes(): number {
-    return parseInt(
-      this.configService.get<string>('SANDBOX_MAX_TOTAL_BYTES', '134217728'),
-      10,
-    );
+    return this.getPositiveIntEnv('SANDBOX_MAX_TOTAL_BYTES', 134_217_728);
   }
 }
