@@ -107,5 +107,35 @@ describe("htmlToMarkdown — custom nodes are preserved losslessly (#206 mdrt-2)
       expect(html).toMatch(/<span[^>]*data-type="status"[^>]*>/);
       expect(html).toContain("green");
     });
+
+    // HTML special chars in an attribute value or in a node's text must be
+    // ESCAPED when re-emitted as raw HTML, otherwise the exported tag is
+    // malformed and `markdownToHtml`'s parser cannot restore the original value
+    // (the same silent data loss this PR fixes). This exercises the escape
+    // branches of escapeHtmlAttr (&, ", <, >) and escapeHtmlText (&, <, >) that
+    // the alphanumeric-only cases above never hit. The mention's data-label and
+    // visible text both carry `&` and `"`.
+    it("escapes HTML special chars in attrs + text and round-trips them", async () => {
+      const md = htmlToMarkdown(
+        `<p>hi <span data-type="mention" data-id="u1" data-label='A & "B"'>@A &amp; "B"</span> there</p>`,
+      );
+
+      // (a) The exported Markdown carries a WELL-FORMED, correctly-escaped tag:
+      // the attribute escapes both `&` and `"`; the text escapes `&` (a `"`
+      // inside text content is legal, so it stays literal).
+      expect(md).toContain('data-label="A &amp; &quot;B&quot;"');
+      expect(md).toContain('>@A &amp; "B"</span>');
+      // And NOT the raw, malformed form that would break the attribute.
+      expect(md).not.toContain('data-label="A & "B""');
+
+      // (b) Import restores the ORIGINAL (unescaped) values, attribute and text.
+      const html = await markdownToHtml(md);
+      const dom = new DOMParser().parseFromString(html as string, "text/html");
+      const span = dom.querySelector('span[data-type="mention"]');
+      expect(span).not.toBeNull();
+      expect(span!.getAttribute("data-id")).toBe("u1");
+      expect(span!.getAttribute("data-label")).toBe('A & "B"');
+      expect(span!.textContent).toBe('@A & "B"');
+    });
   });
 });
