@@ -121,4 +121,70 @@ describe('SandboxController', () => {
 
     expect(res._sent.status).toBe(200);
   });
+
+  it('returns 304 for a wildcard "*" If-None-Match', async () => {
+    const sha = 'e'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('x'), 'application/json', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq({ 'if-none-match': '*' }), res);
+
+    expect(res._sent.status).toBe(304);
+  });
+
+  it('returns 304 for a weak validator W/"<sha>"', async () => {
+    const sha = 'f'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('x'), 'application/json', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq({ 'if-none-match': `W/"${sha}"` }), res);
+
+    expect(res._sent.status).toBe(304);
+  });
+
+  it('returns 304 when a comma-separated If-None-Match list contains the sha', async () => {
+    const sha = '1'.repeat(64);
+    const store = {
+      get: jest.fn().mockReturnValue(entry(Buffer.from('x'), 'application/json', sha)),
+    };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(
+      VALID_ID,
+      makeReq({ 'if-none-match': `"other", "${sha}"` }),
+      res,
+    );
+
+    expect(res._sent.status).toBe(304);
+  });
+
+  it('sets a private, immutable Cache-Control with a max-age within the TTL on 200', async () => {
+    const sha = '2'.repeat(64);
+    // Known TTL: ~30s out, so the floored max-age must land within [0, 60].
+    const e: SandboxEntry = {
+      buf: Buffer.from('x'),
+      mime: 'application/json',
+      sha256: sha,
+      expiresAt: Date.now() + 30_000,
+    };
+    const store = { get: jest.fn().mockReturnValue(e) };
+    const controller = new SandboxController(store as any);
+    const res = makeRes();
+
+    await controller.get(VALID_ID, makeReq(), res);
+
+    expect(res._sent.status).toBe(200);
+    const cc = res._sent.headers['cache-control'] as string;
+    expect(cc).toMatch(/^private, max-age=\d+, immutable$/);
+    const maxAge = Number(cc.match(/max-age=(\d+)/)![1]);
+    expect(maxAge).toBeGreaterThanOrEqual(0);
+    expect(maxAge).toBeLessThanOrEqual(60);
+  });
 });

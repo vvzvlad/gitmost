@@ -16,7 +16,6 @@ import {
 import { resolveCurrentPageResult } from './current-page.util';
 import { parseNodeArg } from './parse-node-arg';
 import { modelFriendlyInput } from './model-friendly-input';
-import { EnvironmentService } from '../../../integrations/environment/environment.service';
 import { SandboxStore } from '../../../integrations/sandbox/sandbox.store';
 
 /**
@@ -43,7 +42,6 @@ export class AiChatToolsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly spaceMemberRepo: SpaceMemberRepo,
     private readonly pagePermissionRepo: PagePermissionRepo,
-    private readonly environmentService: EnvironmentService,
     // Shared singleton in-RAM blob store backing the stash tool.
     private readonly sandboxStore: SandboxStore,
   ) {}
@@ -91,22 +89,23 @@ export class AiChatToolsService {
         aiChatId,
       });
 
-    // Bind the stash tool to the shared in-RAM SandboxStore and compose the
-    // anonymous public URL here (the MCP package never touches env or the
-    // store). put() returns the read URL + sha256/size; sha256 is also the
-    // blob's ETag for integrity.
-    const sandboxPut = (buf: Buffer, mime: string) => {
-      const stored = this.sandboxStore.put(buf, mime);
-      const base = this.environmentService.getSandboxPublicUrl();
-      return { uri: `${base}/api/sb/${stored.id}`, sha256: stored.sha256, size: stored.size };
-    };
+    // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
+    // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
+    // package needs to keep its mirror counts honest under FIFO eviction (the
+    // package never touches env or the store). The sink speaks `uri`s, so the
+    // probes map a uri back to its id (the last path segment).
+    const idOf = (uri: string) => uri.substring(uri.lastIndexOf('/') + 1);
 
     const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
     const client: DocmostClientLike = new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
-      sandbox: { put: sandboxPut },
+      sandbox: {
+        put: (buf, mime) => this.sandboxStore.putAndLink(buf, mime),
+        has: (uri) => this.sandboxStore.has(idOf(uri)),
+        evict: (uri) => this.sandboxStore.remove(idOf(uri)),
+      },
     });
 
     // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the

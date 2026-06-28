@@ -143,6 +143,11 @@ export type DocmostMcpConfig = (
       buf: Buffer,
       mime: string,
     ) => { uri: string; sha256: string; size: number };
+    // Optional live/evict probes the package uses to keep stash_page's mirror
+    // counts honest under the store's FIFO eviction (mirror of the package's
+    // sink type); older bindings omit them.
+    has?: (uri: string) => boolean;
+    evict?: (uri: string) => void;
   };
 };
 

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { EnvironmentService } from '../environment/environment.service';
+import { SANDBOX_API_PATH } from './sandbox.constants';
 
 // In-RAM, process-local blob store. No disk, no DB. Ephemeral by design: a
 // restart empties it. A blob is addressed by an unguessable randomUUID() which
@@ -17,7 +18,6 @@ export interface SandboxPutResult {
   id: string;
   sha256: string;
   size: number;
-  expiresAt: number;
 }
 
 @Injectable()
@@ -86,7 +86,36 @@ export class SandboxStore implements OnModuleDestroy {
     const expiresAt = Date.now() + this.environmentService.getSandboxTtlMs();
     this.map.set(id, { buf, mime, sha256, expiresAt });
     this.totalBytes += buf.length;
-    return { id, sha256, size: buf.length, expiresAt };
+    return { id, sha256, size: buf.length };
+  }
+
+  /**
+   * Store a blob and return its anonymous read URL plus integrity metadata.
+   * Owns the single sandbox-URL composition (`${publicBase}${SANDBOX_API_PATH}/
+   * <id>`) so callers never hand-build the route; the raw put() stays public for
+   * tests/low-level callers. sha256 is also the blob's strong ETag.
+   */
+  putAndLink(
+    buf: Buffer,
+    mime: string,
+  ): { uri: string; sha256: string; size: number } {
+    const stored = this.put(buf, mime);
+    const base = this.environmentService.getSandboxPublicUrl();
+    return {
+      uri: `${base}${SANDBOX_API_PATH}/${stored.id}`,
+      sha256: stored.sha256,
+      size: stored.size,
+    };
+  }
+
+  /** True if the blob is still live (not evicted/expired). */
+  has(id: string): boolean {
+    return this.get(id) !== undefined;
+  }
+
+  /** Drop a blob by id (public wrapper over the private FIFO evict). */
+  remove(id: string): void {
+    this.evict(id);
   }
 
   /** Returns the entry, or undefined if missing OR expired (lazy expiry). */

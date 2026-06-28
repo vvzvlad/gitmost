@@ -14,4 +14,30 @@ describe('EnvironmentService', () => {
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
+
+  describe('getSandboxTtlMs', () => {
+    // ConfigService stub: get(key, def) returns the configured value for the key
+    // (falling back to def), matching the @nestjs/config contract the service
+    // calls with (key, default).
+    const build = (sandboxTtl?: string) =>
+      new EnvironmentService({
+        get: (key: string, def?: string) =>
+          key === 'SANDBOX_TTL_MS' ? (sandboxTtl ?? def) : def,
+      } as any);
+
+    it.each(['0', '-5', 'abc'])(
+      'falls back to the 3600000 default for invalid value %s',
+      (value) => {
+        expect(build(value).getSandboxTtlMs()).toBe(3_600_000);
+      },
+    );
+
+    it('returns the parsed value for a valid positive integer', () => {
+      expect(build('120000').getSandboxTtlMs()).toBe(120_000);
+    });
+
+    it('uses the 3600000 default when SANDBOX_TTL_MS is unset', () => {
+      expect(build(undefined).getSandboxTtlMs()).toBe(3_600_000);
+    });
+  });
 });

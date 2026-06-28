@@ -8,7 +8,6 @@ import { ModuleRef } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
 import { IncomingMessage } from 'node:http';
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { EnvironmentService } from '../environment/environment.service';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
@@ -93,7 +92,6 @@ export class McpService implements OnModuleDestroy {
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(
-    private readonly environmentService: EnvironmentService,
     private readonly workspaceRepo: WorkspaceRepo,
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
@@ -118,20 +116,17 @@ export class McpService implements OnModuleDestroy {
     clearInterval(this.sweepTimer);
   }
 
-  // Bind the stash tool to the shared in-RAM SandboxStore and compose the
-  // anonymous public URL (the MCP package owns neither env nor the store).
-  // put() returns the read URL + sha256/size; sha256 is also the blob ETag.
+  // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
+  // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
+  // package needs to keep its mirror counts honest under FIFO eviction; the
+  // package owns neither env nor the store. The sink speaks `uri`s, so the
+  // probes map a uri back to its id (the last path segment).
   private buildSandboxConfig(): DocmostMcpConfig['sandbox'] {
+    const idOf = (uri: string) => uri.substring(uri.lastIndexOf('/') + 1);
     return {
-      put: (buf: Buffer, mime: string) => {
-        const stored = this.sandboxStore.put(buf, mime);
-        const base = this.environmentService.getSandboxPublicUrl();
-        return {
-          uri: `${base}/api/sb/${stored.id}`,
-          sha256: stored.sha256,
-          size: stored.size,
-        };
-      },
+      put: (buf, mime) => this.sandboxStore.putAndLink(buf, mime),
+      has: (uri) => this.sandboxStore.has(idOf(uri)),
+      evict: (uri) => this.sandboxStore.remove(idOf(uri)),
     };
   }
 

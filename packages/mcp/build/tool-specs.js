@@ -224,7 +224,10 @@ export const SHARED_TOOL_SPECS = {
             'failed} }. Integrity: the blob is served with ETag = its sha256, so a ' +
             'truncated/corrupted fetch is detectable. Blobs are RAM-only: they expire ' +
             'after a short TTL (~1h) and are cleared on restart — consume the URL ' +
-            'within the TTL and one uptime, or re-stash.',
+            'within the TTL and one uptime, or re-stash. A blob is bound to the ' +
+            'server instance that created it: in a multi-replica deployment without ' +
+            'sticky sessions a blob stored on one instance is not retrievable via the ' +
+            'sandbox URL on another (it 404s like an expired one).',
         buildShape: (z) => ({
             pageId: z.string().min(1),
         }),

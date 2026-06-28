@@ -1,6 +1,7 @@
 import { Controller, Get, Param, Req, Res } from '@nestjs/common';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { SandboxStore } from './sandbox.store';
+import { SANDBOX_ROUTE_SEGMENT } from './sandbox.constants';
 
 // Strict UUID v-agnostic shape. This is anti-traversal / input hygiene (so `:id`
 // can never be a path like `../...`), NOT authorization — the capability is the
@@ -22,7 +23,7 @@ const UUID_RE =
  * UUID; `:id` is never used as a filesystem path, so there is no traversal
  * surface. Never returns tokens, never 401s.
  */
-@Controller('sb')
+@Controller(SANDBOX_ROUTE_SEGMENT)
 export class SandboxController {
   constructor(private readonly store: SandboxStore) {}
 

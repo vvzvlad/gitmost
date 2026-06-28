@@ -171,11 +171,15 @@ export type DocmostClientConfig = {
   getCollabToken?: () => Promise<string>;
   // Optional blob-sandbox sink for the stash tool. `put` stores a blob in the
   // host's in-RAM SandboxStore and returns the anonymous read URL + integrity.
+  // The optional `has`/`evict` probes let stashPage keep its mirror counts
+  // honest under the store's FIFO eviction (mirror of the package's sink type).
   sandbox?: {
     put: (
       buf: Buffer,
       mime: string,
     ) => { uri: string; sha256: string; size: number };
+    has?: (uri: string) => boolean;
+    evict?: (uri: string) => void;
   };
 };
 

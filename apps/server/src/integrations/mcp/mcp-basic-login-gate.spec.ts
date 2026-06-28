@@ -109,7 +109,6 @@ function makeService(opts: {
   };
 
   const service = new McpService(
-    undefined as never, // environmentService
     undefined as never, // workspaceRepo
     undefined as never, // authService
     undefined as never, // tokenService

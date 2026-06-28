@@ -1,9 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import ms, { StringValue } from 'ms';
 
 @Injectable()
 export class EnvironmentService {
+  private readonly logger = new Logger(EnvironmentService.name);
+  // One-shot guard so an invalid SANDBOX_TTL_MS is warned about once, not on
+  // every getSandboxTtlMs() call (which runs per blob put).
+  private sandboxTtlWarned = false;
+
   constructor(private configService: ConfigService) {}
 
   getNodeEnv(): string {
@@ -348,12 +353,25 @@ export class EnvironmentService {
   }
 
   // Blob time-to-live. Default 1h. The unguessable UUID + this short TTL + TLS
-  // are the whole capability model (no tokens).
+  // are the whole capability model (no tokens). A non-positive or non-integer
+  // value would make every blob expire instantly (silent 404s), so reject it and
+  // fall back to the 1h default (warned about once to avoid per-put log spam).
   getSandboxTtlMs(): number {
-    return parseInt(
+    const parsed = parseInt(
       this.configService.get<string>('SANDBOX_TTL_MS', '3600000'),
       10,
     );
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      if (!this.sandboxTtlWarned) {
+        this.sandboxTtlWarned = true;
+        this.logger.warn(
+          `Invalid SANDBOX_TTL_MS (must be a positive integer); ` +
+            `falling back to the 3600000 ms default`,
+        );
+      }
+      return 3_600_000;
+    }
+    return parsed;
   }
 
   // Per-blob cap for non-image blobs (the serialized document). Default 8 MiB.

@@ -16,7 +16,7 @@ license.
 > that interface. Other Docmost MCPs are human-shaped — they expose "open the page" and
 > "replace the page"; this one exposes the editing primitives a model is good at.
 
-It exposes **38 tools** built around three ideas that the other Docmost MCPs do not
+It exposes **39 tools** built around three ideas that the other Docmost MCPs do not
 combine:
 
 1. **Surgical, token-cheap edits.** Address a single block by id and patch it, or run
@@ -106,7 +106,7 @@ There are several Docmost MCPs. Here is a capability-by-capability comparison.
 
 ## Tools
 
-All 38 tools, grouped by what you'd reach for them.
+All 39 tools, grouped by what you'd reach for them.
 
 ### Exploration & retrieval
 
@@ -203,6 +203,14 @@ All 38 tools, grouped by what you'd reach for them.
   node referencing the old attachment (recursively, including callouts/tables) via the
   live document, preserving comments, alignment and alt text. (In-place overwrite is
   deliberately avoided — some Docmost versions corrupt the attachment on overwrite.)
+- **`stash_page`** — Serialize a whole page (its full ProseMirror JSON) into an ephemeral
+  in-RAM blob and return ONLY a short anonymous URL — the body never enters the model
+  context, so it is the way to hand a large page (and its images) to an external consumer
+  without truncation. Every internal file/image attachment is mirrored into the same
+  sandbox and its `src` rewritten to a sandbox URL; external http(s) images are left
+  untouched. Returns `{ uri, size, sha256, images:{ mirrored, failed } }` (`sha256` is also
+  the blob's ETag). Blobs are RAM-only, expire after a short TTL (~1h) and are bound to the
+  server instance that created them.
 
 ### Comments
 

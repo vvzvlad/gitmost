@@ -7,7 +7,7 @@ import { TiptapTransformer } from "@hocuspocus/transformer";
 import * as Y from "yjs";
 import WebSocket from "ws";
 import { convertProseMirrorToMarkdown } from "./lib/markdown-converter.js";
-import { collectInternalFileNodes, normalizeFileUrl, } from "./lib/internal-file-urls.js";
+import { collectInternalFileNodes, normalizeFileUrl, resolveInternalFilePath, } from "./lib/internal-file-urls.js";
 import { updatePageContentRealtime, replacePageContent, markdownToProseMirror, markdownToProseMirrorCanonical, mutatePageContent, buildCollabWsUrl, assertYjsEncodable, applyDocToFragment, } from "./lib/collaboration.js";
 import { footnoteWarningsField } from "./lib/footnote-analyze.js";
 import { buildPageTree } from "./lib/tree.js";
@@ -54,6 +54,11 @@ export class DocmostClient {
     getCollabTokenFn = null;
     // Optional blob-sandbox sink for the stash tool. Null when not configured.
     sandboxPut = null;
+    // Optional probes paired with the sink. `has` lets stashPage detect a blob
+    // FIFO-evicted by a LATER put in the same stash; `evict` lets it free this
+    // op's image blobs if the final doc put throws. Null when the sink omits them.
+    sandboxHas = null;
+    sandboxEvict = null;
     // In-flight login dedup: when the token expires, the 401 interceptor,
     // ensureAuthenticated, getCollabTokenWithReauth and the two multipart retries
     // can all call login() at once. Memoizing a single promise collapses that
@@ -82,6 +87,8 @@ export class DocmostClient {
         }
         if (config.sandbox) {
             this.sandboxPut = config.sandbox.put;
+            this.sandboxHas = config.sandbox.has ?? null;
+            this.sandboxEvict = config.sandbox.evict ?? null;
         }
         this.client = axios.create({
             baseURL: this.apiUrl,
@@ -619,12 +626,16 @@ export class DocmostClient {
      * and the response Content-Type (mime), defaulting to octet-stream.
      *
      * The fetch is size-bounded (hard 64 MiB ceiling) purely to protect memory;
-     * the authoritative per-blob cap is enforced by the sandbox `put`. The leading
-     * `/api` strip means this never escapes the Docmost API base.
+     * the authoritative per-blob cap is enforced by the sandbox `put`. The path is
+     * resolved via resolveInternalFilePath, which REJECTS (throws) any traversal
+     * or percent-encoded src that would let an attacker-controlled `attrs.src`
+     * escape `/api/files/` and reach another internal endpoint (SSRF). That throw
+     * happens before this.client.get, so a malicious src is counted as a failed
+     * mirror — it never reaches the network.
      */
     async fetchInternalFile(src) {
         const HARD_CEILING = 64 * 1024 * 1024; // 64 MiB memory guard
-        const relPath = src.replace(/^\/api/, "");
+        const relPath = resolveInternalFilePath(src);
         const response = await this.client.get(relPath, {
             responseType: "arraybuffer",
             timeout: 30000,
@@ -668,42 +679,82 @@ export class DocmostClient {
         const cloned = structuredClone(pageJson);
         // Group internal-file nodes by normalized src so each unique resource is
         // fetched + stored ONCE (dedup), and every node sharing that src points at
-        // the one sandbox blob.
+        // the one sandbox blob. Capture each node's ORIGINAL raw src per-node:
+        // dedup groups nodes whose normalized src is equal even when their raw srcs
+        // differ (e.g. `/api/files/...` vs the bare `/files/...`), so on a revert we
+        // must restore each node's own original value, not the group key.
         const bySrc = new Map();
         for (const node of collectInternalFileNodes(cloned.content)) {
-            const src = normalizeFileUrl(String(node.attrs.src));
+            const origSrc = String(node.attrs.src);
+            const src = normalizeFileUrl(origSrc);
+            const entry = { node, origSrc };
             const group = bySrc.get(src);
             if (group)
-                group.push(node);
+                group.push(entry);
             else
-                bySrc.set(src, [node]);
+                bySrc.set(src, [entry]);
         }
         let mirrored = 0;
         let failed = 0;
+        // Record every successful mirror so it can be (a) reverted if its blob gets
+        // FIFO-evicted by a LATER put in this same stash, and (b) freed if the final
+        // doc put throws.
+        const mirrors = [];
         const MAX_CONCURRENCY = 5;
         const groups = [...bySrc.entries()];
         for (let i = 0; i < groups.length; i += MAX_CONCURRENCY) {
             const batch = groups.slice(i, i + MAX_CONCURRENCY);
-            await Promise.all(batch.map(async ([src, nodes]) => {
+            await Promise.all(batch.map(async ([src, entries]) => {
                 try {
                     const { buffer, mime } = await this.fetchInternalFile(src);
                     // put may throw if the blob exceeds the per-blob/total caps.
                     const stored = this.sandboxPut(buffer, mime);
-                    for (const node of nodes)
-                        node.attrs.src = stored.uri;
+                    for (const entry of entries)
+                        entry.node.attrs.src = stored.uri;
+                    mirrors.push({ uri: stored.uri, entries });
                     mirrored++;
                 }
                 catch (err) {
-                    // One bad/oversized image must not abort the document.
+                    // One bad/oversized image (or a rejected traversal src) must not
+                    // abort the document. Logged unconditionally (never the blob body),
+                    // matching the package's ungated console.warn convention.
                     failed++;
-                    if (process.env.DEBUG) {
-                        console.error(`stash_page: failed to mirror "${src}":`, err);
-                    }
+                    console.warn(`stash_page: failed to mirror "${src}": ${err instanceof Error ? err.message : String(err)}`);
                 }
             }));
         }
+        // Reconcile against FIFO eviction: a heavy page can have a later image-put
+        // evict an EARLIER image stored in this SAME stash. The stored doc must not
+        // reference an evicted blob (consumer 404) and the counts must not lie, so
+        // for any mirror whose blob is gone, revert its nodes to their original
+        // internal srcs and re-count it as failed.
+        if (this.sandboxHas) {
+            for (const mirror of mirrors) {
+                if (!this.sandboxHas(mirror.uri)) {
+                    for (const entry of mirror.entries) {
+                        entry.node.attrs.src = entry.origSrc;
+                    }
+                    mirrored--;
+                    failed++;
+                    console.warn(`stash_page: mirrored blob ${mirror.uri} was evicted before ` +
+                        `the doc was stored; reverted its src and counted it as failed`);
+                }
+            }
+        }
         const docBuf = Buffer.from(JSON.stringify(cloned), "utf8");
-        const stored = this.sandboxPut(docBuf, "application/json");
+        let stored;
+        try {
+            stored = this.sandboxPut(docBuf, "application/json");
+        }
+        catch (err) {
+            // The doc put failed (e.g. doc exceeds the cap). Free this op's image
+            // blobs instead of leaking them in RAM for the whole TTL, then re-throw.
+            if (this.sandboxEvict) {
+                for (const mirror of mirrors)
+                    this.sandboxEvict(mirror.uri);
+            }
+            throw err;
+        }
         return {
             uri: stored.uri,
             sha256: stored.sha256,
