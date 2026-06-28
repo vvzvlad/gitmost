@@ -233,9 +233,9 @@ export function convertProseMirrorToMarkdown(content: any): string {
         const imgCaption = node.attrs?.caption || "";
         if (imgCaption) {
           // ![]() can't carry a caption, so (symmetric to video) emit a raw
-          // <img> wrapped in a block <div>. markdownToHtml passes it through and
-          // the image extension's parseHTML restores the caption from
-          // data-caption on import.
+          // <img> wrapped in a block <div>. On import marked.parse keeps the raw
+          // HTML and generateJSON runs the image extension's parseHTML, which
+          // restores the caption from data-caption.
           const parts: string[] = [`src="${escapeAttr(node.attrs?.src ?? "")}"`];
           if (imgAlt) parts.push(`alt="${escapeAttr(imgAlt)}"`);
           parts.push(`data-caption="${escapeAttr(imgCaption)}"`);
