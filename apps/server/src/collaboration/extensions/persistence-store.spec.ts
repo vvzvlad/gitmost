@@ -205,31 +205,158 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(historyQueue.add).toHaveBeenCalledTimes(1);
   });
 
-  // #206 persist-6 — RED (it.failing): a momentarily-empty live Y.Doc must not
-  // overwrite non-empty persisted content. `onStoreDocument` empty-guards the
-  // LOAD path but not the STORE path, so today an empty doc (a client/agent
-  // glitch, a bad merge, an emptying transclusion) is written straight over the
-  // page and the content is wiped silently. A store-side empty-guard is a real
-  // behaviour change (a deliberate "select-all + delete" is also empty), so it
-  // is left UNFIXED pending a product decision; this documents the data-loss
-  // path and flips to a normal passing test the moment the guard lands.
-  it.failing(
-    'does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)',
-    async () => {
-      const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
-      const document = ydocFor(emptyDoc);
-      pageRepo.findById.mockResolvedValue({
-        ...persistedHumanPage('IGNORED'),
-        content: doc('IMPORTANT RICH CONTENT'),
-      });
+  // #206 persist-6 / #248 — a momentarily-empty live Y.Doc must not overwrite
+  // non-empty persisted content. The store-side empty-guard blocks an empty doc
+  // (a client/agent glitch, a bad merge, an emptying transclusion) from wiping
+  // the page silently when NO intentional-clear signal is present.
+  it('does NOT overwrite non-empty content with a momentarily-empty live doc (persist-6)', async () => {
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
 
-      await ext.onStoreDocument(buildData(document, 'user') as any);
+    await ext.onStoreDocument(buildData(document, 'user') as any);
 
-      // Desired contract: the empty incoming doc is rejected and the rich page
-      // survives. Today updatePage is called with the empty content (data loss).
-      expect(pageRepo.updatePage).not.toHaveBeenCalled();
-    },
-  );
+    // The empty incoming doc is rejected and the rich page survives.
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
+
+  // #248 — an empty-over-empty store is allowed (nothing to lose); the guard
+  // only protects non-empty persisted content.
+  it('allows an empty store over already-empty content (#248)', async () => {
+    const liveEmptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(liveEmptyDoc);
+    // Stored content is empty per isEmptyParagraphDoc (paragraph with content:[])
+    // but NOT deep-equal to the normalized live doc, so the unchanged
+    // short-circuit is skipped and the empty-guard is genuinely reached.
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [] }] },
+    });
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+  });
+
+  // #251 — REAL-PATH regression test. The intentional-clear signal is set via
+  // the actual transport seam (ext.onStateless with the exact stateless payload
+  // the client's IntentionalClear extension sends), NOT a hand-injected
+  // context.intentionalClear poke. We then run the debounced store with an empty
+  // live doc over non-empty persisted content and assert the empty write goes
+  // through — i.e. the clear persists.
+  it('persists an intentional clear signalled via the real stateless transport (#251)', async () => {
+    const documentName = `page.${PAGE_ID}`;
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    // The client signalled a deliberate clear over the live connection.
+    await ext.onStateless({
+      connection: { readOnly: false } as any,
+      documentName,
+      document: document as any,
+      payload: JSON.stringify({ type: 'intentional-clear' }),
+    } as any);
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    // The empty doc was written (the clear persisted). The persisted content is
+    // the Y.Doc round-trip of the empty doc (attrs normalized), so compare
+    // against fromYdoc rather than the raw literal.
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+    const expectedEmpty = TiptapTransformer.fromYdoc(document, 'default');
+    expect(pageRepo.updatePage.mock.calls[0][0].content).toEqual(expectedEmpty);
+  });
+
+  // #251 — the signal is single-use: it is consumed by the first empty store,
+  // so a SECOND accidental empty (no fresh signal) is still blocked.
+  it('consumes the intentional-clear signal once; a later empty is blocked (#251)', async () => {
+    const documentName = `page.${PAGE_ID}`;
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    await ext.onStateless({
+      connection: { readOnly: false } as any,
+      documentName,
+      document: ydocFor(emptyDoc) as any,
+      payload: JSON.stringify({ type: 'intentional-clear' }),
+    } as any);
+
+    // First empty store consumes the signal and writes.
+    await ext.onStoreDocument(buildData(ydocFor(emptyDoc), 'user') as any);
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+
+    // Re-arm findById to non-empty (as if content came back) and fire another
+    // empty store WITHOUT a new signal — the guard must block it.
+    pageRepo.updatePage.mockClear();
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+    await ext.onStoreDocument(buildData(ydocFor(emptyDoc), 'user') as any);
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
+
+  // #251 — a read-only connection cannot arm the clear, so its empty store is
+  // still blocked (defends the guard against a read-only spoof).
+  it('ignores an intentional-clear signal from a read-only connection (#251)', async () => {
+    const documentName = `page.${PAGE_ID}`;
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    await ext.onStateless({
+      connection: { readOnly: true } as any,
+      documentName,
+      document: document as any,
+      payload: JSON.stringify({ type: 'intentional-clear' }),
+    } as any);
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
+
+  // #251 — a non-empty store between the signal and the empty store drops the
+  // pending flag ("cleared then retyped" can't leave a usable signal behind).
+  it('drops a pending clear when a non-empty store intervenes (#251)', async () => {
+    const documentName = `page.${PAGE_ID}`;
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+
+    await ext.onStateless({
+      connection: { readOnly: false } as any,
+      documentName,
+      document: ydocFor(emptyDoc) as any,
+      payload: JSON.stringify({ type: 'intentional-clear' }),
+    } as any);
+
+    // A non-empty store lands first → consumes/drops the stale flag.
+    pageRepo.findById.mockResolvedValue(persistedHumanPage('NEW HUMAN TEXT'));
+    await ext.onStoreDocument(
+      buildData(ydocFor(doc('NEW HUMAN TEXT')), 'user') as any,
+    );
+    pageRepo.updatePage.mockClear();
+
+    // Now an empty store with no fresh signal must be blocked.
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+    await ext.onStoreDocument(buildData(ydocFor(emptyDoc), 'user') as any);
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
 
   // persist-1 — when every attempt fails the hook must NOT report a phantom
   // success: no "page.updated" badge broadcast and no history snapshot for

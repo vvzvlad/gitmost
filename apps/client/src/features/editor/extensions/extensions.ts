@@ -123,6 +123,7 @@ import { countWords } from "alfaaz";
 import AutoJoiner from "@/features/editor/extensions/autojoiner.ts";
 import GlobalDragHandle from "@/features/editor/extensions/drag-handle.ts";
 import { CleanStyles } from "@/features/editor/extensions/clean-styles.ts";
+import { IntentionalClear } from "@/features/editor/extensions/intentional-clear.ts";
 
 const lowlight = createLowlight(common);
 lowlight.register("mermaid", plaintext);
@@ -485,5 +486,11 @@ export const collabExtensions: CollabExtensions = (provider, user) => [
       name: user.name,
       color: randomElement(userColors),
     },
+  }),
+  // #251 — emit an intentional-clear signal to the server when the user
+  // deliberately empties the page, so the #248 store-side empty-guard lets that
+  // one clear through while still blocking accidental empties.
+  IntentionalClear.configure({
+    provider,
   }),
 ];
