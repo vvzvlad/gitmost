@@ -11,10 +11,11 @@ import { getTestDb, destroyTestDb, createWorkspace, createSpace } from './db';
  * ID set while the status endpoint reports the count as the live denominator, so
  * if the two predicates ever diverge the "done X of Y" counter ends on the wrong
  * total. Both share the SAME WHERE: a page qualifies iff it is non-deleted AND
- * (text_content has a non-whitespace char OR it has a non-deleted embedding row).
+ * (text_content has a non-whitespace char OR — when text_content is empty — its
+ * content JSON has a text node OR it has a non-deleted embedding row).
  *
  * This is a DB-level invariant: the predicate lives in raw SQL (`text_content ~
- * '[^[:space:]]'`) and an EXISTS subquery, so a unit test with mocked Kysely
+ * '[^[:space:]]'`, `content::text ~ '"type":"text"'`) and an EXISTS subquery, so a unit test with mocked Kysely
  * cannot observe it. We seed every boundary case against real Postgres and
  * assert the returned ID set EQUALS the count (and is exactly the expected set).
  * A future edit that touches one predicate but not the other turns this red.

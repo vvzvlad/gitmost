@@ -186,7 +186,6 @@ describe('AiSettingsService.reindex progress seed', () => {
     // pinned to the client poll cap (120s) so a still-pending run can't expire
     // into a false "done" while the client is still polling (F11).
     expect(ttl).toBe(120);
-    expect(ttl).toBeLessThanOrEqual(120);
     expect(aiQueue.add).toHaveBeenCalledTimes(1);
     // Seed must precede the enqueue so the first poll already reports done=0.
     expect(order).toEqual(['start', 'add']);
