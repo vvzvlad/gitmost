@@ -1,11 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { Schema } from "@tiptap/pm/model";
-import type { Node as PMNode } from "@tiptap/pm/model";
-import { tableNodes, CellSelection } from "@tiptap/pm/tables";
-import { EditorState, Selection } from "@tiptap/pm/state";
+import { CellSelection } from "@tiptap/pm/tables";
 import { moveRow } from "./move-row";
-import { convertTableNodeToArrayOfRows } from "./convert-table-node-to-array-of-rows";
-import { findTable } from "./query";
+import {
+  schema,
+  cell,
+  row,
+  table,
+  doc,
+  grid,
+  stateFor,
+} from "./table-test-helpers";
 
 /**
  * moveRow reorders whole rows of a real ProseMirror table by mutating a
@@ -14,38 +18,6 @@ import { findTable } from "./query";
  * that after the call the table's rows appear in the new order with every cell's
  * content preserved, and no rows are dropped or duplicated.
  */
-
-const tNodes = tableNodes({
-  tableGroup: "block",
-  cellContent: "inline*",
-  cellAttributes: {},
-});
-const schema = new Schema({
-  nodes: {
-    doc: { content: "block+" },
-    paragraph: { group: "block", content: "inline*", toDOM: () => ["p", 0] },
-    text: { group: "inline" },
-    ...tNodes,
-  },
-  marks: {},
-});
-const cell = (txt: string): PMNode =>
-  schema.nodes.table_cell.createChecked(null, schema.text(txt));
-const row = (...cells: PMNode[]): PMNode =>
-  schema.nodes.table_row.createChecked(null, cells);
-const table = (...rows: PMNode[]): PMNode =>
-  schema.nodes.table.createChecked(null, rows);
-const doc = (...content: PMNode[]): PMNode =>
-  schema.nodes.doc.createChecked(null, content);
-
-// Read the table's content as a grid of cell texts (rows x cols) from whatever
-// table currently lives in `tr.doc`.
-const grid = (tr: any): string[][] => {
-  const t = findTable(tr.doc.resolve(tr.selection.from))!;
-  return convertTableNodeToArrayOfRows(t.node).map((r) =>
-    r.map((c) => (c ? c.textContent : "")),
-  );
-};
 
 // 3-row x 2-col table; each row identifiable by its cells.
 const grid2x3 = () =>
@@ -56,9 +28,6 @@ const grid2x3 = () =>
       row(cell("r2a"), cell("r2b")),
     ),
   );
-
-const stateFor = (d: PMNode) =>
-  EditorState.create({ doc: d, selection: Selection.atStart(d) });
 
 describe("moveRow", () => {
   it("moves the first row down to the last index, preserving content", () => {

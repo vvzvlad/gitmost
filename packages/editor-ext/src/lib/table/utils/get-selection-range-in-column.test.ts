@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { Schema } from "@tiptap/pm/model";
-import type { Node as PMNode } from "@tiptap/pm/model";
-import { tableNodes } from "@tiptap/pm/tables";
-import { EditorState, Selection } from "@tiptap/pm/state";
 import { getSelectionRangeInColumn } from "./get-selection-range-in-column";
+import { cell, row, table, doc, trFor } from "./table-test-helpers";
 
 /**
  * getSelectionRangeInColumn computes the rectangular column range (the set of
@@ -12,36 +9,6 @@ import { getSelectionRangeInColumn } from "./get-selection-range-in-column";
  * It keys off the table found from the current selection, so we drive it with a
  * real EditorState whose selection sits inside the table.
  */
-
-// Real ProseMirror table schema (same primitives the editor uses) so TableMap /
-// cellsInRect behave exactly as in production.
-const tNodes = tableNodes({
-  tableGroup: "block",
-  cellContent: "inline*",
-  cellAttributes: {},
-});
-const schema = new Schema({
-  nodes: {
-    doc: { content: "block+" },
-    paragraph: { group: "block", content: "inline*", toDOM: () => ["p", 0] },
-    text: { group: "inline" },
-    ...tNodes,
-  },
-  marks: {},
-});
-const cell = (txt: string, attrs?: Record<string, unknown>): PMNode =>
-  schema.nodes.table_cell.createChecked(attrs ?? null, schema.text(txt));
-const row = (...cells: PMNode[]): PMNode =>
-  schema.nodes.table_row.createChecked(null, cells);
-const table = (...rows: PMNode[]): PMNode =>
-  schema.nodes.table.createChecked(null, rows);
-const doc = (...content: PMNode[]): PMNode =>
-  schema.nodes.doc.createChecked(null, content);
-
-// Build a transaction whose selection is inside the table (the function locates
-// the table via `tr.selection.$from`).
-const trFor = (d: PMNode) =>
-  EditorState.create({ doc: d, selection: Selection.atStart(d) }).tr;
 
 // A 2-row x 3-col grid; each column is identifiable by its top-row letter.
 const grid3x2 = () =>
