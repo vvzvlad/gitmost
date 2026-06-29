@@ -124,6 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "This address is in use. Saving will move it to this page." — and keeps Save
   enabled, so the existing reassign-confirm flow (`409 ALIAS_REASSIGN_REQUIRED` →
   "Move custom address?") is discoverable instead of reading as terminal. (#227)
+- **A non-empty page can no longer be silently lost to a momentarily-empty live
+  document.** The server's persistence guard now refuses to overwrite non-empty
+  persisted content with an empty live Y.Doc — a transient emptiness from a
+  glitch, a bad merge, or an emptying transclusion no longer wipes the saved
+  page. A *deliberate* clear still works: a select-all + Delete in the editor
+  emits a single-use "intentional clear" signal that lets exactly that one empty
+  write through the guard, so genuinely emptying a page is persisted while
+  accidental empties are blocked. (#248, #251)
 
 ### Security
 
