@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   append/prepend fragments, nor to COMMENT bodies — a comment may legitimately
   contain a standalone footnote definition, which canonicalization would drop.
   (#228)
+- **Out-of-band page transfer via an in-RAM blob sandbox (`stash_page`).** A
+  new MCP tool serializes a whole page (its full ProseMirror JSON, with every
+  internal image/file mirrored) into an ephemeral in-RAM blob and returns only
+  a short anonymous URL, so a large page can be handed to an external consumer
+  without flooding the model context. Blobs are served by unguessable UUID over
+  a new anonymous `GET /api/sb/:id` route (strong sha256 ETag, short TTL,
+  `nosniff` + restrictive CSP + attachment disposition for non-image mimes) and
+  are RAM-only, bound to the instance that created them. Tunable via five
+  `SANDBOX_*` env vars (see `.env.example`). (#243)
 
 ### Changed
 
@@ -66,6 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public only when you explicitly turn on the dedicated "Include sub-pages"
   toggle. Previously the create call defaulted to including sub-pages, silently
   exposing every child of a freshly shared page. (#216)
+
+- **The agent-roles catalog is now stored as YAML instead of JSON.** Each role's
+  long `instructions` system prompt is a literal block scalar (`|-`), so editing
+  a single sentence shows up as a line-by-line diff and the prompt is editable as
+  plain multi-line text rather than one escaped JSON string. The catalog content
+  files become `index.yaml` and `bundles/<id>/<lang>.yaml` (old `.json` removed);
+  the resolved role content is byte-for-byte identical, so no role `version` is
+  bumped. The server fetches `<base>/index.yaml` and
+  `<base>/bundles/<id>/<lang>.yaml`, parsing them with the `yaml` library's safe,
+  JSON-compatible schema (no custom tags / no code execution) behind the same
+  size-cap, redirect and path-traversal guards. The `AI_AGENT_ROLES_CATALOG_URL`
+  base-URL contract is unchanged. (#229)
 
 ### Fixed
 
@@ -103,6 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "This address is in use. Saving will move it to this page." — and keeps Save
   enabled, so the existing reassign-confirm flow (`409 ALIAS_REASSIGN_REQUIRED` →
   "Move custom address?") is discoverable instead of reading as terminal. (#227)
+- **A non-empty page can no longer be silently lost to a momentarily-empty live
+  document.** The server's persistence guard now refuses to overwrite non-empty
+  persisted content with an empty live Y.Doc — a transient emptiness from a
+  glitch, a bad merge, or an emptying transclusion no longer wipes the saved
+  page. A *deliberate* clear still works: a select-all + Delete in the editor
+  emits a single-use "intentional clear" signal that lets exactly that one empty
+  write through the guard, so genuinely emptying a page is persisted while
+  accidental empties are blocked. (#248, #251)
 
 ### Security
 

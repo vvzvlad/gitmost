@@ -2,6 +2,7 @@ import {
   IsIn,
   IsNotEmpty,
   IsNotIn,
+  IsNumberString,
   IsOptional,
   IsString,
   IsUrl,
@@ -170,6 +171,35 @@ export class EnvironmentVariables {
     },
   )
   CLICKHOUSE_URL: string;
+
+  // --- Blob sandbox (in-RAM ephemeral blob transfer; see SandboxModule) ---
+
+  @IsOptional()
+  @ValidateIf((obj) => obj.SANDBOX_PUBLIC_URL != '' && obj.SANDBOX_PUBLIC_URL != null)
+  @IsUrl(
+    { protocols: ['http', 'https'], require_tld: false },
+    {
+      message:
+        'SANDBOX_PUBLIC_URL must be a valid http(s) URL reachable by the external blob consumer',
+    },
+  )
+  SANDBOX_PUBLIC_URL: string;
+
+  @IsOptional()
+  @IsNumberString({}, { message: 'SANDBOX_TTL_MS must be an integer (milliseconds)' })
+  SANDBOX_TTL_MS: string;
+
+  @IsOptional()
+  @IsNumberString({}, { message: 'SANDBOX_MAX_BYTES must be an integer (bytes)' })
+  SANDBOX_MAX_BYTES: string;
+
+  @IsOptional()
+  @IsNumberString({}, { message: 'SANDBOX_MAX_IMAGE_BYTES must be an integer (bytes)' })
+  SANDBOX_MAX_IMAGE_BYTES: string;
+
+  @IsOptional()
+  @IsNumberString({}, { message: 'SANDBOX_MAX_TOTAL_BYTES must be an integer (bytes)' })
+  SANDBOX_MAX_TOTAL_BYTES: string;
 }
 
 export function validate(config: Record<string, any>) {

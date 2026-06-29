@@ -34,7 +34,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | --- | --- |
 | **EE code removed** | Stripped all client and server Enterprise-Edition code; ships as a clean community/AGPL build with no license checks. |
 | **Comment resolution** | Re-implemented from scratch as a community feature (resolve / re-open with Open/Resolved tabs). No EE code reused, available to anyone who can comment. |
-| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 39 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
+| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 40 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
 | **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
@@ -44,7 +44,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 ### Embedded MCP server
 
 Gitmost has **our own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
-which we wrote — **built directly into the app** and served at `/mcp`. It exposes **39
+which we wrote — **built directly into the app** and served at `/mcp`. It exposes **40
 agent-native tools**: surgical per-block edits (patch / insert / delete by id),
 structure-preserving find/replace, scripted `(doc) => doc` transforms with a dry-run diff,
 structured table editing, version history with diff / restore, comments, images and share
@@ -60,7 +60,7 @@ every little fix. And it needs no enterprise license.
 | | **Gitmost `/mcp` (our docmost-mcp)** | Docmost's built-in MCP |
 | --- | :---: | :---: |
 | **Enterprise license** | Not required | Required |
-| **Tools** | 39, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
+| **Tools** | 40, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
 | **Per-block edits / find-replace / scripted transforms** | ✅ | — |
 | **Structured table editing, version diff / restore** | ✅ | — |
 | **Comments, images, share links** | ✅ | — |

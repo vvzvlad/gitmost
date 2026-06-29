@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { parse as parseYamlDoc } from 'yaml';
 import { EnvironmentService } from '../../../../integrations/environment/environment.service';
 import {
   CatalogBundleFile,
@@ -28,9 +29,11 @@ const MAX_BYTES = 1_000_000;
  * base URL — REMOTE only; local-filesystem sources are no longer supported. The
  * value is baked into the Docker image at build time (set per-branch in CI).
  *
- * The catalog is UNTRUSTED input: every file is JSON-parsed and run through a
- * hand-written type guard before any field is exposed, and every dynamic path
- * segment is validated against SEGMENT_RE up front (path-traversal + SSRF).
+ * The catalog is UNTRUSTED input: every file is YAML-parsed with a SAFE schema
+ * (standard JSON-compatible tags only — no custom `!!` tags / no code execution)
+ * and run through a hand-written type guard before any field is exposed, and
+ * every dynamic path segment is validated against SEGMENT_RE up front
+ * (path-traversal + SSRF).
  */
 @Injectable()
 export class AiAgentRolesCatalogProvider {
@@ -38,19 +41,19 @@ export class AiAgentRolesCatalogProvider {
 
   constructor(private readonly environmentService: EnvironmentService) {}
 
-  /** Read + validate the top-level index (`index.json`). */
+  /** Read + validate the top-level index (`index.yaml`). */
   async fetchIndex(): Promise<CatalogIndex> {
-    const raw = await this.readRelative('index.json');
-    const parsed = this.parseJson(raw, 'index.json');
+    const raw = await this.readRelative('index.yaml');
+    const parsed = this.parseYaml(raw, 'index.yaml');
     if (!isCatalogIndex(parsed)) {
       throw new BadGatewayException(
-        'Agent roles catalog index is malformed (index.json)',
+        'Agent roles catalog index is malformed (index.yaml)',
       );
     }
     return parsed;
   }
 
-  /** Read + validate one language file (`bundles/<bundleId>/<language>.json`). */
+  /** Read + validate one language file (`bundles/<bundleId>/<language>.yaml`). */
   async fetchBundle(
     bundleId: string,
     language: string,
@@ -58,9 +61,9 @@ export class AiAgentRolesCatalogProvider {
     // SECURITY: validate BEFORE building any path/URL (path-traversal + SSRF).
     this.assertSegment(bundleId, 'bundleId');
     this.assertSegment(language, 'language');
-    const rel = `bundles/${bundleId}/${language}.json`;
+    const rel = `bundles/${bundleId}/${language}.yaml`;
     const raw = await this.readRelative(rel);
-    const parsed = this.parseJson(raw, rel);
+    const parsed = this.parseYaml(raw, rel);
     if (!isCatalogBundleFile(parsed)) {
       throw new BadGatewayException(
         `Agent roles catalog bundle is malformed (${rel})`,
@@ -76,15 +79,29 @@ export class AiAgentRolesCatalogProvider {
     }
   }
 
-  /** JSON.parse with a clear BadGateway on malformed content. */
-  private parseJson(raw: string, rel: string): unknown {
+  /**
+   * Safe YAML parse with a clear BadGateway on malformed content. The catalog is
+   * untrusted, so we lean on the `yaml` library's default `core` schema, which
+   * only produces JSON-compatible values (objects/arrays/strings/numbers/
+   * booleans/null) and NEVER constructs arbitrary types or runs code — there is
+   * no `!!js`-style tag handling. `strict: true` rejects duplicate keys instead
+   * of silently coercing them. (Note: in yaml@2.8.x an unknown custom tag does
+   * NOT throw even under `strict` — the parser logs a warning and resolves the
+   * node to a plain scalar; the catalog stays safe because the default schema
+   * never builds arbitrary types from a tag and our hand-written type guards
+   * reject any value of the wrong shape.) The alias-expansion guard
+   * (`maxAliasCount`) bounds billion-laughs blow-ups (the 1 MB streaming
+   * cap already limits the input itself). JSON is a YAML subset, so a leftover
+   * `.json`-style body still parses here too.
+   */
+  private parseYaml(raw: string, rel: string): unknown {
     try {
-      return JSON.parse(raw);
+      return parseYamlDoc(raw, { strict: true, maxAliasCount: 100 });
     } catch (err) {
       const reason = shortError(err);
-      this.logger.error(`Agent roles catalog JSON parse failed (${rel}): ${reason}`);
+      this.logger.error(`Agent roles catalog YAML parse failed (${rel}): ${reason}`);
       throw new BadGatewayException(
-        `Agent roles catalog file is not valid JSON (${rel}): ${reason}`,
+        `Agent roles catalog file is not valid YAML (${rel}): ${reason}`,
       );
     }
   }

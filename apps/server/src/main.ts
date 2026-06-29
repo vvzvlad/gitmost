@@ -13,6 +13,7 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyIp from 'fastify-ip';
 import { InternalLogFilter } from './common/logger/internal-log-filter';
 import { EnvironmentService } from './integrations/environment/environment.service';
+import { SANDBOX_API_PATH } from './integrations/sandbox/sandbox.constants';
 import { resolveFrameHeader } from './common/helpers';
 import { resolveTrustProxy } from './integrations/environment/trust-proxy.util';
 
@@ -126,6 +127,10 @@ async function bootstrap() {
         '/api/workspace/create',
         '/api/workspace/joined',
         '/api/workspace/find-by-email',
+        // Anonymous in-RAM blob sandbox: a remote consumer fetches blobs by an
+        // unguessable UUID without any workspace host context, so the
+        // workspace-resolution gate must not apply.
+        SANDBOX_API_PATH,
       ];
 
       if (

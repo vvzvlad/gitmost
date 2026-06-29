@@ -1,12 +1,23 @@
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
-import { AiAgentRolesCatalogProvider } from './ai-agent-roles-catalog.provider';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import {
+  AiAgentRolesCatalogProvider,
+  isCatalogBundleFile,
+  isCatalogIndex,
+  isCatalogRole,
+} from './ai-agent-roles-catalog.provider';
 
 /**
  * Provider tests against a mocked remote source (no network). They cover the
- * happy read path (fetchIndex / fetchBundle), the malformed-shape rejection,
- * rejection of non-http(s) sources (local sources are gone), and — most
- * importantly — the `^[a-z0-9-]+$` path-traversal guard that runs BEFORE any
- * path/URL is built.
+ * happy read path (fetchIndex / fetchBundle) over the YAML catalog format, the
+ * block-scalar `instructions` round-trip, the malformed-shape rejection, the
+ * malformed-YAML rejection, rejection of non-http(s) sources (local sources are
+ * gone), and — most importantly — the `^[a-z0-9-]+$` path-traversal guard that
+ * runs BEFORE any path/URL is built. Fixtures are serialized with the same
+ * `yaml` library the provider parses with (`stringifyYaml`), so the tests
+ * exercise real YAML, not the JSON subset.
  */
 describe('AiAgentRolesCatalogProvider', () => {
   function makeProvider(source: string) {
@@ -71,7 +82,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     }
 
     it('fetchBundle remote happy path => parses + validates', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         language: 'en',
         roles: [
@@ -82,7 +93,7 @@ describe('AiAgentRolesCatalogProvider', () => {
           },
         ],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -92,12 +103,12 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('fetchBundle remote malformed (role missing instructions) => BadGateway', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         language: 'fr',
         roles: [{ slug: 'researcher', name: 'Chercheur' }],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -153,8 +164,9 @@ describe('AiAgentRolesCatalogProvider', () => {
         );
       global.fetch = fetchMock as never;
       const provider = makeProvider('https://catalog.example.com');
-      // Body shape is irrelevant; an empty stream parses to invalid JSON and
-      // throws, but the fetch call (with its init) still happened.
+      // Body shape is irrelevant; an empty stream parses to an empty YAML doc
+      // (null), fails the shape guard and throws, but the fetch call (with its
+      // init) still happened.
       await expect(provider.fetchIndex()).rejects.toBeDefined();
       expect(fetchMock).toHaveBeenCalledWith(
         expect.any(String),
@@ -190,7 +202,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('small streamed body parses normally (cap not hit)', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         bundles: [
           {
@@ -201,7 +213,7 @@ describe('AiAgentRolesCatalogProvider', () => {
           },
         ],
       });
-      const body = streamOf([new TextEncoder().encode(json)]);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -227,7 +239,7 @@ describe('AiAgentRolesCatalogProvider', () => {
     });
 
     it('null body (no readable stream) => response.text() fallback parses', async () => {
-      const json = JSON.stringify({
+      const yaml = stringifyYaml({
         schemaVersion: 1,
         bundles: [
           {
@@ -240,7 +252,7 @@ describe('AiAgentRolesCatalogProvider', () => {
       });
       global.fetch = jest
         .fn()
-        .mockResolvedValue(mockResponse({ body: null, text: json })) as never;
+        .mockResolvedValue(mockResponse({ body: null, text: yaml })) as never;
       const provider = makeProvider('https://catalog.example.com');
       const index = await provider.fetchIndex();
       expect(index.bundles[0].id).toBe('general');
@@ -259,8 +271,12 @@ describe('AiAgentRolesCatalogProvider', () => {
       );
     });
 
-    it('invalid JSON body => BadGateway (parse failure)', async () => {
-      const body = streamOf([new TextEncoder().encode('{not valid json')]);
+    it('invalid YAML body => BadGateway (parse failure)', async () => {
+      // An unterminated flow mapping is not valid YAML, so YAML.parse throws and
+      // the provider maps it to BadGateway (not a generic 500).
+      const body = streamOf([
+        new TextEncoder().encode('schemaVersion: {not: closed'),
+      ]);
       global.fetch = jest
         .fn()
         .mockResolvedValue(mockResponse({ body })) as never;
@@ -270,11 +286,28 @@ describe('AiAgentRolesCatalogProvider', () => {
       );
     });
 
-    it('malformed index.json (valid JSON, wrong shape) => BadGateway', async () => {
-      // Parses as JSON but fails isCatalogIndex (schemaVersion not a number).
+    it('YAML with a duplicate key (strict) => BadGateway (parse failure)', async () => {
+      // strict:true rejects duplicate mapping keys rather than last-wins coercing
+      // them — a defensive parse on untrusted input.
       const body = streamOf([
         new TextEncoder().encode(
-          JSON.stringify({ schemaVersion: 'x', bundles: [] }),
+          'schemaVersion: 1\nbundles: []\nschemaVersion: 2\n',
+        ),
+      ]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      await expect(provider.fetchIndex()).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+    });
+
+    it('malformed index.yaml (valid YAML, wrong shape) => BadGateway', async () => {
+      // Parses as YAML but fails isCatalogIndex (schemaVersion not a number).
+      const body = streamOf([
+        new TextEncoder().encode(
+          stringifyYaml({ schemaVersion: 'x', bundles: [] }),
         ),
       ]);
       global.fetch = jest
@@ -282,6 +315,36 @@ describe('AiAgentRolesCatalogProvider', () => {
         .mockResolvedValue(mockResponse({ body })) as never;
       const provider = makeProvider('https://catalog.example.com');
       await expect(provider.fetchIndex()).rejects.toThrow(/malformed/i);
+    });
+
+    it('block-scalar instructions round-trips to the exact multi-line string', async () => {
+      // The whole point of the YAML migration: a long `instructions` prompt is
+      // stored as a literal block scalar (|-) for line-by-line diffs, and must
+      // resolve byte-for-byte to the original multi-line string.
+      const instructions = [
+        'Line one of the prompt.',
+        '',
+        '  Indented bullet that must survive.',
+        'Final line, no trailing newline.',
+      ].join('\n');
+      const yaml = stringifyYaml(
+        {
+          schemaVersion: 1,
+          language: 'en',
+          roles: [{ slug: 'researcher', name: 'Researcher', instructions }],
+        },
+        { lineWidth: 0 },
+      );
+      // Sanity: the fixture really uses a literal block scalar (|, optionally
+      // with an indentation indicator), not a flow/quoted string.
+      expect(yaml).toMatch(/instructions: \|/);
+      const body = streamOf([new TextEncoder().encode(yaml)]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockResponse({ body })) as never;
+      const provider = makeProvider('https://catalog.example.com');
+      const bundle = await provider.fetchBundle('research', 'en');
+      expect(bundle.roles[0].instructions).toBe(instructions);
     });
   });
 
@@ -303,5 +366,94 @@ describe('AiAgentRolesCatalogProvider', () => {
         ).rejects.toBeInstanceOf(BadRequestException);
       });
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pin the REAL shipped catalog files (not synthetic fixtures). The JSON->YAML
+  // migration was a hand conversion, so the realistic failure is a hand-edit
+  // error in one of the 5 content YAML files (the index + the four per-bundle/
+  // lang files: index.yaml plus bundles/{editorial,research}/{en,ru}.yaml) — a
+  // quote/colon in a description, a broken
+  // emoji/arrow, a block-scalar indent slip that silently changes or drops
+  // instructions). Nothing else in CI parses these files — `scripts/check.mjs`
+  // is not wired into any turbo/husky/CI step — so this is the only automated
+  // guard over the shipped content. We read them straight off disk, parse with
+  // the SAME options the provider uses (strict + maxAliasCount, see parseYaml in
+  // the provider), and run them through the provider's own type guards. A future
+  // edit that breaks a real file fails here.
+  // ---------------------------------------------------------------------------
+  describe('real shipped catalog files (the YAML migration must not break them)', () => {
+    // Spec lives at apps/server/src/core/ai-chat/roles/catalog/; the catalog
+    // ships at the repo root (agent-roles-catalog/) — seven levels up.
+    const CATALOG_DIR = join(
+      __dirname,
+      '../../../../../../../agent-roles-catalog',
+    );
+    // Match the provider's parseYaml exactly (untrusted-input parse options).
+    const PARSE_OPTS = { strict: true, maxAliasCount: 100 } as const;
+
+    function readCatalogYaml(rel: string): unknown {
+      return parseYaml(readFileSync(join(CATALOG_DIR, rel), 'utf8'), PARSE_OPTS);
+    }
+
+    // Load + validate the real index lazily (only when a test runs), so a broken
+    // real file fails ONLY these catalog tests — not collection of the entire
+    // spec, which also holds the unrelated mocked-remote provider tests above.
+    function loadRealIndex() {
+      const parsed = readCatalogYaml('index.yaml');
+      if (!isCatalogIndex(parsed)) {
+        throw new Error('Real index.yaml is not a valid catalog index');
+      }
+      return parsed;
+    }
+
+    it('index.yaml parses + validates with the provider guard', () => {
+      expect(isCatalogIndex(readCatalogYaml('index.yaml'))).toBe(true);
+    });
+
+    it('editorial bundle still ships the fact-checker role', () => {
+      const editorial = loadRealIndex().bundles.find((b) => b.id === 'editorial');
+      expect(editorial).toBeDefined();
+      expect(editorial?.roles.map((r) => r.slug)).toContain('fact-checker');
+    });
+
+    // Driven by the real index (read inside the test, so it's lazy): every
+    // declared bundle + language file must parse, validate, and be in EXACT slug
+    // correspondence with the index — every declared role present AND no
+    // undeclared extras — mirroring scripts/check.mjs, which requires both
+    // directions. A bundle or language added later is covered automatically.
+    it('every declared bundle/language file is valid and in exact slug correspondence', () => {
+      const index = loadRealIndex();
+      // Guard against an empty index silently passing the loops below.
+      expect(index.bundles.length).toBeGreaterThan(0);
+      for (const bundle of index.bundles) {
+        const declaredSlugs = bundle.roles.map((r) => r.slug);
+        expect(bundle.languages.length).toBeGreaterThan(0);
+        for (const lang of bundle.languages) {
+          const rel = `bundles/${bundle.id}/${lang}.yaml`;
+          const file = readCatalogYaml(rel);
+          expect(isCatalogBundleFile(file)).toBe(true);
+          // Narrow for TS and access fields safely.
+          if (!isCatalogBundleFile(file)) continue;
+          expect(file.language).toBe(lang);
+          const fileSlugs = file.roles.map((r) => r.slug);
+          // Existing direction: every declared role is present in the file.
+          for (const slug of declaredSlugs) {
+            expect(fileSlugs).toContain(slug);
+          }
+          // Symmetric direction: the file carries NO undeclared/extra roles, so
+          // file slugs and declared slugs must be the SAME set (exact match).
+          // Catches a hand-edit that copies a stray role into a bundle file.
+          expect([...fileSlugs].sort()).toEqual([...declaredSlugs].sort());
+          expect(file.roles.length).toBeGreaterThan(0);
+          for (const role of file.roles) {
+            expect(isCatalogRole(role)).toBe(true);
+            expect(typeof role.instructions).toBe('string');
+            expect(role.instructions.trim().length).toBeGreaterThan(0);
+            expect(role.name.trim().length).toBeGreaterThan(0);
+          }
+        }
+      }
+    });
   });
 });

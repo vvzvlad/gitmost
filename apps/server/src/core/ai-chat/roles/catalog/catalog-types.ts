@@ -1,7 +1,8 @@
 /**
- * Catalog wire shapes. The catalog is curated, untrusted JSON (a GitHub repo or
+ * Catalog wire shapes. The catalog is curated, untrusted YAML (a GitHub repo or
  * a local folder), so every shape is validated by a hand-written type guard in
- * the provider before any field is used — no zod / new deps on the server.
+ * the provider before any field is used — no zod on the server (YAML is parsed
+ * with the `yaml` library's safe, JSON-compatible schema).
  *
  * Localized fields (`name` / `description` at the bundle level) are
  * `Record<language, string>` so one bundle serves many UI languages; per-role
@@ -22,7 +23,7 @@ export interface CatalogRole {
   modelConfig?: Record<string, unknown> | null;
 }
 
-/** A single language file: `bundles/<id>/<language>.json`. */
+/** A single language file: `bundles/<id>/<language>.yaml`. */
 export interface CatalogBundleFile {
   schemaVersion: number;
   language: string;
@@ -40,7 +41,7 @@ export interface CatalogBundleMeta {
   roles: { slug: string; version: number }[];
 }
 
-/** Top-level catalog index: `index.json`. */
+/** Top-level catalog index: `index.yaml`. */
 export interface CatalogIndex {
   schemaVersion: number;
   bundles: CatalogBundleMeta[];

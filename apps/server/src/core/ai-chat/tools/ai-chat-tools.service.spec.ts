@@ -63,6 +63,12 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
       {} as never,
       {} as never,
       {} as never,
+      // sandboxStore: forUser() eagerly calls asSink() to wire the stash tool,
+      // even though these tests never execute it — return a no-op sink so the
+      // tool wiring in forUser() succeeds.
+      {
+        asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }),
+      } as never,
     );
   });
 
@@ -175,6 +181,12 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
       {} as never,
       {} as never,
       {} as never,
+      // sandboxStore: forUser() eagerly calls asSink() to wire the stash tool,
+      // even though these tests never execute it — return a no-op sink so the
+      // tool wiring in forUser() succeeds.
+      {
+        asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }),
+      } as never,
     );
   });
 
@@ -290,6 +302,12 @@ describe('AiChatToolsService node-arg JSON-string coercion', () => {
       {} as never,
       {} as never,
       {} as never,
+      // sandboxStore: forUser() eagerly calls asSink() to wire the stash tool,
+      // even though these tests never execute it — return a no-op sink so the
+      // tool wiring in forUser() succeeds.
+      {
+        asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }),
+      } as never,
     );
   });
 
@@ -440,6 +458,12 @@ describe('AiChatToolsService model-friendly input validation (#190)', () => {
       {} as never,
       {} as never,
       {} as never,
+      // sandboxStore: forUser() eagerly calls asSink() to wire the stash tool,
+      // even though these tests never execute it — return a no-op sink so the
+      // tool wiring in forUser() succeeds.
+      {
+        asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }),
+      } as never,
     );
   });
 

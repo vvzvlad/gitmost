@@ -15,6 +15,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Real Postgres + Redis so the server integration suite (`*.int-spec.ts`,
     # behind `pnpm --filter server test:int`) runs in CI (red-team finding #7).
     # Without it, cost-cap / FK-cascade / jsonb-round-trip / real-apply tests

@@ -16,6 +16,7 @@ import {
 import { resolveCurrentPageResult } from './current-page.util';
 import { parseNodeArg } from './parse-node-arg';
 import { modelFriendlyInput } from './model-friendly-input';
+import { SandboxStore } from '../../../integrations/sandbox/sandbox.store';
 
 /**
  * Per-user, per-request adapter that exposes Docmost READ operations to the
@@ -41,6 +42,8 @@ export class AiChatToolsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly spaceMemberRepo: SpaceMemberRepo,
     private readonly pagePermissionRepo: PagePermissionRepo,
+    // Shared singleton in-RAM blob store backing the stash tool.
+    private readonly sandboxStore: SandboxStore,
   ) {}
 
   async forUser(
@@ -86,11 +89,17 @@ export class AiChatToolsService {
         aiChatId,
       });
 
+    // Bind the stash tool to the shared in-RAM SandboxStore. The store owns the
+    // anonymous-URL composition (putAndLink) and the live/evict probes the MCP
+    // package needs to keep its mirror counts honest under FIFO eviction (the
+    // package never touches env or the store). asSink() centralizes the uri↔id
+    // mapping next to putAndLink, shared with the embedded-MCP wiring site.
     const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
     const client: DocmostClientLike = new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
+      sandbox: this.sandboxStore.asSink(),
     });
 
     // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the
@@ -623,6 +632,14 @@ export class AiChatToolsService {
       editPageText: sharedTool(
         sharedToolSpecs.editPageText,
         async ({ pageId, edits }) => await client.editPageText(pageId, edits),
+      ),
+
+      // Returns ONLY the short link object — never the document body — so a
+      // large page can be handed to an external consumer without bloating
+      // context.
+      stashPage: sharedTool(
+        sharedToolSpecs.stashPage,
+        async ({ pageId }) => await client.stashPage(pageId),
       ),
 
       patchNode: tool({

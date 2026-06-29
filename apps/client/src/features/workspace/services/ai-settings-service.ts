@@ -48,6 +48,9 @@ export interface IAiSettings {
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
   totalPages: number;
+  // True while a full workspace reindex is actively running; the counts above
+  // then reflect the live run progress (done climbs 0 -> total).
+  reindexing?: boolean;
 }
 
 // Update payload. Key semantics (same for `apiKey` and `embeddingApiKey`):

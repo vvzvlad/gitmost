@@ -3,6 +3,7 @@ import {
   Extension,
   onChangePayload,
   onLoadDocumentPayload,
+  onStatelessPayload,
   onStoreDocumentPayload,
 } from '@hocuspocus/server';
 import * as Y from 'yjs';
@@ -40,6 +41,35 @@ import {
   HISTORY_INTERVAL,
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
+
+/**
+ * #251 — wire format of the client→server stateless message that signals a
+ * deliberate page clear. The client (IntentionalClear editor extension) sends
+ * `{ type: INTENTIONAL_CLEAR_MESSAGE_TYPE }`; the document is taken from the
+ * connection, not the payload, so the signal cannot be aimed at another page.
+ */
+export const INTENTIONAL_CLEAR_MESSAGE_TYPE = 'intentional-clear';
+
+/**
+ * #251 — how long an intentional-clear signal stays "pending" before it is
+ * ignored. The signal is set on the clearing keystroke but consumed by the
+ * DEBOUNCED onStoreDocument, so the TTL must comfortably exceed the collab
+ * store debounce window (hocuspocus is configured with maxDebounce = 45s in
+ * collaboration.gateway.ts). 60s leaves a margin while keeping the window for a
+ * stale flag small; on top of the TTL, any non-empty store immediately drops a
+ * pending flag (see onStoreDocument), so a "cleared then retyped" sequence can
+ * never leave a usable flag behind.
+ *
+ * Known fail-safe limitation: the flag lives only in this node's process memory.
+ * If document ownership transfers to another node, or this node crashes/restarts,
+ * between the stateless signal (set on node A) and the debounced store, the
+ * in-memory flag is lost and the clear is silently NOT applied — the store-side
+ * empty-guard then reloads the document non-empty from the DB. This is
+ * deliberately fail-safe (a lost flag preserves content rather than destroying
+ * it), but it is a documented limitation, not a guarantee that every deliberate
+ * clear survives a node handoff.
+ */
+export const INTENTIONAL_CLEAR_TTL_MS = 60_000;
 
 /**
  * Resolve the provenance source for a coalesced snapshot.
@@ -96,6 +126,13 @@ export class PersistenceExtension implements Extension {
   // coalescing window" per document and OR it across all edits in the window,
   // so the snapshot is marked 'agent' regardless of who wrote last.
   private agentTouched: Map<string, boolean> = new Map();
+  // #251 — per-document "intentional clear pending" flags. Keyed by
+  // documentName, value = expiry timestamp (ms). Set by onStateless when the
+  // client reports a deliberate clear; consumed once by the next
+  // onStoreDocument empty-guard branch. This is the per-EDIT channel the
+  // per-connection context cannot provide (a clear is an edit event, but the
+  // store is debounced and connection context is fixed at authentication).
+  private intentionalClear: Map<string, number> = new Map();
 
   constructor(
     private readonly pageRepo: PageRepo,
@@ -180,6 +217,19 @@ export class PersistenceExtension implements Extension {
       this.consumeAgentTouched(documentName),
       context?.actor,
     );
+    // #251 — consume the intentional-clear flag ONCE, BEFORE the retry loop
+    // (like consumeContributors / consumeAgentTouched above). consumeIntentional-
+    // Clear ALWAYS deletes the in-memory Map entry, but a tx rollback cannot
+    // un-delete it. Calling it INSIDE the loop meant: a clear armed for attempt 1
+    // was consumed there, attempt 1's updatePage threw a transient error and
+    // rolled back, then attempt 2 re-read non-empty content and saw the flag
+    // already gone — silently downgrading the retry into a BLOCKED write, so the
+    // user's deliberate clear was dropped. Hoisting makes the decision stable
+    // across every attempt. This single call also preserves the "a non-empty
+    // store drops a pending flag" semantics (the cleared-then-retyped case):
+    // every store consumes the flag here regardless of incoming emptiness, so a
+    // subsequent non-empty store can never leave a usable flag behind.
+    const allowIntentionalClear = this.consumeIntentionalClear(documentName);
 
     // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
     // of the latest edit until this hook returns: hocuspocus destroys/unloads the
@@ -210,33 +260,44 @@ export class PersistenceExtension implements Extension {
             return;
           }
 
-          // #206 persist-6 — store-side empty-guard. A momentarily-empty live
-          // Y.Doc (a client/agent glitch, a bad merge, a transclusion that
+          // #206 persist-6 / #248 — store-side empty-guard. A momentarily-empty
+          // live Y.Doc (a client/agent glitch, a bad merge, a transclusion that
           // emptied) must NOT overwrite non-empty persisted content. The LOAD
           // path already guards emptiness (onLoadDocument only hydrates from db
           // when the live doc isEmpty); the STORE path did not, so an empty
           // serialization was written straight over the page, wiping it
-          // silently. Skip the write when the incoming doc is an empty
-          // paragraph doc AND the stored page is non-empty. New/empty pages are
-          // unaffected (stored content is already empty), and an unchanged doc
-          // was already short-circuited above.
+          // silently.
           //
-          // This unconditionally blocks empty-over-non-empty: a deliberate
-          // select-all + delete is currently indistinguishable from a glitch at
-          // this layer, so data-loss prevention wins. A real intentional-clear
-          // UX (a distinct signal threaded from the client) is tracked in issue
-          // #251; do not re-add an escape hatch here without that signal.
+          // #251 — the ONE legitimate empty-over-non-empty write is a user who
+          // deliberately clears the page. That intent arrives out-of-band as a
+          // stateless message, NOT from the doc content, which is why it cannot
+          // be spoofed for non-clear writes: the flag is only ever read on this
+          // empty-incoming branch, so the worst a forged signal can do is clear
+          // a page the connection may already edit. The flag was consumed ONCE
+          // before the retry loop (`allowIntentionalClear`) so the decision is
+          // stable across retries; a non-empty store still drops any pending
+          // flag via that same hoisted consume (a "cleared then retyped"
+          // sequence can't leave a usable one behind).
+          const incomingEmpty = isEmptyParagraphDoc(tiptapJson as any);
           if (
-            isEmptyParagraphDoc(tiptapJson as any) &&
+            incomingEmpty &&
             page.content &&
             !isEmptyParagraphDoc(page.content as any)
           ) {
-            this.logger.warn(
-              `Skipping store for ${pageId}: empty live doc would overwrite ` +
-                `non-empty persisted content`,
-            );
-            page = null;
-            return;
+            if (allowIntentionalClear) {
+              this.logger.debug(
+                `Intentional clear for ${pageId}: persisting empty doc over ` +
+                  `non-empty content (user-signalled)`,
+              );
+              // fall through — the empty write is allowed exactly once.
+            } else {
+              this.logger.warn(
+                `Skipping store for ${pageId}: empty live doc would overwrite ` +
+                  `non-empty persisted content`,
+              );
+              page = null;
+              return;
+            }
           }
 
           let contributorIds = undefined;
@@ -374,6 +435,37 @@ export class PersistenceExtension implements Extension {
     }
   }
 
+  /**
+   * #251 — receive the client's deliberate-clear signal. Records a short-lived,
+   * single-use pending flag for the originating document so the next
+   * onStoreDocument may let one empty-over-non-empty write through the guard.
+   *
+   * Hardening: read-only connections cannot arm the flag, and the document is
+   * taken from the connection (`data.documentName`), never the payload, so a
+   * client cannot target a page it isn't editing. The flag only ever RELAXES
+   * the guard for an empty write (a clear); it can never force or alter a
+   * non-empty write, so it is not a guard bypass for normal content.
+   */
+  async onStateless(data: onStatelessPayload) {
+    const { connection, documentName, payload } = data;
+
+    if (connection?.readOnly) return;
+
+    let message: { type?: string } | undefined;
+    try {
+      message = JSON.parse(payload);
+    } catch {
+      return; // unrelated / malformed stateless message
+    }
+
+    if (message?.type !== INTENTIONAL_CLEAR_MESSAGE_TYPE) return;
+
+    this.intentionalClear.set(
+      documentName,
+      Date.now() + INTENTIONAL_CLEAR_TTL_MS,
+    );
+  }
+
   async onChange(data: onChangePayload) {
     const documentName = data.documentName;
     const userId = data.context?.user?.id;
@@ -397,6 +489,7 @@ export class PersistenceExtension implements Extension {
     const documentName = data.documentName;
     this.contributors.delete(documentName);
     this.agentTouched.delete(documentName);
+    this.intentionalClear.delete(documentName);
   }
 
   private consumeContributors(documentName: string): string[] {
@@ -412,6 +505,18 @@ export class PersistenceExtension implements Extension {
     const touched = this.agentTouched.get(documentName) ?? false;
     this.agentTouched.delete(documentName);
     return touched;
+  }
+
+  /**
+   * #251 — read and clear the intentional-clear flag for this document. Returns
+   * true only if a flag was pending AND still within its TTL. Always deletes the
+   * entry so the signal is strictly single-use (one clear → one allowed empty
+   * write); an expired flag is treated as absent (guard still blocks).
+   */
+  private consumeIntentionalClear(documentName: string): boolean {
+    const expiry = this.intentionalClear.get(documentName);
+    this.intentionalClear.delete(documentName);
+    return expiry !== undefined && Date.now() < expiry;
   }
 
   private async enqueuePageHistory(

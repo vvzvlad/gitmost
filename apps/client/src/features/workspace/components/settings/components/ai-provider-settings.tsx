@@ -37,6 +37,7 @@ import {
 } from "@/features/workspace/queries/ai-settings-query.ts";
 import {
   AiTestCapability,
+  IAiSettings,
   IAiSettingsUpdate,
   SttApiStyle,
   ChatApiStyle,
@@ -169,6 +170,73 @@ export function resolveKeyField(
   return { set: false };
 }
 
+// Subset of the status payload that drives the reindex poll decisions.
+type ReindexStatus = Pick<
+  IAiSettings,
+  "reindexing" | "indexedPages" | "totalPages"
+>;
+
+/**
+ * Decide the TanStack Query `refetchInterval` while a reindex may be running.
+ * Returns the poll interval (ms) to keep polling, or `false` to stop.
+ *
+ * Polls while the server reports an ACTIVE run (`reindexing === true`) OR we are
+ * still within the deadline window and not yet fully indexed. Stops once the run
+ * has finished AND everything is indexed (server cleared its progress record and
+ * fell back to the DB coverage count), or the deadline cap is hit — the cap
+ * always wins so a stuck/never-clearing progress record can't poll forever.
+ */
+export function nextReindexPollInterval(args: {
+  deadline: number | null;
+  now: number;
+  intervalMs: number;
+  status?: ReindexStatus;
+}): number | false {
+  const { deadline, now, intervalMs, status } = args;
+  if (deadline === null) return false;
+  // Cap always wins.
+  if (now > deadline) return false;
+  // Active run → keep polling even if the momentary counts already look full.
+  if (status?.reindexing) return intervalMs;
+  // Finished and fully indexed (incl. an empty workspace, 0 >= 0) → stop. Reuse
+  // isReindexComplete so the completeness check lives in exactly one place.
+  if (isReindexComplete(status)) return false;
+  // Within the deadline and not yet done → keep polling.
+  return intervalMs;
+}
+
+/**
+ * Whether the reindex poll deadline should be cleared: the server reports no
+ * active run AND the count is complete. The single source of truth for the
+ * "reindex finished" check — `nextReindexPollInterval` reuses it for its stop
+ * condition (sans the cap, which the effect handles via time).
+ */
+export function isReindexComplete(status?: ReindexStatus): boolean {
+  return (
+    !!status && !status.reindexing && status.indexedPages >= status.totalPages
+  );
+}
+
+/**
+ * Whether the reindex button should show its spinner (and stay disabled).
+ *
+ * Spins while the POST is in flight, and for the WHOLE background run while the
+ * server reports `reindexing === true`. The `deadline !== null` gate is the
+ * load-bearing part: once the 120s poll cap fires it nulls `reindexDeadline`
+ * and stops refetching, so `status` (settings?.reindexing) can be a stale
+ * `true` from the last poll. Without the gate the spinner would stick forever
+ * for a run that outlives the cap and block a restart; gating on the active
+ * poll window clears it so the admin can re-trigger.
+ */
+export function isReindexButtonLoading(args: {
+  mutationPending: boolean;
+  deadline: number | null;
+  status?: boolean;
+}): boolean {
+  const { mutationPending, deadline, status } = args;
+  return mutationPending || (deadline !== null && status === true);
+}
+
 // Translate the dot's tooltip label. Kept in one place so all three endpoint
 // cards share identical wording.
 function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
@@ -215,31 +283,34 @@ export default function AiProviderSettings() {
   // PRE-job counts immediately, so the only way the "Indexed X of Y" counter
   // visibly climbs is to keep polling the settings query while the job runs.
   // `reindexDeadline` is the timestamp until which we poll (set on reindex
-  // success); polling stops early once indexed === total. Bounded so a stuck
-  // job can never poll forever.
-  const REINDEX_POLL_INTERVAL = 3000; // ms between refetches while indexing
+  // success). Polling tracks the server's `reindexing` flag: it keeps going for
+  // the whole active run and stops promptly once the server reports the run is
+  // finished. Bounded by the cap so a stuck/never-clearing progress record can
+  // never poll forever.
+  const REINDEX_POLL_INTERVAL = 5000; // ms between refetches while indexing
   const REINDEX_POLL_CAP_MS = 120000; // ~2 min hard cap
   const [reindexDeadline, setReindexDeadline] = useState<number | null>(null);
 
   // Only admins may read the (masked) AI settings; the server enforces this too.
-  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) => {
-    if (reindexDeadline === null) return false;
-    // Past the cap → stop polling (cleared via the effect below too).
-    if (Date.now() > reindexDeadline) return false;
-    const data = query.state.data;
-    // Stop once everything is indexed; otherwise keep polling.
-    if (data && data.indexedPages >= data.totalPages) return false;
-    return REINDEX_POLL_INTERVAL;
-  });
+  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) =>
+    nextReindexPollInterval({
+      deadline: reindexDeadline,
+      now: Date.now(),
+      intervalMs: REINDEX_POLL_INTERVAL,
+      status: query.state.data,
+    }),
+  );
 
-  // Stop polling once the work is done or the cap is reached. Also clears on
+  // Stop polling once the run is finished or the cap is reached. Also clears on
   // unmount because the deadline state goes away with the component.
   useEffect(() => {
     if (reindexDeadline === null) return;
-    // "Done" matches the refetchInterval stop condition (indexed >= total),
-    // including an empty workspace (0 >= 0), so the deadline clears promptly
-    // instead of waiting out the cap.
-    if (settings && settings.indexedPages >= settings.totalPages) {
+    // "Done" matches the refetchInterval stop condition: the server reports no
+    // active run AND the count is complete (indexed >= total, incl. an empty
+    // workspace 0 >= 0), so the deadline clears promptly instead of waiting out
+    // the cap. While `reindexing` is still true we keep the deadline so polling
+    // continues for the whole run.
+    if (isReindexComplete(settings)) {
       setReindexDeadline(null);
       return;
     }
@@ -1031,7 +1102,17 @@ export default function AiProviderSettings() {
             <Button
               variant="subtle"
               size="compact-sm"
-              loading={reindexMutation.isPending}
+              // Spin for the WHOLE run: the POST resolves immediately, but the
+              // background job keeps running, so also stay loading while the
+              // server reports `reindexing` (this also blocks a redundant
+              // re-trigger mid-run; the server de-dupes regardless). The
+              // deadline gate (and why it matters post-cap) lives in
+              // `isReindexButtonLoading`, which is unit-tested.
+              loading={isReindexButtonLoading({
+                mutationPending: reindexMutation.isPending,
+                deadline: reindexDeadline,
+                status: settings?.reindexing,
+              })}
               onClick={() =>
                 reindexMutation.mutate(undefined, {
                   // Begin bounded polling so the counter climbs as the async

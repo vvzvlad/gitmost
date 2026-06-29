@@ -8,6 +8,8 @@ import {
   closeIds,
   mergeRootTrees,
   loadedOpenBranchIds,
+  sortPositionKeys,
+  pageToTreeNode,
 } from "./utils";
 import type { IPage } from "@/features/page/types/page.types.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -59,6 +61,82 @@ function treeNode(id: string, children: SpaceTreeNode[] = []): SpaceTreeNode {
     children,
   };
 }
+
+describe("sortPositionKeys", () => {
+  it("orders items ascending by their fractional `position` string", () => {
+    const items = [
+      { id: "c", position: "a5" },
+      { id: "a", position: "a1" },
+      { id: "b", position: "a3" },
+    ];
+    expect(sortPositionKeys(items).map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("is a stable sort: equal positions keep their input order", () => {
+    const items = [
+      { id: "x", position: "a1" },
+      { id: "y", position: "a1" },
+      { id: "z", position: "a1" },
+    ];
+    expect(sortPositionKeys(items).map((i) => i.id)).toEqual(["x", "y", "z"]);
+  });
+});
+
+describe("pageToTreeNode", () => {
+  function pageRow(over: Partial<IPage> = {}): IPage {
+    return {
+      id: "p1",
+      slugId: "slug-p1",
+      title: "My Page",
+      icon: "📄",
+      position: "a1",
+      hasChildren: true,
+      spaceId: "space-1",
+      parentPageId: null as unknown as string,
+      ...over,
+    } as IPage;
+  }
+
+  it("maps page.title -> node.name and copies the core fields", () => {
+    const node = pageToTreeNode(pageRow());
+    // The non-trivial transform: a page's `title` becomes the tree node's `name`.
+    expect(node.name).toBe("My Page");
+    expect(node.id).toBe("p1");
+    expect(node.slugId).toBe("slug-p1");
+    expect(node.icon).toBe("📄");
+    expect(node.position).toBe("a1");
+    expect(node.spaceId).toBe("space-1");
+    expect(node.hasChildren).toBe(true);
+    // Always materialized with an empty children array.
+    expect(node.children).toEqual([]);
+  });
+
+  it("derives canEdit from page.permissions.canEdit when the flat field is absent", () => {
+    const node = pageToTreeNode(
+      pageRow({ canEdit: undefined, permissions: { canEdit: true } } as Partial<IPage>),
+    );
+    expect(node.canEdit).toBe(true);
+  });
+
+  it("prefers the flat page.canEdit over permissions.canEdit", () => {
+    const node = pageToTreeNode(
+      pageRow({ canEdit: false, permissions: { canEdit: true } } as Partial<IPage>),
+    );
+    expect(node.canEdit).toBe(false);
+  });
+
+  it("carries temporaryExpiresAt straight off the page", () => {
+    const expiresAt = "2026-06-27T21:00:00.000Z";
+    expect(pageToTreeNode(pageRow({ temporaryExpiresAt: expiresAt })).temporaryExpiresAt).toBe(
+      expiresAt,
+    );
+  });
+
+  it("applies overrides on top of the mapped fields (e.g. optimistic blank name)", () => {
+    const node = pageToTreeNode(pageRow(), { name: "" });
+    expect(node.name).toBe("");
+  });
+});
 
 describe("buildTree", () => {
   it("builds one node per unique page", () => {

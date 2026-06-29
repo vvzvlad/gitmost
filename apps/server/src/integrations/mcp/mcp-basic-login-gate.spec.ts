@@ -109,13 +109,13 @@ function makeService(opts: {
   };
 
   const service = new McpService(
-    undefined as never, // environmentService
     undefined as never, // workspaceRepo
     undefined as never, // authService
     undefined as never, // tokenService
     undefined as never, // userRepo
     undefined as never, // userSessionRepo
     moduleRef as never, // moduleRef (read by the MFA branch)
+    undefined as never, // sandboxStore (unused by the login-gate path)
   );
   // Stop the constructor's unref'd sweep timer leaking across tests.
   service.onModuleDestroy();

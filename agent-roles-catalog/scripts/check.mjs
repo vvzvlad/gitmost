@@ -8,6 +8,14 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+// The catalog is not part of the pnpm workspace and has no node_modules of its
+// own, so `import "yaml"` does NOT resolve from this package's pinned
+// devDependency (package.json lists `yaml` only to document the version). Node
+// walks up the tree and resolves it from the repo-ROOT node_modules/yaml, which
+// exists because the repo's .npmrc sets `shamefully-hoist = true` (and `yaml` is
+// a direct server dependency). Run this script from a checkout where the root
+// deps are installed.
+import YAML from "yaml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const catalogDir = join(__dirname, "..");
@@ -23,6 +31,21 @@ const lockPath = join(__dirname, "content-hashes.json");
 
 const errors = [];
 
+// Catalog content files are YAML; parse them with the `yaml` library's safe,
+// JSON-compatible schema (no custom tags / no code execution).
+function readYaml(path) {
+  try {
+    return YAML.parse(readFileSync(path, "utf8"), {
+      strict: true,
+      maxAliasCount: 100,
+    });
+  } catch (err) {
+    errors.push(`Cannot read/parse ${path}: ${err.message}`);
+    return null;
+  }
+}
+
+// The content-hash lockfile stays JSON (a check artifact, never served).
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -32,13 +55,13 @@ function readJson(path) {
   }
 }
 
-const indexPath = join(catalogDir, "index.json");
+const indexPath = join(catalogDir, "index.yaml");
 if (!existsSync(indexPath)) {
-  console.error(`Missing index.json at ${indexPath}`);
+  console.error(`Missing index.yaml at ${indexPath}`);
   process.exit(1);
 }
 
-const index = readJson(indexPath);
+const index = readYaml(indexPath);
 if (!index) {
   for (const e of errors) console.error(e);
   process.exit(1);
@@ -46,7 +69,7 @@ if (!index) {
 
 const bundles = Array.isArray(index.bundles) ? index.bundles : [];
 if (bundles.length === 0) {
-  errors.push("index.json has no bundles[]");
+  errors.push("index.yaml has no bundles[]");
 }
 
 // Track every slug seen across the whole catalog to detect duplicates.
@@ -55,7 +78,7 @@ const slugSeen = new Map(); // slug -> "bundleId/lang"
 for (const bundle of bundles) {
   const bundleId = bundle.id;
   if (!bundleId) {
-    errors.push("A bundle in index.json is missing an id");
+    errors.push("A bundle in index.yaml is missing an id");
     continue;
   }
 
@@ -63,7 +86,7 @@ for (const bundle of bundles) {
   // Duplicate slugs inside the bundle index roles[].
   const indexSlugSet = new Set(indexSlugs);
   if (indexSlugSet.size !== indexSlugs.length) {
-    errors.push(`Bundle "${bundleId}" index.json roles[] contains duplicate slugs`);
+    errors.push(`Bundle "${bundleId}" index.yaml roles[] contains duplicate slugs`);
   }
 
   // Each index role must carry a finite numeric "version". The server requires
@@ -72,7 +95,7 @@ for (const bundle of bundles) {
   for (const r of bundle.roles || []) {
     if (typeof r.version !== "number" || !Number.isFinite(r.version)) {
       errors.push(
-        `Bundle "${bundleId}" index.json role "${r.slug}" is missing a numeric "version"`
+        `Bundle "${bundleId}" index.yaml role "${r.slug}" is missing a numeric "version"`
       );
     }
   }
@@ -83,13 +106,13 @@ for (const bundle of bundles) {
   }
 
   for (const lang of languages) {
-    const langPath = join(catalogDir, "bundles", bundleId, `${lang}.json`);
+    const langPath = join(catalogDir, "bundles", bundleId, `${lang}.yaml`);
     if (!existsSync(langPath)) {
       errors.push(`Bundle "${bundleId}" declares language "${lang}" but ${langPath} is missing`);
       continue;
     }
 
-    const langFile = readJson(langPath);
+    const langFile = readYaml(langPath);
     if (!langFile) continue;
 
     const roles = Array.isArray(langFile.roles) ? langFile.roles : [];
@@ -112,12 +135,12 @@ for (const bundle of bundles) {
     const extraInFile = fileSlugs.filter((s) => !indexSlugSet.has(s));
     if (missingInFile.length > 0) {
       errors.push(
-        `Bundle "${bundleId}/${lang}" is missing roles declared in index.json: ${missingInFile.join(", ")}`
+        `Bundle "${bundleId}/${lang}" is missing roles declared in index.yaml: ${missingInFile.join(", ")}`
       );
     }
     if (extraInFile.length > 0) {
       errors.push(
-        `Bundle "${bundleId}/${lang}" has roles not declared in index.json: ${extraInFile.join(", ")}`
+        `Bundle "${bundleId}/${lang}" has roles not declared in index.yaml: ${extraInFile.join(", ")}`
       );
     }
 
@@ -149,7 +172,7 @@ for (const bundle of bundles) {
 // (scripts/content-hashes.json) mapping each role slug to its recorded
 // { version, hash }. On every run we recompute each role's content hash and
 // compare it against the lock; a content change is only allowed once the role's
-// version in index.json has been bumped and the lock refreshed.
+// version in index.yaml has been bumped and the lock refreshed.
 //
 // Known, accepted limitation: a deliberate prune-then-readd of a slug (remove
 // the role and run --update-hashes, then re-add it with changed content at the
@@ -158,7 +181,7 @@ for (const bundle of bundles) {
 // ---------------------------------------------------------------------------
 
 // Content fields hashed for each role, in a fixed canonical order. `slug` is
-// identity (not content) and `version` lives in index.json, so neither is here.
+// identity (not content) and `version` lives in index.yaml, so neither is here.
 // `modelConfig` (an OPTIONAL role field the server also serves) is intentionally
 // EXCLUDED: no shipped role uses it today, and being an object it would need a
 // deterministic deep canonicalization (recursive key sort) before hashing —
@@ -187,20 +210,20 @@ function collectCatalogRoles() {
       if (!out.has(r.slug)) {
         out.set(r.slug, { version: r.version, langRoles: new Map() });
       } else {
-        // Same slug declared twice in index.json roles[]; already flagged above.
+        // Same slug declared twice in index.yaml roles[]; already flagged above.
         out.get(r.slug).version = r.version;
       }
     }
     for (const lang of languages) {
-      const langPath = join(catalogDir, "bundles", bundleId, `${lang}.json`);
+      const langPath = join(catalogDir, "bundles", bundleId, `${lang}.yaml`);
       if (!existsSync(langPath)) continue;
-      const langFile = readJson(langPath);
+      const langFile = readYaml(langPath);
       if (!langFile) continue;
       const roles = Array.isArray(langFile.roles) ? langFile.roles : [];
       for (const role of roles) {
         if (!role || !role.slug) continue;
         const entry = out.get(role.slug);
-        if (!entry) continue; // role not declared in index.json; flagged above.
+        if (!entry) continue; // role not declared in index.yaml; flagged above.
         entry.langRoles.set(lang, role);
       }
     }
@@ -253,11 +276,11 @@ if (updateHashes) {
     // missing numeric version, but guard here too before comparing.
     if (typeof cur.version !== "number" || !Number.isFinite(cur.version)) {
       blockers.push(
-        `role "${slug}" content changed but its index.json "version" is missing or not numeric; set a numeric "version" before refreshing the lock`
+        `role "${slug}" content changed but its index.yaml "version" is missing or not numeric; set a numeric "version" before refreshing the lock`
       );
     } else if (cur.version <= prev.version) {
       blockers.push(
-        `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.json before refreshing the lock`
+        `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.yaml before refreshing the lock`
       );
     }
   }
@@ -309,10 +332,10 @@ for (const [slug, cur] of current) {
     continue;
   }
   if (cur.hash === prev.hash) {
-    // Content unchanged; the lock version must still agree with index.json.
+    // Content unchanged; the lock version must still agree with index.yaml.
     if (cur.version !== prev.version) {
       errors.push(
-        `role "${slug}" content is unchanged but its index.json version (${cur.version}) differs from the lock (${prev.version}); run: node scripts/check.mjs --update-hashes`
+        `role "${slug}" content is unchanged but its index.yaml version (${cur.version}) differs from the lock (${prev.version}); run: node scripts/check.mjs --update-hashes`
       );
     }
     continue;
@@ -323,11 +346,11 @@ for (const [slug, cur] of current) {
   // (and we avoid a misleading "version bumped to undefined" message).
   if (typeof cur.version !== "number" || !Number.isFinite(cur.version)) {
     errors.push(
-      `role "${slug}" content changed but its index.json "version" is missing or not numeric; set a numeric "version", then run: node scripts/check.mjs --update-hashes`
+      `role "${slug}" content changed but its index.yaml "version" is missing or not numeric; set a numeric "version", then run: node scripts/check.mjs --update-hashes`
     );
   } else if (cur.version <= prev.version) {
     errors.push(
-      `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.json, then run: node scripts/check.mjs --update-hashes`
+      `role "${slug}" content changed but its version was not bumped (still ${prev.version}); bump "version" in index.yaml, then run: node scripts/check.mjs --update-hashes`
     );
   } else {
     errors.push(

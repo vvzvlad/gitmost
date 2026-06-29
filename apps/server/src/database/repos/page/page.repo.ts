@@ -12,6 +12,7 @@ import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagin
 import { validate as isValidUUID } from 'uuid';
 import { ExpressionBuilder, sql } from 'kysely';
 import { DB } from '@docmost/db/types/db';
+import { DbInterface } from '@docmost/db/types/db.interface';
 import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -233,9 +234,9 @@ export class PageRepo {
    * text-less pages (which legitimately store zero embeddings) don't keep the
    * bar below 100% forever.
    *
-   * A page qualifies if it has non-empty textContent OR already has stored
-   * embeddings. The second clause covers pages whose text the indexer extracted
-   * from the content JSON when textContent was null, and guarantees this total is
+   * A page qualifies if it has non-empty textContent, OR its content JSON has at
+   * least one text node (`"type":"text"`) when textContent was never backfilled,
+   * OR it already has stored embeddings. The last clause guarantees this total is
    * always >= countIndexedPages (the indexed count can never exceed it).
    */
   async countEmbeddablePages(workspaceId: string): Promise<number> {
@@ -243,37 +244,91 @@ export class PageRepo {
       .selectFrom('pages as p')
       .where('p.workspaceId', '=', workspaceId)
       .where('p.deletedAt', 'is', null)
-      .where((eb) =>
-        eb.or([
-          // Has extractable body text. The regex matches any non-whitespace
-          // character, mirroring the indexer's `text.trim().length === 0` check
-          // (raw SQL -> use the snake_case column name).
-          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
-          // OR already has at least one (non-deleted) embedding row.
-          eb.exists(
-            eb
-              .selectFrom('pageEmbeddings as pe')
-              .select(sql`1`.as('one'))
-              .whereRef('pe.pageId', '=', 'p.id')
-              .where('pe.deletedAt', 'is', null),
-          ),
-        ]),
-      )
+      .where((eb) => this.embeddablePredicate(eb))
       .select((eb) => eb.fn.countAll().as('count'))
       .executeTakeFirst();
     return Number(row?.count ?? 0);
   }
 
   /**
-   * IDs of all non-deleted pages in a workspace. Used by the RAG bulk reindex to
-   * (re)build embeddings for every existing page.
+   * The "embeddable content" qualifying predicate, shared verbatim by
+   * countEmbeddablePages (the steady-state denominator) and getEmbeddablePageIds
+   * (the set the bulk reindex iterates). Both MUST use the exact same condition
+   * or the live total and steady-state total diverge — extracting it here is what
+   * guarantees that, replacing the previous hand-duplicated copy. Callers supply
+   * the trivial workspaceId/deletedAt filters inline; this returns only the
+   * non-trivial OR clause, evaluated against the `p` alias of `pages`.
+   *
+   * A page qualifies if it has non-empty textContent, OR its ProseMirror
+   * `content` JSON has at least one text node (`"type":"text"`) even though
+   * textContent was never backfilled, OR it already has a stored (non-deleted)
+   * embedding row.
    */
-  async getIdsByWorkspace(workspaceId: string): Promise<string[]> {
+  private embeddablePredicate(
+    eb: ExpressionBuilder<DbInterface & { p: DbInterface['pages'] }, 'p'>,
+  ) {
+    return eb.or([
+      // Has extractable body text. The regex matches any non-whitespace
+      // character, mirroring the indexer's `text.trim().length === 0` check
+      // (raw SQL -> use the snake_case column name).
+      sql<boolean>`p.text_content ~ '[^[:space:]]'`,
+      // OR the ProseMirror `content` JSON has at least one text node (`"type":
+      // "text"`) the indexer can extract, even when `text_content` is null/empty
+      // (never backfilled): `reindexPage` runs `jsonToText` (generateText) over
+      // `content`, which only emits the text of ProseMirror text nodes, so such a
+      // page IS embeddable and a full reindex MUST visit it (otherwise it is
+      // silently skipped). A text node always serialises as
+      // `{"type":"text","text":"..."}`, so we key on the structural `"type":
+      // "text"` marker — NOT a bare `"text":` key, which also appears as the
+      // `attrs.text` of atom nodes that carry NO extractable text (e.g. math
+      // `mathBlock`/`mathInline`, whose LaTeX lives in `attrs.text` and has no
+      // text serializer). A math-only page thus produces empty `text_content` and
+      // zero embeddings; matching its `attrs.text` here would wrongly inflate the
+      // denominator and keep "Indexed N of M" below 100% forever. An empty doc
+      // (no text nodes) has no `"type":"text"` and is correctly excluded. A user
+      // who literally types `"type":"text"` in their prose can't false-positive:
+      // in `content::text` that text value's quotes are escaped (`\"type\"...`),
+      // so the literal-quote regex won't match the escaped form (and such a page
+      // is a real text node anyway).
+      sql<boolean>`p.content::text ~ '"type"[[:space:]]*:[[:space:]]*"text"'`,
+      // OR already has at least one (non-deleted) embedding row.
+      eb.exists(
+        eb
+          .selectFrom('pageEmbeddings as pe')
+          .select(sql`1`.as('one'))
+          .whereRef('pe.pageId', '=', 'p.id')
+          .where('pe.deletedAt', 'is', null),
+      ),
+    ]);
+  }
+
+  /**
+   * IDs of the EMBEDDABLE page set for a workspace — the exact same set that
+   * `countEmbeddablePages` counts (a page qualifies if it has non-empty
+   * textContent, OR content JSON with at least one text node (`"type":"text"`)
+   * and an empty/null textContent, OR already has a stored embedding row). The
+   * bulk reindex
+   * iterates THIS set so the live "done" counter reaches exactly
+   * `countEmbeddablePages` (the steady-state denominator), instead of iterating
+   * every non-deleted page (which would push the denominator above the
+   * steady-state value mid-run).
+   *
+   * IMPORTANT: the qualifying WHERE is shared with `countEmbeddablePages` via the
+   * private `embeddablePredicate` helper, so the two can no longer drift — if the
+   * embeddable definition changes, change it once there and both stay in lockstep
+   * (else the live total and steady-state total diverge again). Dropping
+   * text-less pages is correct: `reindexPage` no-ops on
+   * a page with no extractable content anyway, and a page that lost its text but
+   * still has stale embeddings IS in this set (the EXISTS clause), so it is still
+   * visited and its stale rows are cleared.
+   */
+  async getEmbeddablePageIds(workspaceId: string): Promise<string[]> {
     const rows = await this.db
-      .selectFrom('pages')
-      .select('id')
-      .where('workspaceId', '=', workspaceId)
-      .where('deletedAt', 'is', null)
+      .selectFrom('pages as p')
+      .select('p.id')
+      .where('p.workspaceId', '=', workspaceId)
+      .where('p.deletedAt', 'is', null)
+      .where((eb) => this.embeddablePredicate(eb))
       .execute();
     return rows.map((r) => r.id);
   }
