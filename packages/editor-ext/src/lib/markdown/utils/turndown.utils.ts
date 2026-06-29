@@ -12,14 +12,6 @@ function sanitizeMdLinkText(value: string): string {
     .replace(/[\r\n]+/g, ' ');
 }
 
-// Escape a value placed inside a double-quoted HTML attribute (img src/alt/
-// data-caption in the raw-HTML image fallback). Only & and " are special in
-// that context; escaping them is idempotent because parse5/marked decode them
-// back on re-import.
-function escapeHtmlAttr(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-}
-
 // Tags turndown treats as void (self-closing). Footnote references render as an
 // empty <sup data-footnote-ref> whose meaning lives entirely in its data-id;
 // without marking it void, turndown's blank-node removal drops it before our
