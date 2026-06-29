@@ -33,6 +33,11 @@ export class CollaborationGateway {
   // @ts-ignore
   private readonly redisSync: RedisSyncExtension<CollabEventHandlers> | null =
     null;
+  // Source ioredis client that RedisSyncExtension duplicates into its pub/sub
+  // pair. The extension's onDestroy only disconnects those duplicates, so we
+  // keep a reference here and disconnect the source ourselves on shutdown
+  // (otherwise the socket leaks and jest never exits in e2e).
+  private redisClient: RedisClient | null = null;
   private readonly withRedis: boolean;
 
   constructor(
@@ -57,16 +62,17 @@ export class CollaborationGateway {
     });
 
     if (this.withRedis) {
+      this.redisClient = new RedisClient({
+        host: this.redisConfig.host,
+        port: this.redisConfig.port,
+        password: this.redisConfig.password,
+        db: this.redisConfig.db,
+        family: this.redisConfig.family,
+        retryStrategy: createRetryStrategy(),
+      });
       // @ts-ignore
       this.redisSync = new RedisSyncExtension({
-        redis: new RedisClient({
-          host: this.redisConfig.host,
-          port: this.redisConfig.port,
-          password: this.redisConfig.password,
-          db: this.redisConfig.db,
-          family: this.redisConfig.family,
-          retryStrategy: createRetryStrategy(),
-        }),
+        redis: this.redisClient,
         serverId: `collab-${os?.hostname()}-${nanoid(10)}`,
         prefix: 'collab',
         pack,
@@ -184,5 +190,10 @@ export class CollaborationGateway {
     });
 
     await this.hocuspocus.hooks('onDestroy', { instance: this.hocuspocus });
+
+    // RedisSyncExtension.onDestroy (run via the hook above) disconnects only the
+    // duplicated pub/sub clients; the source client created here is ours to close.
+    this.redisClient?.disconnect();
+    this.redisClient = null;
   }
 }
