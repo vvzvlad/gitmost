@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { ServerOptions } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
@@ -9,6 +10,7 @@ import {
 } from '../../common/helpers';
 
 export class WsRedisIoAdapter extends IoAdapter {
+  private readonly logger = new Logger(WsRedisIoAdapter.name);
   private adapterConstructor: ReturnType<typeof createAdapter>;
   private redisConfig: RedisConfig;
   private pubClient: Redis;
@@ -25,8 +27,8 @@ export class WsRedisIoAdapter extends IoAdapter {
     const pubClient = new Redis(process.env.REDIS_URL, options);
     const subClient = new Redis(process.env.REDIS_URL, options);
 
-    pubClient.on('error', (err) => () => {});
-    subClient.on('error', (err) => () => {});
+    pubClient.on('error', (err) => this.logger.error('socket.io redis pub client error', err));
+    subClient.on('error', (err) => this.logger.error('socket.io redis sub client error', err));
 
     // Hold references so the pub/sub connections can be torn down on shutdown
     // (see dispose()); otherwise these ioredis sockets leak as active handles.
