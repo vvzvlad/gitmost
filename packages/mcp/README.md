@@ -16,7 +16,7 @@ license.
 > that interface. Other Docmost MCPs are human-shaped — they expose "open the page" and
 > "replace the page"; this one exposes the editing primitives a model is good at.
 
-It exposes **40 tools** built around three ideas that the other Docmost MCPs do not
+It exposes **41 tools** built around three ideas that the other Docmost MCPs do not
 combine:
 
 1. **Surgical, token-cheap edits.** Address a single block by id and patch it, or run
@@ -106,7 +106,7 @@ There are several Docmost MCPs. Here is a capability-by-capability comparison.
 
 ## Tools
 
-All 40 tools, grouped by what you'd reach for them.
+All 41 tools, grouped by what you'd reach for them.
 
 ### Exploration & retrieval
 
@@ -219,6 +219,8 @@ All 40 tools, grouped by what you'd reach for them.
 - **`list_comments`** — List a page's comments (content returned as Markdown).
 - **`update_comment`** — Edit an existing comment.
 - **`delete_comment`** — Delete a comment.
+- **`resolve_comment`** — Resolve (close) or reopen a comment thread (reversible). Only top-level
+  comments can be resolved; the thread and its replies are kept, unlike `delete_comment`.
 - **`check_new_comments`** — Find comments created after a given ISO-8601 timestamp across
   a space, optionally scoped to a page subtree — ideal for an agent that watches a doc for
   feedback.
@@ -262,7 +264,7 @@ so capable clients steer the model automatically.
 - **Reads**: `get_page` (Markdown) / `get_page_json` (lossless ProseMirror with ids).
 - **Review changes**: `list_page_history` → `diff_page_versions` → `restore_page_version`.
 - **Comments**: `create_comment` (with optional inline anchoring) / `list_comments` /
-  `update_comment` / `delete_comment` / `check_new_comments`.
+  `update_comment` / `resolve_comment` / `delete_comment` / `check_new_comments`.
 - **Navigate a page cheaply** (find a section/table, grab a block id): `get_outline` →
   `get_node`.
 - **Tables** (add/remove a row, set a cell): `table_get` / `table_insert_row` /

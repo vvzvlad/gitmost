@@ -469,6 +469,17 @@ async function main() {
     check("update_comment + get_comment: content updated", got.data.content.includes("Обновлённый"), got.data.content);
     const news = await client.checkNewComments(spaceId, beforeComments, pageId);
     check("check_new_comments: finds new comments in subtree", news.totalNewComments >= 2, `total=${news.totalNewComments}`);
+    // resolve_comment: close the top-level thread, verify resolvedAt surfaces, then reopen
+    const resolvedRes = await client.resolveComment(c1.data.id, true);
+    check("resolve_comment: marks resolved", resolvedRes.success === true && resolvedRes.resolved === true);
+    const listResolved = await client.listComments(pageId);
+    const c1Resolved = listResolved.find((c) => c.id === c1.data.id);
+    check("resolve_comment: resolvedAt set in list", !!c1Resolved?.resolvedAt, `resolvedAt=${c1Resolved?.resolvedAt}`);
+    const reopenedRes = await client.resolveComment(c1.data.id, false);
+    check("resolve_comment: reopen succeeds", reopenedRes.resolved === false);
+    const listReopened = await client.listComments(pageId);
+    const c1Reopened = listReopened.find((c) => c.id === c1.data.id);
+    check("resolve_comment: resolvedAt cleared on reopen", !c1Reopened?.resolvedAt, `resolvedAt=${c1Reopened?.resolvedAt}`);
     await client.deleteComment(reply.data.id);
     await client.deleteComment(c1.data.id);
     const listAfter = await client.listComments(pageId);

@@ -38,7 +38,7 @@ const VERSION = packageJson.version;
 // Editing guide surfaced to MCP clients in the initialize result so they can
 // pick the right tool by intent and avoid resending whole documents.
 const SERVER_INSTRUCTIONS =
-  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (add an image from a web URL) / replace_image (swap an existing image for one from a web URL). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (always inline; requires an EXACT selection — the contiguous text to anchor/highlight on; fails rather than leaving an unanchored comment), list_comments, update_comment, delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
+  "Docmost editing guide — choose the tool by intent: fix wording/typos/numbers (text inside blocks) -> edit_page_text (no node id needed). Change ONE block (paragraph/heading/callout/table cell/etc.) structurally -> patch_node (address by attrs.id from get_page_json). Add a block -> insert_node (before/after a block by attrs.id or by anchor text, or append). Remove a block -> delete_node (by attrs.id). Images -> insert_image (add an image from a web URL) / replace_image (swap an existing image for one from a web URL). New page -> create_page (Markdown). Bulk/structural rewrite or nodes without an id -> update_page_json (full ProseMirror replace; prefer the granular tools above to avoid resending the whole ~100KB+ document). Copy/replace a page's whole content from another page (server-side, no document through the model) -> copy_page_content. Rename a page (title only) -> rename_page. Read -> get_page (Markdown, lossy) or get_page_json (lossless ProseMirror with block ids). Comments -> create_comment (always inline; requires an EXACT selection — the contiguous text to anchor/highlight on; fails rather than leaving an unanchored comment), list_comments, update_comment, resolve_comment (resolve/reopen a thread, reversible — prefer over delete to close), delete_comment, check_new_comments. Tip: read block ids via get_page_json, then use patch_node/insert_node/delete_node so you never resend the full document. " +
   "Complex/scripted rewrite (multiple coordinated edits, footnotes, renumbering) -> docmost_transform: write a JS `(doc, ctx) => doc` transform, preview the diff with dryRun (default), then apply with dryRun:false; ctx.helpers includes commentsToFootnotes for turning inline comments into numbered footnotes. " +
   "Review what changed -> diff_page_versions (compare a historyId to current, or two history versions). See a page's saved versions -> list_page_history. Undo a bad edit -> restore_page_version (writes a past version back as current; itself revertible). " +
   "Lossless markdown round-trip (download, edit, re-upload, incl. comment anchors) -> export_page_markdown / import_page_markdown.";
@@ -835,6 +835,35 @@ server.registerTool(
         },
       ],
     };
+  },
+);
+
+// Tool: resolve_comment
+server.registerTool(
+  "resolve_comment",
+  {
+    description:
+      "Resolve (close) or reopen a comment thread. Only top-level comments can " +
+      "be resolved — the server rejects resolving a reply. Reversible: pass " +
+      "resolved=false to reopen. Resolving keeps the thread and its replies " +
+      "(unlike delete_comment, which permanently removes them).",
+    inputSchema: {
+      commentId: z
+        .string()
+        .min(1)
+        .describe("ID of the top-level comment thread to resolve or reopen"),
+      resolved: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe(
+          "true (default) marks the thread resolved/closed; false reopens it",
+        ),
+    },
+  },
+  async ({ commentId, resolved }) => {
+    const result = await docmostClient.resolveComment(commentId, resolved);
+    return jsonContent(result);
   },
 );
 
