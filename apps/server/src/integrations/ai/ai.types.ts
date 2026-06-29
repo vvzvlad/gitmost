@@ -146,4 +146,7 @@ export interface MaskedAiSettings {
   // RAG indexing coverage for the settings UI.
   indexedPages: number;
   totalPages: number;
+  // True while a full workspace reindex is actively running (the counts above
+  // then reflect the live run progress rather than the steady-state DB count).
+  reindexing?: boolean;
 }
