@@ -115,6 +115,22 @@ describe('EmbeddingReindexProgressService', () => {
       expect(multiObj.exec).toHaveBeenCalledTimes(1);
     });
 
+    it('defaults the expire TTL to the full 1h record TTL', async () => {
+      const { redis, multiObj } = makeRedis();
+      await makeService(redis).start(WORKSPACE_ID, 478);
+      // Default ttl = full record TTL (60 * 60) so a real run never expires
+      // mid-flight before the worker refreshes it on each increment.
+      expect(multiObj.expire).toHaveBeenCalledWith(KEY, 60 * 60);
+    });
+
+    it('honours an explicit short ttlSeconds for the enqueue-time pre-seed (F10)', async () => {
+      const { redis, multiObj } = makeRedis();
+      // The reindex() pre-seed passes a short ttl so a phantom record left by a
+      // de-duplicated enqueue expires in seconds, not after the full 1h TTL.
+      await makeService(redis).start(WORKSPACE_ID, 478, 45);
+      expect(multiObj.expire).toHaveBeenCalledWith(KEY, 45);
+    });
+
     it('swallows a thrown Redis error (best-effort)', async () => {
       const { redis } = makeRedis({
         execImpl: () => Promise.reject(new Error('redis down')),

@@ -172,7 +172,17 @@ describe('AiSettingsService.reindex progress seed', () => {
 
     await service.reindex(WORKSPACE_ID);
 
-    expect(reindexProgress.start).toHaveBeenCalledWith(WORKSPACE_ID, 478);
+    // The pre-seed carries the real page count AND a SHORT ttl (3rd arg) so a
+    // de-duplicated enqueue against a just-finishing job can't leave a phantom
+    // "reindexing: 0 of N" stuck for the full record TTL (F10).
+    expect(reindexProgress.start).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      478,
+      expect.any(Number),
+    );
+    const ttl = reindexProgress.start.mock.calls[0][2];
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(60); // short, not the full 1h record TTL
     expect(aiQueue.add).toHaveBeenCalledTimes(1);
     // Seed must precede the enqueue so the first poll already reports done=0.
     expect(order).toEqual(['start', 'add']);
@@ -204,7 +214,11 @@ describe('AiSettingsService.reindex progress seed', () => {
 
     await expect(service.reindex(WORKSPACE_ID)).rejects.toBe(boom);
 
-    expect(reindexProgress.start).toHaveBeenCalledWith(WORKSPACE_ID, 478);
+    expect(reindexProgress.start).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      478,
+      expect.any(Number),
+    );
     expect(reindexProgress.clear).toHaveBeenCalledWith(WORKSPACE_ID);
   });
 

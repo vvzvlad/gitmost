@@ -65,12 +65,25 @@ export class EmbeddingReindexProgressService {
 
   /**
    * Begin (or reset) the progress record for a workspace: `total` pages, `done`
-   * back to 0, `startedAt` now. Called at reindex enqueue time (placeholder
-   * total, so the very first status poll already reports done=0) and again at
-   * the worker start (overwriting `total` with the real page count). Resets
-   * `done` to 0 so a re-trigger never inherits a stale count.
+   * back to 0, `startedAt` now. Called twice for a run, BOTH with the real page
+   * count (countEmbeddablePages) so the two totals coincide: once at reindex
+   * enqueue time (so the very first status poll already reports done=0) and again
+   * at the worker start (which re-asserts the same total and resets `done`).
+   * Resets `done` to 0 so a re-trigger never inherits a stale count.
+   *
+   * `ttlSeconds` lets the caller pick the record's lifetime. The enqueue-time
+   * pre-seed passes a SHORT ttl: if `aiQueue.add()` de-duplicates against a job
+   * that is just finishing (its worker hasn't yet removed the job but already
+   * ran its `clear()`), no new worker starts to clear this phantom seed, so a
+   * short ttl lets it expire in seconds instead of sticking for the full TTL.
+   * The worker's own `start()` at the begin of a real run overwrites this entry
+   * and raises the ttl back to the default full TTL.
    */
-  async start(workspaceId: string, total: number): Promise<void> {
+  async start(
+    workspaceId: string,
+    total: number,
+    ttlSeconds: number = TTL_SECONDS,
+  ): Promise<void> {
     const key = this.key(workspaceId);
     try {
       await this.redis
@@ -80,7 +93,7 @@ export class EmbeddingReindexProgressService {
           done: '0',
           startedAt: String(Date.now()),
         })
-        .expire(key, TTL_SECONDS)
+        .expire(key, ttlSeconds)
         .exec();
     } catch (err) {
       this.logger.warn(

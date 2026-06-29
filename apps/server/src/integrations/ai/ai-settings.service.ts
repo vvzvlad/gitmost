@@ -32,6 +32,17 @@ export function parsePositiveInt(raw: unknown): number | undefined {
 }
 
 /**
+ * TTL (seconds) for the enqueue-time progress PRE-SEED written by `reindex()`
+ * before the worker starts. Deliberately SHORT: if `aiQueue.add()` de-duplicates
+ * against a job that is just finishing (the worker's finally already ran
+ * `clear()` but removeOnComplete hasn't yet removed the job), no new worker runs
+ * to overwrite/clear this seed — so a short TTL lets the phantom "reindexing:
+ * 0 of N" expire in seconds instead of sticking for the full 1h record TTL. A
+ * worker that DOES start re-seeds with the full TTL, so a real run is unaffected.
+ */
+const PRE_SEED_TTL_SECONDS = 45;
+
+/**
  * Shape of the partial update accepted by `update`. Mirrors the validated
  * controller DTO. `apiKey` / `embeddingApiKey` are write-only: undefined =
  * leave, '' = clear, non-empty = encrypt + store (§6.4/§8).
@@ -117,7 +128,15 @@ export class AiSettingsService {
     let seeded = false;
     if ((await this.reindexProgress.get(workspaceId)) === null) {
       const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
-      await this.reindexProgress.start(workspaceId, totalPages);
+      // Short TTL: if add() below de-duplicates against a just-finishing job
+      // whose worker already clear()ed but isn't removed yet, no worker runs to
+      // clear this seed — the short TTL expires the phantom record in seconds
+      // rather than leaving a stuck "reindexing: 0 of N" for the full record TTL.
+      await this.reindexProgress.start(
+        workspaceId,
+        totalPages,
+        PRE_SEED_TTL_SECONDS,
+      );
       seeded = true;
     }
 
@@ -286,22 +305,33 @@ export class AiSettingsService {
       hasSttApiKey = !!creds?.sttApiKeyEnc;
     }
 
-    // totalPages now counts only pages with embeddable content (non-empty text
-    // or already-stored embeddings), so empty/text-less pages don't keep the
-    // "Indexed N of M pages" bar below 100% forever.
-    const [indexedPages, totalPages] = await Promise.all([
-      this.pageEmbeddingRepo.countIndexedPages(workspaceId),
-      this.pageRepo.countEmbeddablePages(workspaceId),
-    ]);
-
     // While a reindex run is active, report its LIVE progress (done climbs 0 ->
-    // total) so the settings UI can watch it advance. Without this the counter
-    // never drops: the per-page reindex hard-replaces rows in its own small
-    // transaction, so countIndexedPages stays ~= total for the whole run. With
-    // no active record we fall back to the steady-state DB coverage count, which
+    // total) so the settings UI can watch it advance. Read progress FIRST and
+    // short-circuit: this endpoint is polled every ~5s for the whole run, so when
+    // a record is active we skip the two coverage COUNTs entirely (their results
+    // would be discarded anyway). Without the live progress the counter never
+    // drops: the per-page reindex hard-replaces rows in its own small
+    // transaction, so countIndexedPages stays ~= total for the whole run. With no
+    // active record we fall back to the steady-state DB coverage count, which
     // preserves the existing display and the client's "done == total -> stop
     // polling" condition (the run ends -> record cleared -> DB count == total).
+    //
+    // The fallback `totalPages` counts only pages with embeddable content
+    // (non-empty text, content-borne text, or already-stored embeddings), so
+    // empty/text-less pages don't keep the "Indexed N of M pages" bar below 100%
+    // forever.
     const progress = await this.reindexProgress.get(workspaceId);
+    let indexedPages: number;
+    let totalPages: number;
+    if (progress) {
+      indexedPages = progress.done;
+      totalPages = progress.total;
+    } else {
+      [indexedPages, totalPages] = await Promise.all([
+        this.pageEmbeddingRepo.countIndexedPages(workspaceId),
+        this.pageRepo.countEmbeddablePages(workspaceId),
+      ]);
+    }
 
     return {
       driver: provider.driver,
@@ -321,8 +351,8 @@ export class AiSettingsService {
       hasApiKey,
       hasEmbeddingApiKey,
       hasSttApiKey,
-      indexedPages: progress ? progress.done : indexedPages,
-      totalPages: progress ? progress.total : totalPages,
+      indexedPages,
+      totalPages,
       // Optional hint for the client: a reindex run is currently in progress.
       reindexing: progress != null,
     };

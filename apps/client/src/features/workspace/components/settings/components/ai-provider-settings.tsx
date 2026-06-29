@@ -198,16 +198,18 @@ export function nextReindexPollInterval(args: {
   if (now > deadline) return false;
   // Active run → keep polling even if the momentary counts already look full.
   if (status?.reindexing) return intervalMs;
-  // Finished and fully indexed (incl. an empty workspace, 0 >= 0) → stop.
-  if (status && status.indexedPages >= status.totalPages) return false;
+  // Finished and fully indexed (incl. an empty workspace, 0 >= 0) → stop. Reuse
+  // isReindexComplete so the completeness check lives in exactly one place.
+  if (isReindexComplete(status)) return false;
   // Within the deadline and not yet done → keep polling.
   return intervalMs;
 }
 
 /**
  * Whether the reindex poll deadline should be cleared: the server reports no
- * active run AND the count is complete. Mirrors the stop condition of
- * `nextReindexPollInterval` (sans the cap, which the effect handles via time).
+ * active run AND the count is complete. The single source of truth for the
+ * "reindex finished" check — `nextReindexPollInterval` reuses it for its stop
+ * condition (sans the cap, which the effect handles via time).
  */
 export function isReindexComplete(status?: ReindexStatus): boolean {
   return (
