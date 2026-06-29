@@ -3,6 +3,7 @@ import { Editor } from "@tiptap/core";
 import { Document } from "@tiptap/extension-document";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Text } from "@tiptap/extension-text";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import {
   IntentionalClear,
   INTENTIONAL_CLEAR_MESSAGE_TYPE,
@@ -72,6 +73,37 @@ describe("IntentionalClear extension", () => {
 
     editor.chain().insertContent(" more").run();
 
+    expect(sendStateless).not.toHaveBeenCalled();
+    editor.destroy();
+  });
+
+  it("does NOT emit when a REMOTE/merge (change-origin) transaction empties the doc", () => {
+    // This pins the CENTRAL #248 protection: only a LOCAL user edit may emit the
+    // intentional-clear signal. An emptiness arriving from another client, a bad
+    // merge, or an emptied transclusion is applied as a y-sync transaction tagged
+    // with the ySyncPluginKey meta, which `isChangeOrigin` detects. The extension
+    // must early-return on it and NOT punch the empty write through the server
+    // guard.
+    const editor = makeEditor({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "remote content" }] },
+      ],
+    });
+
+    // Build a transaction that empties the non-empty doc and tag it exactly the
+    // way y-tiptap tags a remote y-sync update: `tr.setMeta(ySyncPluginKey,
+    // { isChangeOrigin: true })` (see @tiptap/y-tiptap sync-plugin). This makes
+    // the real `isChangeOrigin(tr)` predicate return true — not a stand-in.
+    const { state } = editor;
+    const tr = state.tr
+      .delete(0, state.doc.content.size)
+      .setMeta(ySyncPluginKey, { isChangeOrigin: true });
+    editor.view.dispatch(tr);
+
+    // The transaction really emptied the doc (became the single empty paragraph)…
+    expect(editor.state.doc.textContent).toBe("");
+    // …yet because it is change-origin, no signal is emitted.
     expect(sendStateless).not.toHaveBeenCalled();
     editor.destroy();
   });
