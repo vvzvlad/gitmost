@@ -181,7 +181,6 @@ describe('AiSettingsService.reindex progress seed', () => {
       expect.any(Number),
     );
     const ttl = reindexProgress.start.mock.calls[0][2];
-    expect(ttl).toBeGreaterThan(0);
     // Short pre-seed TTL, distinct from the full 1h (3600s) record TTL, but
     // pinned to the client poll cap (120s) so a still-pending run can't expire
     // into a false "done" while the client is still polling (F11).

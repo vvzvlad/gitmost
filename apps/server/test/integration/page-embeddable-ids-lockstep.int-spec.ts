@@ -15,7 +15,7 @@ import { getTestDb, destroyTestDb, createWorkspace, createSpace } from './db';
  * content JSON has a text node OR it has a non-deleted embedding row).
  *
  * This is a DB-level invariant: the predicate lives in raw SQL (`text_content ~
- * '[^[:space:]]'`, `content::text ~ '"type":"text"'`) and an EXISTS subquery, so a unit test with mocked Kysely
+ * '[^[:space:]]'`, `content::text ~ '"type"[[:space:]]*:[[:space:]]*"text"'`) and an EXISTS subquery, so a unit test with mocked Kysely
  * cannot observe it. We seed every boundary case against real Postgres and
  * assert the returned ID set EQUALS the count (and is exactly the expected set).
  * A future edit that touches one predicate but not the other turns this red.
