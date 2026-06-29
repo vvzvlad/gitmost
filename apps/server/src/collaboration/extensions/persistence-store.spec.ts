@@ -274,6 +274,51 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(pageRepo.updatePage.mock.calls[0][0].content).toEqual(expectedEmpty);
   });
 
+  // #251 — retry correctness: a transient DB failure on the FIRST attempt must
+  // not silently drop the clear. The intentional-clear flag is consumed ONCE
+  // before the retry loop, so when attempt 1's updatePage throws (tx rolls back,
+  // but the in-memory flag delete cannot roll back) the retry on attempt 2 still
+  // sees the clear as allowed and writes the empty doc. On the pre-fix code
+  // (consumeIntentionalClear called INSIDE the loop) attempt 1 consumed the flag,
+  // attempt 2 re-read it as absent and the empty-guard BLOCKED the write — so
+  // updatePage would be called once and the clear would be lost. This test fails
+  // on that ordering and passes after the hoist.
+  it('persists an intentional clear even when the first store attempt fails transiently (#251)', async () => {
+    const documentName = `page.${PAGE_ID}`;
+    const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const document = ydocFor(emptyDoc);
+    // The page stays non-empty in the DB across both attempts (the rolled-back
+    // first attempt never changed it), exactly the failure scenario the WARNING
+    // describes.
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    let attempts = 0;
+    pageRepo.updatePage.mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('deadlock detected'); // transient
+      callOrder.push('updatePage');
+    });
+
+    // The client signalled a deliberate clear over the live connection.
+    await ext.onStateless({
+      connection: { readOnly: false } as any,
+      documentName,
+      document: document as any,
+      payload: JSON.stringify({ type: 'intentional-clear' }),
+    } as any);
+
+    await ext.onStoreDocument(buildData(document, 'user') as any);
+
+    // First attempt failed and rolled back; the retry still honoured the clear
+    // and wrote the empty doc (the clear survived the retry).
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(2);
+    const expectedEmpty = TiptapTransformer.fromYdoc(document, 'default');
+    expect(pageRepo.updatePage.mock.calls[1][0].content).toEqual(expectedEmpty);
+  });
+
   // #251 — the signal is single-use: it is consumed by the first empty store,
   // so a SECOND accidental empty (no fresh signal) is still blocked.
   it('consumes the intentional-clear signal once; a later empty is blocked (#251)', async () => {

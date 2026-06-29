@@ -59,6 +59,15 @@ export const INTENTIONAL_CLEAR_MESSAGE_TYPE = 'intentional-clear';
  * stale flag small; on top of the TTL, any non-empty store immediately drops a
  * pending flag (see onStoreDocument), so a "cleared then retyped" sequence can
  * never leave a usable flag behind.
+ *
+ * Known fail-safe limitation: the flag lives only in this node's process memory.
+ * If document ownership transfers to another node, or this node crashes/restarts,
+ * between the stateless signal (set on node A) and the debounced store, the
+ * in-memory flag is lost and the clear is silently NOT applied — the store-side
+ * empty-guard then reloads the document non-empty from the DB. This is
+ * deliberately fail-safe (a lost flag preserves content rather than destroying
+ * it), but it is a documented limitation, not a guarantee that every deliberate
+ * clear survives a node handoff.
  */
 export const INTENTIONAL_CLEAR_TTL_MS = 60_000;
 
@@ -208,6 +217,19 @@ export class PersistenceExtension implements Extension {
       this.consumeAgentTouched(documentName),
       context?.actor,
     );
+    // #251 — consume the intentional-clear flag ONCE, BEFORE the retry loop
+    // (like consumeContributors / consumeAgentTouched above). consumeIntentional-
+    // Clear ALWAYS deletes the in-memory Map entry, but a tx rollback cannot
+    // un-delete it. Calling it INSIDE the loop meant: a clear armed for attempt 1
+    // was consumed there, attempt 1's updatePage threw a transient error and
+    // rolled back, then attempt 2 re-read non-empty content and saw the flag
+    // already gone — silently downgrading the retry into a BLOCKED write, so the
+    // user's deliberate clear was dropped. Hoisting makes the decision stable
+    // across every attempt. This single call also preserves the "a non-empty
+    // store drops a pending flag" semantics (the cleared-then-retyped case):
+    // every store consumes the flag here regardless of incoming emptiness, so a
+    // subsequent non-empty store can never leave a usable flag behind.
+    const allowIntentionalClear = this.consumeIntentionalClear(documentName);
 
     // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
     // of the latest edit until this hook returns: hocuspocus destroys/unloads the
@@ -248,18 +270,21 @@ export class PersistenceExtension implements Extension {
           //
           // #251 — the ONE legitimate empty-over-non-empty write is a user who
           // deliberately clears the page. That intent arrives out-of-band as a
-          // stateless message (consumed below), NOT from the doc content, which
-          // is why it cannot be spoofed for non-clear writes: the flag is only
-          // ever read on this empty-incoming branch, so the worst a forged
-          // signal can do is clear a page the connection may already edit. Every
-          // non-empty write ignores the flag entirely and additionally drops any
-          // pending flag (a "cleared then retyped" sequence can't leave a usable
-          // one behind).
+          // stateless message, NOT from the doc content, which is why it cannot
+          // be spoofed for non-clear writes: the flag is only ever read on this
+          // empty-incoming branch, so the worst a forged signal can do is clear
+          // a page the connection may already edit. The flag was consumed ONCE
+          // before the retry loop (`allowIntentionalClear`) so the decision is
+          // stable across retries; a non-empty store still drops any pending
+          // flag via that same hoisted consume (a "cleared then retyped"
+          // sequence can't leave a usable one behind).
           const incomingEmpty = isEmptyParagraphDoc(tiptapJson as any);
-          if (!incomingEmpty) {
-            this.intentionalClear.delete(documentName);
-          } else if (page.content && !isEmptyParagraphDoc(page.content as any)) {
-            if (this.consumeIntentionalClear(documentName)) {
+          if (
+            incomingEmpty &&
+            page.content &&
+            !isEmptyParagraphDoc(page.content as any)
+          ) {
+            if (allowIntentionalClear) {
               this.logger.debug(
                 `Intentional clear for ${pageId}: persisting empty doc over ` +
                   `non-empty content (user-signalled)`,
