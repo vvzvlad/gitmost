@@ -1,77 +1,147 @@
 import { describe, it, expect } from "vitest";
 import { htmlToMarkdown } from "./turndown.utils";
+import { markdownToHtml } from "./marked.utils";
 
 /**
- * #206 mdrt-2 — Markdown export must never SILENTLY drop a block.
+ * #206 mdrt-2 — Markdown export must never SILENTLY drop a block. (FIXED)
  *
- * `htmlToMarkdown` (turndown) only registers rules for a fixed set of custom
- * nodes (callout, taskItem, details, math, iframe, htmlEmbed, image, video,
- * footnote). Any other custom node — `transclusionReference`, `pageBreak`,
- * `mention`, `status` — falls through to turndown's default handling: an empty
- * wrapper is "blank" and removed, so the block disappears from the exported
- * Markdown with no trace. The invariant "never silently lose a block" is broken.
+ * `htmlToMarkdown` (turndown) historically only registered rules for a fixed
+ * set of custom nodes (callout, taskItem, details, math, iframe, htmlEmbed,
+ * image, video, footnote). Any other custom node — `transclusionReference`,
+ * `pageBreak`, `mention`, `status` — fell through to turndown's default
+ * handling: an empty wrapper is "blank" and removed, so the block disappeared
+ * from the exported Markdown with no trace, and `mention`/`status` collapsed to
+ * bare text, losing their identity (data-id / data-color). The invariant
+ * "never silently lose a block" was broken.
  *
- * The `it.fails` cases assert the DESIRED contract (the block survives export in
- * SOME form) and are RED today: they document the unfixed data loss and flip to
- * green the moment a turndown rule (real syntax or a lossless HTML-comment
- * placeholder) is added. A normal characterization `it` pins the exact current
- * lossy output so the regression is unambiguous.
+ * The fix adds lossless turndown rules that re-emit each of these nodes as raw
+ * HTML carrying every `data-*` attribute. Plain-Markdown viewers ignore the
+ * inert tag; the import path round-trips it (`markdownToHtml` passes the raw
+ * HTML through and each node's `parseHTML` rebuilds the ProseMirror node). These
+ * tests assert the surviving contract (the block is preserved AND its identity
+ * round-trips back through import).
  */
-describe("htmlToMarkdown — custom nodes without a turndown rule (#206 mdrt-2)", () => {
-  const wrap = (inner: string) =>
-    `<p>before</p>${inner}<p>after</p>`;
+describe("htmlToMarkdown — custom nodes are preserved losslessly (#206 mdrt-2)", () => {
+  const wrap = (inner: string) => `<p>before</p>${inner}<p>after</p>`;
 
-  it("CURRENTLY drops a pageBreak entirely (data loss)", () => {
+  it("preserves a pageBreak block on Markdown export", () => {
     const md = htmlToMarkdown(
       wrap('<div data-type="pageBreak" class="page-break"></div>'),
     );
-    // The page break vanishes: only the two paragraphs remain, nothing between.
     expect(md).toContain("before");
     expect(md).toContain("after");
-    expect(md).not.toMatch(/page-?break/i);
-    expect(md).not.toContain("---"); // not even a horizontal-rule fallback
+    // The break survives as an inert raw-HTML tag, not silently dropped.
+    expect(md).toMatch(/data-type="pageBreak"/);
+    expect(md).toMatch(/page-?break/i);
   });
 
-  it("CURRENTLY drops a transclusionReference entirely (data loss)", () => {
+  it("preserves a transclusionReference's identity on Markdown export", () => {
     const md = htmlToMarkdown(
       wrap('<div data-type="transclusionReference" data-id="abc"></div>'),
     );
     expect(md).toContain("before");
     expect(md).toContain("after");
-    // The data-id (the only thing that gives the reference identity) is gone.
-    expect(md).not.toContain("abc");
+    // The data-id (the only thing that gives the reference identity) survives.
+    expect(md).toContain("abc");
+    expect(md).toMatch(/data-type="transclusionReference"/);
   });
 
-  it.fails(
-    "should NOT lose a pageBreak block on Markdown export",
-    () => {
+  it("preserves a mention's data-id (stable identity) on Markdown export", () => {
+    const md = htmlToMarkdown(
+      '<p>hi <span data-type="mention" data-id="u1" data-label="Bob">@Bob</span> there</p>',
+    );
+    // The mention keeps its stable identity (data-id), not just the text.
+    expect(md).toContain("u1");
+    expect(md).toContain("Bob");
+    expect(md).toMatch(/data-type="mention"/);
+  });
+
+  it("preserves a status chip's color on Markdown export", () => {
+    const md = htmlToMarkdown(
+      '<p>s <span data-type="status" data-color="green">Done</span></p>',
+    );
+    // The chip's color (its identity) survives, not just the visible text.
+    expect(md).toContain("green");
+    expect(md).toContain("Done");
+    expect(md).toMatch(/data-type="status"/);
+  });
+
+  // The export form is only lossless if the import path can rebuild it. These
+  // assert the full MD -> HTML round-trip restores the node + its attributes,
+  // which is the marker <-> node contract each `parseHTML` relies on.
+  describe("import round-trip (markdownToHtml restores the node)", () => {
+    it("round-trips a pageBreak through export + import", async () => {
       const md = htmlToMarkdown(
         wrap('<div data-type="pageBreak" class="page-break"></div>'),
       );
-      // Desired: the break survives in some form (e.g. a `---` rule or marker).
-      expect(md).toMatch(/(-{3,}|page-?break)/i);
-    },
-  );
+      const html = await markdownToHtml(md);
+      expect(html).toMatch(/<div[^>]*data-type="pageBreak"[^>]*>/);
+      expect(html).toContain("before");
+      expect(html).toContain("after");
+    });
 
-  it.fails(
-    "should NOT lose a transclusionReference's identity on Markdown export",
-    () => {
+    it("round-trips a transclusionReference (keeps data-id)", async () => {
       const md = htmlToMarkdown(
         wrap('<div data-type="transclusionReference" data-id="abc"></div>'),
       );
-      // Desired: the referenced id survives so the block can be rebuilt.
-      expect(md).toContain("abc");
-    },
-  );
+      const html = await markdownToHtml(md);
+      expect(html).toMatch(/<div[^>]*data-type="transclusionReference"[^>]*>/);
+      expect(html).toContain("abc");
+    });
 
-  it.fails(
-    "should NOT lose a mention's data-id on Markdown export",
-    () => {
+    it("round-trips a mention (keeps data-id + data-label)", async () => {
       const md = htmlToMarkdown(
         '<p>hi <span data-type="mention" data-id="u1" data-label="Bob">@Bob</span> there</p>',
       );
-      // Desired: the mention keeps its stable identity (data-id), not just text.
-      expect(md).toContain("u1");
-    },
-  );
+      const html = await markdownToHtml(md);
+      expect(html).toMatch(/<span[^>]*data-type="mention"[^>]*>/);
+      expect(html).toContain("u1");
+      expect(html).toContain("Bob");
+    });
+
+    it("round-trips a status chip (keeps data-color)", async () => {
+      const md = htmlToMarkdown(
+        '<p>s <span data-type="status" data-color="green">Done</span></p>',
+      );
+      const html = await markdownToHtml(md);
+      expect(html).toMatch(/<span[^>]*data-type="status"[^>]*>/);
+      expect(html).toContain("green");
+    });
+
+    // HTML special chars in an attribute value or in a node's text must be
+    // ESCAPED when re-emitted as raw HTML, otherwise the exported tag is
+    // malformed and `markdownToHtml`'s parser cannot restore the original value
+    // (the same silent data loss this PR fixes). Dropping `<`/`>` escaping is the
+    // dangerous regression: a stray `<` or `>` corrupts the tag (or injects new
+    // markup), so the test data carries ALL of `&`, `"`, `<`, `>` in BOTH the
+    // data-label attribute and the visible text. That fully exercises
+    // escapeHtmlAttr's `&,",<,>` branches and escapeHtmlText's `&,<,>` branches
+    // (escapeHtmlText leaves `"` literal); the alphanumeric-only cases above hit
+    // none of them.
+    it("escapes HTML special chars (& \" < >) in attrs + text and round-trips them", async () => {
+      const md = htmlToMarkdown(
+        `<p>hi <span data-type="mention" data-id="u1" data-label="A &amp; &lt;B&gt; &quot;C&quot;">@A &amp; &lt;B&gt; "C"</span> there</p>`,
+      );
+
+      // (a) The exported Markdown carries a WELL-FORMED, correctly-escaped tag:
+      // the attribute escapes `&`, `<`, `>` AND `"`; the text escapes `&`, `<`,
+      // `>` (a `"` inside text content is legal, so it stays literal).
+      expect(md).toContain('data-label="A &amp; &lt;B&gt; &quot;C&quot;"');
+      expect(md).toContain('>@A &amp; &lt;B&gt; "C"</span>');
+      // And explicitly NOT the raw, tag-corrupting forms: a literal `<B>` (would
+      // mean `<`/`>` escaping was dropped in either the attr or the text)...
+      expect(md).not.toContain("<B>");
+      // ...nor the malformed attribute that an unescaped `"` would produce.
+      expect(md).not.toContain('data-label="A &amp; &lt;B&gt; "C""');
+
+      // (b) Import restores the ORIGINAL (unescaped) values, attribute and text.
+      const html = await markdownToHtml(md);
+      const dom = new DOMParser().parseFromString(html as string, "text/html");
+      const span = dom.querySelector('span[data-type="mention"]');
+      expect(span).not.toBeNull();
+      expect(span!.getAttribute("data-id")).toBe("u1");
+      expect(span!.getAttribute("data-label")).toBe('A & <B> "C"');
+      expect(span!.textContent).toBe('@A & <B> "C"');
+    });
+  });
 });
