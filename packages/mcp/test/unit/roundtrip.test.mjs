@@ -82,6 +82,24 @@ test("round-trip: image inside a column survives as an image node (not literal m
   assert.ok(!JSON.stringify(out).includes("![pic]"), "image must not become literal markdown text");
 });
 
+test("round-trip: captioned image inside a column preserves its caption (imageToHtml branch)", async () => {
+  // A captioned image in a column is emitted via the imageToHtml helper (raw
+  // HTML container), a different path from the top-level image case. Special
+  // chars in the caption exercise attribute escaping on the way out and in.
+  const caption = 'Tom & "Jerry"';
+  const input = doc({
+    type: "columns",
+    content: [
+      { type: "column", content: [{ type: "image", attrs: { src: "/api/files/a/p.png", alt: "pic", caption } }] },
+      { type: "column", content: [para(text("right"))] },
+    ],
+  });
+  const out = await roundtrip(input);
+  const imgs = findNodes(out, "image");
+  assert.equal(imgs.length, 1, "captioned image inside a column must survive");
+  assert.equal(imgs[0].attrs?.caption, caption, "caption (incl. special chars) must be preserved");
+});
+
 test("round-trip: blockquote inside a column survives as a blockquote node", async () => {
   const input = doc({
     type: "columns",

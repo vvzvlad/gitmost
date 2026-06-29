@@ -142,3 +142,31 @@ test("round-trip: pdf node survives markdown export with src + name + attachment
   assert.equal(found[0].attrs?.name, "x.pdf");
   assert.equal(found[0].attrs?.attachmentId, "a4");
 });
+
+// The converter emits captioned images as a raw <img data-caption="...">; for
+// the caption to survive the PM -> markdown -> PM round-trip the docmost-schema
+// Image node must parse data-caption back into the `caption` attr. Without that
+// (stock @tiptap/extension-image), the caption is silently lost — these guard
+// the "lossless" claim.
+test("round-trip: image caption survives markdown export (data-caption restored)", async () => {
+  const found = await roundtrip(
+    { type: "image", attrs: { src: "/api/files/cat.png", alt: "cat", caption: "A grey cat" } },
+    "image",
+  );
+  assert.equal(found.length, 1, "image node should survive");
+  assert.equal(found[0].attrs?.src, "/api/files/cat.png");
+  assert.equal(found[0].attrs?.caption, "A grey cat", "caption must round-trip");
+});
+
+test("round-trip: image caption with special chars survives markdown export", async () => {
+  const found = await roundtrip(
+    { type: "image", attrs: { src: "/api/files/cat.png", caption: 'Tom & "Jerry"' } },
+    "image",
+  );
+  assert.equal(found.length, 1, "image node should survive");
+  assert.equal(
+    found[0].attrs?.caption,
+    'Tom & "Jerry"',
+    "special-char caption must round-trip unescaped",
+  );
+});

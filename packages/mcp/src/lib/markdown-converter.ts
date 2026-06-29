@@ -228,16 +228,26 @@ export function convertProseMirrorToMarkdown(content: any): string {
         // a bare "\n" would be reimported as a soft break and lost.
         return "  \n";
 
-      case "image":
+      case "image": {
         const imgAlt = node.attrs?.alt || "";
+        const imgCaption = node.attrs?.caption || "";
+        if (imgCaption) {
+          // ![]() can't carry a caption, so (symmetric to video) emit a raw
+          // <img> wrapped in a block <div>. On import marked.parse keeps the raw
+          // HTML and generateJSON runs the image extension's parseHTML, which
+          // restores the caption from data-caption.
+          const parts: string[] = [`src="${escapeAttr(node.attrs?.src ?? "")}"`];
+          if (imgAlt) parts.push(`alt="${escapeAttr(imgAlt)}"`);
+          parts.push(`data-caption="${escapeAttr(imgCaption)}"`);
+          return `<div><img ${parts.join(" ")}></div>`;
+        }
         // Neutralize characters that could break out of the markdown image
         // URL: spaces/newlines and parentheses would terminate the (...) target
         // and let a stored src inject following markdown/HTML. Percent-encode
         // them so the URL stays a single inert token.
         const imgSrc = encodeMdUrl(node.attrs?.src);
-        // No "caption" attribute exists in the Docmost image schema, so we do
-        // not emit one (the previous caption branch was dead).
         return `![${imgAlt}](${imgSrc})`;
+      }
 
       case "video": {
         // Emit the schema-matching <video> element so generateJSON rebuilds the
@@ -678,6 +688,8 @@ export function convertProseMirrorToMarkdown(content: any): string {
     const attrs = node.attrs || {};
     const parts: string[] = [`src="${escapeAttr(attrs.src ?? "")}"`];
     if (attrs.alt) parts.push(`alt="${escapeAttr(attrs.alt)}"`);
+    if (attrs.caption)
+      parts.push(`data-caption="${escapeAttr(attrs.caption)}"`);
     if (attrs.title) parts.push(`title="${escapeAttr(attrs.title)}"`);
     if (attrs.width != null) parts.push(`width="${escapeAttr(attrs.width)}"`);
     if (attrs.height != null) parts.push(`height="${escapeAttr(attrs.height)}"`);

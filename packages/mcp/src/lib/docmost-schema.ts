@@ -1164,7 +1164,26 @@ export const docmostExtensions = [
     heading: {},
     link: { openOnClick: false },
   }),
-  Image.configure({ inline: false }),
+  // Stock @tiptap/extension-image has no caption attribute, so a round-trip
+  // through this schema would drop the data-caption the client TiptapImage
+  // emits. Mirror editor-ext image.ts: add a caption attribute that parses
+  // data-caption and re-renders it only when set (caption-less images stay
+  // clean), keeping the MCP markdown round-trip lossless.
+  Image.extend({
+    addAttributes() {
+      const parent = this.parent?.() ?? {};
+      return {
+        ...parent,
+        caption: {
+          default: undefined,
+          parseHTML: (el: HTMLElement) =>
+            el.getAttribute("data-caption") || undefined,
+          renderHTML: (attrs: Record<string, any>) =>
+            attrs.caption ? { "data-caption": attrs.caption } : {},
+        },
+      };
+    },
+  }).configure({ inline: false }),
   TaskList,
   TaskItem.configure({ nested: true }),
   // Highlight stores its color unescaped and Docmost interpolates it into

@@ -149,3 +149,37 @@ test("empty task item still emits its marker", () => {
 
   assert.equal(convertProseMirrorToMarkdown(input), "- [ ]\n- [x]");
 });
+
+// Image captions (issue #221). An image WITHOUT a caption stays the lossy-free
+// `![alt](src)`; WITH a caption it is emitted as a raw <img data-caption>
+// wrapped in a block <div> (symmetric to video) so the round-trip md -> html ->
+// json restores the caption via the image extension's parseHTML.
+test("image without a caption emits plain ![alt](src)", () => {
+  const input = doc({
+    type: "image",
+    attrs: { src: "/files/a.png", alt: "cat" },
+  });
+  assert.equal(convertProseMirrorToMarkdown(input), "![cat](/files/a.png)");
+});
+
+test("image with a caption emits a raw <img data-caption> in a block div", () => {
+  const input = doc({
+    type: "image",
+    attrs: { src: "/files/a.png", alt: "cat", caption: "A grey cat" },
+  });
+  assert.equal(
+    convertProseMirrorToMarkdown(input),
+    '<div><img src="/files/a.png" alt="cat" data-caption="A grey cat"></div>',
+  );
+});
+
+test("image caption escapes & and \" in the data-caption attribute", () => {
+  const input = doc({
+    type: "image",
+    attrs: { src: "/files/a.png", caption: 'Tom & "Jerry"' },
+  });
+  assert.equal(
+    convertProseMirrorToMarkdown(input),
+    '<div><img src="/files/a.png" data-caption="Tom &amp; &quot;Jerry&quot;"></div>',
+  );
+});
