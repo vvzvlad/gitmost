@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { Schema } from "@tiptap/pm/model";
 import type { Node as PMNode } from "@tiptap/pm/model";
-import { tableNodes, TableMap } from "@tiptap/pm/tables";
+import { TableMap } from "@tiptap/pm/tables";
 import { transpose } from "./transpose";
 import { moveRowInArrayOfRows } from "./move-row-in-array-of-rows";
 import { convertTableNodeToArrayOfRows } from "./convert-table-node-to-array-of-rows";
 import { convertArrayOfRowsToTableNode } from "./convert-array-of-rows-to-table-node";
+import { cell, row, table } from "./table-test-helpers";
 
 /**
  * Unit tests for the pure table data-transformation utilities. These functions
@@ -13,30 +13,6 @@ import { convertArrayOfRowsToTableNode } from "./convert-array-of-rows-to-table-
  * silently corrupts table content. We test them in isolation against a real
  * ProseMirror table schema (the same primitives the editor uses).
  */
-
-// Minimal schema containing real ProseMirror table nodes so TableMap behaves
-// exactly as it does in the editor (merged cells, colspan, etc.).
-const tNodes = tableNodes({
-  tableGroup: "block",
-  cellContent: "inline*",
-  cellAttributes: {},
-});
-const schema = new Schema({
-  nodes: {
-    doc: { content: "block+" },
-    paragraph: { group: "block", content: "inline*", toDOM: () => ["p", 0] },
-    text: { group: "inline" },
-    ...tNodes,
-  },
-  marks: {},
-});
-
-const cell = (txt: string, attrs?: Record<string, unknown>): PMNode =>
-  schema.nodes.table_cell.createChecked(attrs ?? null, schema.text(txt));
-const row = (...cells: PMNode[]): PMNode =>
-  schema.nodes.table_row.createChecked(null, cells);
-const table = (...rows: PMNode[]): PMNode =>
-  schema.nodes.table.createChecked(null, rows);
 
 // Read the text content of each (non-null) cell so we can compare structure
 // without depending on ProseMirror node identity.

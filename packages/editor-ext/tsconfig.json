@@ -27,6 +27,7 @@
     "dist",
     "src/**/*.spec.ts",
     "src/**/*.test.ts",
-    "src/lib/footnote/footnote-corpus.ts"
+    "src/lib/footnote/footnote-corpus.ts",
+    "src/lib/table/utils/table-test-helpers.ts"
   ]
 }

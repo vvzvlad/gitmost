@@ -29,6 +29,41 @@ export async function getCollabToken(baseUrl, apiToken) {
         throw error;
     }
 }
+/**
+ * Pure cookie-parsing helper extracted from `performLogin` so the parsing logic
+ * can be unit-tested without performing the login network request. Given the
+ * raw `Set-Cookie` header array from the login response, return the `authToken`
+ * cookie's value.
+ *
+ * Behavior (kept identical to the original inline logic):
+ *  - throws if there is no Set-Cookie header at all;
+ *  - matches the cookie NAME exactly (`authToken`), so a future
+ *    `authTokenRefresh=...` cookie is NOT picked up (a `startsWith` would be);
+ *  - returns everything after the FIRST `=` up to the first `;`, so a base64
+ *    value containing `=` padding is preserved (a naive `split("=")` would
+ *    truncate it);
+ *  - cookie attributes after the first `;` (Path, HttpOnly, Expires, …) are
+ *    ignored;
+ *  - throws if no `authToken` cookie is present.
+ */
+export function extractAuthTokenFromSetCookie(cookies) {
+    if (!cookies) {
+        throw new Error("No Set-Cookie header found in login response");
+    }
+    // Match the cookie name exactly to avoid matching a future
+    // authTokenRefresh cookie (startsWith would catch it).
+    const authCookie = cookies.find((c) => {
+        const kv = c.split(";")[0];
+        return kv.slice(0, kv.indexOf("=")) === "authToken";
+    });
+    if (!authCookie) {
+        throw new Error("No authToken cookie found in login response");
+    }
+    // Take everything after the FIRST "=" up to the first ";".
+    // Splitting on "=" would truncate base64 values containing "=" padding.
+    const kv = authCookie.split(";")[0];
+    return kv.slice(kv.indexOf("=") + 1);
+}
 export async function performLogin(baseUrl, email, password) {
     try {
         const response = await axios.post(`${baseUrl}/auth/login`, {
@@ -36,24 +71,7 @@ export async function performLogin(baseUrl, email, password) {
             password,
         });
         // Extract token from Set-Cookie header
-        const cookies = response.headers["set-cookie"];
-        if (!cookies) {
-            throw new Error("No Set-Cookie header found in login response");
-        }
-        // Match the cookie name exactly to avoid matching a future
-        // authTokenRefresh cookie (startsWith would catch it).
-        const authCookie = cookies.find((c) => {
-            const kv = c.split(";")[0];
-            return kv.slice(0, kv.indexOf("=")) === "authToken";
-        });
-        if (!authCookie) {
-            throw new Error("No authToken cookie found in login response");
-        }
-        // Take everything after the FIRST "=" up to the first ";".
-        // Splitting on "=" would truncate base64 values containing "=" padding.
-        const kv = authCookie.split(";")[0];
-        const token = kv.slice(kv.indexOf("=") + 1);
-        return token;
+        return extractAuthTokenFromSetCookie(response.headers["set-cookie"]);
     }
     catch (error) {
         // Avoid leaking the full server response body by default; log only the
