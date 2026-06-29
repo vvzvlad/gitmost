@@ -121,6 +121,7 @@ export function htmlToMarkdown(html: string): string {
     mathBlock,
     iframeEmbed,
     htmlEmbed,
+    spoiler,
     image,
     video,
     footnoteReference,
@@ -224,6 +225,29 @@ function htmlEmbed(turndownService: _TurndownService) {
     replacement: function (_content: string, node: HTMLInputElement) {
       const encoded = node.getAttribute('data-source') || '';
       return `\n\n<!--html-embed:${encoded}-->\n\n`;
+    },
+  });
+}
+
+/**
+ * Serialize the `spoiler` inline mark to lossless raw inline HTML.
+ *
+ * Markdown has no native spoiler syntax, so we emit the same `<span
+ * data-spoiler="true">…</span>` the mark renders. `marked` passes inline raw HTML
+ * through untouched, and `generateJSON` restores the mark via its parseHTML, so
+ * the round-trip MD -> HTML -> JSON keeps the spoiler intact. The UI-only
+ * `is-revealed` state is never serialized.
+ */
+function spoiler(turndownService: _TurndownService) {
+  turndownService.addRule('spoiler', {
+    filter: function (node: HTMLInputElement) {
+      return (
+        node.nodeName === 'SPAN' &&
+        node.getAttribute('data-spoiler') === 'true'
+      );
+    },
+    replacement: function (content: string) {
+      return `<span data-spoiler="true">${content}</span>`;
     },
   });
 }

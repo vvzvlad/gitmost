@@ -167,6 +167,38 @@ test("export emits comment anchors and they round-trip back to a comment mark", 
   });
 });
 
+test("export emits a spoiler span and it round-trips back to a spoiler mark", () => {
+  // A small ProseMirror doc with a text run carrying a `spoiler` mark. The MCP
+  // schema mirrors the editor-ext mark, so a spoiler must survive json -> md ->
+  // json instead of being silently dropped as an unrecognized mark.
+  const doc = {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "plot: " },
+          {
+            type: "text",
+            text: "the butler did it",
+            marks: [{ type: "spoiler" }],
+          },
+          { type: "text", text: " end" },
+        ],
+      },
+    ],
+  };
+
+  const body = convertProseMirrorToMarkdown(doc);
+  assert.match(body, /<span data-spoiler="true">the butler did it<\/span>/);
+
+  return markdownToProseMirror(body).then((rebuilt) => {
+    const spoilered = findTextWithMark(rebuilt, "spoiler");
+    assert.ok(spoilered, "expected a text node with a spoiler mark");
+    assert.equal(spoilered.text, "the butler did it");
+  });
+});
+
 test("drawio round-trips through export and import", () => {
   const doc = {
     type: "doc",

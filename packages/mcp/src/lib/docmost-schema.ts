@@ -299,6 +299,26 @@ const TextStyle = Mark.create({
 });
 
 /**
+ * Inline spoiler mark. Mirrors the @docmost/editor-ext `spoiler` mark so a
+ * document carrying a spoiler survives the MCP read -> transform -> write path
+ * (and markdown export) instead of silently dropping the unrecognized mark.
+ * packages/mcp does NOT depend on editor-ext, so the definition is kept local;
+ * it parses span[data-spoiler] and renders the same span[data-spoiler][class]
+ * the editor-ext mark emits.
+ */
+const Spoiler = Mark.create({
+  name: "spoiler",
+  // Don't bleed onto text typed at the boundary (mirrors editor-ext).
+  inclusive: false,
+  parseHTML() {
+    return [{ tag: "span[data-spoiler]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["span", { "data-spoiler": "true", class: "spoiler", ...HTMLAttributes }, 0];
+  },
+});
+
+/**
  * Passthrough definitions for the remaining Docmost-specific nodes.
  *
  * TiptapTransformer.toYdoc (the write path every mutation uses) throws
@@ -1213,6 +1233,7 @@ export const docmostExtensions = [
   // generateJSON drops <span style="color: ...">, defeating the color import.
   TextStyle,
   Comment,
+  Spoiler,
   Callout,
   Table,
   TableRow,

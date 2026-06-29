@@ -53,6 +53,7 @@ import {
   Subpages,
   Heading,
   Highlight,
+  Spoiler,
   Indent,
   UniqueID,
   SharedStorage,
@@ -116,6 +117,7 @@ import mentionRenderItems from "@/features/editor/components/mention/mention-sug
 import { ReactNodeViewRenderer, ReactMarkViewRenderer } from "@tiptap/react";
 import MentionView from "@/features/editor/components/mention/mention-view.tsx";
 import LinkView from "@/features/editor/components/link/link-view.tsx";
+import SpoilerView from "@/features/editor/components/spoiler/spoiler-view.tsx";
 import i18n from "@/i18n.ts";
 import { MarkdownClipboard } from "@/features/editor/extensions/markdown-clipboard.ts";
 import EmojiCommand from "./emoji-command";
@@ -237,6 +239,11 @@ export const mainExtensions = [
   SubScript,
   Highlight.configure({
     multicolor: true,
+  }),
+  Spoiler.configure({}).extend({
+    addMarkView() {
+      return ReactMarkViewRenderer(SpoilerView);
+    },
   }),
   Typography,
   TrailingNode,
