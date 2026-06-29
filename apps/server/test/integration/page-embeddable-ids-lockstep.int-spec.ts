@@ -42,10 +42,14 @@ describe('PageRepo embeddable-page set: getEmbeddablePageIds <-> countEmbeddable
     await destroyTestDb();
   });
 
-  // Insert a page with explicit text_content / deleted_at (createPage in db.ts
-  // sets neither), returning its id so the test can assert membership.
+  // Insert a page with explicit text_content / content / deleted_at (createPage
+  // in db.ts sets none), returning its id so the test can assert membership.
+  // `content` is the ProseMirror doc JSON (jsonb): postgres.js serializes a plain
+  // object to JSON for jsonb columns, so we pass it through only when supplied so
+  // the rest of the rows keep the DB default.
   async function insertPage(args: {
     textContent: string | null;
+    content?: unknown;
     deletedAt?: Date | null;
   }): Promise<string> {
     const id = randomUUID();
@@ -58,6 +62,7 @@ describe('PageRepo embeddable-page set: getEmbeddablePageIds <-> countEmbeddable
         spaceId,
         workspaceId,
         textContent: args.textContent,
+        ...(args.content !== undefined ? { content: args.content as any } : {}),
         deletedAt: args.deletedAt ?? null,
       })
       .execute();
@@ -96,29 +101,59 @@ describe('PageRepo embeddable-page set: getEmbeddablePageIds <-> countEmbeddable
     //     so the reindex can clear them).
     const noTextLiveEmbedding = await insertPage({ textContent: null });
     await insertEmbedding(noTextLiveEmbedding);
+    // (c) non-deleted page with EMPTY text_content but ProseMirror `content` JSON
+    //     carrying a real text node — the content-JSON clause. This pins BOTH the
+    //     third OR-clause AND the space-after-colon: jsonb stores the key/value
+    //     separator as `"type": "text"` (a space after the colon), which is why
+    //     the predicate needs `[[:space:]]*`. `reindexPage` extracts this text, so
+    //     the page IS embeddable and the reindex MUST visit it.
+    const noTextContentDoc = await insertPage({
+      textContent: null,
+      content: {
+        type: 'doc',
+        content: [
+          { type: 'paragraph', content: [{ type: 'text', text: 'hello' }] },
+        ],
+      },
+    });
 
     // OUT of the set ----------------------------------------------------------
-    // (c) non-deleted, text_content NULL, no embeddings.
+    // (d) non-deleted, text_content NULL, no embeddings.
     await insertPage({ textContent: null });
-    // (d) non-deleted, whitespace-only text (regex requires a non-space char).
+    // (e) non-deleted, whitespace-only text (regex requires a non-space char).
     await insertPage({ textContent: '   \n\t  ' });
-    // (e) deleted page WITH body text — excluded by the non-deleted predicate.
+    // (f) deleted page WITH body text — excluded by the non-deleted predicate.
     await insertPage({
       textContent: 'deleted but had text',
       deletedAt: new Date(),
     });
-    // (f) non-deleted, no text, with ONLY a DELETED embedding row — the EXISTS
+    // (g) non-deleted, no text, with ONLY a DELETED embedding row — the EXISTS
     //     subquery filters pe.deleted_at IS NULL, so this stays out.
     const onlyDeletedEmbedding = await insertPage({ textContent: null });
     await insertEmbedding(onlyDeletedEmbedding, { deletedAt: new Date() });
+    // (h) non-deleted, empty text_content, content JSON with ONLY a math atom
+    //     node — its LaTeX lives in `attrs.text` (a `"text":` KEY, not a
+    //     `"type":"text"` text node) and has no text serializer, so `jsonToText`
+    //     yields nothing and the page produces zero embeddings. The predicate
+    //     keys on the structural `"type":"text"` marker, so this stays OUT (a
+    //     bare `"text":` match would wrongly inflate the denominator).
+    await insertPage({
+      textContent: null,
+      content: {
+        type: 'doc',
+        content: [{ type: 'mathBlock', attrs: { text: 'E=mc^2' } }],
+      },
+    });
 
     const ids = await repo.getEmbeddablePageIds(workspaceId);
     const count = await repo.countEmbeddablePages(workspaceId);
 
     // The two queries agree on the size (the load-bearing lockstep invariant)...
     expect(ids.length).toBe(count);
-    // ...and the set is exactly the two qualifying pages, nothing else.
-    expect(new Set(ids)).toEqual(new Set([withText, noTextLiveEmbedding]));
-    expect(count).toBe(2);
+    // ...and the set is exactly the three qualifying pages, nothing else.
+    expect(new Set(ids)).toEqual(
+      new Set([withText, noTextLiveEmbedding, noTextContentDoc]),
+    );
+    expect(count).toBe(3);
   });
 });

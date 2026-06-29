@@ -182,7 +182,11 @@ describe('AiSettingsService.reindex progress seed', () => {
     );
     const ttl = reindexProgress.start.mock.calls[0][2];
     expect(ttl).toBeGreaterThan(0);
-    expect(ttl).toBeLessThanOrEqual(60); // short, not the full 1h record TTL
+    // Short pre-seed TTL, distinct from the full 1h (3600s) record TTL, but
+    // pinned to the client poll cap (120s) so a still-pending run can't expire
+    // into a false "done" while the client is still polling (F11).
+    expect(ttl).toBe(120);
+    expect(ttl).toBeLessThanOrEqual(120);
     expect(aiQueue.add).toHaveBeenCalledTimes(1);
     // Seed must precede the enqueue so the first poll already reports done=0.
     expect(order).toEqual(['start', 'add']);

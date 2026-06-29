@@ -187,15 +187,19 @@ export class EmbeddingIndexerService {
   /**
    * (Re)build embeddings for the EMBEDDABLE page set of a workspace — the same
    * set countEmbeddablePages counts (via getEmbeddablePageIds): non-deleted pages
-   * that have non-empty textContent OR already have a stored embedding row, NOT
-   * every non-deleted page. Iterating this set keeps the live `total` equal to
-   * the steady-state denominator, so the progress counter climbs 0 -> total and
-   * matches the before/after DB coverage exactly. Text-less pages are correctly
-   * skipped (reindexPage no-ops on them); a page that lost its text but still has
-   * stale embeddings stays in the set (the EXISTS clause) so it is visited and
-   * its stale rows are cleared. Used by the bulk reindex
-   * (WORKSPACE_CREATE_EMBEDDINGS, fired when AI Search is enabled and by the
-   * manual "Reindex now" action).
+   * that qualify under any of the three clauses of `embeddablePredicate` —
+   * non-empty textContent, OR an empty/null textContent whose ProseMirror
+   * `content` JSON has at least one text node (`"type":"text"`) that `jsonToText`
+   * can extract, OR an already-stored (non-deleted) embedding row — NOT every
+   * non-deleted page. Iterating this set keeps the live `total` equal to the
+   * steady-state denominator, so the progress counter climbs 0 -> total and
+   * matches the before/after DB coverage exactly. A page with truly no
+   * extractable text (empty textContent AND content with only non-text/atom
+   * nodes such as math) is correctly skipped (reindexPage no-ops on it); a page
+   * that lost its text but still has stale embeddings stays in the set (the
+   * EXISTS clause) so it is visited and its stale rows are cleared. Used by the
+   * bulk reindex (WORKSPACE_CREATE_EMBEDDINGS, fired when AI Search is enabled
+   * and by the manual "Reindex now" action).
    *
    * Resolves the embeddings model once up front: if the workspace has no
    * embeddings provider configured, the whole batch is skipped (otherwise each
@@ -223,13 +227,16 @@ export class EmbeddingIndexerService {
         throw err;
       }
 
-      // Iterate the EMBEDDABLE set (same predicate as countEmbeddablePages), NOT
-      // every non-deleted page: this makes `total` here equal the steady-state
-      // denominator, so the live counter climbs 0 -> total and matches the
-      // before/after DB count exactly (no 478 -> 500 -> 478 denominator jump).
-      // Text-less pages are correctly skipped — reindexPage no-ops on them, and
-      // a page that lost its text but still has stale embeddings IS in this set
-      // (the EXISTS clause) so it is still visited and its stale rows cleared.
+      // Iterate the EMBEDDABLE set (same three-clause predicate as
+      // countEmbeddablePages), NOT every non-deleted page: this makes `total`
+      // here equal the steady-state denominator, so the live counter climbs
+      // 0 -> total and matches the before/after DB count exactly (no
+      // 478 -> 500 -> 478 denominator jump). Pages whose text lives in the
+      // ProseMirror `content` JSON (a text node) even with empty text_content ARE
+      // in this set (the content-JSON clause) and get embedded; a page with no
+      // extractable text at all is correctly skipped — reindexPage no-ops on it —
+      // and a page that lost its text but still has stale embeddings IS in this
+      // set (the EXISTS clause) so it is still visited and its stale rows cleared.
       const pageIds = await this.pageRepo.getEmbeddablePageIds(workspaceId);
       const total = pageIds.length;
       const startedAt = Date.now();

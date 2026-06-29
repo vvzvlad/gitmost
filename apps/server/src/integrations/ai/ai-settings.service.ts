@@ -33,14 +33,27 @@ export function parsePositiveInt(raw: unknown): number | undefined {
 
 /**
  * TTL (seconds) for the enqueue-time progress PRE-SEED written by `reindex()`
- * before the worker starts. Deliberately SHORT: if `aiQueue.add()` de-duplicates
- * against a job that is just finishing (the worker's finally already ran
- * `clear()` but removeOnComplete hasn't yet removed the job), no new worker runs
- * to overwrite/clear this seed — so a short TTL lets the phantom "reindexing:
- * 0 of N" expire in seconds instead of sticking for the full 1h record TTL. A
- * worker that DOES start re-seeds with the full TTL, so a real run is unaffected.
+ * before the worker starts. Deliberately SHORT relative to the full 1h record
+ * TTL: if `aiQueue.add()` de-duplicates against a job that is just finishing
+ * (the worker's finally already ran `clear()` but removeOnComplete hasn't yet
+ * removed the job), no new worker runs to overwrite/clear this seed — so this
+ * shorter TTL lets the phantom "reindexing: 0 of N" expire instead of sticking
+ * for the full 1h record TTL. A worker that DOES start re-seeds with the full
+ * TTL, so a real run is unaffected.
+ *
+ * It MUST be >= the client poll cap (REINDEX_POLL_CAP_MS = 120000ms in
+ * ai-provider-settings.tsx) though: the AI_QUEUE worker runs at concurrency 1
+ * and shares the queue with page-level embedding jobs, so a queued reindex can
+ * wait well beyond a few dozen seconds before the worker re-seeds with the full
+ * TTL. If the pre-seed expired while the job is still pending, `get()` returns
+ * null and getMasked() falls back to the steady-state COUNT (indexedPages ==
+ * totalPages, reindexing=false) — the client reads that as "done & fully
+ * indexed", clears its deadline and STOPS polling, so the admin never sees the
+ * real climb. Pinning the pre-seed TTL to the client cap means a deduped phantom
+ * is bounded to ~120s — the same window the client already polls — and a genuine
+ * pending run never expires-into-"done" inside that window.
  */
-const PRE_SEED_TTL_SECONDS = 45;
+const PRE_SEED_TTL_SECONDS = 120;
 
 /**
  * Shape of the partial update accepted by `update`. Mirrors the validated
@@ -128,10 +141,13 @@ export class AiSettingsService {
     let seeded = false;
     if ((await this.reindexProgress.get(workspaceId)) === null) {
       const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
-      // Short TTL: if add() below de-duplicates against a just-finishing job
-      // whose worker already clear()ed but isn't removed yet, no worker runs to
-      // clear this seed — the short TTL expires the phantom record in seconds
-      // rather than leaving a stuck "reindexing: 0 of N" for the full record TTL.
+      // Short TTL (vs the full 1h record TTL): if add() below de-duplicates
+      // against a just-finishing job whose worker already clear()ed but isn't
+      // removed yet, no worker runs to clear this seed — the shorter TTL expires
+      // the phantom record rather than leaving a stuck "reindexing: 0 of N" for
+      // the full record TTL. It is kept >= the client poll cap (120s) so a
+      // genuine but still-pending run never expires into a false "done" while
+      // the client is still polling (see PRE_SEED_TTL_SECONDS).
       await this.reindexProgress.start(
         workspaceId,
         totalPages,
