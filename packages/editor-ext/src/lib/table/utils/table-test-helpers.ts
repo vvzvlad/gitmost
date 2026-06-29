@@ -13,8 +13,9 @@ import { convertTableNodeToArrayOfRows } from "./convert-table-node-to-array-of-
  * means a schema change (e.g. cellAttributes) is applied once instead of being
  * copied across every test file.
  *
- * This is a test-only helper (not shipped) and intentionally contains no test
- * cases, so vitest does not pick it up as a spec file.
+ * This is a test-only helper (not shipped). Its name does not match vitest's
+ * `*.{test,spec}.ts` include glob, so it is not collected as a spec file —
+ * adding test cases here would NOT make them run; put them in a `*.test.ts`.
  */
 
 const tNodes = tableNodes({
