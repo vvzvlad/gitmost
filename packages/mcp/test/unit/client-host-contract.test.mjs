@@ -28,8 +28,8 @@ import { DocmostClient } from "../../build/index.js";
 // in the server's DocmostClientLike interface (the in-app per-user tool adapter
 // only — it is a SUBSET of the DocmostClient surface — covers only what the in-app adapter
 // consumes; the standalone MCP transport (packages/mcp/src/index.ts) calls additional
-// client methods (insertImage/replaceImage/deleteComment/updateComment/insertFootnote/
-// uploadImage) that this guard does NOT track — the MCP transport's own typecheck covers those). Full type-derivation
+// client methods (insertImage/replaceImage/deleteComment/updateComment/insertFootnote)
+// that this guard does NOT track — the MCP transport's own typecheck covers those). Full type-derivation
 // of DocmostClientLike from this class is deferred (see the staged plan in
 // docmost-client.loader.ts): the package emits no declarations and the real
 // (inferred, concrete) return types conflict with the host's loose
