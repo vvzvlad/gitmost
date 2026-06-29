@@ -70,18 +70,22 @@ export function findBreadcrumbPath(
   path: SpaceTreeNode[] = [],
 ): SpaceTreeNode[] | null {
   for (const node of tree) {
-    if (!node.name || node.name.trim() === "") {
-      node.name = "Untitled";
-    }
+    // Never mutate the input tree (it is the live, shared sidebar tree state).
+    // When a node has no usable name, surface "Untitled" via a shallow copy that
+    // only the returned breadcrumb chain sees — the source node stays untouched.
+    const displayNode: SpaceTreeNode =
+      !node.name || node.name.trim() === ""
+        ? { ...node, name: "Untitled" }
+        : node;
 
     if (node.id === pageId) {
-      return [...path, node];
+      return [...path, displayNode];
     }
 
     if (node.children) {
       const newPath = findBreadcrumbPath(node.children, pageId, [
         ...path,
-        node,
+        displayNode,
       ]);
       if (newPath) {
         return newPath;

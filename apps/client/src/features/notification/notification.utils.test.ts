@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import i18n from "@/i18n.ts";
 import {
+  formatRelativeTime,
   getTimeGroup,
   groupNotificationsByTime,
 } from "@/features/notification/notification.utils.ts";
@@ -130,5 +132,61 @@ describe("groupNotificationsByTime", () => {
 
   it("returns an empty array for no notifications", () => {
     expect(groupNotificationsByTime([], labels)).toEqual([]);
+  });
+});
+
+describe("formatRelativeTime — relative buckets and absolute-date fallback", () => {
+  // Distinct fixed clock for the relative formatter (uses Date.now via `new
+  // Date()`), so the bucket boundaries are deterministic under fake timers.
+  const NOW = new Date("2026-06-15T12:00:00.000Z");
+  const MIN = 60_000;
+
+  beforeEach(() => {
+    vi.setSystemTime(NOW);
+  });
+
+  // ISO string `ms` milliseconds before NOW.
+  function ago(ms: number): string {
+    return new Date(NOW.getTime() - ms).toISOString();
+  }
+
+  it("returns the i18n 'now' label for anything under a minute", () => {
+    expect(formatRelativeTime(ago(0))).toBe(i18n.t("now"));
+    expect(formatRelativeTime(ago(59_000))).toBe(i18n.t("now"));
+  });
+
+  it("crosses into the minutes bucket exactly at 1 minute", () => {
+    expect(formatRelativeTime(ago(MIN - 1000))).toBe(i18n.t("now"));
+    expect(formatRelativeTime(ago(MIN))).toBe("1m");
+    expect(formatRelativeTime(ago(5 * MIN))).toBe("5m");
+    expect(formatRelativeTime(ago(59 * MIN))).toBe("59m");
+  });
+
+  it("crosses into the hours bucket exactly at 60 minutes", () => {
+    expect(formatRelativeTime(ago(60 * MIN - 1000))).toBe("59m");
+    expect(formatRelativeTime(ago(HOUR))).toBe("1h");
+    expect(formatRelativeTime(ago(23 * HOUR))).toBe("23h");
+  });
+
+  it("crosses into the days bucket exactly at 24 hours", () => {
+    expect(formatRelativeTime(ago(24 * HOUR - 1000))).toBe("23h");
+    expect(formatRelativeTime(ago(DAY))).toBe("1d");
+    expect(formatRelativeTime(ago(6 * DAY))).toBe("6d");
+  });
+
+  it("falls back to an absolute short date once >= 7 days old", () => {
+    // 6d -> still relative; 7d -> absolute date (no longer N[mhd], and equal to
+    // the localized short-date of the source timestamp).
+    expect(formatRelativeTime(ago(6 * DAY))).toBe("6d");
+
+    const sevenDaysAgo = ago(7 * DAY);
+    const result = formatRelativeTime(sevenDaysAgo);
+    expect(result).not.toMatch(/^\d+[mhd]$/);
+    expect(result).not.toBe(i18n.t("now"));
+    const expected = new Intl.DateTimeFormat(i18n.language, {
+      month: "short",
+      day: "numeric",
+    }).format(new Date(sevenDaysAgo));
+    expect(result).toBe(expected);
   });
 });
