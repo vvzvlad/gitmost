@@ -9,6 +9,7 @@ import {
   IconStrikethrough,
   IconUnderline,
   IconMessage,
+  IconEyeOff,
 } from "@tabler/icons-react";
 import clsx from "clsx";
 import classes from "./bubble-menu.module.css";
@@ -74,6 +75,7 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
         isStrike: ctx.editor.isActive("strike"),
         isCode: ctx.editor.isActive("code"),
         isComment: ctx.editor.isActive("comment"),
+        isSpoiler: ctx.editor.isActive("spoiler"),
       };
     },
   });
@@ -108,6 +110,12 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
       isActive: () => editorState?.isCode,
       command: () => props.editor.chain().focus().toggleCode().run(),
       icon: IconCode,
+    },
+    {
+      name: "Spoiler",
+      isActive: () => editorState?.isSpoiler,
+      command: () => props.editor.chain().focus().toggleSpoiler().run(),
+      icon: IconEyeOff,
     },
   ];
 
