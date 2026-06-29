@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nosniff` + restrictive CSP + attachment disposition for non-image mimes) and
   are RAM-only, bound to the instance that created them. Tunable via five
   `SANDBOX_*` env vars (see `.env.example`). (#243)
+- **Inline spoiler mark — hide text behind click-to-reveal blur.** Selected text
+  can be marked as a spoiler from a new bubble-menu toggle, or typed Discord-style
+  with the `||text||` input rule; the rendered span blurs until clicked to reveal.
+  The mark is preserved losslessly through Markdown export/import (as a raw
+  `<span data-spoiler="true">…</span>`) and on public shares. (#259)
 
 ### Changed
 

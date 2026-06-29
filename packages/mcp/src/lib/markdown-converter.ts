@@ -167,6 +167,12 @@ export function convertProseMirrorToMarkdown(content: any): string {
                 }
                 break;
               }
+              case "spoiler":
+                // Markdown has no native spoiler syntax, so emit the same
+                // lossless raw HTML the editor-ext turndown rule produces; the
+                // schema's Spoiler mark parses span[data-spoiler] back on import.
+                textContent = `<span data-spoiler="true">${textContent}</span>`;
+                break;
             }
           }
         }
