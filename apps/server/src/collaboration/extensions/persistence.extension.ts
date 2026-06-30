@@ -329,8 +329,10 @@ export class PersistenceExtension implements Extension {
             lastUpdatedSource === 'agent' &&
             page.lastUpdatedSource !== 'agent'
           ) {
+            // pageHistory.pageId is uuid-typed; use page.id (never the doc-name
+            // slugId) so a `page.<slugId>` doc cannot throw 22P02 here (#260).
             const lastHistory = await this.pageHistoryRepo.findPageLastHistory(
-              pageId,
+              page.id,
               { includeContent: true, trx },
             );
             const humanBaselineMissing =
@@ -398,11 +400,16 @@ export class PersistenceExtension implements Extension {
         }),
       );
 
-      await this.syncTransclusion(pageId, page.workspaceId, tiptapJson);
+      // Use the canonical page UUID (page.id), not the doc-name id, which may be
+      // a slugId for a `page.<slugId>` doc (#260). The transclusion/reference
+      // syncs write uuid-typed columns, so a slugId here threw Postgres 22P02.
+      await this.syncTransclusion(page.id, page.workspaceId, tiptapJson);
     }
 
     if (page) {
-      await this.collabHistory.addContributors(pageId, editingUserIds);
+      // Key contributors by the page UUID so they MATCH the PAGE_HISTORY job,
+      // which is enqueued with page.id and pops contributors by page.id (#260).
+      await this.collabHistory.addContributors(page.id, editingUserIds);
 
       const mentions = extractMentions(tiptapJson);
 
@@ -420,14 +427,17 @@ export class PersistenceExtension implements Extension {
             creatorId: m.creatorId,
           })),
           oldMentionedUserIds,
-          pageId,
+          // Canonical UUID, never the doc-name slugId (#260).
+          pageId: page.id,
           spaceId: page.spaceId,
           workspaceId: page.workspaceId,
         } as IPageMentionNotificationJob);
       }
 
       await this.aiQueue.add(QueueJob.PAGE_CONTENT_UPDATED, {
-        pageIds: [pageId],
+        // Canonical UUID: the embedding reindex resolves pages by uuid, so a
+        // slugId here threw Postgres 22P02 invalid-uuid (#260).
+        pageIds: [page.id],
         workspaceId: page.workspaceId,
       });
 

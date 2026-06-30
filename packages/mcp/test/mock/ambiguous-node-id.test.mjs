@@ -132,7 +132,7 @@ test("patch_node REFUSES an ambiguous (duplicate) id without writing to collab",
 
   await assert.rejects(
     () =>
-      client.patchNode("page-1", DUP_ID, {
+      client.patchNode("11111111-1111-4111-8111-111111111111", DUP_ID, {
         type: "paragraph",
         content: [{ type: "text", text: "replacement" }],
       }),
@@ -152,7 +152,7 @@ test("delete_node REFUSES an ambiguous (duplicate) id without writing to collab"
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
 
   await assert.rejects(
-    () => client.deleteNode("page-2", DUP_ID),
+    () => client.deleteNode("22222222-2222-4222-8222-222222222222", DUP_ID),
     /ambiguous/i,
     "delete_node must reject a duplicate-id target with an 'ambiguous' error",
   );

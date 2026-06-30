@@ -37,6 +37,11 @@ function makeClient(liveDoc) {
     async getCollabTokenWithReauth() {
       return "collab-token";
     }
+    // Identity resolution: this test isolates the footnote wrapper, so the
+    // slugId->uuid resolution (#260) is stubbed to a no-op and "p1" stays "p1".
+    async resolvePageId(pageId) {
+      return pageId;
+    }
     async mutatePage(pageId, token, apiUrl, transform) {
       calls.pageId = pageId;
       calls.token = token;

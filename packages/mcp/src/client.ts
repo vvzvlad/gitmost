@@ -133,6 +133,18 @@ export type DocmostMcpConfig = { apiUrl: string } & (
     };
   };
 
+// Canonical UUID shape (versions 1–8, matching the `uuid` package's `validate`
+// that the server's isValidUUID uses). page.repo.ts treats any non-UUID pageId
+// as a slugId, so the MCP detects a UUID locally and skips a /pages/info
+// round-trip in resolvePageId. A 10-char nanoid slugId never contains dashes,
+// so it can never be misread as a UUID here.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
 export class DocmostClient {
   private client: AxiosInstance;
   private token: string | null = null;
@@ -160,6 +172,11 @@ export class DocmostClient {
   // can all call login() at once. Memoizing a single promise collapses that
   // thundering herd into ONE /auth/login request that everyone awaits.
   private loginPromise: Promise<void> | null = null;
+  // Canonical-UUID cache for resolvePageId: maps an agent-supplied pageId
+  // (slugId OR uuid) to the page's canonical UUID, so repeated collab edits on
+  // the same page do not re-fetch /pages/info. Both slugId->uuid and uuid->uuid
+  // are cached. See resolvePageId for why every collab doc must open by UUID.
+  private pageIdCache = new Map<string, string>();
 
   // Two construction forms:
   //  - new DocmostClient(config)                  // discriminated union (current)
@@ -751,6 +768,37 @@ export class DocmostClient {
     return response.data?.data ?? response.data;
   }
 
+  /**
+   * Resolve an agent-supplied pageId to the page's CANONICAL UUID (`page.id`),
+   * so every collaboration document the MCP opens is named `page.<uuid>` — the
+   * SAME name the web editor always uses (`page.${page.id}`).
+   *
+   * The agent commonly passes a 10-char public slugId (from URLs/listings) as
+   * the pageId. The web editor opens the collab doc by UUID, but the MCP used to
+   * pass that slugId straight into the collab doc name (`page.<slugId>`). For one
+   * DB row that produced TWO independent Yjs documents whose debounced stores
+   * clobbered each other — the agent's edit was silently lost (#260).
+   *
+   * A UUID input short-circuits with no network round-trip. A slugId is resolved
+   * once via getPageRaw and cached (both slugId->uuid and uuid->uuid), so
+   * repeated edits on the same page add no extra request.
+   */
+  private async resolvePageId(pageId: string): Promise<string> {
+    if (isUuid(pageId)) return pageId;
+    const cached = this.pageIdCache.get(pageId);
+    if (cached) return cached;
+    const data = await this.getPageRaw(pageId);
+    const uuid = data?.id;
+    if (typeof uuid !== "string" || !uuid) {
+      throw new Error(
+        `Could not resolve a canonical page id for "${pageId}"`,
+      );
+    }
+    this.pageIdCache.set(pageId, uuid);
+    this.pageIdCache.set(uuid, uuid);
+    return uuid;
+  }
+
   async getPage(pageId: string) {
     await this.ensureAuthenticated();
     const resultData = await this.getPageRaw(pageId);
@@ -1083,12 +1131,14 @@ export class DocmostClient {
   ) {
     await this.ensureAuthenticated();
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Track insertion in an outer var, reset per-transform, so a collab retry
     // recomputes it cleanly (mirrors insertNode's pattern).
     let inserted = false;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -1126,10 +1176,12 @@ export class DocmostClient {
   async tableDeleteRow(pageId: string, tableRef: string, index: number) {
     await this.ensureAuthenticated();
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     let deleted = false;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -1174,10 +1226,12 @@ export class DocmostClient {
   ) {
     await this.ensureAuthenticated();
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     let updated = false;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -1313,6 +1367,10 @@ export class DocmostClient {
    */
   async updatePage(pageId: string, content: string, title?: string) {
     await this.ensureAuthenticated();
+    // Open the collab doc by the canonical UUID, never the slugId (#260). The
+    // REST /pages/update title write below keeps the agent-supplied id (the
+    // server resolves a slugId there).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Write the BODY first, then the title (#159 split-brain). If the collab
     // body write fails (e.g. a persist timeout), the title must be left
@@ -1324,7 +1382,7 @@ export class DocmostClient {
     try {
       collabToken = await this.getCollabTokenWithReauth();
       mutation = await updatePageContentRealtime(
-        pageId,
+        pageUuid,
         content,
         collabToken,
         this.apiUrl,
@@ -1587,8 +1645,10 @@ export class DocmostClient {
     // Write the BODY first, then the title (#159 split-brain): a failed body
     // write (e.g. persist timeout) must not leave a new title over the old body.
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
     const mutation = await this.replacePage(
-      pageId,
+      pageUuid,
       doc,
       collabToken,
       this.apiUrl,
@@ -1630,9 +1690,11 @@ export class DocmostClient {
       throw new Error("insert_footnote: text is required");
     }
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
     let result: { footnoteId: string; reused: boolean } | null = null;
     const mutation = await this.mutatePage(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc: any) => {
@@ -1740,8 +1802,10 @@ export class DocmostClient {
     // PAGE import: canonicalize footnotes (see markdownToProseMirrorCanonical).
     const doc = await markdownToProseMirrorCanonical(body);
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
     const mutation = await replacePageContent(
-      pageId,
+      pageUuid,
       doc,
       collabToken,
       this.apiUrl,
@@ -1840,8 +1904,10 @@ export class DocmostClient {
     const canonical = canonicalizeFootnotes(content);
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the TARGET collab doc by its canonical UUID, never the slugId (#260).
+    const targetUuid = await this.resolvePageId(targetPageId);
     const mutation = await this.replacePage(
-      targetPageId,
+      targetUuid,
       canonical,
       collabToken,
       this.apiUrl,
@@ -1864,6 +1930,8 @@ export class DocmostClient {
     await this.ensureAuthenticated();
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Apply the edits against the LIVE synced document, not the debounced REST
     // snapshot, so concurrent human edits/comments are preserved. applyTextEdits
@@ -1878,7 +1946,7 @@ export class DocmostClient {
     // happened.
     let wrote = false;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -1978,12 +2046,14 @@ export class DocmostClient {
     }
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Track the replacement count in an outer var, reset per-transform, so a
     // collab retry recomputes it cleanly (mirrors replaceImage's pattern).
     let replaced = 0;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -2066,12 +2136,14 @@ export class DocmostClient {
     }
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Track insertion in an outer var, reset per-transform, so a collab retry
     // recomputes it cleanly (mirrors replaceImage's pattern).
     let inserted = false;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -2120,12 +2192,14 @@ export class DocmostClient {
     await this.ensureAuthenticated();
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Track the deletion count in an outer var, reset per-transform, so a
     // collab retry recomputes it cleanly (mirrors replaceImage's pattern).
     let deleted = 0;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -2414,8 +2488,11 @@ export class DocmostClient {
     let anchored = false;
     try {
       const collabToken = await this.getCollabTokenWithReauth();
+      // Open the collab doc by the canonical UUID, never the slugId (#260). The
+      // /comments/create REST call above keeps the agent-supplied id.
+      const pageUuid = await this.resolvePageId(pageId);
       const mutation = await mutatePageContent(
-        pageId,
+        pageUuid,
         collabToken,
         this.apiUrl,
         (liveDoc) => {
@@ -2893,6 +2970,9 @@ export class DocmostClient {
     if (opts.alt) node.attrs.alt = opts.alt;
 
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260). The
+    // uploadImage /files/upload call above keeps the agent-supplied id.
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Recursively collect the plain text of a top-level block.
     const blockText = (n: any): string => {
@@ -2907,7 +2987,7 @@ export class DocmostClient {
     // calls (serialized by the per-page lock) each see the previous insertion.
     let placement: "replaced" | "after" | "appended" | undefined;
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       (liveDoc) => {
@@ -3019,6 +3099,13 @@ export class DocmostClient {
     opts: { align?: "left" | "center" | "right"; alt?: string } = {},
   ) {
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260). The
+    // page lock must ALSO key on the UUID so this operation serializes against
+    // other writes to the same page (mutatePageContent now locks by the resolved
+    // UUID too); locking by the raw slugId here would desync the mutex key and
+    // reopen the TOCTOU/orphan-attachment window the lock closes. uploadImage
+    // keeps the agent-supplied id (it hits REST, not the collab doc).
+    const pageUuid = await this.resolvePageId(pageId);
 
     // Hold ONE per-page lock for the WHOLE operation (scan -> upload -> write).
     // Previously the scan and the write were two separate mutatePageContent
@@ -3031,7 +3118,7 @@ export class DocmostClient {
     // reentrant, so the self-locking mutatePageContent would deadlock here)
     // closes that TOCTOU window. uploadImage hits /files/upload over plain HTTP
     // and does not touch the page lock, so it is safe to call while held.
-    return withPageLock(pageId, async () => {
+    return withPageLock(pageUuid, async () => {
       // STEP 1: read-only live check. Scan the live document for any image node
       // matching oldAttachmentId BEFORE uploading anything, so a wrong/stale id
       // throws without ever creating an orphan attachment.
@@ -3050,7 +3137,7 @@ export class DocmostClient {
         }
       };
 
-      await this.mutateLiveContentUnlocked(pageId, collabToken, (liveDoc) => {
+      await this.mutateLiveContentUnlocked(pageUuid, collabToken, (liveDoc) => {
         matchFound = false; // reset per-transform (collab may retry the read).
         const doc =
           liveDoc && liveDoc.type === "doc"
@@ -3105,7 +3192,7 @@ export class DocmostClient {
       };
 
       const mutation = await this.mutateLiveContentUnlocked(
-        pageId,
+        pageUuid,
         collabToken,
         (liveDoc) => {
           // Reset per-transform so collab retries recompute cleanly (no double-count).
@@ -3214,8 +3301,11 @@ export class DocmostClient {
     // JSON write path) before writing it back.
     this.validateDocUrls(version.content);
     const collabToken = await this.getCollabTokenWithReauth();
+    // version.pageId is the page entity id (already a UUID); resolvePageId
+    // short-circuits a UUID with no round-trip, so this is defensive only (#260).
+    const pageUuid = await this.resolvePageId(version.pageId);
     const mutation = await mutatePageContent(
-      version.pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       () => version.content,
@@ -3414,8 +3504,10 @@ export class DocmostClient {
 
     // Apply atomically against the live doc.
     const collabToken = await this.getCollabTokenWithReauth();
+    // Open the collab doc by the canonical UUID, never the slugId (#260).
+    const pageUuid = await this.resolvePageId(pageId);
     const mutation = await mutatePageContent(
-      pageId,
+      pageUuid,
       collabToken,
       this.apiUrl,
       runTransform,
