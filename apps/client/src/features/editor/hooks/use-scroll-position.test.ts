@@ -74,6 +74,51 @@ describe("useScrollPosition", () => {
     unmount();
   });
 
+  it("(a2) the restore target is captured at mount and survives a fresh scroll@0 clobber", () => {
+    vi.useFakeTimers();
+    // A previous session saved 500.
+    window.sessionStorage.setItem(`${KEY_PREFIX}clob`, "500");
+
+    const { result } = renderHook(() => useScrollPosition("clob"));
+
+    // On load the page is at the top; a scroll@0 fires and overwrites storage
+    // with 0. This is exactly the clobber the synchronous mount-capture defends
+    // against: the stored value becomes "0", but the target was already captured.
+    setScrollY(0);
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    expect(window.sessionStorage.getItem(`${KEY_PREFIX}clob`)).toBe("0");
+
+    // Restore still scrolls to 500 (the captured target), NOT the clobbered 0.
+    // If the capture were moved into an effect (after handlers register), it
+    // would read the clobbered 0 and this assertion would fail.
+    setScrollHeight(2000); // maxScroll = 1200 >= 500
+    act(() => {
+      result.current.restoreScrollPosition();
+    });
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+  });
+
+  it("(a3) restores at most once per mount even if called again", () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem(`${KEY_PREFIX}once`, "500");
+    setScrollHeight(2000); // tall enough to restore synchronously
+
+    const { result } = renderHook(() => useScrollPosition("once"));
+    act(() => {
+      result.current.restoreScrollPosition();
+    });
+    expect(window.scrollTo).toHaveBeenCalledTimes(1);
+
+    // A second call (e.g. the wiring effect re-running on [showStatic, editor,
+    // restoreScrollPosition]) must NOT scroll again and yank the reader.
+    act(() => {
+      result.current.restoreScrollPosition();
+    });
+    expect(window.scrollTo).toHaveBeenCalledTimes(1);
+  });
+
   it("(b) does not restore when the URL has a #hash anchor", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem(`${KEY_PREFIX}p2`, "500");

@@ -25,7 +25,11 @@ function readStorage(pageId: string): number | null {
     if (raw === null) return null;
     const value = Number.parseInt(raw, 10);
     return Number.isFinite(value) ? value : null;
-  } catch {
+  } catch (err) {
+    // Best-effort feature: storage may be unavailable (private mode / quota).
+    // No user-facing notification (a missed scroll restore is not actionable),
+    // but log per the AGENTS.md "errors must never be swallowed" rule.
+    console.warn("[useScrollPosition] sessionStorage read failed", err);
     return null;
   }
 }
@@ -33,8 +37,10 @@ function readStorage(pageId: string): number | null {
 function writeStorage(pageId: string, scrollY: number): void {
   try {
     window.sessionStorage.setItem(storageKey(pageId), String(Math.round(scrollY)));
-  } catch {
-    // Silently ignore: storage unavailable (private mode / quota exceeded).
+  } catch (err) {
+    // Storage unavailable (private mode / quota). Non-actionable for the user,
+    // but log it rather than swallow silently (AGENTS.md error-handling rule).
+    console.warn("[useScrollPosition] sessionStorage write failed", err);
   }
 }
 
@@ -50,6 +56,14 @@ function writeStorage(pageId: string, scrollY: number): void {
 export function useScrollPosition(pageId: string): {
   restoreScrollPosition: () => void;
 } {
+  // CONTRACT: this hook assumes PageEditor REMOUNTS per page — page.tsx renders
+  // `<MemoizedFullEditor key={page.id} ...>`, so switching pages creates a fresh
+  // hook instance with fresh refs. These refs latch per-mount and are NOT reset
+  // when `pageId` changes in place (only the effect re-runs on [pageId]). If that
+  // `key={page.id}` is ever removed, restore would silently break on the 2nd page
+  // (refs would hold the first page's target / already-restored flag) — in that
+  // case the refs must be reset on a pageId change.
+  //
   // The target Y captured synchronously at mount, BEFORE any scroll/visibility
   // handler can overwrite the stored value with a fresh 0 (the page starts
   // scrolled to top on load). `null` means "not yet captured".
