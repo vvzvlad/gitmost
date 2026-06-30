@@ -156,6 +156,36 @@ describe("useStreamingDictation — in-order segment emitter", () => {
     expect(emitted).toEqual(["survivor"]);
   });
 
+  it("an OUT-OF-ORDER failed segment is buffered as empty and skipped without stalling later text", async () => {
+    const emitted: string[] = [];
+    await startRecording((t) => emitted.push(t));
+    await emitSegments(3);
+
+    // seq 1 (NOT next-to-emit) fails first: it takes the else branch — an empty
+    // placeholder is buffered (resultsRef.set(seq, "")) so the emitter can later
+    // skip it. One notification, nothing emitted yet (seq 0 still gates).
+    await act(async () => {
+      h.pending[1].reject({ message: "boom" });
+    });
+    expect(notifyShow).toHaveBeenCalledTimes(1);
+    expect(emitted).toEqual([]);
+
+    // seq 0 flushes; the drain then reaches the buffered empty seq 1 and SKIPS
+    // past it to seq 2.
+    await act(async () => {
+      h.pending[0].resolve("alpha");
+    });
+    expect(emitted).toEqual(["alpha"]);
+
+    // seq 2 emits — proving the empty placeholder let the emitter advance past
+    // the failed seq 1. Without the else branch's placeholder the drain would
+    // stall at the missing seq 1 and "gamma" would never flush.
+    await act(async () => {
+      h.pending[2].resolve("gamma");
+    });
+    expect(emitted).toEqual(["alpha", "gamma"]);
+  });
+
   it("ignores a transcription that resolves AFTER cancel() (stale epoch — no emit)", async () => {
     const emitted: string[] = [];
     const hook = await startRecording((t) => emitted.push(t));
