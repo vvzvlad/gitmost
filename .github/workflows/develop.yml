@@ -75,7 +75,9 @@ jobs:
       APP_URL: http://localhost:3000
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_DB: docmost
           POSTGRES_USER: docmost
@@ -88,7 +90,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-
@@ -135,7 +138,9 @@ jobs:
       NODE_ENV: production
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_DB: docmost
           POSTGRES_USER: docmost
@@ -148,7 +153,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-

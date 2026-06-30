@@ -27,7 +27,9 @@ jobs:
     # TEST_*_URL overrides are needed.
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_USER: docmost
           POSTGRES_PASSWORD: docmost_dev_pw
@@ -40,7 +42,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-
