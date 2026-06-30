@@ -10,6 +10,7 @@ import {
   IconUnderline,
   IconMessage,
   IconEyeOff,
+  IconClearFormatting,
 } from "@tabler/icons-react";
 import clsx from "clsx";
 import classes from "./bubble-menu.module.css";
@@ -116,6 +117,14 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
       isActive: () => editorState?.isSpoiler,
       command: () => props.editor.chain().focus().toggleSpoiler().run(),
       icon: IconEyeOff,
+    },
+    {
+      name: "Clear formatting",
+      // Action, not a toggle — never show an active/highlighted state.
+      isActive: () => false,
+      // Mirror the fixed-toolbar behavior: strip all inline marks from the selection.
+      command: () => props.editor.chain().focus().unsetAllMarks().run(),
+      icon: IconClearFormatting,
     },
   ];
 
