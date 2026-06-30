@@ -19,6 +19,11 @@ import { WebSocketServer } from "ws";
 import { Hocuspocus } from "@hocuspocus/server";
 import { DocmostClient } from "../../build/client.js";
 import { buildYDoc } from "../../build/lib/collaboration.js";
+// Import the SAME page-lock module instance that build/client.js imports. ESM
+// caches modules by resolved URL, so this `withPageLock` shares the very
+// per-page mutex map (`chains`) the client uses — letting the replaceImage test
+// probe which key the operation actually locks on (see that test for details).
+import { withPageLock } from "../../build/lib/page-lock.js";
 
 const SLUG = "dwzDdgPep2"; // 10-char nanoid public id (no dashes)
 const UUID = "11111111-1111-4111-8111-111111111111"; // canonical page.id
@@ -40,6 +45,32 @@ function seedDoc() {
   };
 }
 
+// Same shape as seedDoc but with one image node carrying attachmentId "att-old"
+// (mirrors what client.addImage emits). replaceImage scans the live doc for this
+// node, so it must survive the Yjs round-trip with attachmentId intact.
+function seedDocWithImage() {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        attrs: { id: "p1" },
+        content: [{ type: "text", text: "hello world" }],
+      },
+      {
+        type: "image",
+        attrs: {
+          src: "/api/files/att-old/old.png",
+          attachmentId: "att-old",
+          size: 10,
+          align: "center",
+          width: null,
+        },
+      },
+    ],
+  };
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     let raw = "";
@@ -51,14 +82,19 @@ function readBody(req) {
 // Stand up an HTTP server that authenticates, hands out a collab token, serves
 // /pages/info (slugId -> uuid resolution), and upgrades /collab to a Hocuspocus
 // instance whose onLoadDocument records the requested documentName.
-async function spawnCollabStack() {
+// opts.seed: a function returning the ProseMirror doc the collab server loads
+// (defaults to seedDoc). opts.onUpload: an optional async hook invoked when
+// /files/upload is hit, letting a test GATE the upload (hold replaceImage inside
+// its page lock). Existing callers pass no opts and are unaffected.
+async function spawnCollabStack(opts = {}) {
+  const seed = opts.seed ?? seedDoc;
   const state = { docNames: [], pagesInfoCalls: [] };
 
   const hocuspocus = new Hocuspocus({
     quiet: true,
     async onLoadDocument({ documentName }) {
       state.docNames.push(documentName);
-      return buildYDoc(seedDoc());
+      return buildYDoc(seed());
     },
   });
 
@@ -99,6 +135,26 @@ async function spawnCollabStack() {
             spaceId: "space-1",
             content: seedDoc(),
           },
+        }),
+      );
+      return;
+    }
+    if (req.url && req.url.endsWith(".png")) {
+      // Serve image bytes for fetchRemoteImage (replaceImage downloads the new
+      // image before uploading it). Any non-empty image/* body is enough;
+      // fetchRemoteImage does not validate PNG magic bytes.
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      return;
+    }
+    if (req.url === "/api/files/upload") {
+      // Optional gate: a test can hold replaceImage parked here (inside its page
+      // lock, after the scan) to probe the lock key. Default: respond at once.
+      if (opts.onUpload) await opts.onUpload();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          data: { id: "att-new", fileName: "replacement.png", fileSize: 8 },
         }),
       );
       return;
@@ -229,5 +285,103 @@ test("a repeated slugId edit resolves the UUID only once (cache)", async () => {
     state.pagesInfoCalls.length,
     1,
     "the slugId->uuid resolution must be cached across edits on the same page",
+  );
+});
+
+// PR#265 reviewer finding F1. replaceImage is the one path where the resolved
+// UUID gates BOTH (a) the collab-doc OPEN (mutateLiveContentUnlocked ->
+// page.<uuid>) AND (b) the per-page mutex key withPageLock(uuid). The lock
+// serializes the whole scan -> upload -> write against other writes to the same
+// page (which now also lock by the resolved UUID), closing a TOCTOU/orphan-
+// attachment window. A regression that re-keys this lock by the raw slugId would
+// desync it from mutatePageContent's UUID key and silently reopen that window.
+// This test pins both invariants and FAILS under either regression:
+//   - open by slugId  -> assertion (a) sees page.<slug> in docNames;
+//   - lock by slugId   -> assertion (b)'s UUID-keyed probe is no longer blocked.
+test("replaceImage opens by the resolved UUID AND keys its page lock by that UUID, not the slugId (#260 / PR#265 F1)", async () => {
+  // A gate that holds the /files/upload response open, so replaceImage parks
+  // INSIDE its page lock (after the read-only scan, mid-upload) until released.
+  let releaseUpload;
+  const uploadReleased = new Promise((r) => (releaseUpload = r));
+  let uploadHit;
+  const uploadStarted = new Promise((r) => (uploadHit = r));
+
+  const { state, baseURL } = await spawnCollabStack({
+    seed: seedDocWithImage,
+    onUpload: async () => {
+      uploadHit(); // replaceImage is now holding its page lock...
+      await uploadReleased; // ...and stays parked until the test releases it.
+    },
+  });
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+
+  // Kick off the replace but DO NOT await: it resolves SLUG->UUID, takes
+  // withPageLock(UUID), scan-opens page.<UUID>, finds the seeded "att-old"
+  // image, then blocks in uploadImage on our gate while still holding the lock.
+  // The image URL is served as image/png by the mock (the ".png" route above).
+  const imageUrl = `${baseURL}/x.png`;
+  const replacePromise = client.replaceImage(SLUG, "att-old", imageUrl);
+
+  await uploadStarted; // deterministic: replaceImage now holds its page lock.
+
+  // (a) OPEN BY UUID: the only collab doc opened so far (the scan pass) used the
+  // canonical UUID, never the slugId. (The write pass opens a second time after
+  // we release the gate; asserted at the end.)
+  assert.deepEqual(
+    state.docNames,
+    [`page.${UUID}`],
+    "replaceImage must scan-open the collab doc by the resolved UUID, never the slugId",
+  );
+
+  // (b) LOCK KEY == UUID (the distinct invariant). We share the SAME page-lock
+  // module instance as build/client.js, so enqueuing on key=UUID contends on the
+  // very chain replaceImage holds. Because replaceImage is deterministically
+  // parked mid-upload (still holding the lock), a UUID-keyed probe MUST stay
+  // queued; it cannot run until the lock frees. The contention here is pure
+  // in-memory promise-chain microtask scheduling (no timers, no socket I/O), so
+  // a single macrotask flush is a sufficient and deterministic observation.
+  // If replaceImage were reverted to lock by the slugId, the UUID chain would be
+  // free and this probe would run during the flush -> probeRan === true -> FAIL.
+  let probeRan = false;
+  const probeDone = withPageLock(UUID, async () => {
+    probeRan = true;
+  });
+  // setImmediate runs after the microtask queue fully drains, so a probe on a
+  // FREE chain would already have run by the time this resolves.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(
+    probeRan,
+    false,
+    "a probe on key=UUID must stay blocked while replaceImage holds the lock; " +
+      "if it ran, replaceImage locked by a different key (e.g. the raw slugId)",
+  );
+
+  // Non-vacuity guard: a probe on an UNRELATED key DOES run after the same
+  // single flush. This proves the flush actually executes queued callbacks, so
+  // probeRan === false above means "blocked", not "the flush never ran anyone".
+  let freeRan = false;
+  const freeDone = withPageLock(`page.free-${UUID}`, async () => {
+    freeRan = true;
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(
+    freeRan,
+    true,
+    "sanity: a probe on a FREE key must run after one flush (the UUID probe was blocked by the held key, not by an inert flush)",
+  );
+
+  // Release the gate; replaceImage finishes and the queued UUID probe can run.
+  releaseUpload();
+  const res = await replacePromise;
+  await probeDone;
+  await freeDone;
+
+  assert.equal(res.success, true);
+  assert.equal(res.replaced, 1, "the one seeded image must be repointed");
+  // Both opens (scan pass + write pass) used the UUID; the slugId never appears.
+  assert.deepEqual(state.docNames, [`page.${UUID}`, `page.${UUID}`]);
+  assert.ok(
+    !state.docNames.includes(`page.${SLUG}`),
+    "replaceImage must NEVER open the collab doc by the slugId (the #260 bug)",
   );
 });

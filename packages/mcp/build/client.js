@@ -73,10 +73,10 @@ export class DocmostClient {
     // can all call login() at once. Memoizing a single promise collapses that
     // thundering herd into ONE /auth/login request that everyone awaits.
     loginPromise = null;
-    // Canonical-UUID cache for resolvePageId: maps an agent-supplied pageId
-    // (slugId OR uuid) to the page's canonical UUID, so repeated collab edits on
-    // the same page do not re-fetch /pages/info. Both slugId->uuid and uuid->uuid
-    // are cached. See resolvePageId for why every collab doc must open by UUID.
+    // Canonical-UUID cache for resolvePageId: maps an agent-supplied slugId to the
+    // page's canonical UUID, so repeated collab edits on the same page do not
+    // re-fetch /pages/info. A UUID input short-circuits before this cache (see
+    // resolvePageId), so only slugId->uuid entries are stored/read here.
     pageIdCache = new Map();
     constructor(configOrBaseURL, email, password) {
         // Normalize the legacy positional form into the object union.
@@ -613,7 +613,6 @@ export class DocmostClient {
             throw new Error(`Could not resolve a canonical page id for "${pageId}"`);
         }
         this.pageIdCache.set(pageId, uuid);
-        this.pageIdCache.set(uuid, uuid);
         return uuid;
     }
     async getPage(pageId) {
