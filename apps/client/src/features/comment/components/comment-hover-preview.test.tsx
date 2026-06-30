@@ -182,6 +182,10 @@ describe("CommentHoverPreview — hover behaviour", () => {
     });
     const card = screen.getByTestId("comment-hover-preview");
     expect(card.textContent).toBe("Hello world");
+    // The card MUST NOT intercept the mark's click (which opens the side panel):
+    // pointer-events:none is the single property guaranteeing that — lock it so
+    // a regression dropping it from the style object fails here.
+    expect(card.style.pointerEvents).toBe("none");
   });
 
   it("hides on mouseout", () => {
