@@ -77,7 +77,9 @@ describe('resolveKeyField (write-only key payload)', () => {
 
 describe('nextReindexPollInterval', () => {
   const INTERVAL = 5000;
-  const base = { now: 1_000, intervalMs: INTERVAL };
+  // `seenActive: true` is the steady state for most of a run — a poll has
+  // observed `reindexing === true` (the server pre-seeds it from enqueue time).
+  const base = { now: 1_000, intervalMs: INTERVAL, seenActive: true };
 
   it('does not poll when no reindex deadline is set', () => {
     expect(
@@ -111,7 +113,7 @@ describe('nextReindexPollInterval', () => {
     ).toBe(INTERVAL);
   });
 
-  it('stops once the run is finished AND fully indexed', () => {
+  it('stops once the run is finished AND fully indexed (after having been active)', () => {
     expect(
       nextReindexPollInterval({
         ...base,
@@ -121,11 +123,29 @@ describe('nextReindexPollInterval', () => {
     ).toBe(false);
   });
 
+  it('does NOT stop on the stale pre-reindex snapshot (fully indexed, never seen active)', () => {
+    // Regression for #262: right after "Reindex now" the client still holds the
+    // PRE-reindex settings (an already fully-indexed workspace reads as
+    // reindexing=false, indexed>=total). Without the seenActive gate this looked
+    // "done" and stopped polling on the very first tick, freezing the counter at
+    // 0 until a manual reload. The fresh window has not observed the active run,
+    // so polling must continue until the first real poll lands.
+    expect(
+      nextReindexPollInterval({
+        ...base,
+        seenActive: false,
+        deadline: 10_000,
+        status: { reindexing: false, indexedPages: 478, totalPages: 478 },
+      }),
+    ).toBe(INTERVAL);
+  });
+
   it('keeps polling within the deadline when not yet done and no active flag', () => {
     // First poll right after enqueue, before the worker publishes progress.
     expect(
       nextReindexPollInterval({
         ...base,
+        seenActive: false,
         deadline: 10_000,
         status: { reindexing: false, indexedPages: 0, totalPages: 478 },
       }),
@@ -138,12 +158,15 @@ describe('nextReindexPollInterval', () => {
         deadline: 1_000,
         now: 2_000, // past the deadline
         intervalMs: INTERVAL,
+        seenActive: true,
         status: { reindexing: true, indexedPages: 200, totalPages: 478 },
       }),
     ).toBe(false);
   });
 
   it('stops on an empty workspace (0 of 0) once the run is finished', () => {
+    // The pre-seed publishes reindexing=true even for 0 pages, so a poll sees the
+    // run active before the worker clears -> seenActive latches true.
     expect(
       nextReindexPollInterval({
         ...base,
@@ -156,25 +179,45 @@ describe('nextReindexPollInterval', () => {
 
 describe('isReindexComplete', () => {
   it('false when no status yet', () => {
-    expect(isReindexComplete(undefined)).toBe(false);
+    expect(isReindexComplete(undefined, true)).toBe(false);
   });
 
   it('false while a run is still active (even at indexed==total)', () => {
     expect(
-      isReindexComplete({ reindexing: true, indexedPages: 478, totalPages: 478 }),
+      isReindexComplete(
+        { reindexing: true, indexedPages: 478, totalPages: 478 },
+        true,
+      ),
     ).toBe(false);
   });
 
   it('false when finished but not yet fully indexed', () => {
     expect(
-      isReindexComplete({ reindexing: false, indexedPages: 120, totalPages: 478 }),
+      isReindexComplete(
+        { reindexing: false, indexedPages: 120, totalPages: 478 },
+        true,
+      ),
     ).toBe(false);
   });
 
-  it('true once finished and fully indexed', () => {
+  it('true once finished and fully indexed (after having been active)', () => {
     expect(
-      isReindexComplete({ reindexing: false, indexedPages: 478, totalPages: 478 }),
+      isReindexComplete(
+        { reindexing: false, indexedPages: 478, totalPages: 478 },
+        true,
+      ),
     ).toBe(true);
+  });
+
+  it('false on the stale pre-reindex snapshot: finished+fully indexed but never seen active', () => {
+    // The just-started edge: the gate keeps this from clearing the poll deadline
+    // before the first post-reindex poll arrives.
+    expect(
+      isReindexComplete(
+        { reindexing: false, indexedPages: 478, totalPages: 478 },
+        false,
+      ),
+    ).toBe(false);
   });
 });
 
