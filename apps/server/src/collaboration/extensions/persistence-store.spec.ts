@@ -422,4 +422,51 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(historyQueue.add).not.toHaveBeenCalled();
     expect(aiQueue.add).not.toHaveBeenCalled();
   });
+
+  // #260 — when the collab doc name carries a SLUGID (`page.<slugId>`) the
+  // post-store side effects must use the resolved page.id (a UUID), NOT the
+  // slugId. The transclusion sync + embedding reindex write uuid-typed columns,
+  // so a slugId there threw Postgres 22P02; the contributors key must also match
+  // the PAGE_HISTORY job, which is enqueued with page.id.
+  it('uses the canonical page.id (not the slugId doc name) for post-store side effects (#260)', async () => {
+    const SLUG = 'slug-1'; // persistedHumanPage.slugId; findById resolves it
+    const document = ydocFor(doc('NEW AGENT CONTENT'));
+    pageRepo.findById.mockResolvedValue(persistedHumanPage('NEW AGENT CONTENT'));
+    pageHistoryRepo.findPageLastHistory.mockResolvedValue(null);
+
+    // A `page.<slugId>` document name (the bug's smoking gun), agent store over
+    // a human page so the in-tx history-boundary read is also exercised.
+    await ext.onStoreDocument({
+      documentName: `page.${SLUG}`,
+      document,
+      context: { user: { id: USER_ID, name: 'Alice' }, actor: 'agent' },
+    } as any);
+
+    // findById was queried with the slugId (it resolves either id or slugId).
+    expect(pageRepo.findById).toHaveBeenCalledWith(SLUG, expect.anything());
+
+    // The in-tx history-boundary read uses the canonical UUID, never the slugId.
+    expect(pageHistoryRepo.findPageLastHistory).toHaveBeenCalledWith(
+      PAGE_ID,
+      expect.anything(),
+    );
+
+    // Transclusion sync (uuid-typed columns) must receive the UUID.
+    expect(transclusionService.syncPageTransclusions.mock.calls[0][0]).toBe(
+      PAGE_ID,
+    );
+    expect(transclusionService.syncPageReferences.mock.calls[0][0]).toBe(
+      PAGE_ID,
+    );
+    expect(
+      transclusionService.syncPageTemplateReferences.mock.calls[0][0],
+    ).toBe(PAGE_ID);
+
+    // Embedding reindex job keyed by the UUID (slugId there threw 22P02).
+    expect(aiQueue.add).toHaveBeenCalledTimes(1);
+    expect(aiQueue.add.mock.calls[0][1].pageIds).toEqual([PAGE_ID]);
+
+    // Contributors keyed by the UUID so they match the PAGE_HISTORY job (page.id).
+    expect(collabHistory.addContributors.mock.calls[0][0]).toBe(PAGE_ID);
+  });
 });
