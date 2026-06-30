@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod/v4";
 import {
   ActionIcon,
@@ -185,14 +185,23 @@ type ReindexStatus = Pick<
  * has finished AND everything is indexed (server cleared its progress record and
  * fell back to the DB coverage count), or the deadline cap is hit — the cap
  * always wins so a stuck/never-clearing progress record can't poll forever.
+ *
+ * `seenActive` guards the just-started window: right after "Reindex now" the
+ * client still holds the PRE-reindex settings snapshot, which for an already
+ * fully-indexed workspace reads as `reindexing=false, indexed>=total`. Treating
+ * that stale snapshot as "done" would stop polling before the first post-reindex
+ * poll ever lands (counter frozen at 0). So completion is only honored once a
+ * poll has actually observed the active run (the enqueue-time pre-seed makes
+ * `reindexing=true` visible from the first poll until the run truly clears).
  */
 export function nextReindexPollInterval(args: {
   deadline: number | null;
   now: number;
   intervalMs: number;
   status?: ReindexStatus;
+  seenActive: boolean;
 }): number | false {
-  const { deadline, now, intervalMs, status } = args;
+  const { deadline, now, intervalMs, status, seenActive } = args;
   if (deadline === null) return false;
   // Cap always wins.
   if (now > deadline) return false;
@@ -200,20 +209,33 @@ export function nextReindexPollInterval(args: {
   if (status?.reindexing) return intervalMs;
   // Finished and fully indexed (incl. an empty workspace, 0 >= 0) → stop. Reuse
   // isReindexComplete so the completeness check lives in exactly one place.
-  if (isReindexComplete(status)) return false;
+  if (isReindexComplete(status, seenActive)) return false;
   // Within the deadline and not yet done → keep polling.
   return intervalMs;
 }
 
 /**
- * Whether the reindex poll deadline should be cleared: the server reports no
- * active run AND the count is complete. The single source of truth for the
- * "reindex finished" check — `nextReindexPollInterval` reuses it for its stop
- * condition (sans the cap, which the effect handles via time).
+ * Whether the reindex poll deadline should be cleared: a poll has observed the
+ * active run (`seenActive`) AND the server now reports no active run AND the
+ * count is complete. The single source of truth for the "reindex finished"
+ * check — `nextReindexPollInterval` reuses it for its stop condition (sans the
+ * cap, which the effect handles via time).
+ *
+ * The `seenActive` requirement is what keeps the STALE pre-reindex snapshot
+ * (already fully indexed → `reindexing=false, indexed>=total`) from being read
+ * as "finished" in the window before the first post-reindex poll arrives. Once
+ * a poll has seen `reindexing=true` (guaranteed by the server's enqueue-time
+ * pre-seed for the whole run), this flips to a genuine completion check.
  */
-export function isReindexComplete(status?: ReindexStatus): boolean {
+export function isReindexComplete(
+  status: ReindexStatus | undefined,
+  seenActive: boolean,
+): boolean {
   return (
-    !!status && !status.reindexing && status.indexedPages >= status.totalPages
+    seenActive &&
+    !!status &&
+    !status.reindexing &&
+    status.indexedPages >= status.totalPages
   );
 }
 
@@ -290,6 +312,14 @@ export default function AiProviderSettings() {
   const REINDEX_POLL_INTERVAL = 5000; // ms between refetches while indexing
   const REINDEX_POLL_CAP_MS = 120000; // ~2 min hard cap
   const [reindexDeadline, setReindexDeadline] = useState<number | null>(null);
+  // Whether any poll in the CURRENT window has actually observed the active run
+  // (`reindexing === true`). Reset when a new reindex is kicked off. Gates the
+  // completion check so the STALE pre-reindex snapshot (an already fully-indexed
+  // workspace reads as `reindexing=false, indexed>=total`) can't be mistaken for
+  // "finished" before the first post-reindex poll lands — which would freeze the
+  // counter at 0 until a manual reload. A ref (not state) because it must not
+  // trigger a render and is only ever read where `reindexing` is already false.
+  const reindexSeenActiveRef = useRef(false);
 
   // Only admins may read the (masked) AI settings; the server enforces this too.
   const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) =>
@@ -298,6 +328,7 @@ export default function AiProviderSettings() {
       now: Date.now(),
       intervalMs: REINDEX_POLL_INTERVAL,
       status: query.state.data,
+      seenActive: reindexSeenActiveRef.current,
     }),
   );
 
@@ -305,12 +336,17 @@ export default function AiProviderSettings() {
   // unmount because the deadline state goes away with the component.
   useEffect(() => {
     if (reindexDeadline === null) return;
-    // "Done" matches the refetchInterval stop condition: the server reports no
-    // active run AND the count is complete (indexed >= total, incl. an empty
-    // workspace 0 >= 0), so the deadline clears promptly instead of waiting out
-    // the cap. While `reindexing` is still true we keep the deadline so polling
-    // continues for the whole run.
-    if (isReindexComplete(settings)) {
+    // Latch "we have seen the active run" the moment a poll reports it, so the
+    // completion check below (and the refetchInterval's) only fires once the run
+    // has genuinely started — never on the stale pre-reindex snapshot.
+    if (settings?.reindexing) reindexSeenActiveRef.current = true;
+    // "Done" matches the refetchInterval stop condition: a poll has observed the
+    // active run AND the server now reports no active run AND the count is
+    // complete (indexed >= total, incl. an empty workspace 0 >= 0), so the
+    // deadline clears promptly instead of waiting out the cap. While `reindexing`
+    // is still true (or no poll has seen it active yet) we keep the deadline so
+    // polling continues for the whole run.
+    if (isReindexComplete(settings, reindexSeenActiveRef.current)) {
       setReindexDeadline(null);
       return;
     }
@@ -1117,8 +1153,13 @@ export default function AiProviderSettings() {
                 reindexMutation.mutate(undefined, {
                   // Begin bounded polling so the counter climbs as the async
                   // background job indexes (it does not update on its own).
-                  onSuccess: () =>
-                    setReindexDeadline(Date.now() + REINDEX_POLL_CAP_MS),
+                  // Clear the "seen active" latch first so this fresh window
+                  // doesn't inherit a previous run's completion state and stop
+                  // immediately.
+                  onSuccess: () => {
+                    reindexSeenActiveRef.current = false;
+                    setReindexDeadline(Date.now() + REINDEX_POLL_CAP_MS);
+                  },
                 })
               }
             >
