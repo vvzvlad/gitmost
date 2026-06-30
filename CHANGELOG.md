@@ -514,6 +514,7 @@ knowledge layer, an embedded MCP server, and the Gitmost rebrand.
 - Build: drop the private EE submodule, retarget CI to GHCR, and update the
   Docker image to the GHCR registry.
 
-[Unreleased]: https://github.com/vvzvlad/gitmost/compare/v0.93.0...HEAD
+[Unreleased]: https://github.com/vvzvlad/gitmost/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/vvzvlad/gitmost/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/vvzvlad/gitmost/compare/v0.91.0...v0.93.0
 [0.91.0]: https://github.com/vvzvlad/gitmost/compare/v0.90.1...v0.91.0
