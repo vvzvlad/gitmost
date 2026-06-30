@@ -42,6 +42,7 @@ import {
   showReadOnlyCommentPopupAtom,
 } from "@/features/comment/atoms/comment-atom";
 import CommentDialog from "@/features/comment/components/comment-dialog";
+import CommentHoverPreview from "@/features/comment/components/comment-hover-preview";
 import { EditorBubbleMenu } from "@/features/editor/components/bubble-menu/bubble-menu";
 import { ReadonlyBubbleMenu } from "@/features/editor/components/bubble-menu/readonly-bubble-menu";
 import TableMenu from "@/features/editor/components/table/table-menu.tsx";
@@ -532,6 +533,11 @@ export default function PageEditor({
         <div className="editor-container" style={{ position: "relative" }}>
           <div ref={menuContainerRef}>
             <EditorContent editor={editor} />
+
+            <CommentHoverPreview
+              pageId={pageId}
+              containerRef={menuContainerRef}
+            />
 
             {editor && (
               <SearchAndReplaceDialog editor={editor} editable={editable} />
