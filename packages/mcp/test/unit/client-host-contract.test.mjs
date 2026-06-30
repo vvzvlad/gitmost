@@ -74,6 +74,7 @@ const HOST_CONTRACT_METHODS = [
   "unsharePage",
   "restorePageVersion",
   "transformPage",
+  "stashPage",
   // write (comment)
   "createComment",
   "resolveComment",
