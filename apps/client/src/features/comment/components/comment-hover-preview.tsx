@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Paper } from "@mantine/core";
+import { Paper, Text } from "@mantine/core";
 import { useCommentsQuery } from "@/features/comment/queries/comment-query";
 import { IComment } from "@/features/comment/types/comment.types";
 import { commentContentToText } from "@/features/comment/utils/comment-content-to-text";
@@ -11,15 +11,25 @@ interface CommentHoverPreviewProps {
 }
 
 // Delay before the card appears, to avoid flicker when the pointer quickly
-// passes over comment marks.
-const OPEN_DELAY_MS = 120;
-const CARD_MAX_WIDTH = 320;
+// passes over comment marks (kept generous so it does not pop up on a passing
+// glance).
+const OPEN_DELAY_MS = 350;
+const CARD_MAX_WIDTH = 360;
+const CARD_MAX_HEIGHT = 300;
 const GAP = 6;
 // Reserve roughly this much room below the span; flip above when it doesn't fit.
-const ESTIMATED_CARD_HEIGHT = 160;
+const ESTIMATED_CARD_HEIGHT = 200;
+
+// One rendered line of the thread: the author and the comment's plain text,
+// pre-computed at hover time so render stays cheap. Shown as "Author: text".
+interface ThreadRow {
+  id: string;
+  name: string;
+  text: string;
+}
 
 interface HoverState {
-  text: string;
+  thread: ThreadRow[];
   rect: { top: number; bottom: number; left: number };
 }
 
@@ -27,9 +37,32 @@ function isResolved(comment: IComment): boolean {
   return comment.resolvedAt != null || comment.resolvedById != null;
 }
 
+// Build the thread for a root (parent) comment: the root first, followed by its
+// replies sorted by createdAt ascending. Reads every comment from the map.
+function buildThread(
+  commentMap: Map<string, IComment>,
+  root: IComment,
+): ThreadRow[] {
+  const replies: IComment[] = [];
+  commentMap.forEach((comment) => {
+    if (comment.parentCommentId === root.id) replies.push(comment);
+  });
+  replies.sort(
+    (a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+
+  return [root, ...replies].map((comment) => ({
+    id: comment.id,
+    name: comment.creator?.name ?? "",
+    text: commentContentToText(comment.content),
+  }));
+}
+
 /**
- * Shows a small floating card with the plain text of the parent comment when
- * the user hovers a `.comment-mark` span in the main editor. Read-only:
+ * Shows a small floating card when the user hovers a `.comment-mark` span in the
+ * main editor: the parent comment plus all its replies, one per line as
+ * "Author: text" (plain — no avatars or timestamps). Read-only:
  * `pointer-events: none` so it never intercepts the mark's click (which opens
  * the side panel via ACTIVE_COMMENT_EVENT). Resolved/unknown marks show nothing.
  */
@@ -39,8 +72,8 @@ export default function CommentHoverPreview({
 }: CommentHoverPreviewProps) {
   const { data } = useCommentsQuery({ pageId });
 
-  // Map of commentId -> comment. Only parent comments anchor marks, but indexing
-  // every comment by id is harmless and keeps the lookup a single Map access.
+  // Map of commentId -> comment. The map indexes every comment (parents and
+  // replies) so a thread can be assembled from a single source.
   const commentMap = useMemo(() => {
     const map = new Map<string, IComment>();
     data?.items?.forEach((comment) => map.set(comment.id, comment));
@@ -102,12 +135,16 @@ export default function CommentHoverPreview({
         return;
       }
 
-      // Already tracking this span: nothing to do (avoids re-parsing the
-      // comment content on every intra-span mousemove).
+      // Already tracking this span: nothing to do (avoids re-building the thread
+      // on every intra-span mousemove).
       if (span === activeSpanRef.current) return;
 
-      const text = commentContentToText(comment.content);
-      if (!text) return;
+      const thread = buildThread(commentMapRef.current, comment);
+      // Show the card when the root has text OR it has at least one reply.
+      // A thread of a single empty-text root carries nothing worth showing.
+      const hasContent =
+        thread.length > 1 || thread.some((row) => row.text.length > 0);
+      if (!hasContent) return;
 
       activeSpanRef.current = span;
 
@@ -117,7 +154,7 @@ export default function CommentHoverPreview({
         if (activeSpanRef.current !== span || !span.isConnected) return;
         const rect = span.getBoundingClientRect();
         setHover({
-          text,
+          thread,
           rect: { top: rect.top, bottom: rect.bottom, left: rect.left },
         });
       }, OPEN_DELAY_MS);
@@ -191,21 +228,36 @@ export default function CommentHoverPreview({
         ...positionStyle,
         zIndex: 1000,
         maxWidth: CARD_MAX_WIDTH,
-        maxHeight: ESTIMATED_CARD_HEIGHT,
+        // The card is pointer-events:none, so it can't scroll; clamp long
+        // threads instead (most threads are short).
+        maxHeight: CARD_MAX_HEIGHT,
         overflow: "hidden",
-        padding: "6px 10px",
+        padding: "8px 10px",
         fontSize: "13px",
         lineHeight: 1.4,
         // Never intercept clicks targeting the comment-mark span beneath.
         pointerEvents: "none",
-        whiteSpace: "pre-wrap",
         wordBreak: "break-word",
-        display: "-webkit-box",
-        WebkitLineClamp: 6,
-        WebkitBoxOrient: "vertical",
       }}
     >
-      {hover.text}
+      {hover.thread
+        // A comment with no plain text (e.g. an image-only reply) adds nothing
+        // to a text preview — skip its line.
+        .filter((row) => row.text.length > 0)
+        .map((row) => (
+          <Text
+            key={row.id}
+            size="xs"
+            mt={4}
+            style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+          >
+            {/* "Author: text" — one line per comment, parent then replies. */}
+            <Text span fw={600}>
+              {row.name}:
+            </Text>{" "}
+            {row.text}
+          </Text>
+        ))}
     </Paper>,
     document.body,
   );

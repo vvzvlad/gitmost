@@ -169,8 +169,13 @@ describe("CommentHoverPreview — hover behaviour", () => {
     vi.useRealTimers();
   });
 
-  it("shows the comment text after the open delay", () => {
-    setComments([comment()]);
+  it("shows the parent comment text and author after the open delay", () => {
+    setComments([
+      comment({
+        content: doc("Hello world"),
+        creator: { id: "u-1", name: "Alice", avatarUrl: null } as any,
+      }),
+    ]);
     render(<Harness />);
 
     hoverMark();
@@ -178,14 +183,89 @@ describe("CommentHoverPreview — hover behaviour", () => {
     expect(screen.queryByTestId("comment-hover-preview")).toBeNull();
 
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
     const card = screen.getByTestId("comment-hover-preview");
-    expect(card.textContent).toBe("Hello world");
+    // The line shows "Author: text" — both the author name and the comment text.
+    expect(card.textContent).toContain("Alice:");
+    expect(card.textContent).toContain("Hello world");
     // The card MUST NOT intercept the mark's click (which opens the side panel):
     // pointer-events:none is the single property guaranteeing that — lock it so
     // a regression dropping it from the style object fails here.
     expect(card.style.pointerEvents).toBe("none");
+  });
+
+  it("renders the whole thread: parent plus replies, each with its author", () => {
+    setComments([
+      comment({
+        id: "c-1",
+        content: doc("Parent comment"),
+        createdAt: new Date("2026-01-01T10:00:00Z"),
+        creator: { id: "u-1", name: "Alice", avatarUrl: null } as any,
+      }),
+      comment({
+        id: "c-3",
+        content: doc("Second reply"),
+        parentCommentId: "c-1",
+        createdAt: new Date("2026-01-01T12:00:00Z"),
+        creator: { id: "u-3", name: "Carol", avatarUrl: null } as any,
+      }),
+      comment({
+        id: "c-2",
+        content: doc("First reply"),
+        parentCommentId: "c-1",
+        createdAt: new Date("2026-01-01T11:00:00Z"),
+        creator: { id: "u-2", name: "Bob", avatarUrl: null } as any,
+      }),
+    ]);
+    render(<Harness />);
+
+    hoverMark();
+    act(() => {
+      vi.advanceTimersByTime(350);
+    });
+    const card = screen.getByTestId("comment-hover-preview");
+
+    // Parent and both replies are present, each as "Author: text".
+    const body = card.textContent ?? "";
+    expect(body).toContain("Alice: Parent comment");
+    expect(body).toContain("Bob: First reply");
+    expect(body).toContain("Carol: Second reply");
+
+    // Replies are ordered by createdAt ascending after the parent
+    // (Parent -> First reply -> Second reply), even though the input was
+    // out of order (Second reply's comment came before First reply's).
+    expect(body.indexOf("Parent comment")).toBeLessThan(
+      body.indexOf("First reply"),
+    );
+    expect(body.indexOf("First reply")).toBeLessThan(
+      body.indexOf("Second reply"),
+    );
+  });
+
+  it("shows the thread even when the parent text is empty but it has replies", () => {
+    setComments([
+      comment({
+        id: "c-1",
+        content: JSON.stringify({ type: "doc", content: [] }),
+        creator: { id: "u-1", name: "Alice", avatarUrl: null } as any,
+      }),
+      comment({
+        id: "c-2",
+        content: doc("A reply"),
+        parentCommentId: "c-1",
+        createdAt: new Date(),
+        creator: { id: "u-2", name: "Bob", avatarUrl: null } as any,
+      }),
+    ]);
+    render(<Harness />);
+
+    hoverMark();
+    act(() => {
+      vi.advanceTimersByTime(350);
+    });
+    const card = screen.getByTestId("comment-hover-preview");
+    expect(card.textContent).toContain("Bob: A reply");
   });
 
   it("hides on mouseout", () => {
@@ -194,11 +274,11 @@ describe("CommentHoverPreview — hover behaviour", () => {
 
     hoverMark();
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
-    expect(screen.getByTestId("comment-hover-preview").textContent).toBe(
-      "Hello world",
-    );
+    expect(
+      screen.getByTestId("comment-hover-preview").textContent,
+    ).toContain("Hello world");
 
     leaveMark();
     expect(screen.queryByTestId("comment-hover-preview")).toBeNull();
@@ -258,11 +338,11 @@ describe("CommentHoverPreview — hover behaviour", () => {
 
     hoverMark();
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
-    expect(screen.getByTestId("comment-hover-preview").textContent).toBe(
-      "Hello world",
-    );
+    expect(
+      screen.getByTestId("comment-hover-preview").textContent,
+    ).toContain("Hello world");
 
     act(() => {
       window.dispatchEvent(new Event("scroll"));
@@ -276,11 +356,11 @@ describe("CommentHoverPreview — hover behaviour", () => {
 
     hoverMark();
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
-    expect(screen.getByTestId("comment-hover-preview").textContent).toBe(
-      "Hello world",
-    );
+    expect(
+      screen.getByTestId("comment-hover-preview").textContent,
+    ).toContain("Hello world");
 
     const span = screen.getByTestId("mark");
     act(() => {
@@ -295,7 +375,7 @@ describe("CommentHoverPreview — hover behaviour", () => {
 
     hoverMark();
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
     expect(screen.queryByTestId("comment-hover-preview")).not.toBeNull();
 
@@ -315,7 +395,7 @@ describe("CommentHoverPreview — hover behaviour", () => {
 
     hoverMark();
     act(() => {
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(350);
     });
     expect(screen.queryByTestId("comment-hover-preview")).not.toBeNull();
 
