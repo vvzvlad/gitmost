@@ -197,6 +197,12 @@ pnpm workspace (`pnpm@10.4.0`) orchestrated by **Nx**. Four workspace packages:
 
 Run from the repo root unless noted. The dev workflow needs **Postgres (with the `pgvector` extension) and Redis** reachable per `.env` (copy `.env.example` → `.env`).
 
+> **Bringing up a full local stand** (API + client + the separate realtime
+> collaboration process) has several non-obvious gotchas — a missing collab
+> server, `APP_SECRET` mismatch between processes, a stale `editor-ext` white-
+> screening the client, LAN exposure. See **[docs/dev-stand.md](docs/dev-stand.md)**
+> for the step-by-step and the traps.
+
 ```bash
 pnpm install                 # install all workspaces (uses pnpm patches; see package.json `pnpm.patchedDependencies`)
 pnpm dev                     # client (Vite) + server (Nest watch) concurrently — primary dev loop
@@ -240,6 +246,8 @@ Migration files live in `apps/server/src/database/migrations/` and are named `YY
 `apps/server` builds one codebase but runs as **two distinct entrypoints**, both required in production:
 - **API server** — `dist/main` (`apps/server/src/main.ts`), the Fastify HTTP app (`AppModule`).
 - **Collaboration server** — `dist/collaboration/server/collab-main` (`pnpm collab`), a Hocuspocus/Yjs WebSocket server (`apps/server/src/collaboration/`) handling real-time document editing, persistence, and page-history snapshots. It listens on `COLLAB_PORT` (default `3001`), separate from the API server's `PORT` (default `3000`), and shares state with the API server through Redis.
+
+`pnpm dev` starts **only** the API server + client — the collaboration process is separate and must be started too, or the editor never connects. See **[docs/dev-stand.md](docs/dev-stand.md)** for running both locally (and why `APP_SECRET` must match between them).
 
 The API server is a Fastify app with a global `/api` prefix (`main.ts` excludes `robots.txt`, public share pages, and `mcp` from the prefix). A `preHandler` hook enforces that a resolved `workspaceId` exists for most `/api` routes (multi-tenant by hostname/subdomain via `DomainMiddleware`). `GET /api/sb/:id` (the anonymous blob-sandbox read route) is listed in that preHandler's `excludedPaths`, so it is exempt from workspace resolution and carries no session auth at all (its capability is the unguessable UUID + TTL + TLS) — unlike `/api/files/public/...`, which still resolves a workspace and requires a workspace-bound attachment JWT. Auth is JWT (cookie + bearer); authorization is **CASL** (`core/casl`) — every data access is scoped to the user's abilities.
 
