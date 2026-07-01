@@ -644,6 +644,24 @@ export interface AiChatMessages {
   deletedAt: Timestamp | null;
 }
 
+// Per-(chat,page) snapshot of the open page's Markdown at the END of the agent's
+// previous turn (#274). Mirrors migration 20260702T120000-ai-chat-page-snapshot.ts.
+// The next turn diffs the CURRENT Markdown against `contentMd` to surface edits a
+// human made between turns; `pageUpdatedAt` is the cheap "did anything change?"
+// fast path. One live row per (chatId, pageId) — the turn-end write upserts on
+// that key. Both FKs are ON DELETE CASCADE (derived, per-chat state).
+export interface AiChatPageSnapshots {
+  id: Generated<string>;
+  chatId: string;
+  pageId: string;
+  workspaceId: string;
+  contentMd: string;
+  pageUpdatedAt: Timestamp;
+  contentHash: string | null;
+  createdAt: Generated<Timestamp>;
+  updatedAt: Generated<Timestamp>;
+}
+
 export interface UserSessions {
   id: Generated<string>;
   userId: string;
@@ -663,6 +681,7 @@ export interface DB {
   aiAgentRoles: AiAgentRoles;
   aiChats: AiChats;
   aiChatMessages: AiChatMessages;
+  aiChatPageSnapshots: AiChatPageSnapshots;
   apiKeys: ApiKeys;
   attachments: Attachments;
   audit: Audit;

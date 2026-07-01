@@ -15,6 +15,7 @@ describe('AiChatService.onModuleInit (startup sweep)', () => {
       {} as never, // ai
       {} as never, // aiChatRepo
       aiChatMessageRepo as never,
+      {} as never, // aiChatPageSnapshotRepo
       {} as never, // aiSettings
       {} as never, // tools
       {} as never, // mcpClients

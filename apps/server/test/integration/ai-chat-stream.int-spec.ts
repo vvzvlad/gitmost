@@ -135,6 +135,9 @@ describe('AiChatService.stream [integration]', () => {
       { getChatModel: async () => null } as any,
       aiChatRepo,
       msgRepo,
+      // aiChatPageSnapshotRepo (#274) — no open page in this harness, so the
+      // detection/snapshot cycle never touches it; a stub is enough.
+      {} as any,
       // aiSettings.resolve — no admin system prompt / context window.
       { resolve: async () => null } as any,
       // tools.forUser — no Docmost tools for this harness.

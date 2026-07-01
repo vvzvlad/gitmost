@@ -3,6 +3,7 @@ import {
   AiAgentRoles,
   AiChats,
   AiChatMessages,
+  AiChatPageSnapshots,
   Attachments,
   Comments,
   Groups,
@@ -58,6 +59,15 @@ export type AiChatMessage = Omit<Selectable<AiChatMessages>, 'tsv'>;
 export type InsertableAiChatMessage = Omit<
   Insertable<AiChatMessages>,
   'tsv'
+>;
+
+// AI Chat Page Snapshot (#274): per-(chat,page) Markdown snapshot taken at the
+// end of the agent's previous turn, diffed against the current page next turn to
+// detect human edits made between turns.
+export type AiChatPageSnapshot = Selectable<AiChatPageSnapshots>;
+export type InsertableAiChatPageSnapshot = Insertable<AiChatPageSnapshots>;
+export type UpdatableAiChatPageSnapshot = Updateable<
+  Omit<AiChatPageSnapshots, 'id'>
 >;
 
 // AI Provider Credentials

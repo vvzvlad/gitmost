@@ -268,3 +268,58 @@ describe('buildSystemPrompt interrupt note (#198)', () => {
     expect(buildSystemPrompt({ workspace })).not.toContain(NOTE_MARKER);
   });
 });
+
+/**
+ * Page-changed note (#274). A <page_changed> block with the note + the unified
+ * diff is injected ONLY when the server passes a `pageChanged` with a non-empty
+ * diff (it does so after detecting the open page was edited since the agent's last
+ * turn). The block lives inside the safety sandwich (context section).
+ */
+describe('buildSystemPrompt page-changed note (#274)', () => {
+  const workspace = { name: 'Acme' } as unknown as Workspace;
+  const NOTE_MARKER = 'edited the open page AFTER your last response';
+  const SAFETY_MARKER = 'Operating rules (always in effect)';
+
+  it('renders the page_changed block + diff when the flag is set', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      pageChanged: {
+        title: 'Release Notes',
+        diff: '@@ -1 +1 @@\n-old line\n+new line',
+      },
+    });
+    expect(prompt).toContain('<page_changed');
+    expect(prompt).toContain('Release Notes');
+    expect(prompt).toContain(NOTE_MARKER);
+    expect(prompt).toContain('-old line');
+    expect(prompt).toContain('+new line');
+    // Inside the safety sandwich: the trailing SAFETY block follows the note.
+    expect(prompt.lastIndexOf(SAFETY_MARKER)).toBeGreaterThan(
+      prompt.indexOf(NOTE_MARKER),
+    );
+  });
+
+  it('omits the block when pageChanged is absent/null', () => {
+    expect(buildSystemPrompt({ workspace })).not.toContain('<page_changed');
+    expect(
+      buildSystemPrompt({ workspace, pageChanged: null }),
+    ).not.toContain('<page_changed');
+  });
+
+  it('omits the block when the diff is empty/whitespace', () => {
+    expect(
+      buildSystemPrompt({
+        workspace,
+        pageChanged: { title: 'X', diff: '   \n  ' },
+      }),
+    ).not.toContain('<page_changed');
+  });
+
+  it('labels an untitled page as "Untitled"', () => {
+    const prompt = buildSystemPrompt({
+      workspace,
+      pageChanged: { title: '  ', diff: '@@ -1 +1 @@\n-a\n+b' },
+    });
+    expect(prompt).toContain('page="Untitled"');
+  });
+});

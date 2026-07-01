@@ -46,23 +46,20 @@ export class AiChatToolsService {
     private readonly sandboxStore: SandboxStore,
   ) {}
 
-  async forUser(
+  /**
+   * Construct the per-user loopback `DocmostClient` used to reach Docmost's REST
+   * / collab surface AS the current user. Every call is scoped by the user's own
+   * access JWT (CASL-enforced) and carries the signed agent provenance claim
+   * ({ actor:'agent', aiChatId }) for both the access and collab tokens. Shared
+   * by `forUser` (the agent toolset) and `exportPageMarkdown` (the #274
+   * page-change detection path) so they use an identical authenticated route.
+   */
+  private async buildDocmostClient(
     user: User,
     sessionId: string,
-    // workspaceId scopes the provenance collab token (which is workspace-bound),
-    // and documents the single-workspace assumption; the loopback REST client is
-    // scoped by the user's JWT, not by an explicit workspace argument.
     workspaceId: string,
-    // The resolved AI chat id. Threaded into both provenance tokens so every
-    // agent write (REST + collab) records { actor:'agent', aiChatId } off a
-    // SIGNED claim — non-spoofable, never a client body field (§6.5/§6.6).
     aiChatId: string,
-    // The page the user currently has open (from the request context), exposed
-    // to the model via getCurrentPage. Optional and last so existing callers
-    // keep compiling. Kept proxy-robust: the model can CALL for the current
-    // page instead of relying on it surviving in the system prompt text.
-    openedPage?: { id?: string; title?: string } | null,
-  ): Promise<Record<string, Tool>> {
+  ): Promise<DocmostClientLike> {
     const apiUrl =
       process.env.MCP_DOCMOST_API_URL ||
       `http://127.0.0.1:${process.env.PORT || 3000}/api`;
@@ -94,13 +91,66 @@ export class AiChatToolsService {
     // package needs to keep its mirror counts honest under FIFO eviction (the
     // package never touches env or the store). asSink() centralizes the uri↔id
     // mapping next to putAndLink, shared with the embedded-MCP wiring site.
-    const { DocmostClient, sharedToolSpecs } = await loadDocmostMcp();
-    const client: DocmostClientLike = new DocmostClient({
+    const { DocmostClient } = await loadDocmostMcp();
+    return new DocmostClient({
       apiUrl,
       getToken,
       getCollabToken,
       sandbox: this.sandboxStore.asSink(),
     });
+  }
+
+  /**
+   * Export a page's current Markdown (meta + body + comment threads) via the
+   * SAME loopback path the `exportPageMarkdown` tool uses (#274). Used by the
+   * per-turn page-change detection to render both the snapshot end and the
+   * current end identically, so formatting never pollutes the diff. Access is
+   * CASL-enforced by the user's JWT: a page the user cannot read throws.
+   */
+  async exportPageMarkdown(
+    user: User,
+    sessionId: string,
+    workspaceId: string,
+    aiChatId: string,
+    pageId: string,
+  ): Promise<string> {
+    const client = await this.buildDocmostClient(
+      user,
+      sessionId,
+      workspaceId,
+      aiChatId,
+    );
+    return client.exportPageMarkdown(pageId);
+  }
+
+  async forUser(
+    user: User,
+    sessionId: string,
+    // workspaceId scopes the provenance collab token (which is workspace-bound),
+    // and documents the single-workspace assumption; the loopback REST client is
+    // scoped by the user's JWT, not by an explicit workspace argument.
+    workspaceId: string,
+    // The resolved AI chat id. Threaded into both provenance tokens so every
+    // agent write (REST + collab) records { actor:'agent', aiChatId } off a
+    // SIGNED claim — non-spoofable, never a client body field (§6.5/§6.6).
+    aiChatId: string,
+    // The page the user currently has open (from the request context), exposed
+    // to the model via getCurrentPage. Optional and last so existing callers
+    // keep compiling. Kept proxy-robust: the model can CALL for the current
+    // page instead of relying on it surviving in the system prompt text.
+    openedPage?: { id?: string; title?: string } | null,
+  ): Promise<Record<string, Tool>> {
+    // Build the per-user loopback client (carrying the access + collab
+    // provenance tokens) and load the shared tool-spec registry. Client
+    // construction is shared with the page-change detection path (#274) via
+    // buildDocmostClient so both go over the exact same authenticated route.
+    const { sharedToolSpecs } = await loadDocmostMcp();
+    const client = await this.buildDocmostClient(
+      user,
+      sessionId,
+      workspaceId,
+      aiChatId,
+    );
 
     // Build an ai-SDK tool from a shared, zod-agnostic spec. The spec owns the
     // canonical description + (optional) schema builder, which is invoked with
