@@ -67,11 +67,7 @@ export default function CodeBlockView(props: NodeViewProps) {
         <NodeViewContent as="code" className={`language-${language}`} />
       </pre>
 
-      <Group
-        justify="flex-end"
-        contentEditable={false}
-        className={classes.menuGroup}
-      >
+      <Group contentEditable={false} className={classes.menuGroup}>
         {/* In read-only (published) there is no language selector at all —
             only the copy button. When editable the selector is hidden until
             the block is hovered/focused (or its dropdown is open) via the
