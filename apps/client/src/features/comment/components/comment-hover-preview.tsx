@@ -18,7 +18,10 @@ const CARD_MAX_WIDTH = 360;
 const CARD_MAX_HEIGHT = 300;
 const GAP = 6;
 // Reserve roughly this much room below the span; flip above when it doesn't fit.
-const ESTIMATED_CARD_HEIGHT = 200;
+// Match CARD_MAX_HEIGHT so the flip-above decision reserves the real worst-case
+// height — otherwise a tall thread placed below near the viewport bottom passes
+// the "fits below" check and then overflows off-screen (clipped, no scroll).
+const ESTIMATED_CARD_HEIGHT = 300;
 
 // One rendered line of the thread: the author and the comment's plain text,
 // pre-computed at hover time so render stays cheap. Shown as "Author: text".
@@ -140,10 +143,10 @@ export default function CommentHoverPreview({
       if (span === activeSpanRef.current) return;
 
       const thread = buildThread(commentMapRef.current, comment);
-      // Show the card when the root has text OR it has at least one reply.
-      // A thread of a single empty-text root carries nothing worth showing.
-      const hasContent =
-        thread.length > 1 || thread.some((row) => row.text.length > 0);
+      // Show the card only when SOME comment has text. Gating on thread length
+      // could open an empty card (a text-less root whose only reply is also
+      // text-less), since the render filters out empty-text rows.
+      const hasContent = thread.some((row) => row.text.length > 0);
       if (!hasContent) return;
 
       activeSpanRef.current = span;

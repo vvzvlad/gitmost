@@ -268,6 +268,33 @@ describe("CommentHoverPreview — hover behaviour", () => {
     expect(card.textContent).toContain("Bob: A reply");
   });
 
+  it("shows nothing when neither the parent nor its reply has any text", () => {
+    // The card is gated on rows-with-text (not thread length), so a text-less
+    // root whose only reply is also text-less must NOT open an empty card.
+    const emptyDoc = JSON.stringify({ type: "doc", content: [] });
+    setComments([
+      comment({
+        id: "c-1",
+        content: emptyDoc,
+        creator: { id: "u-1", name: "Alice", avatarUrl: null } as any,
+      }),
+      comment({
+        id: "c-2",
+        content: emptyDoc,
+        parentCommentId: "c-1",
+        createdAt: new Date(),
+        creator: { id: "u-2", name: "Bob", avatarUrl: null } as any,
+      }),
+    ]);
+    render(<Harness />);
+
+    hoverMark();
+    act(() => {
+      vi.advanceTimersByTime(350);
+    });
+    expect(screen.queryByTestId("comment-hover-preview")).toBeNull();
+  });
+
   it("hides on mouseout", () => {
     setComments([comment()]);
     render(<Harness />);
