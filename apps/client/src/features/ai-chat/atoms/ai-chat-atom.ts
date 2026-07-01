@@ -19,6 +19,18 @@ export const aiChatWindowGeomAtom = atomWithStorage<AiChatWindowGeom | null>(
 );
 
 /**
+ * Whether the AI chat window is docked into the sidebar (page-tree navbar).
+ * Persisted to localStorage so the docked/floating mode survives a full page
+ * reload and close/reopen. `false` = the default floating window. When docked,
+ * the SAME window instance pins itself to the live bounding rect of the app
+ * navbar (see AiChatWindow), overlaying the page tree.
+ */
+export const aiChatWindowDockedAtom = atomWithStorage<boolean>(
+  "ai-chat-window-docked",
+  false,
+);
+
+/**
  * The currently selected chat id. `null` means a fresh (not-yet-created) chat:
  * the server creates the chat row on the first streamed message and echoes its
  * id, which the panel then adopts.

@@ -715,6 +715,8 @@
   "Ask the AI agent anything about your workspace.": "Спросите AI-агента о чём угодно по вашему рабочему пространству.",
   "Ask the AI agent…": "Спросите AI-агента…",
   "Copy chat": "Копировать чат",
+  "Dock to sidebar": "Закрепить в боковой панели",
+  "Undock": "Открепить",
   "Created successfully": "Успешно создано",
   "Context size / model limit": "Размер контекста / лимит модели",
   "Context window (tokens)": "Окно контекста (токены)",
