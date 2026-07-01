@@ -29,6 +29,37 @@ import { LinkSelector } from "@/features/editor/components/bubble-menu/link-sele
 import { useTranslation } from "react-i18next";
 import { showLinkMenuAtom } from "@/features/editor/atoms/editor-atoms";
 import { userAtom } from "@/features/user/atoms/current-user-atom";
+import {
+  hasStressAfterSelection,
+  toggleStressAccent,
+} from "./stress-accent";
+
+// Tabler has no acute-accent glyph (IconGrave is a tombstone), so we ship a
+// tiny local icon that mirrors the Tabler icon API ({ style, stroke }).
+function IconStress({
+  style,
+  stroke = 2,
+}: {
+  style?: React.CSSProperties;
+  stroke?: number;
+}) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={stroke}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={style}
+    >
+      <path d="M5 19l5 -12l5 12" />
+      <path d="M7.5 14h5" />
+      <path d="M13 5l4 -3" />
+    </svg>
+  );
+}
 
 export interface BubbleMenuItem {
   name: string;
@@ -77,6 +108,8 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
         isCode: ctx.editor.isActive("code"),
         isComment: ctx.editor.isActive("comment"),
         isSpoiler: ctx.editor.isActive("spoiler"),
+        // A stress accent already sits right after the selection end.
+        isStress: hasStressAfterSelection(ctx.editor.state),
       };
     },
   });
@@ -117,6 +150,20 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
       isActive: () => editorState?.isSpoiler,
       command: () => props.editor.chain().focus().toggleSpoiler().run(),
       icon: IconEyeOff,
+    },
+    {
+      name: "Stress",
+      isActive: () => editorState?.isStress,
+      // Toggle the U+0301 combining accent right after the selected letter.
+      // The whole toggle is a single transaction, so one Ctrl+Z reverts it.
+      command: () => {
+        const editor = props.editor;
+        editor.view.dispatch(toggleStressAccent(editor.state));
+        editor.view.focus();
+      },
+      // Local SVG icon; cast to the Tabler icon type used by the other items.
+      // It renders with the same { style, stroke } props they are given.
+      icon: IconStress as unknown as typeof IconBold,
     },
     {
       name: "Clear formatting",
