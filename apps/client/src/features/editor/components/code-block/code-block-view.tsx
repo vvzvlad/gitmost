@@ -50,10 +50,10 @@ export default function CodeBlockView(props: NodeViewProps) {
       {/* #146: the editable <pre><code> (contentDOM) MUST come first in the DOM.
           With the non-editable menu rendered before it, the browser's click
           hit-testing snapped the caret up one line. Render content first; the
-          menu is rendered after it and lifted back above visually via flex
-          `order: -1` (the `.codeBlock` wrapper is a flex column — see
-          code-block.module.css). It stays fully in flow as a full-width row
-          above the code: no overlay/absolute positioning. The second #146
+          menu is rendered after it and floated into the top-right corner as an
+          absolute overlay (see `.menuGroup` in code-block.module.css, anchored
+          to the `position: relative` `.codeBlock` wrapper in code.css). It no
+          longer takes a full-width row above the code. The second #146
           mitigation lives in editor-paste-handler.tsx (reflowAfterPaste). */}
       <pre
         spellCheck="false"
@@ -72,17 +72,22 @@ export default function CodeBlockView(props: NodeViewProps) {
         contentEditable={false}
         className={classes.menuGroup}
       >
-        <Select
-          placeholder="auto"
-          checkIconPosition="right"
-          data={extension.options.lowlight.listLanguages().sort()}
-          value={languageValue}
-          onChange={changeLanguage}
-          searchable
-          style={{ maxWidth: "130px" }}
-          classNames={{ input: classes.selectInput }}
-          disabled={!editor.isEditable}
-        />
+        {/* In read-only (published) there is no language selector at all —
+            only the copy button. When editable the selector is hidden until
+            the block is hovered/focused (or its dropdown is open) via the
+            `.languageSelect` class (see code-block.module.css). */}
+        {editor.isEditable && (
+          <Select
+            placeholder="auto"
+            checkIconPosition="right"
+            data={extension.options.lowlight.listLanguages().sort()}
+            value={languageValue}
+            onChange={changeLanguage}
+            searchable
+            style={{ maxWidth: "130px" }}
+            classNames={{ root: classes.languageSelect, input: classes.selectInput }}
+          />
+        )}
 
         <CopyButton value={node?.textContent} timeout={2000}>
           {({ copied, copy }) => (

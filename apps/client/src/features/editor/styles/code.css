@@ -1,9 +1,12 @@
 .ProseMirror {
   .codeBlock {
-    /* #146: flex column so the menu (rendered AFTER <pre> in the DOM, so the
-       editable contentDOM is first) is lifted back above the code via `order`. */
+    /* #146: flex column keeps the editable <pre> (first in the DOM so click
+       hit-testing is correct) laid out above any Mermaid diagram. `position:
+       relative` anchors the control panel, which is floated into the top-right
+       corner as an absolute overlay (see `.menuGroup` in code-block.module.css). */
     display: flex;
     flex-direction: column;
+    position: relative;
     padding: 4px;
     border-radius: var(--mantine-radius-default);
     background-color: light-dark(var(--mantine-color-gray-0),  var(--mantine-color-dark-8));
