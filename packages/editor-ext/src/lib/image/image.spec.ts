@@ -63,6 +63,38 @@ describe("applyAlignment", () => {
     expect(el.dataset.imageAlign).toBe("center");
   });
 
+  it("inline -> inline-block + top alignment + gap padding, no float", () => {
+    applyAlignment(el, "inline");
+    expect(el.style.display).toBe("inline-block");
+    expect(el.style.verticalAlign).toBe("top");
+    expect(el.style.padding).toBe("0px 10px 10px 0px");
+    expect(el.dataset.imageAlign).toBe("inline");
+    expect(el.style.cssFloat).toBe("");
+  });
+
+  it("clears inline-block when switching inline -> center (reset-then-apply)", () => {
+    applyAlignment(el, "inline");
+    expect(el.style.display).toBe("inline-block");
+    // Switching back to a flex alignment must replace the inline-block
+    // override with the constructor-style flex, not just clear it.
+    applyAlignment(el, "center");
+    expect(el.style.display).toBe("flex");
+    expect(el.style.verticalAlign).toBe("");
+    expect(el.style.padding).toBe("");
+    expect(el.dataset.imageAlign).toBe("center");
+    expect(el.style.justifyContent).toBe("center");
+  });
+
+  it("clears a previous float when switching floatLeft -> inline", () => {
+    applyAlignment(el, "floatLeft");
+    expect(el.style.cssFloat).toBe("left");
+    applyAlignment(el, "inline");
+    expect(el.style.cssFloat).toBe("");
+    expect(el.style.display).toBe("inline-block");
+    expect(el.style.verticalAlign).toBe("top");
+    expect(el.dataset.imageAlign).toBe("inline");
+  });
+
   it("clears a previous float when switching floatLeft -> left (reset-then-apply)", () => {
     applyAlignment(el, "floatLeft");
     expect(el.style.cssFloat).toBe("left");

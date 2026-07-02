@@ -15,6 +15,7 @@ import {
   IconLayoutAlignRight,
   IconFloatLeft,
   IconFloatRight,
+  IconLayoutColumns,
   IconDownload,
   IconRefresh,
   IconTrash,
@@ -46,6 +47,7 @@ export function ImageMenu({ editor }: EditorMenuProps) {
         isAlignRight: ctx.editor.isActive("image", { align: "right" }),
         isFloatLeft: ctx.editor.isActive("image", { align: "floatLeft" }),
         isFloatRight: ctx.editor.isActive("image", { align: "floatRight" }),
+        isInline: ctx.editor.isActive("image", { align: "inline" }),
         src: imageAttrs?.src || null,
         alt: imageAttrs?.alt || "",
         caption: imageAttrs?.caption || "",
@@ -123,6 +125,14 @@ export function ImageMenu({ editor }: EditorMenuProps) {
       .chain()
       .focus(undefined, { scrollIntoView: false })
       .setImageAlign("floatRight")
+      .run();
+  }, [editor]);
+
+  const alignImageInline = useCallback(() => {
+    editor
+      .chain()
+      .focus(undefined, { scrollIntoView: false })
+      .setImageAlign("inline")
       .run();
   }, [editor]);
 
@@ -256,6 +266,18 @@ export function ImageMenu({ editor }: EditorMenuProps) {
             className={clsx({ [classes.active]: editorState?.isFloatRight })}
           >
             <IconFloatRight size={18} />
+          </ActionIcon>
+        </Tooltip>
+
+        <Tooltip position="top" label={t("Inline (side by side)")} withinPortal={false}>
+          <ActionIcon
+            onClick={alignImageInline}
+            size="lg"
+            aria-label={t("Inline (side by side)")}
+            variant="subtle"
+            className={clsx({ [classes.active]: editorState?.isInline })}
+          >
+            <IconLayoutColumns size={18} />
           </ActionIcon>
         </Tooltip>
 

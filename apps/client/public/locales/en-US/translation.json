@@ -1325,6 +1325,7 @@
   "Move to space": "Move to space",
   "Float left (wrap text)": "Float left (wrap text)",
   "Float right (wrap text)": "Float right (wrap text)",
+  "Inline (side by side)": "Inline (side by side)",
   "Switch to tree": "Switch to tree",
   "Switch to flat list": "Switch to flat list",
   "Toggle subpages display mode": "Toggle subpages display mode",
