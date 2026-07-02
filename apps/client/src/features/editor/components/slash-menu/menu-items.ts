@@ -35,6 +35,7 @@ import { PAGE_EMBED_PICKER_EVENT } from "@/features/editor/components/page-embed
 import {
   CommandProps,
   SlashMenuGroupedItemsType,
+  SlashMenuItemType,
 } from "@/features/editor/components/slash-menu/types";
 import { uploadImageAction } from "@/features/editor/components/image/upload-image-action.tsx";
 import { uploadVideoAction } from "@/features/editor/components/video/upload-video-action.tsx";
@@ -835,6 +836,49 @@ export function isHtmlEmbedFeatureEnabled(): boolean {
   }
 }
 
+// Russian ЙЦУКЕН -> US QWERTY by physical key position (lowercase; callers
+// lowercase first). Lets the slash menu match Latin item titles/terms even when
+// a command is typed with the wrong keyboard layout active (e.g. "/сщву" while
+// ЙЦУКЕН is on physically types the same keys as "/code").
+const RU_TO_EN_LAYOUT: Record<string, string> = {
+  й: "q", ц: "w", у: "e", к: "r", е: "t", н: "y", г: "u", ш: "i", щ: "o",
+  з: "p", х: "[", ъ: "]",
+  ф: "a", ы: "s", в: "d", а: "f", п: "g", р: "h", о: "j", л: "k", д: "l",
+  ж: ";", э: "'",
+  я: "z", ч: "x", с: "c", м: "v", и: "b", т: "n", ь: "m", б: ",", ю: ".",
+  ё: "`",
+};
+// Inverse map: US QWERTY -> Russian ЙЦУКЕН by physical key position. Handles the
+// mirror case (e.g. "cyjcrf" typed with EN layout on == "сноска" == Footnote).
+const EN_TO_RU_LAYOUT: Record<string, string> = Object.fromEntries(
+  Object.entries(RU_TO_EN_LAYOUT).map(([ru, en]) => [en, ru]),
+);
+
+function translitByLayout(text: string, map: Record<string, string>): string {
+  let out = "";
+  for (const ch of text) out += map[ch] ?? ch;
+  return out;
+}
+
+/**
+ * Build the list of search strings to try for a given query: the original
+ * query first, followed by its RU->EN and EN->RU physical-layout remappings.
+ * Keeping the original first preserves genuine Cyrillic search terms (e.g.
+ * "сноска"/"примечание" for Footnote) and lets callers treat the original
+ * differently from the remapped candidates. De-duplication only collapses the
+ * list to one element when nothing is remappable (e.g. digits/spaces), so a
+ * typical ASCII query still yields multiple candidates.
+ */
+export function buildLayoutCandidates(search: string): string[] {
+  return [
+    ...new Set([
+      search,
+      translitByLayout(search, RU_TO_EN_LAYOUT),
+      translitByLayout(search, EN_TO_RU_LAYOUT),
+    ]),
+  ];
+}
+
 export const getSuggestionItems = ({
   query,
   excludeItems,
@@ -843,6 +887,18 @@ export const getSuggestionItems = ({
   excludeItems?: Set<string>;
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
+  const candidates = buildLayoutCandidates(search);
+  // Only the original query is allowed to match via a short substring. Remapped
+  // (wrong-layout) candidates must be at least REMAP_MIN_LEN chars before they
+  // can match, so a 1-2 char ASCII query does not spuriously substring-match
+  // unrelated Cyrillic search terms (e.g. "/cy" -> "сн" hitting "сноска",
+  // "/b" -> "и" hitting "примечание"). buildLayoutCandidates already dedupes
+  // the remaps against the original, so candidates[0] is the original query.
+  const REMAP_MIN_LEN = 3;
+  const [originalCandidate, ...remapped] = candidates;
+  const remappedCandidates = remapped.filter(
+    (candidate) => candidate.length >= REMAP_MIN_LEN,
+  );
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
@@ -856,24 +912,42 @@ export const getSuggestionItems = ({
     return false;
   };
 
+  const candidateMatchesItem = (
+    candidate: string,
+    item: SlashMenuItemType,
+    description: string,
+  ) =>
+    fuzzyMatch(candidate, item.title) ||
+    description.includes(candidate) ||
+    (item.searchTerms != null &&
+      item.searchTerms.some((term: string) => term.includes(candidate)));
+
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
       if (excludeItems?.has(item.title)) return false;
       // Hide the HTML embed item unless the workspace master toggle is ON.
       if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
         return false;
+      const description = item.description.toLowerCase();
       return (
-        fuzzyMatch(search, item.title) ||
-        item.description.toLowerCase().includes(search) ||
-        (item.searchTerms &&
-          item.searchTerms.some((term: string) => term.includes(search)))
+        candidateMatchesItem(originalCandidate, item, description) ||
+        remappedCandidates.some((candidate) =>
+          candidateMatchesItem(candidate, item, description),
+        )
       );
     });
 
     if (filteredItems.length) {
+      const titleMatchesAnyCandidate = (title: string) => {
+        const lower = title.toLowerCase();
+        return (
+          lower.includes(originalCandidate) ||
+          remappedCandidates.some((candidate) => lower.includes(candidate))
+        );
+      };
       filteredGroups[group] = filteredItems.sort((a, b) => {
-        const aTitle = a.title.toLowerCase().includes(search) ? 0 : 1;
-        const bTitle = b.title.toLowerCase().includes(search) ? 0 : 1;
+        const aTitle = titleMatchesAnyCandidate(a.title) ? 0 : 1;
+        const bTitle = titleMatchesAnyCandidate(b.title) ? 0 : 1;
         return aTitle - bTitle;
       });
     }
