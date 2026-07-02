@@ -1,7 +1,14 @@
 import { BubbleMenu, BubbleMenuProps } from "@tiptap/react/menus";
 import { isNodeSelection, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
-import { FC, useEffect, useRef, useState } from "react";
+import {
+  ComponentType,
+  CSSProperties,
+  FC,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   IconBold,
   IconCode,
@@ -41,7 +48,7 @@ function IconStress({
   stroke = 2,
 }: {
   style?: React.CSSProperties;
-  stroke?: number;
+  stroke?: string | number;
 }) {
   return (
     <svg
@@ -65,7 +72,10 @@ export interface BubbleMenuItem {
   name: string;
   isActive: () => boolean;
   command: () => void;
-  icon: typeof IconBold;
+  // Rendered as <item.icon style={...} stroke={2} />, so the real contract is
+  // just { style?, stroke? }. stroke is string|number to match Tabler's own prop
+  // type; Tabler icons and the local IconStress both satisfy it (no cast needed).
+  icon: ComponentType<{ style?: CSSProperties; stroke?: string | number }>;
 }
 
 type EditorBubbleMenuProps = Omit<BubbleMenuProps, "children" | "editor"> & {
@@ -161,9 +171,7 @@ export const EditorBubbleMenu: FC<EditorBubbleMenuProps> = (props) => {
         editor.view.dispatch(toggleStressAccent(editor.state));
         editor.view.focus();
       },
-      // Local SVG icon; cast to the Tabler icon type used by the other items.
-      // It renders with the same { style, stroke } props they are given.
-      icon: IconStress as unknown as typeof IconBold,
+      icon: IconStress,
     },
     {
       name: "Clear formatting",
