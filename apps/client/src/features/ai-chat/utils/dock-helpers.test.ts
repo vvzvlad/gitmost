@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isPointWithinRect, type NavbarRect } from "./dock-helpers.ts";
+import {
+  isPointWithinRect,
+  isNavbarRectVisible,
+  type NavbarRect,
+} from "./dock-helpers.ts";
 
 const NAVBAR: NavbarRect = { left: 0, top: 45, width: 300, height: 800 };
 
@@ -24,5 +28,31 @@ describe("isPointWithinRect", () => {
 
   it("returns false when the navbar rect is null (absent/collapsed)", () => {
     expect(isPointWithinRect(150, 400, null)).toBe(false);
+  });
+});
+
+describe("isNavbarRectVisible", () => {
+  it("returns true for a normal on-screen navbar rect", () => {
+    expect(isNavbarRectVisible({ width: 300, height: 800, right: 300 })).toBe(
+      true,
+    );
+  });
+
+  it("returns false for a zero-size rect (width or height 0)", () => {
+    expect(isNavbarRectVisible({ width: 0, height: 800, right: 300 })).toBe(
+      false,
+    );
+    expect(isNavbarRectVisible({ width: 300, height: 0, right: 300 })).toBe(
+      false,
+    );
+  });
+
+  it("returns false when the navbar is translated off-screen (right <= 0)", () => {
+    expect(isNavbarRectVisible({ width: 300, height: 800, right: 0 })).toBe(
+      false,
+    );
+    expect(isNavbarRectVisible({ width: 300, height: 800, right: -50 })).toBe(
+      false,
+    );
   });
 });

@@ -30,3 +30,19 @@ export function isPointWithinRect(
     y <= rect.top + rect.height
   );
 }
+
+/**
+ * Whether a measured navbar rect represents a VISIBLE navbar. Mantine collapses
+ * the navbar by translating it off-screen (its right edge lands at or left of the
+ * viewport) without changing its width/border-box, so a zero-size or off-screen
+ * rect means "no navbar" — the docked window then falls back to floating instead
+ * of pinning to an invisible box. Pure (no DOM) so it can be unit-tested; the
+ * DOM-reading getNavbarRect() in the window component supplies the rect.
+ */
+export function isNavbarRectVisible(r: {
+  width: number;
+  height: number;
+  right: number;
+}): boolean {
+  return !(r.width === 0 || r.height === 0 || r.right <= 0);
+}

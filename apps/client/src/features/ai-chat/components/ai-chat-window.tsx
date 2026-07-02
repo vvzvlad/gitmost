@@ -56,6 +56,7 @@ import {
 import { selectContextBadge } from "@/features/ai-chat/utils/context-badge.ts";
 import {
   isPointWithinRect,
+  isNavbarRectVisible,
   type NavbarRect,
 } from "@/features/ai-chat/utils/dock-helpers.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
@@ -134,7 +135,8 @@ function getNavbarRect(): NavbarRect | null {
   const el = document.getElementById(APP_NAVBAR_ID);
   if (!el) return null;
   const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0 || r.right <= 0) return null;
+  // Off-screen/collapsed navbar (visibility predicate extracted + unit-tested).
+  if (!isNavbarRectVisible(r)) return null;
   return { left: r.left, top: r.top, width: r.width, height: r.height };
 }
 
@@ -751,17 +753,21 @@ export default function AiChatWindow() {
               )}
             </button>
           )}
-          {/* Dock/undock toggle. Docked -> "Undock" (expand icon) pops the window
-              back out to floating; floating -> "Dock to sidebar" (collapse icon)
-              pins it into the navbar. */}
+          {/* Dock/undock toggle. Effectively docked -> "Undock" (expand icon) pops
+              the window back out to floating; floating -> "Dock to sidebar"
+              (collapse icon) pins it into the navbar. The LABEL/icon reflect the
+              EFFECTIVE state (useDock), consistent with the Minimize gate: when
+              docked but the navbar is absent/collapsed the window renders floating,
+              so an "Undock" label there would misdescribe a floating window. The
+              action still toggles the raw `docked` atom. */}
           <button
             type="button"
             className={classes.headerBtn}
-            title={docked ? t("Undock") : t("Dock to sidebar")}
-            aria-label={docked ? t("Undock") : t("Dock to sidebar")}
+            title={useDock ? t("Undock") : t("Dock to sidebar")}
+            aria-label={useDock ? t("Undock") : t("Dock to sidebar")}
             onClick={toggleDock}
           >
-            {docked ? (
+            {useDock ? (
               <IconLayoutSidebarLeftExpand size={14} />
             ) : (
               <IconLayoutSidebarLeftCollapse size={14} />
