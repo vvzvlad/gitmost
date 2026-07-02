@@ -17,15 +17,37 @@
     justify-content: center;
 }
 
-/* #146: the menu now follows the <pre> in the DOM (so the editable contentDOM is
-   FIRST and click hit-testing is correct). Lift it back ABOVE the code visually
-   with flex `order` — the .codeBlock wrapper is a flex column (see code.css) —
-   so the menu still reads as a row above the code, exactly as before, without
-   sitting in-flow before the contentDOM. */
+/* #146: the menu follows the <pre> in the DOM (so the editable contentDOM is
+   FIRST and click hit-testing is correct). Instead of sitting in-flow, it is
+   floated into the top-right corner as an absolute overlay anchored to the
+   `position: relative` .codeBlock wrapper (see code.css), so it no longer
+   takes a full-width row above the code. The Mantine dropdown is portaled, so
+   it is never clipped by the overlay. */
 .menuGroup {
-    order: -1;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    gap: 4px;
 
     @media print {
         display: none;
     }
+}
+
+/* The language selector is hidden until the block is hovered, or the selector
+   itself is focused / its dropdown is open. It keeps its width in the flex
+   Group (only opacity toggles) so the copy button never jumps, and
+   `pointer-events: none` while hidden lets clicks fall through to the code.
+   `.codeBlock` is the global NodeViewWrapper class → use :global(). */
+.languageSelect {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease;
+}
+
+:global(.codeBlock):hover .languageSelect,
+.languageSelect:focus-within {
+    opacity: 1;
+    pointer-events: auto;
 }
