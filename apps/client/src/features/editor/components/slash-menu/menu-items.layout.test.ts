@@ -45,6 +45,17 @@ describe("getSuggestionItems layout-aware matching", () => {
     expect(titles(getSuggestionItems({ query: "code" }))).toContain("Code");
   });
 
+  it("finds Code for a short wrong-layout prefix (/сщ -> co)", () => {
+    // "сщ" RU->EN remaps to "co", which fuzzy-matches the "Code" title. Short
+    // remaps are title-only, but a title match must still get through. See #283.
+    expect(titles(getSuggestionItems({ query: "сщ" }))).toContain("Code");
+  });
+
+  it("still finds Code for the plain short query (/co)", () => {
+    // Sanity: the original (non-remapped) short query keeps full matching.
+    expect(titles(getSuggestionItems({ query: "co" }))).toContain("Code");
+  });
+
   it("still matches genuine Cyrillic search terms (/сноска -> Footnote)", () => {
     expect(titles(getSuggestionItems({ query: "сноска" }))).toContain(
       "Footnote",
