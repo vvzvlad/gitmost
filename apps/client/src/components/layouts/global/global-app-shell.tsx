@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import SettingsSidebar from "@/components/settings/settings-sidebar.tsx";
 import { useAtom } from "jotai";
 import {
+  APP_NAVBAR_ID,
   asideStateAtom,
   desktopSidebarAtom,
   mobileSidebarAtom,
@@ -106,6 +107,7 @@ export default function GlobalAppShell({
         <AppHeader />
       </AppShell.Header>
       <AppShell.Navbar
+        id={APP_NAVBAR_ID}
         className={classes.navbar}
         withBorder={false}
         ref={sidebarRef}

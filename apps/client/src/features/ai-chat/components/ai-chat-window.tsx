@@ -13,21 +13,29 @@ import {
   IconChevronDown,
   IconCopy,
   IconGripVertical,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
   IconMinus,
   IconPlus,
   IconX,
 } from "@tabler/icons-react";
 import { useAtom, useSetAtom } from "jotai";
-import { useMatch } from "react-router-dom";
+import { useLocation, useMatch } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   activeAiChatIdAtom,
   aiChatWindowOpenAtom,
   aiChatWindowGeomAtom,
+  aiChatWindowDockedAtom,
   aiChatDraftAtom,
   selectedAiRoleIdAtom,
 } from "@/features/ai-chat/atoms/ai-chat-atom.ts";
+import {
+  APP_NAVBAR_ID,
+  desktopSidebarAtom,
+  mobileSidebarAtom,
+} from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
 import { extractPageSlugId } from "@/lib";
 import {
@@ -46,6 +54,11 @@ import {
   isHeaderClick,
 } from "@/features/ai-chat/utils/collapse-helpers.ts";
 import { selectContextBadge } from "@/features/ai-chat/utils/context-badge.ts";
+import {
+  isPointWithinRect,
+  isNavbarRectVisible,
+  type NavbarRect,
+} from "@/features/ai-chat/utils/dock-helpers.ts";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { notifications } from "@mantine/notifications";
 import classes from "@/features/ai-chat/components/ai-chat-window.module.css";
@@ -112,6 +125,28 @@ function clampGeom(g: {
   };
 }
 
+// Live bounding rect of the app-shell navbar (the page-tree sidebar), by its
+// stable id. Returns null when the navbar is absent OR collapsed: Mantine
+// collapses the navbar by translating it off-screen (its right edge lands at or
+// left of the viewport), so a zero-size or off-screen rect is treated as "no
+// navbar" — the docked window then falls back to floating instead of pinning to
+// an off-screen box. Reads the DOM, so call it inside effects / handlers only.
+function getNavbarRect(): NavbarRect | null {
+  const el = document.getElementById(APP_NAVBAR_ID);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  // Off-screen/collapsed navbar (visibility predicate extracted + unit-tested).
+  if (!isNavbarRectVisible(r)) return null;
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+}
+
+// Whether a viewport point falls within the (visible) navbar bounds. Used to
+// decide dock-on-drop and undock-on-drag-out. The point-in-rect math is the pure
+// isPointWithinRect helper (unit-tested); this only supplies the live rect.
+function isPointerOverNavbar(x: number, y: number): boolean {
+  return isPointWithinRect(x, y, getNavbarRect());
+}
+
 /**
  * Floating, draggable, resizable, minimizable AI chat window. Replaces the
  * former right-aside `AiChatPanel`: it owns ALL chat orchestration (active
@@ -137,6 +172,43 @@ export default function AiChatWindow() {
   // which would otherwise close over a stale value. Kept in sync below.
   const minimizedRef = useRef(minimized);
   minimizedRef.current = minimized;
+
+  // Docked-into-sidebar mode (#276). Persisted so it survives reload + reopen.
+  // When docked the SAME window instance pins itself to the navbar rect below.
+  const [docked, setDocked] = useAtom(aiChatWindowDockedAtom);
+  // Mirror for the useCallback([]) drag handlers (same reason as minimizedRef).
+  const dockedRef = useRef(docked);
+  dockedRef.current = docked;
+  // Live navbar rect the docked window is pinned to; synced before paint by the
+  // layout effect below. null = navbar absent/collapsed -> floating fallback.
+  const [dockRect, setDockRect] = useState<NavbarRect | null>(null);
+  // While dragging a FLOATING window over the navbar: show the drop-zone hint.
+  const [dockHint, setDockHint] = useState(false);
+  // Live window position during a drag. Normally the drag is fully imperative
+  // (el.style updated per mousemove, no re-render — matching the pre-#276
+  // behavior), so this stays null. It is set ONLY at a navbar-boundary crossing:
+  // that crossing already forces a re-render (dockHint flips), which would
+  // otherwise re-apply the committed geom and snap the box back for a frame — so
+  // we hand the render the live position at that instant instead. Cleared on drop.
+  const [dragPos, setDragPos] = useState<{ left: number; top: number } | null>(
+    null,
+  );
+
+  // Subscribed (read-only) so this component re-renders — and the dockRect-sync
+  // effect below re-runs — when the sidebar is collapsed/expanded via the header
+  // toggle. Mantine collapses the navbar with a transform (width/border-box
+  // unchanged), so the navbar's ResizeObserver never fires; these deps + the
+  // navbar `transitionend` listener are what re-measure the rect on toggle.
+  const [desktopSidebarOpen] = useAtom(desktopSidebarAtom);
+  const [mobileSidebarOpen] = useAtom(mobileSidebarAtom);
+
+  // Dock mode is only EFFECTIVE when a navbar rect is available. When docked but
+  // the navbar is absent/collapsed (dockRect === null) the window falls back to
+  // the floating look, so effects gated on "is docked" must use this — not the
+  // raw `docked` flag — or a fallback-floating window would behave half-docked.
+  const useDock = docked && dockRect !== null;
+
+  const location = useLocation();
 
   const winRef = useRef<HTMLDivElement>(null);
   // Live window geometry (position + size); persisted to localStorage so a
@@ -325,6 +397,47 @@ export default function AiChatWindow() {
     setMinimized(false);
   }, [windowOpen]);
 
+  // While docked, keep the window pinned to the navbar's LIVE rect. useLayoutEffect
+  // (not useEffect) so dockRect is measured/committed before the browser paints,
+  // avoiding a first-frame jump. Re-measures on: navbar size changes (manual
+  // sidebar resize -> ResizeObserver), viewport resize (window `resize`), and
+  // route changes that swap the navbar width (space <-> shared/global sidebar are
+  // 300px vs sidebarWidth -> re-run on location.pathname). If the navbar is
+  // absent/collapsed, getNavbarRect() returns null and the render falls back to
+  // the floating look (the window does NOT vanish).
+  useLayoutEffect(() => {
+    if (!windowOpen || !docked) return;
+    const sync = () => setDockRect(getNavbarRect());
+    sync();
+    const navbar = document.getElementById(APP_NAVBAR_ID);
+    let ro: ResizeObserver | null = null;
+    if (navbar) {
+      ro = new ResizeObserver(sync);
+      ro.observe(navbar);
+      // Collapsing/expanding the sidebar translates the navbar off-screen WITHOUT
+      // changing its width/border-box, so the ResizeObserver never fires and the
+      // effect's initial sync() may measure mid-transition (stale). Re-measure at
+      // transitionend so getNavbarRect() sees the final position: null once the
+      // navbar is translated off (right <= 0) -> fall back to floating; the real
+      // rect once it slides back -> re-dock. The sidebar-state deps below force
+      // this effect (and the immediate sync) to re-run on each toggle, covering
+      // the reduced-motion case where no transition -> no transitionend.
+      navbar.addEventListener("transitionend", sync);
+    }
+    window.addEventListener("resize", sync);
+    return () => {
+      ro?.disconnect();
+      navbar?.removeEventListener("transitionend", sync);
+      window.removeEventListener("resize", sync);
+    };
+  }, [
+    windowOpen,
+    docked,
+    location.pathname,
+    desktopSidebarOpen,
+    mobileSidebarOpen,
+  ]);
+
   // Auto-collapse the window into its header as soon as the user interacts with
   // anything outside it (clicks the page/editor). Armed ONLY while the window is
   // open and expanded, so it never fires repeatedly and never collapses on the
@@ -333,7 +446,12 @@ export default function AiChatWindow() {
   // (shouldCollapseOnOutsidePointer) prevent false collapses from clicks inside
   // the window or inside Mantine portals (kebab menu, delete-confirm modal).
   useEffect(() => {
-    if (!windowOpen || minimized) return;
+    // Disabled while EFFECTIVELY docked: a docked window intentionally overlays
+    // the page tree, so a click on the surrounding page must NOT auto-collapse
+    // it. Gated on useDock (not raw `docked`) so a fallback-floating window
+    // (docked but navbar absent/collapsed) still auto-collapses like a normal
+    // floating window.
+    if (!windowOpen || minimized || useDock) return;
     const onPointerDown = (e: MouseEvent): void => {
       if (shouldCollapseOnOutsidePointer(e.target, winRef.current)) {
         setMinimized(true);
@@ -341,13 +459,18 @@ export default function AiChatWindow() {
     };
     document.addEventListener("mousedown", onPointerDown, true);
     return () => document.removeEventListener("mousedown", onPointerDown, true);
-  }, [windowOpen, minimized]);
+  }, [windowOpen, minimized, useDock]);
 
   // Persist the user's resize into state so it survives close/reopen. Skipped
   // while minimized so the collapsed (auto) height is never captured. The
   // equality guard avoids an update loop.
   useEffect(() => {
-    if (!windowOpen || minimized) return;
+    // Disabled while EFFECTIVELY docked: in dock mode the size is driven by the
+    // navbar rect, not a user resize, so we must not capture the navbar-sized box
+    // into the persisted floating geom (it would clobber the remembered floating
+    // size). Gated on useDock so a fallback-floating window (docked but navbar
+    // absent) still persists user resizes like a normal floating window.
+    if (!windowOpen || minimized || useDock) return;
     const el = winRef.current;
     // `geom` is in the deps so this re-runs once geometry is settled and the
     // window is actually rendered (on the first open `geom` is still null on the
@@ -365,18 +488,30 @@ export default function AiChatWindow() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [windowOpen, minimized, geom !== null]);
+  }, [windowOpen, minimized, useDock, geom !== null]);
 
   const startDrag = useCallback((e: React.MouseEvent): void => {
-    // Ignore drags that originate on a button (minimize/close/new chat).
+    // Ignore drags that originate on a button (dock/minimize/close/new chat).
     if ((e.target as HTMLElement).closest("button")) return;
     const el = winRef.current;
     if (!el) return;
 
     const sx = e.clientX;
     const sy = e.clientY;
+    // Starting position: the element's current inline left/top, whether it was
+    // placed by the floating geom or pinned to the navbar rect (both render as
+    // "<n>px"). getBoundingClientRect would work too, but the inline values keep
+    // the drag math identical to the pre-#276 floating behavior.
     const ol = parseFloat(el.style.left) || 0;
     const ot = parseFloat(el.style.top) || 0;
+    // Freeze the box size for the drag: a docked window keeps its navbar size
+    // while being pulled out, a floating window keeps its own size.
+    const dragW = el.offsetWidth;
+    const dragH = el.offsetHeight;
+
+    // Latch for the drop-zone hint so setState fires only when the pointer
+    // actually crosses the navbar boundary, not on every mousemove.
+    let overNavbar = false;
 
     const move = (ev: MouseEvent): void => {
       let nl = ol + (ev.clientX - sx);
@@ -385,20 +520,58 @@ export default function AiChatWindow() {
       // with position: fixed) with an 8px margin.
       nl = Math.max(
         EDGE_MARGIN,
-        Math.min(nl, window.innerWidth - el.offsetWidth - EDGE_MARGIN),
+        Math.min(nl, window.innerWidth - dragW - EDGE_MARGIN),
       );
       nt = Math.max(
         EDGE_MARGIN,
-        Math.min(nt, window.innerHeight - el.offsetHeight - EDGE_MARGIN),
+        Math.min(nt, window.innerHeight - dragH - EDGE_MARGIN),
       );
       el.style.left = `${nl}px`;
       el.style.top = `${nt}px`;
+      // Drop-zone highlight: only meaningful when dragging a FLOATING window in
+      // to dock it (a docked window is already over the navbar).
+      if (!dockedRef.current) {
+        const nowOver = isPointerOverNavbar(ev.clientX, ev.clientY);
+        if (nowOver !== overNavbar) {
+          overNavbar = nowOver;
+          // This re-render would re-apply the committed geom; hand it the live
+          // position so the box does not snap back for a frame.
+          setDragPos({ left: nl, top: nt });
+          setDockHint(nowOver);
+        }
+      }
     };
 
     const up = (ev: MouseEvent): void => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       document.body.style.userSelect = "";
+      setDragPos(null);
+      setDockHint(false);
+      const overNavbarNow = isPointerOverNavbar(ev.clientX, ev.clientY);
+
+      if (dockedRef.current) {
+        // Docked window: releasing OUTSIDE the navbar pops it out as a floating
+        // window at the drop point (clamped to the viewport). Released over the
+        // navbar -> stays docked (a header click is a no-op here). The response
+        // stream is untouched — only the mode flag / geom change.
+        if (!overNavbarNow) {
+          const el2 = winRef.current;
+          const dropLeft = el2 ? parseFloat(el2.style.left) || 0 : 0;
+          const dropTop = el2 ? parseFloat(el2.style.top) || 0 : 0;
+          setGeom((prev) =>
+            clampGeom({
+              ...(prev ?? computeInitialGeom()),
+              left: dropLeft,
+              top: dropTop,
+            }),
+          );
+          setDocked(false);
+        }
+        return;
+      }
+
+      // Floating window.
       // Treat a near-zero-movement press as a click (not a drag). When the
       // window is minimized, a header click expands it; nothing to persist
       // because the position did not change. minimizedRef avoids the stale
@@ -408,6 +581,13 @@ export default function AiChatWindow() {
         isHeaderClick(sx, sy, ev.clientX, ev.clientY)
       ) {
         setMinimized(false);
+        return;
+      }
+      // Released over the navbar -> dock. The layout effect then pins the window
+      // to the navbar rect; the last floating geom is left untouched so a later
+      // undock/close restores the remembered floating placement.
+      if (overNavbarNow) {
+        setDocked(true);
         return;
       }
       const el2 = winRef.current;
@@ -432,6 +612,20 @@ export default function AiChatWindow() {
     e.preventDefault();
   }, []);
 
+  // Dock/undock via the header button. Docking pins the window to the navbar;
+  // undocking restores the floating window at its last remembered geom. On
+  // undock we re-clamp that geom to the current viewport (matching drag-undock's
+  // clampGeom) so a viewport shrink while docked can't leave the popped-out
+  // window partly off-screen. The chat thread stays mounted across the toggle,
+  // so a live stream is intact. dockedRef gives the live value inside this
+  // useCallback([]) handler.
+  const toggleDock = useCallback((): void => {
+    if (dockedRef.current) {
+      setGeom((prev) => (prev ? clampGeom(prev) : prev));
+    }
+    setDocked((d) => !d);
+  }, [setDocked, setGeom]);
+
   // Just toggle the flag. The `.minimized` CSS handles the collapsed height and
   // disables resize, and `.minimized .content` hides the body while keeping
   // ChatThread mounted (so an in-flight stream is not aborted).
@@ -441,17 +635,45 @@ export default function AiChatWindow() {
 
   if (!windowOpen || !geom) return null;
 
-  return (
-    <div
-      ref={winRef}
-      className={`${classes.window}${minimized ? ` ${classes.minimized}` : ""}`}
-      style={{
+  // `useDock` (computed above) is the EFFECTIVE dock state: docked AND a navbar
+  // rect is available. If the navbar is absent/collapsed we keep the persisted
+  // `docked` flag but render the floating look so the window never vanishes (it
+  // re-docks once the navbar reappears — see the layout effect above). Minimize
+  // is suppressed while actually docked.
+  const showMinimized = minimized && !useDock;
+
+  // Position/size of the window this frame. `dragPos` (set only at a mid-drag
+  // navbar-boundary crossing) overrides the committed position so the box does
+  // not snap back for a frame when that crossing forces a re-render.
+  const boxStyle = dockRect && useDock
+    ? {
+        left: dockRect.left,
+        top: dockRect.top,
+        width: dockRect.width,
+        height: dockRect.height,
+      }
+    : {
         left: geom.left,
         top: geom.top,
         width: geom.width,
         // Height omitted when minimized so the `.minimized` CSS auto-height wins.
-        height: minimized ? undefined : geom.height,
-      }}
+        height: showMinimized ? undefined : geom.height,
+      };
+  const style = dragPos
+    ? { ...boxStyle, left: dragPos.left, top: dragPos.top }
+    : boxStyle;
+
+  // Drop-zone highlight over the navbar bounds while dragging a floating window
+  // onto the sidebar. Rendered as a viewport-fixed sibling overlay (not inside
+  // the moving window), so its position is independent of the drag.
+  const hintRect = dockHint ? getNavbarRect() : null;
+
+  return (
+    <>
+    <div
+      ref={winRef}
+      className={`${classes.window}${showMinimized ? ` ${classes.minimized}` : ""}${useDock ? ` ${classes.docked}` : ""}`}
+      style={style}
     >
       {/* drag bar / header. Mouse users expand a minimized window by clicking
           anywhere on the bar (the click-vs-drag logic in startDrag, which
@@ -471,11 +693,11 @@ export default function AiChatWindow() {
             is a plain, non-focusable label. */}
         <span
           className={classes.title}
-          role={minimized ? "button" : undefined}
-          tabIndex={minimized ? 0 : undefined}
-          aria-label={minimized ? t("Expand") : undefined}
+          role={showMinimized ? "button" : undefined}
+          tabIndex={showMinimized ? 0 : undefined}
+          aria-label={showMinimized ? t("Expand") : undefined}
           onKeyDown={
-            minimized
+            showMinimized
               ? (event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
@@ -531,15 +753,39 @@ export default function AiChatWindow() {
               )}
             </button>
           )}
+          {/* Dock/undock toggle. Effectively docked -> "Undock" (expand icon) pops
+              the window back out to floating; floating -> "Dock to sidebar"
+              (collapse icon) pins it into the navbar. The LABEL/icon reflect the
+              EFFECTIVE state (useDock), consistent with the Minimize gate: when
+              docked but the navbar is absent/collapsed the window renders floating,
+              so an "Undock" label there would misdescribe a floating window. The
+              action still toggles the raw `docked` atom. */}
           <button
             type="button"
             className={classes.headerBtn}
-            title={t("Minimize")}
-            aria-label={t("Minimize")}
-            onClick={toggleMinimize}
+            title={useDock ? t("Undock") : t("Dock to sidebar")}
+            aria-label={useDock ? t("Undock") : t("Dock to sidebar")}
+            onClick={toggleDock}
           >
-            <IconMinus size={14} />
+            {useDock ? (
+              <IconLayoutSidebarLeftExpand size={14} />
+            ) : (
+              <IconLayoutSidebarLeftCollapse size={14} />
+            )}
           </button>
+          {/* Minimize (collapse to header) makes no sense while docked — the
+              window fills the navbar — so it is hidden in dock mode. */}
+          {!useDock && (
+            <button
+              type="button"
+              className={classes.headerBtn}
+              title={t("Minimize")}
+              aria-label={t("Minimize")}
+              onClick={toggleMinimize}
+            >
+              <IconMinus size={14} />
+            </button>
+          )}
           <button
             type="button"
             className={classes.headerBtn}
@@ -641,12 +887,29 @@ export default function AiChatWindow() {
         </div>
       </div>
 
-      {/* resize affordance icon (drawn manually; native resizer is hidden) */}
-      {!minimized && (
+      {/* resize affordance icon (drawn manually; native resizer is hidden).
+          Hidden while docked — the docked size follows the navbar, not a manual
+          resize. */}
+      {!showMinimized && !useDock && (
         <span className={classes.resizeHandle}>
           <IconArrowsDiagonal size={12} />
         </span>
       )}
     </div>
+      {/* Drop-zone highlight over the navbar while dragging a floating window in
+          to dock it. Sibling of the window (position: fixed) so it tracks the
+          navbar bounds, not the moving window. */}
+      {hintRect && (
+        <div
+          className={classes.dockHighlight}
+          style={{
+            left: hintRect.left,
+            top: hintRect.top,
+            width: hintRect.width,
+            height: hintRect.height,
+          }}
+        />
+      )}
+    </>
   );
 }
