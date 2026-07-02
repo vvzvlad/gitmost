@@ -657,7 +657,6 @@ export interface AiChatPageSnapshots {
   workspaceId: string;
   contentMd: string;
   pageUpdatedAt: Timestamp;
-  contentHash: string | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
 }

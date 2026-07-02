@@ -102,7 +102,6 @@ describe('AiChatPageSnapshotRepo', () => {
         workspaceId: 'ws1',
         contentMd: '# hello',
         pageUpdatedAt,
-        contentHash: 'abc',
       });
 
       expect(rec.table).toBe('aiChatPageSnapshots');
@@ -112,31 +111,13 @@ describe('AiChatPageSnapshotRepo', () => {
         workspaceId: 'ws1',
         contentMd: '# hello',
         pageUpdatedAt,
-        contentHash: 'abc',
       });
       expect(rec.conflictColumns).toEqual(['chatId', 'pageId']);
       expect(rec.conflictUpdate).toMatchObject({
         contentMd: '# hello',
         pageUpdatedAt,
-        contentHash: 'abc',
       });
       expect(rec.conflictUpdate?.updatedAt).toBeInstanceOf(Date);
-    });
-
-    it('defaults a missing content hash to null (insert and conflict update)', async () => {
-      const { db, rec } = makeDb({ id: 's1' });
-      const repo = new AiChatPageSnapshotRepo(db);
-
-      await repo.upsert({
-        chatId: 'c1',
-        pageId: 'p1',
-        workspaceId: 'ws1',
-        contentMd: 'body',
-        pageUpdatedAt: new Date('2026-07-02T10:00:00Z'),
-      });
-
-      expect(rec.values?.contentHash).toBeNull();
-      expect(rec.conflictUpdate?.contentHash).toBeNull();
     });
   });
 });

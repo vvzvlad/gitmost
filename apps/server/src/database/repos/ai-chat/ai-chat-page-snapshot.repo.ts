@@ -48,7 +48,6 @@ export class AiChatPageSnapshotRepo {
       workspaceId: string;
       contentMd: string;
       pageUpdatedAt: Date;
-      contentHash?: string | null;
     },
     trx?: KyselyTransaction,
   ): Promise<AiChatPageSnapshot> {
@@ -61,13 +60,11 @@ export class AiChatPageSnapshotRepo {
         workspaceId: values.workspaceId,
         contentMd: values.contentMd,
         pageUpdatedAt: values.pageUpdatedAt,
-        contentHash: values.contentHash ?? null,
       })
       .onConflict((oc) =>
         oc.columns(['chatId', 'pageId']).doUpdateSet({
           contentMd: values.contentMd,
           pageUpdatedAt: values.pageUpdatedAt,
-          contentHash: values.contentHash ?? null,
           updatedAt: new Date(),
         }),
       )

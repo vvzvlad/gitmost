@@ -838,13 +838,50 @@ describe('AiChatService page-change lifecycle (#274)', () => {
     const row = store.get('c1|p1');
     expect(row.contentMd).toBe('Sa');
     expect(row.pageUpdatedAt).toBe(T1);
-    expect(typeof row.contentHash).toBe('string');
   });
 
   it('snapshot: skips the write when the page was deleted during the turn', async () => {
     const { svc, store } = makeService({ exportMd: 'X', page: null });
     await snapshot(svc);
     expect(store.get('c1|p1')).toBeUndefined();
+  });
+
+  it('detect: swallows a best-effort fault (export throws) and returns null', async () => {
+    // Snapshot present + a bumped updatedAt, so detection gets past the fast path
+    // and calls exportPageMarkdown — which throws. The catch must downgrade to
+    // "no note" (null) so the turn is never broken (#274 F4).
+    const { svc } = makeService({
+      snapshot: { contentMd: 'S0', pageUpdatedAt: T0 },
+    });
+    (svc as any).tools.exportPageMarkdown = async () => {
+      throw new Error('export failed');
+    };
+    expect(
+      await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 }),
+    ).toBeNull();
+  });
+
+  it('detect: swallows a repo fault (findByChatPage throws) and returns null', async () => {
+    const { svc } = makeService({
+      snapshot: { contentMd: 'S0', pageUpdatedAt: T0 },
+    });
+    (svc as any).aiChatPageSnapshotRepo.findByChatPage = async () => {
+      throw new Error('db down');
+    };
+    expect(
+      await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 }),
+    ).toBeNull();
+  });
+
+  it('snapshot: swallows a best-effort fault (upsert throws) and does not throw', async () => {
+    const { svc } = makeService({
+      exportMd: 'Sa',
+      page: { workspaceId: 'ws-1', updatedAt: T1 },
+    });
+    (svc as any).aiChatPageSnapshotRepo.upsert = async () => {
+      throw new Error('write failed');
+    };
+    await expect(snapshot(svc)).resolves.toBeUndefined();
   });
 
   it('abort branch: advancing the snapshot after an agent edit prevents a false note next turn', async () => {

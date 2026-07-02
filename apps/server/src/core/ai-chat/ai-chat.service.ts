@@ -4,7 +4,6 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { FastifyReply } from 'fastify';
 import {
   streamText,
@@ -430,7 +429,6 @@ export class AiChatService implements OnModuleInit {
         workspaceId: workspace.id,
         contentMd: currentMd,
         pageUpdatedAt: freshPage.updatedAt,
-        contentHash: createHash('sha256').update(currentMd).digest('hex'),
       });
     } catch (err) {
       this.logger.warn(

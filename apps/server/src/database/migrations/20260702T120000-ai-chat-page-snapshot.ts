@@ -34,9 +34,6 @@ export async function up(db: Kysely<any>): Promise<void> {
     // against the live page.updated_at as a cheap fast path: equal => nothing
     // changed, skip the render + diff entirely.
     .addColumn('page_updated_at', 'timestamptz', (col) => col.notNull())
-    // Optional content fingerprint (informational; the updated_at fast path is the
-    // primary change signal). Nullable so a snapshot can be written without one.
-    .addColumn('content_hash', 'varchar', (col) => col)
     .addColumn('created_at', 'timestamptz', (col) =>
       col.notNull().defaultTo(sql`now()`),
     )
