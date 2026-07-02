@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 import { isCellSelection } from "@docmost/editor-ext";
 import { CellChevronMenu } from "./menus/cell-chevron-menu";
+import { refocusEditorAfterMenuClose } from "./hooks/use-column-row-menu-lifecycle";
 import classes from "./handle.module.css";
 
 interface CellChevronProps {
@@ -87,6 +88,7 @@ export const CellChevron = React.memo(function CellChevron({
 
   const onClose = useCallback(() => {
     editor.commands.unfreezeHandles();
+    refocusEditorAfterMenuClose(editor);
   }, [editor]);
 
   if (!cellDom) return null;
