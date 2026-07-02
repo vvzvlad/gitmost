@@ -835,6 +835,47 @@ export function isHtmlEmbedFeatureEnabled(): boolean {
   }
 }
 
+// Russian ЙЦУКЕН -> US QWERTY by physical key position (lowercase; callers
+// lowercase first). Lets the slash menu match Latin item titles/terms even when
+// a command is typed with the wrong keyboard layout active (e.g. "/сщву" while
+// ЙЦУКЕН is on physically types the same keys as "/code").
+const RU_TO_EN_LAYOUT: Record<string, string> = {
+  й: "q", ц: "w", у: "e", к: "r", е: "t", н: "y", г: "u", ш: "i", щ: "o",
+  з: "p", х: "[", ъ: "]",
+  ф: "a", ы: "s", в: "d", а: "f", п: "g", р: "h", о: "j", л: "k", д: "l",
+  ж: ";", э: "'",
+  я: "z", ч: "x", с: "c", м: "v", и: "b", т: "n", ь: "m", б: ",", ю: ".",
+  ё: "`",
+};
+// Inverse map: US QWERTY -> Russian ЙЦУКЕН by physical key position. Handles the
+// mirror case (e.g. "cyjcrf" typed with EN layout on == "сноска" == Footnote).
+const EN_TO_RU_LAYOUT: Record<string, string> = Object.fromEntries(
+  Object.entries(RU_TO_EN_LAYOUT).map(([ru, en]) => [en, ru]),
+);
+
+function translitByLayout(text: string, map: Record<string, string>): string {
+  let out = "";
+  for (const ch of text) out += map[ch] ?? ch;
+  return out;
+}
+
+/**
+ * Build the set of search strings to try for a given query: the original plus
+ * its RU->EN and EN->RU physical-layout remappings. Keeping the original among
+ * the candidates preserves genuine Cyrillic search terms (e.g. "сноска",
+ * "примечание" for Footnote). De-duplicated so an ascii-only query stays a
+ * single-element set.
+ */
+export function buildLayoutCandidates(search: string): string[] {
+  return [
+    ...new Set([
+      search,
+      translitByLayout(search, RU_TO_EN_LAYOUT),
+      translitByLayout(search, EN_TO_RU_LAYOUT),
+    ]),
+  ];
+}
+
 export const getSuggestionItems = ({
   query,
   excludeItems,
@@ -843,6 +884,7 @@ export const getSuggestionItems = ({
   excludeItems?: Set<string>;
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
+  const candidates = buildLayoutCandidates(search);
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
@@ -862,18 +904,24 @@ export const getSuggestionItems = ({
       // Hide the HTML embed item unless the workspace master toggle is ON.
       if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
         return false;
-      return (
-        fuzzyMatch(search, item.title) ||
-        item.description.toLowerCase().includes(search) ||
-        (item.searchTerms &&
-          item.searchTerms.some((term: string) => term.includes(search)))
+      const description = item.description.toLowerCase();
+      return candidates.some(
+        (candidate) =>
+          fuzzyMatch(candidate, item.title) ||
+          description.includes(candidate) ||
+          (item.searchTerms &&
+            item.searchTerms.some((term: string) => term.includes(candidate))),
       );
     });
 
     if (filteredItems.length) {
+      const titleMatchesAnyCandidate = (title: string) => {
+        const lower = title.toLowerCase();
+        return candidates.some((candidate) => lower.includes(candidate));
+      };
       filteredGroups[group] = filteredItems.sort((a, b) => {
-        const aTitle = a.title.toLowerCase().includes(search) ? 0 : 1;
-        const bTitle = b.title.toLowerCase().includes(search) ? 0 : 1;
+        const aTitle = titleMatchesAnyCandidate(a.title) ? 0 : 1;
+        const bTitle = titleMatchesAnyCandidate(b.title) ? 0 : 1;
         return aTitle - bTitle;
       });
     }
