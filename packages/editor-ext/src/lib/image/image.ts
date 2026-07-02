@@ -53,7 +53,13 @@ declare module "@tiptap/core" {
         attributes: ImageAttributes & { pos: number | Range },
       ) => ReturnType;
       setImageAlign: (
-        align: "left" | "center" | "right" | "floatLeft" | "floatRight",
+        align:
+          | "left"
+          | "center"
+          | "right"
+          | "floatLeft"
+          | "floatRight"
+          | "inline",
       ) => ReturnType;
       setImageWidth: (width: number) => ReturnType;
       setImageSize: (width: number, height: number) => ReturnType;
@@ -415,6 +421,14 @@ export function applyAlignment(container: HTMLElement, align: string) {
   // (a previous float must not leak into a later left/center/right).
   container.style.cssFloat = "";
   container.style.padding = "";
+  // The ResizableNodeView constructor sets an inline `display: flex` on the
+  // container; the inline mode overrides it with `inline-block`, so the reset
+  // restores the constructor's flex here. This keeps the container's layout
+  // independent of any app-level CSS class (which also happens to set flex)
+  // and makes non-inline modes carry exactly the same inline styles as before
+  // the inline mode existed.
+  container.style.display = "flex";
+  container.style.verticalAlign = "";
   // Mirror the resolved alignment onto the CONTAINER as a data attribute so the
   // responsive stylesheet can neutralize the float on small screens (an inline
   // `float` can only be overridden by `!important`, which keys off this attr).
@@ -430,6 +444,15 @@ export function applyAlignment(container: HTMLElement, align: string) {
     container.style.cssFloat = "right";
     container.style.padding = "0 0 0 10px";
     container.style.justifyContent = "flex-end";
+  } else if (align === "inline") {
+    // Consecutive inline images sit side by side on one line box and wrap to
+    // the next line when the viewport is narrow. The right/bottom padding
+    // provides the gap between images in a row and between wrapped rows;
+    // vertical-align: top keeps rows of different-height images aligned by
+    // their top edge.
+    container.style.display = "inline-block";
+    container.style.verticalAlign = "top";
+    container.style.padding = "0 10px 10px 0";
   } else if (align === "left") {
     container.style.justifyContent = "flex-start";
   } else if (align === "right") {

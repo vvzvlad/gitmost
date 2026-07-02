@@ -1175,6 +1175,7 @@
   "Spoken language hint sent to the transcription model. Auto-detect lets the model decide.": "Подсказка языка речи для модели транскрипции. «Автоопределение» оставляет выбор за моделью.",
   "Float left (wrap text)": "Обтекание слева",
   "Float right (wrap text)": "Обтекание справа",
+  "Inline (side by side)": "В ряд",
   "Switch to tree": "Переключить на дерево",
   "Switch to flat list": "Переключить на плоский список",
   "Toggle subpages display mode": "Переключить режим отображения подстраниц",

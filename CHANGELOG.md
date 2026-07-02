@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Place several images side by side in a row.** A new "Inline (side by
+  side)" alignment mode in the image bubble menu renders consecutive inline
+  images as a row that wraps onto the next line on narrow screens. Unlike the
+  float modes, text does not wrap around inline images. The mode round-trips
+  losslessly through markdown as `data-align`, like the other alignment
+  values.
+
 - **Editable captions for images.** Images gain an optional caption shown
   below them, edited inline from the image bubble menu and stored as a `caption` attribute. Captions round-trip
   losslessly through markdown as a `data-caption` attribute on the image, so
