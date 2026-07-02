@@ -18,6 +18,7 @@ import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
 import { describeProviderError } from '../../integrations/ai/ai-error.util';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
+import { AiChatPageSnapshotRepo } from '@docmost/db/repos/ai-chat/ai-chat-page-snapshot.repo';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PageAccessService } from '../page/page-access/page-access.service';
@@ -30,6 +31,7 @@ import {
 import { AiChatToolsService } from './tools/ai-chat-tools.service';
 import { McpClientsService } from './external-mcp/mcp-clients.service';
 import { buildSystemPrompt } from './ai-chat.prompt';
+import { computePageChange } from './page-change/page-change.util';
 import { roleModelOverride } from './roles/role-model-config';
 import {
   startSseHeartbeat,
@@ -114,6 +116,24 @@ export function isInterruptResume(
 }
 
 /**
+ * Whether two timestamps refer to the SAME instant (#274 page-change fast path).
+ * The snapshot's `pageUpdatedAt` comes back from Postgres as a Date, the live
+ * page's `updatedAt` is a Date too; compare by epoch millis so a value that
+ * round-tripped through the driver as a string still matches. Either side
+ * missing => treat as different (fall through to the diff, never a false skip).
+ */
+export function sameInstant(
+  a: Date | string | null | undefined,
+  b: Date | string | null | undefined,
+): boolean {
+  if (a == null || b == null) return false;
+  const ta = new Date(a).getTime();
+  const tb = new Date(b).getTime();
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
+  return ta === tb;
+}
+
+/**
  * Payload accepted from the client `useChat` POST body. We do NOT bind a strict
  * DTO (the global ValidationPipe whitelist would strip the useChat-specific
  * fields), so this is a loose shape parsed straight off `req.body`.
@@ -179,6 +199,7 @@ export class AiChatService implements OnModuleInit {
     private readonly ai: AiService,
     private readonly aiChatRepo: AiChatRepo,
     private readonly aiChatMessageRepo: AiChatMessageRepo,
+    private readonly aiChatPageSnapshotRepo: AiChatPageSnapshotRepo,
     private readonly aiSettings: AiSettingsService,
     private readonly tools: AiChatToolsService,
     private readonly mcpClients: McpClientsService,
@@ -272,7 +293,7 @@ export class AiChatService implements OnModuleInit {
     openPage: { id?: string; title?: string } | null | undefined,
     workspace: Workspace,
     user: User,
-  ): Promise<{ id: string; title: string } | null> {
+  ): Promise<{ id: string; title: string; updatedAt: Date } | null> {
     const candidatePageId = openPage?.id;
     if (!candidatePageId) return null;
     const page = await this.pageRepo.findById(candidatePageId);
@@ -291,7 +312,131 @@ export class AiChatService implements OnModuleInit {
       }
       return null;
     }
-    return { id: page.id, title: page.title ?? '' };
+    // updatedAt is the page's last-modified instant, used by the #274 per-turn
+    // page-change detection as a cheap fast path (unchanged instant => skip the
+    // render + diff). The system-prompt / tool consumers ignore the extra field.
+    return { id: page.id, title: page.title ?? '', updatedAt: page.updatedAt };
+  }
+
+  /**
+   * Per-turn page-change detection (#274). The agent rebuilds its context from the
+   * DB each turn and otherwise cannot tell that the user hand-edited the open page
+   * since it last spoke — so it can silently overwrite those edits. This compares
+   * the page's CURRENT Markdown against the snapshot taken at the END of the
+   * agent's previous turn (see `snapshotOpenPage`) and, when a human changed
+   * something in between, returns a `{ title, diff }` the caller feeds to
+   * `buildSystemPrompt` as an ephemeral note.
+   *
+   * Edge cases: page not open / no snapshot (first turn) / page untouched since
+   * the snapshot (updatedAt fast path) / empty-after-normalization diff => null
+   * (no note). Best-effort: any fault is logged and downgraded to "no note" so it
+   * never breaks the turn.
+   */
+  private async detectPageChange(
+    chatId: string,
+    openPageContext: { id: string; title: string; updatedAt: Date } | null,
+    workspace: Workspace,
+    user: User,
+    sessionId: string,
+  ): Promise<{ title: string; diff: string } | null> {
+    if (!openPageContext) return null;
+    try {
+      const snapshot = await this.aiChatPageSnapshotRepo.findByChatPage(
+        chatId,
+        openPageContext.id,
+        workspace.id,
+      );
+      // No snapshot yet => first turn on this page; there is nothing to diff
+      // against. onFinish seeds it; the note starts from the NEXT turn.
+      if (!snapshot) return null;
+      // Fast path: the page has not been touched since the snapshot instant, so
+      // nothing changed — skip the render + diff entirely.
+      if (sameInstant(snapshot.pageUpdatedAt, openPageContext.updatedAt)) {
+        return null;
+      }
+      // Render the current page the SAME way the snapshot end was rendered, so
+      // pure formatting never registers as a change.
+      const currentMd = await this.tools.exportPageMarkdown(
+        user,
+        sessionId,
+        workspace.id,
+        chatId,
+        openPageContext.id,
+      );
+      const change = computePageChange(snapshot.contentMd, currentMd);
+      if (!change.changed) return null;
+      return {
+        title: openPageContext.title || 'Untitled',
+        diff: change.diff,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `page-change detection skipped (chat ${chatId}): ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Write the end-of-turn snapshot for the open page (#274): the page's current
+   * Markdown after ALL of the agent's edits this turn, plus the page's
+   * updated_at. The agent's own edits are therefore baked into the snapshot, so
+   * the next turn's diff isolates exactly what a HUMAN changed in between. Also
+   * seeds the snapshot on the first turn. Best-effort — a deleted/foreign page or
+   * any fault simply skips the write (no snapshot, no note next turn).
+   *
+   * Ordering note (deliberate): read updated_at BEFORE exporting, and store that
+   * earlier value. This keeps the stored updated_at <= the true version of the
+   * stored content, which is the SAFE direction for the fast path: it can only
+   * ever be too conservative (force an extra diff), never falsely skip. Concretely
+   * — if a user edit lands in the tiny window between the read and the export, the
+   * export captures the NEW content while we store the OLDER updated_at; next turn
+   * the two updated_ats differ, so the fast path is bypassed and we diff — which
+   * resolves to "no change" because that edit is already baked into the stored
+   * content. The only cost is not emitting a page_changed note for that specific
+   * window edit, which is safe: the snapshot already contains it, so it can never
+   * be silently overwritten later.
+   *
+   * The OPPOSITE order (read updated_at AFTER the export) is what would be unsafe:
+   * a concurrent edit's NEWER updated_at would be stored alongside the OLDER
+   * exported content, and next turn's fast path would then match on updated_at and
+   * SKIP detection while the content genuinely diverged — a real missed edit. So
+   * we intentionally do NOT re-read updated_at after the export.
+   */
+  private async snapshotOpenPage(
+    chatId: string,
+    pageId: string,
+    workspace: Workspace,
+    user: User,
+    sessionId: string,
+  ): Promise<void> {
+    try {
+      const freshPage = await this.pageRepo.findById(pageId);
+      // Page deleted during the turn (or somehow foreign) => don't write.
+      if (!freshPage || freshPage.workspaceId !== workspace.id) return;
+      const currentMd = await this.tools.exportPageMarkdown(
+        user,
+        sessionId,
+        workspace.id,
+        chatId,
+        pageId,
+      );
+      await this.aiChatPageSnapshotRepo.upsert({
+        chatId,
+        pageId,
+        workspaceId: workspace.id,
+        contentMd: currentMd,
+        pageUpdatedAt: freshPage.updatedAt,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `page snapshot skipped (chat ${chatId}): ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      );
+    }
   }
 
   async stream({
@@ -385,6 +530,19 @@ export class AiChatService implements OnModuleInit {
     // already in `messages` (the aborted assistant row replays via findRecent).
     const interrupted = isInterruptResume(history, body.interrupted);
 
+    // Per-turn page-change detection (#274): if the open page was hand-edited by
+    // the user since the agent's last turn ended, compute the unified diff so the
+    // system prompt can warn the agent its copy is stale (else it overwrites those
+    // edits). Best-effort (null on the fast path / first turn / any fault) — never
+    // blocks the turn. Snapshot is (re)written at turn end in onFinish below.
+    const pageChanged = await this.detectPageChange(
+      chatId,
+      openPageContext,
+      workspace,
+      user,
+      sessionId,
+    );
+
     // The model is resolved by the controller before hijack (clean 503 path).
     // Here we only need the admin-configured system prompt.
     const resolved = await this.aiSettings.resolve(workspace.id);
@@ -440,6 +598,30 @@ export class AiChatService implements OnModuleInit {
       );
     };
 
+    // Turn-end snapshot of the open page (#274), run EXACTLY ONCE across the
+    // terminal callbacks. This MUST run on onError/onAbort too, not only on the
+    // successful onFinish: the write tools commit page edits to the DB
+    // synchronously during a step, so an agent edit followed by an abort/error
+    // (client disconnect, stop(), provider failure) still persists and bumps
+    // page.updatedAt. If the snapshot did not advance on those paths, the NEXT
+    // turn would diff the agent's OWN committed edit against the stale previous
+    // snapshot and mis-report it as a user edit — breaking the "own edits excluded
+    // by construction" guarantee. Best-effort (snapshotOpenPage swallows + logs);
+    // skipped when no page is open.
+    let snapshotWritten = false;
+    const snapshotTurnEnd = async (): Promise<void> => {
+      if (snapshotWritten) return;
+      snapshotWritten = true;
+      if (!openPageContext) return;
+      await this.snapshotOpenPage(
+        chatId,
+        openPageContext.id,
+        workspace,
+        user,
+        sessionId,
+      );
+    };
+
     // Build the system prompt + Docmost toolset. If either throws after the
     // external MCP lease was taken above, release the lease before rethrowing so
     // the leased transports are not leaked (#185 review).
@@ -459,6 +641,9 @@ export class AiChatService implements OnModuleInit {
         // History-confirmed interrupt-resume flag (#198): adds the interrupt note
         // so the model treats the partial answer above as cut off, not finished.
         interrupted,
+        // Detected between-turns human edit to the open page (#274): adds the
+        // page_changed note + unified diff so the agent doesn't overwrite it.
+        pageChanged,
       });
 
       // Pass the resolved chatId so the write tools can mint provenance tokens
@@ -680,6 +865,13 @@ export class AiChatService implements OnModuleInit {
           // Lifecycle: release the external MCP clients leased for this turn.
           await closeExternalClients();
 
+          // Turn end (#274): snapshot the open page's current Markdown (after all
+          // of the agent's edits this turn) so the NEXT turn can diff against it
+          // and detect edits a human made in between. Self-clearing — the agent's
+          // own edits are baked in — and this also SEEDS the snapshot on the first
+          // turn. Runs once across every terminal path (see snapshotTurnEnd).
+          await snapshotTurnEnd();
+
           // Generate the chat title for a freshly created chat AFTER the stream's
           // provider call has completed — NOT concurrently with it. The z.ai coding
           // endpoint stalls one of two concurrent requests to the same plan, which
@@ -722,6 +914,10 @@ export class AiChatService implements OnModuleInit {
             }),
           );
           await closeExternalClients();
+          // Advance the page snapshot even on failure (#274): an agent edit that
+          // committed before the error must be baked into the snapshot, or the
+          // next turn would mis-report it as a user edit.
+          await snapshotTurnEnd();
         },
         onAbort: async ({ steps }) => {
           const partialChars =
@@ -747,6 +943,10 @@ export class AiChatService implements OnModuleInit {
             flushAssistant(capturedSteps, inProgressText, 'aborted'),
           );
           await closeExternalClients();
+          // Advance the page snapshot even on abort (#274): an agent edit that
+          // committed before the client disconnect / stop() must be baked into the
+          // snapshot, or the next turn would mis-report it as a user edit.
+          await snapshotTurnEnd();
         },
       });
 

@@ -31,6 +31,7 @@ import { FavoriteRepo } from '@docmost/db/repos/favorite/favorite.repo';
 import { TemplateRepo } from '@docmost/db/repos/template/template.repo';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
+import { AiChatPageSnapshotRepo } from '@docmost/db/repos/ai-chat/ai-chat-page-snapshot.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
@@ -104,6 +105,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     TemplateRepo,
     AiChatRepo,
     AiChatMessageRepo,
+    AiChatPageSnapshotRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
     AiAgentRoleRepo,
@@ -137,6 +139,7 @@ import { normalizePostgresUrl } from '../common/helpers';
     TemplateRepo,
     AiChatRepo,
     AiChatMessageRepo,
+    AiChatPageSnapshotRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
     AiAgentRoleRepo,

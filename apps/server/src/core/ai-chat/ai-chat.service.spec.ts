@@ -10,6 +10,7 @@ import {
   chatStreamMetadata,
   accumulateStepUsage,
   isInterruptResume,
+  sameInstant,
   MAX_AGENT_STEPS,
   FINAL_STEP_INSTRUCTION,
 } from './ai-chat.service';
@@ -573,7 +574,12 @@ describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', 
   const user = { id: 'u-1' } as any;
 
   function makeService(opts: {
-    page?: { id: string; workspaceId: string; title: string | null } | null;
+    page?: {
+      id: string;
+      workspaceId: string;
+      title: string | null;
+      updatedAt?: Date;
+    } | null;
     canView?: boolean | 'throw-other';
   }) {
     const svc = Object.create(AiChatService.prototype) as AiChatService;
@@ -595,6 +601,7 @@ describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', 
     (svc as any).resolveOpenPageContext(openPage, ws, user) as Promise<{
       id: string;
       title: string;
+      updatedAt: Date;
     } | null>;
 
   it('returns null when no page is open (no id)', async () => {
@@ -632,22 +639,283 @@ describe('AiChatService.resolveOpenPageContext (#159 current-page validation)', 
     expect(await call(svc, { id: 'p-1' })).toBeNull();
   });
 
-  it('uses the AUTHORITATIVE DB title, IGNORING the client-supplied title', async () => {
+  it('uses the AUTHORITATIVE DB title + updatedAt, IGNORING the client-supplied title', async () => {
+    const updatedAt = new Date('2026-07-02T10:00:00Z');
     const svc = makeService({
-      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Real Title B' },
+      page: { id: 'p-1', workspaceId: 'ws-1', title: 'Real Title B', updatedAt },
       canView: true,
     });
     // The client claims it is on "Page A" but the id points at page B.
     const result = await call(svc, { id: 'p-1', title: 'Page A' });
-    expect(result).toEqual({ id: 'p-1', title: 'Real Title B' });
+    // updatedAt (#274 page-change fast path) is carried through from the DB row.
+    expect(result).toEqual({ id: 'p-1', title: 'Real Title B', updatedAt });
   });
 
   it('coerces a null DB title to an empty string', async () => {
+    const updatedAt = new Date('2026-07-02T10:00:00Z');
     const svc = makeService({
-      page: { id: 'p-1', workspaceId: 'ws-1', title: null },
+      page: { id: 'p-1', workspaceId: 'ws-1', title: null, updatedAt },
       canView: true,
     });
-    expect(await call(svc, { id: 'p-1' })).toEqual({ id: 'p-1', title: '' });
+    expect(await call(svc, { id: 'p-1' })).toEqual({
+      id: 'p-1',
+      title: '',
+      updatedAt,
+    });
+  });
+});
+
+/**
+ * sameInstant (#274 page-change fast path): equal instants => the open page is
+ * untouched since the snapshot, so detection can skip the render + diff. A
+ * missing/invalid timestamp must fall through (return false) so a bad value never
+ * causes a false "nothing changed" skip that would lose a human edit.
+ */
+describe('sameInstant', () => {
+  it('true for identical instants (Date and equivalent string)', () => {
+    const d = new Date('2026-07-02T10:00:00Z');
+    expect(sameInstant(d, new Date(d.getTime()))).toBe(true);
+    expect(sameInstant(d, '2026-07-02T10:00:00.000Z')).toBe(true);
+  });
+
+  it('false for different instants', () => {
+    expect(
+      sameInstant(
+        new Date('2026-07-02T10:00:00Z'),
+        new Date('2026-07-02T10:00:01Z'),
+      ),
+    ).toBe(false);
+  });
+
+  it('false when either side is null/undefined/invalid', () => {
+    const d = new Date('2026-07-02T10:00:00Z');
+    expect(sameInstant(null, d)).toBe(false);
+    expect(sameInstant(d, undefined)).toBe(false);
+    expect(sameInstant(d, 'not-a-date')).toBe(false);
+  });
+});
+
+/**
+ * Page-change lifecycle (#274): detectPageChange (turn start) + snapshotOpenPage
+ * (turn end) exercised with in-memory fakes (Object.create — no Nest graph, no
+ * DB). Covers detection happy path / no-change / first-turn-seed-only / fast
+ * path, the snapshot seed + deleted-page skip, and — the key regression — the
+ * abort/error branch: after an aborted turn where the AGENT edited the page, the
+ * snapshot must advance so the next turn does NOT mis-report the agent's own edit
+ * as a user edit.
+ */
+describe('AiChatService page-change lifecycle (#274)', () => {
+  const workspace = { id: 'ws-1' } as Workspace;
+  const user = { id: 'u-1' } as any;
+  const sessionId = 'sess-1';
+  const T0 = new Date('2026-07-02T10:00:00Z');
+  const T1 = new Date('2026-07-02T10:05:00Z');
+
+  function makeService(opts: {
+    snapshot?: { contentMd: string; pageUpdatedAt: Date };
+    exportMd?: string;
+    // pageRepo.findById result used by snapshotOpenPage. `null` models a deleted
+    // page; omitted defaults to a same-workspace page at T1.
+    page?: { workspaceId: string; updatedAt: Date } | null;
+  }) {
+    const store = new Map<string, any>();
+    if (opts.snapshot) {
+      store.set('c1|p1', {
+        chatId: 'c1',
+        pageId: 'p1',
+        workspaceId: 'ws-1',
+        ...opts.snapshot,
+      });
+    }
+    // Mutable so a test can reconfigure between the abort-snapshot phase and the
+    // next-turn detect phase.
+    const state = {
+      exportMd: opts.exportMd ?? '',
+      page:
+        opts.page === undefined
+          ? { workspaceId: 'ws-1', updatedAt: T1 }
+          : opts.page,
+    };
+    const exportCalls: string[] = [];
+
+    const svc = Object.create(AiChatService.prototype) as AiChatService;
+    (svc as any).logger = { warn: () => {}, error: () => {} };
+    (svc as any).aiChatPageSnapshotRepo = {
+      findByChatPage: async (chatId: string, pageId: string) =>
+        store.get(`${chatId}|${pageId}`),
+      upsert: async (v: any) => {
+        store.set(`${v.chatId}|${v.pageId}`, { ...v });
+        return v;
+      },
+    };
+    (svc as any).tools = {
+      exportPageMarkdown: async (
+        _u: unknown,
+        _s: unknown,
+        _ws: unknown,
+        _c: unknown,
+        pageId: string,
+      ) => {
+        exportCalls.push(pageId);
+        return state.exportMd;
+      },
+    };
+    (svc as any).pageRepo = { findById: async () => state.page };
+    return { svc, store, state, exportCalls };
+  }
+
+  const detect = (
+    svc: AiChatService,
+    openPage: { id: string; title: string; updatedAt: Date } | null,
+  ) =>
+    (svc as any).detectPageChange(
+      'c1',
+      openPage,
+      workspace,
+      user,
+      sessionId,
+    ) as Promise<{ title: string; diff: string } | null>;
+
+  const snapshot = (svc: AiChatService) =>
+    (svc as any).snapshotOpenPage(
+      'c1',
+      'p1',
+      workspace,
+      user,
+      sessionId,
+    ) as Promise<void>;
+
+  it('detect: no note when the page is not open', async () => {
+    const { svc } = makeService({});
+    expect(await detect(svc, null)).toBeNull();
+  });
+
+  it('detect: first turn (no snapshot) seeds only, no note', async () => {
+    const { svc, exportCalls } = makeService({});
+    const res = await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T0 });
+    expect(res).toBeNull();
+    // No snapshot => no render/diff at all.
+    expect(exportCalls).toHaveLength(0);
+  });
+
+  it('detect: fast path skips render+diff when updatedAt is unchanged', async () => {
+    const { svc, exportCalls } = makeService({
+      snapshot: { contentMd: 'S0', pageUpdatedAt: T0 },
+    });
+    const res = await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T0 });
+    expect(res).toBeNull();
+    expect(exportCalls).toHaveLength(0);
+  });
+
+  it('detect: user edit between turns yields a titled note + diff', async () => {
+    const { svc } = makeService({
+      snapshot: { contentMd: '# Title\n\nold body', pageUpdatedAt: T0 },
+      exportMd: '# Title\n\nnew body',
+    });
+    const res = await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 });
+    expect(res).not.toBeNull();
+    expect(res!.title).toBe('Doc');
+    expect(res!.diff).toContain('-old body');
+    expect(res!.diff).toContain('+new body');
+  });
+
+  it('detect: no note when content is unchanged despite a bumped updatedAt', async () => {
+    const { svc } = makeService({
+      snapshot: { contentMd: 'same content', pageUpdatedAt: T0 },
+      exportMd: 'same content',
+    });
+    expect(
+      await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 }),
+    ).toBeNull();
+  });
+
+  it('snapshot: seeds the current Markdown + page updatedAt', async () => {
+    const { svc, store } = makeService({
+      exportMd: 'Sa',
+      page: { workspaceId: 'ws-1', updatedAt: T1 },
+    });
+    await snapshot(svc);
+    const row = store.get('c1|p1');
+    expect(row.contentMd).toBe('Sa');
+    expect(row.pageUpdatedAt).toBe(T1);
+  });
+
+  it('snapshot: skips the write when the page was deleted during the turn', async () => {
+    const { svc, store } = makeService({ exportMd: 'X', page: null });
+    await snapshot(svc);
+    expect(store.get('c1|p1')).toBeUndefined();
+  });
+
+  it('detect: swallows a best-effort fault (export throws) and returns null', async () => {
+    // Snapshot present + a bumped updatedAt, so detection gets past the fast path
+    // and calls exportPageMarkdown — which throws. The catch must downgrade to
+    // "no note" (null) so the turn is never broken (#274 F4).
+    const { svc } = makeService({
+      snapshot: { contentMd: 'S0', pageUpdatedAt: T0 },
+    });
+    (svc as any).tools.exportPageMarkdown = async () => {
+      throw new Error('export failed');
+    };
+    expect(
+      await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 }),
+    ).toBeNull();
+  });
+
+  it('detect: swallows a repo fault (findByChatPage throws) and returns null', async () => {
+    const { svc } = makeService({
+      snapshot: { contentMd: 'S0', pageUpdatedAt: T0 },
+    });
+    (svc as any).aiChatPageSnapshotRepo.findByChatPage = async () => {
+      throw new Error('db down');
+    };
+    expect(
+      await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 }),
+    ).toBeNull();
+  });
+
+  it('snapshot: swallows a best-effort fault (upsert throws) and does not throw', async () => {
+    const { svc } = makeService({
+      exportMd: 'Sa',
+      page: { workspaceId: 'ws-1', updatedAt: T1 },
+    });
+    (svc as any).aiChatPageSnapshotRepo.upsert = async () => {
+      throw new Error('write failed');
+    };
+    await expect(snapshot(svc)).resolves.toBeUndefined();
+  });
+
+  it('abort branch: advancing the snapshot after an agent edit prevents a false note next turn', async () => {
+    // Previous turn ended with the page at S0 @ T0.
+    const { svc, store, state } = makeService({
+      snapshot: { contentMd: 'S0 body', pageUpdatedAt: T0 },
+    });
+
+    // This turn the AGENT edited the page (committed to the DB) to "Sa body",
+    // bumping updatedAt to T1, and then the turn ABORTED. The abort path runs the
+    // same snapshot, which must advance the snapshot to what the agent left.
+    state.exportMd = 'Sa body';
+    state.page = { workspaceId: 'ws-1', updatedAt: T1 };
+    await snapshot(svc);
+    expect(store.get('c1|p1').contentMd).toBe('Sa body');
+    expect(store.get('c1|p1').pageUpdatedAt).toBe(T1);
+
+    // Next turn: nobody edited further; the page is still Sa @ T1. The agent's OWN
+    // edit must NOT surface as a "user edited the page" note.
+    const res = await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 });
+    expect(res).toBeNull();
+  });
+
+  it('abort branch: WITHOUT advancing the snapshot, the agent edit would wrongly surface (proves the fix)', async () => {
+    // Same setup but the snapshot is NOT advanced (the pre-fix behaviour where
+    // only onFinish snapshotted). The agent's committed edit then looks like a
+    // between-turns user edit — exactly the bug FIX 1 removes.
+    const { svc } = makeService({
+      snapshot: { contentMd: 'S0 body', pageUpdatedAt: T0 },
+      exportMd: 'Sa body',
+    });
+    const res = await detect(svc, { id: 'p1', title: 'Doc', updatedAt: T1 });
+    expect(res).not.toBeNull();
+    expect(res!.diff).toContain('+Sa body');
   });
 });
 
