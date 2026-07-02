@@ -56,4 +56,20 @@ describe("getSuggestionItems layout-aware matching", () => {
       "Footnote",
     );
   });
+
+  it("does not surface Footnote for a short wrong-layout query (/cy)", () => {
+    // "cy" EN->RU remaps to "сн", a substring of the "сноска" searchTerm, but
+    // the gate blocks it because the remapped candidate is < 3 chars.
+    expect(titles(getSuggestionItems({ query: "cy" }))).not.toContain(
+      "Footnote",
+    );
+  });
+
+  it("does not surface Footnote for a single-char wrong-layout query (/b)", () => {
+    // "b" EN->RU remaps to "и", a substring of the "примечание" searchTerm, but
+    // the gate blocks it because the remapped candidate is < 3 chars.
+    expect(titles(getSuggestionItems({ query: "b" }))).not.toContain(
+      "Footnote",
+    );
+  });
 });

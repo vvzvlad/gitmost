@@ -35,6 +35,7 @@ import { PAGE_EMBED_PICKER_EVENT } from "@/features/editor/components/page-embed
 import {
   CommandProps,
   SlashMenuGroupedItemsType,
+  SlashMenuItemType,
 } from "@/features/editor/components/slash-menu/types";
 import { uploadImageAction } from "@/features/editor/components/image/upload-image-action.tsx";
 import { uploadVideoAction } from "@/features/editor/components/video/upload-video-action.tsx";
@@ -860,11 +861,13 @@ function translitByLayout(text: string, map: Record<string, string>): string {
 }
 
 /**
- * Build the set of search strings to try for a given query: the original plus
- * its RU->EN and EN->RU physical-layout remappings. Keeping the original among
- * the candidates preserves genuine Cyrillic search terms (e.g. "сноска",
- * "примечание" for Footnote). De-duplicated so an ascii-only query stays a
- * single-element set.
+ * Build the list of search strings to try for a given query: the original
+ * query first, followed by its RU->EN and EN->RU physical-layout remappings.
+ * Keeping the original first preserves genuine Cyrillic search terms (e.g.
+ * "сноска"/"примечание" for Footnote) and lets callers treat the original
+ * differently from the remapped candidates. De-duplication only collapses the
+ * list to one element when nothing is remappable (e.g. digits/spaces), so a
+ * typical ASCII query still yields multiple candidates.
  */
 export function buildLayoutCandidates(search: string): string[] {
   return [
@@ -885,6 +888,17 @@ export const getSuggestionItems = ({
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
   const candidates = buildLayoutCandidates(search);
+  // Only the original query is allowed to match via a short substring. Remapped
+  // (wrong-layout) candidates must be at least REMAP_MIN_LEN chars and differ
+  // from the original before they can match, so a 1-2 char ASCII query does not
+  // spuriously substring-match unrelated Cyrillic search terms (e.g. "/cy" ->
+  // "сн" hitting "сноска", "/b" -> "и" hitting "примечание").
+  const REMAP_MIN_LEN = 3;
+  const [originalCandidate, ...remapped] = candidates;
+  const remappedCandidates = remapped.filter(
+    (candidate) =>
+      candidate.length >= REMAP_MIN_LEN && candidate !== originalCandidate,
+  );
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
@@ -898,6 +912,16 @@ export const getSuggestionItems = ({
     return false;
   };
 
+  const candidateMatchesItem = (
+    candidate: string,
+    item: SlashMenuItemType,
+    description: string,
+  ) =>
+    fuzzyMatch(candidate, item.title) ||
+    description.includes(candidate) ||
+    (item.searchTerms != null &&
+      item.searchTerms.some((term: string) => term.includes(candidate)));
+
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
       if (excludeItems?.has(item.title)) return false;
@@ -905,19 +929,21 @@ export const getSuggestionItems = ({
       if (item.requiresHtmlEmbedFeature && !htmlEmbedFeatureEnabled)
         return false;
       const description = item.description.toLowerCase();
-      return candidates.some(
-        (candidate) =>
-          fuzzyMatch(candidate, item.title) ||
-          description.includes(candidate) ||
-          (item.searchTerms &&
-            item.searchTerms.some((term: string) => term.includes(candidate))),
+      return (
+        candidateMatchesItem(originalCandidate, item, description) ||
+        remappedCandidates.some((candidate) =>
+          candidateMatchesItem(candidate, item, description),
+        )
       );
     });
 
     if (filteredItems.length) {
       const titleMatchesAnyCandidate = (title: string) => {
         const lower = title.toLowerCase();
-        return candidates.some((candidate) => lower.includes(candidate));
+        return (
+          lower.includes(originalCandidate) ||
+          remappedCandidates.some((candidate) => lower.includes(candidate))
+        );
       };
       filteredGroups[group] = filteredItems.sort((a, b) => {
         const aTitle = titleMatchesAnyCandidate(a.title) ? 0 : 1;
