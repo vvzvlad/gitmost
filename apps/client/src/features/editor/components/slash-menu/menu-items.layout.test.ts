@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildLayoutCandidates,
   getSuggestionItems,
-} from "@/features/editor/components/slash-menu/menu-items.ts";
+} from "./menu-items";
 
 /**
  * `buildLayoutCandidates` maps a slash query across physical keyboard layouts

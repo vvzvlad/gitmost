@@ -889,15 +889,15 @@ export const getSuggestionItems = ({
   const search = query.toLowerCase();
   const candidates = buildLayoutCandidates(search);
   // Only the original query is allowed to match via a short substring. Remapped
-  // (wrong-layout) candidates must be at least REMAP_MIN_LEN chars and differ
-  // from the original before they can match, so a 1-2 char ASCII query does not
-  // spuriously substring-match unrelated Cyrillic search terms (e.g. "/cy" ->
-  // "сн" hitting "сноска", "/b" -> "и" hitting "примечание").
+  // (wrong-layout) candidates must be at least REMAP_MIN_LEN chars before they
+  // can match, so a 1-2 char ASCII query does not spuriously substring-match
+  // unrelated Cyrillic search terms (e.g. "/cy" -> "сн" hitting "сноска",
+  // "/b" -> "и" hitting "примечание"). buildLayoutCandidates already dedupes
+  // the remaps against the original, so candidates[0] is the original query.
   const REMAP_MIN_LEN = 3;
   const [originalCandidate, ...remapped] = candidates;
   const remappedCandidates = remapped.filter(
-    (candidate) =>
-      candidate.length >= REMAP_MIN_LEN && candidate !== originalCandidate,
+    (candidate) => candidate.length >= REMAP_MIN_LEN,
   );
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
