@@ -97,7 +97,7 @@ const PAGE_CHANGED_NOTE =
  * can steer the title of the page user A has open — an unescaped `"`/`<`/`>` or a
  * newline in the title would let them break out of the attribute and inject
  * pseudo-tags (`x"><system>…`) or extra lines into user A's system prompt. We
- * strip the four attribute-breaking characters (double quote, angle brackets) and
+ * strip the three attribute-breaking characters (double quote, angle brackets) and
  * collapse any newline/CR/tab to a single space so the value stays a single inert
  * attribute token. Cross-user prompt-injection defense (#274 review F1).
  */
