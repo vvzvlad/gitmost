@@ -1,8 +1,10 @@
 import { Button, Group, Paper, Text } from "@mantine/core";
-import { IconClockHour4 } from "@tabler/icons-react";
+import { IconClockHour4, IconTrash } from "@tabler/icons-react";
+import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
 import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import {
   useToggleTemporaryMutation,
   syncTemporaryExpiresInCache,
@@ -31,12 +33,27 @@ export function TemporaryNoteBanner({ slugId }: TemporaryNoteBannerProps) {
   const spaceAbility = useSpaceAbility(space?.membership?.permissions);
   const expiresTimeAgo = useTimeAgo(page?.temporaryExpiresAt);
   const toggleTemporary = useToggleTemporaryMutation();
+  // Reuse the exact soft-delete path the tree/header menus use: optimistic
+  // tree removal, the "Page moved to trash" undo-toast, the deletedAt cache
+  // stamp, and the redirect to space home (which unmounts this banner).
+  const { handleDelete: trashPage } = useTreeMutation(page?.spaceId ?? "");
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Don't show on a note that is already in trash; the deleted-page banner
   // owns that state.
   if (!page?.temporaryExpiresAt || page?.deletedAt) return null;
 
   const canEdit = spaceAbility.can(SpaceCaslAction.Edit, SpaceCaslSubject.Page);
+
+  const handleTrashNow = async () => {
+    // No confirm modal by convention — the undo-toast is the safety net.
+    setIsDeleting(true);
+    try {
+      await trashPage(page.id);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const handleMakePermanent = async () => {
     try {
@@ -70,16 +87,28 @@ export function TemporaryNoteBanner({ slugId }: TemporaryNoteBannerProps) {
           </Text>
         </Group>
         {canEdit && (
-          <Button
-            size="xs"
-            variant="light"
-            color="orange"
-            leftSection={<IconClockHour4 size={16} />}
-            onClick={handleMakePermanent}
-            loading={toggleTemporary.isPending}
-          >
-            {t("Make permanent")}
-          </Button>
+          <Group gap="xs" wrap="nowrap">
+            <Button
+              size="xs"
+              variant="subtle"
+              color="red"
+              leftSection={<IconTrash size={16} />}
+              onClick={handleTrashNow}
+              loading={isDeleting}
+            >
+              {t("Move to trash")}
+            </Button>
+            <Button
+              size="xs"
+              variant="light"
+              color="orange"
+              leftSection={<IconClockHour4 size={16} />}
+              onClick={handleMakePermanent}
+              loading={toggleTemporary.isPending}
+            >
+              {t("Make permanent")}
+            </Button>
+          </Group>
         )}
       </Group>
     </Paper>
