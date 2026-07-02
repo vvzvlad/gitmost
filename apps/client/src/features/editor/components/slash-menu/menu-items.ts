@@ -888,17 +888,17 @@ export const getSuggestionItems = ({
 }): SlashMenuGroupedItemsType => {
   const search = query.toLowerCase();
   const candidates = buildLayoutCandidates(search);
-  // Only the original query is allowed to match via a short substring. Remapped
-  // (wrong-layout) candidates must be at least REMAP_MIN_LEN chars before they
-  // can match, so a 1-2 char ASCII query does not spuriously substring-match
-  // unrelated Cyrillic search terms (e.g. "/cy" -> "сн" hitting "сноска",
-  // "/b" -> "и" hitting "примечание"). buildLayoutCandidates already dedupes
-  // the remaps against the original, so candidates[0] is the original query.
-  const REMAP_MIN_LEN = 3;
+  // buildLayoutCandidates dedupes the remaps against the original, so
+  // candidates[0] is the original query and the rest are wrong-layout remaps.
+  // The original query matches on everything (title, description, searchTerms).
+  // A remapped candidate matches fully only when it is long enough to be
+  // unambiguous; a short (1-2 char) remap is restricted to a TITLE match so it
+  // does not spuriously substring-match unrelated Cyrillic search terms
+  // (e.g. "/cy" -> "сн" hitting the "сноска" searchTerm, "/b" -> "и" hitting
+  // "примечание"), while still letting a real short wrong-layout prefix through
+  // (e.g. "/сщ" -> "co" fuzzy-matching the "Code" title).
+  const REMAP_FULL_MATCH_MIN_LEN = 3;
   const [originalCandidate, ...remapped] = candidates;
-  const remappedCandidates = remapped.filter(
-    (candidate) => candidate.length >= REMAP_MIN_LEN,
-  );
   const filteredGroups: SlashMenuGroupedItemsType = {};
   const htmlEmbedFeatureEnabled = isHtmlEmbedFeatureEnabled();
 
@@ -916,11 +916,16 @@ export const getSuggestionItems = ({
     candidate: string,
     item: SlashMenuItemType,
     description: string,
-  ) =>
-    fuzzyMatch(candidate, item.title) ||
-    description.includes(candidate) ||
-    (item.searchTerms != null &&
-      item.searchTerms.some((term: string) => term.includes(candidate)));
+    titleOnly: boolean,
+  ) => {
+    if (fuzzyMatch(candidate, item.title)) return true;
+    if (titleOnly) return false;
+    return (
+      description.includes(candidate) ||
+      (item.searchTerms != null &&
+        item.searchTerms.some((term: string) => term.includes(candidate)))
+    );
+  };
 
   for (const [group, items] of Object.entries(CommandGroups)) {
     const filteredItems = items.filter((item) => {
@@ -930,9 +935,14 @@ export const getSuggestionItems = ({
         return false;
       const description = item.description.toLowerCase();
       return (
-        candidateMatchesItem(originalCandidate, item, description) ||
-        remappedCandidates.some((candidate) =>
-          candidateMatchesItem(candidate, item, description),
+        candidateMatchesItem(originalCandidate, item, description, false) ||
+        remapped.some((candidate) =>
+          candidateMatchesItem(
+            candidate,
+            item,
+            description,
+            candidate.length < REMAP_FULL_MATCH_MIN_LEN,
+          ),
         )
       );
     });
@@ -942,7 +952,7 @@ export const getSuggestionItems = ({
         const lower = title.toLowerCase();
         return (
           lower.includes(originalCandidate) ||
-          remappedCandidates.some((candidate) => lower.includes(candidate))
+          remapped.some((candidate) => lower.includes(candidate))
         );
       };
       filteredGroups[group] = filteredItems.sort((a, b) => {
