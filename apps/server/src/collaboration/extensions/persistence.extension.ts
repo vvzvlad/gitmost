@@ -2,6 +2,7 @@ import {
   afterUnloadDocumentPayload,
   Extension,
   onChangePayload,
+  onDisconnectPayload,
   onLoadDocumentPayload,
   onStatelessPayload,
   onStoreDocumentPayload,
@@ -113,7 +114,17 @@ export function resolveSource(
   stickyTouched: boolean,
   contextActor?: string,
 ): ProvenanceSource {
-  return stickyTouched || contextActor === 'agent' ? 'agent' : 'user';
+  // An EXPLICIT current-write actor is authoritative for THIS write and wins
+  // over the sticky-agent fallback. Order: explicit 'agent' > explicit
+  // 'git-sync' > sticky agent marker > plain human 'user'. The git-sync case
+  // must NOT be masked by the sticky marker, or the PageChangeListener
+  // loop-guard (which keys on lastUpdatedSource === 'git-sync') would re-export
+  // git-sync's own writes (#14). Explicit agent still wins so a window that
+  // mixed an agent edit stays tagged 'agent'.
+  if (contextActor === 'agent') return 'agent';
+  if (contextActor === 'git-sync') return 'git-sync';
+  if (stickyTouched) return 'agent';
+  return 'user';
 }
 
 /**
@@ -270,6 +281,40 @@ export class PersistenceExtension implements Extension {
     return;
   }
 
+  /**
+   * LOSS-ON-FAST-CLOSE FIX (QA #119). When the LAST editor disconnects, FLUSH any
+   * pending (debounced) store to the DB IMMEDIATELY instead of waiting out the
+   * up-to-10s `debounce` window.
+   *
+   * The collab server runs with `unloadImmediately: false` (collaboration.gateway),
+   * so on a last-client disconnect Hocuspocus does NOT flush the debounced
+   * onStoreDocument — it relies on the timer firing later. A quick edit-then-close
+   * (closing the tab within the debounce window, ~3-18s) therefore left the edit
+   * only in the soon-to-be-unloaded in-memory Y.Doc; meanwhile git-sync mirrored
+   * the STALE/empty DB body to the vault (the reported "59-byte frontmatter-only"
+   * data loss). Running the already-scheduled store now closes that window.
+   *
+   * Gated tightly so it never adds a redundant write: only on the LAST disconnect
+   * (`clientsCount === 0`), only for a fully-loaded doc, and only when a store is
+   * actually pending (`isDebounced`). `executeNow` runs the SAME payload Hocuspocus
+   * scheduled (preserving the edit's context/actor) and clears the timer.
+   */
+  async onDisconnect(data: onDisconnectPayload) {
+    const { instance, document, documentName, clientsCount } = data;
+    if (clientsCount > 0) return;
+    if (!document || document.isLoading) return;
+    const debounceId = `onStoreDocument-${documentName}`;
+    if (!instance?.debouncer?.isDebounced(debounceId)) return;
+    try {
+      await instance.debouncer.executeNow(debounceId);
+    } catch (err) {
+      this.logger.error(
+        `onDisconnect flush failed for ${documentName}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
   async onStoreDocument(data: onStoreDocumentPayload) {
     // #355 — time the full store (persist + post-store side effects) into
     // collab_store_duration_seconds. #402 — also tag by document size bucket.
@@ -313,6 +358,11 @@ export class PersistenceExtension implements Extension {
     // Sticky agent marker: 'agent' if any agent edit landed in this window, OR
     // if the current writer is the agent (covers a store with no prior onChange
     // agent event in the same window). §15 H2.
+    // Provenance precedence: agent > git-sync > user (see resolveSource). A
+    // 'git-sync' store is NOT given an immediate history snapshot — it is
+    // debounced like a human edit (a git-sync write is a block-level merge into
+    // the live doc, so it reads like an incremental human edit, not a bulk
+    // import that would warrant its own immediate snapshot).
     const lastUpdatedSource = resolveSource(
       this.consumeAgentTouched(documentName),
       context?.actor,
@@ -379,17 +429,25 @@ export class PersistenceExtension implements Extension {
           // flag via that same hoisted consume (a "cleared then retyped"
           // sequence can't leave a usable one behind).
           const incomingEmpty = isEmptyParagraphDoc(tiptapJson as any);
+          // A git-sync write is authoritative and its content IS the vault file:
+          // an empty incoming doc there means the user DELIBERATELY cleared the
+          // page's markdown in git (there is no "transient glitch empty" for a
+          // file-sourced write). Honor it, otherwise the empty-guard rejects the
+          // clear, the vault ref has already advanced past the empty commit, and
+          // vault<->Docmost diverge permanently (review warning). This mirrors the
+          // #251 intentional-clear allowance for a different authoritative source.
+          const gitSyncClear = lastUpdatedSource === 'git-sync';
           if (
             incomingEmpty &&
             page.content &&
             !isEmptyParagraphDoc(page.content as any)
           ) {
-            if (allowIntentionalClear) {
+            if (allowIntentionalClear || gitSyncClear) {
               this.logger.debug(
                 `Intentional clear for ${pageId}: persisting empty doc over ` +
-                  `non-empty content (user-signalled)`,
+                  `non-empty content (${gitSyncClear ? 'git-sync' : 'user-signalled'})`,
               );
-              // fall through — the empty write is allowed exactly once.
+              // fall through — the empty write is allowed.
             } else {
               this.logger.warn(
                 `Skipping store for ${pageId}: empty live doc would overwrite ` +
@@ -423,7 +481,10 @@ export class PersistenceExtension implements Extension {
           // later by the debounced idle job. Skip if the page is effectively
           // empty or if the latest existing snapshot already equals this state
           // (the shared isDeepStrictEqual gate — avoids duplicates). Generalizing
-          // beyond the old user→agent special-case also covers git-sync for free.
+          // beyond the old user→agent special-case also covers git-sync for free:
+          // a git-sync write over a differently-sourced page pins the pre-merge
+          // state so a same-block human edit "lost" to git stays recoverable
+          // (SPEC §9 observable-loss guard).
           if (
             page.lastUpdatedSource &&
             page.lastUpdatedSource !== lastUpdatedSource

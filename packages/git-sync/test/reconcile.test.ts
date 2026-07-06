@@ -59,6 +59,43 @@ describe('planReconciliation', () => {
     expect(plan.moved).toEqual([]);
   });
 
+  // D-P3-1 ghost guard: when `deletableIds` is supplied, an absence-delete fires
+  // ONLY for an id that is a REAL page row. A tracked file whose id was NEVER a
+  // page (a hand-authored git file with an unknown id) is absent from `live` AND
+  // absent from `deletableIds` -> it MUST be preserved, not silently deleted.
+  it('GHOST GUARD: an absent id NOT in deletableIds is PRESERVED (not deleted)', () => {
+    const live: LiveEntry[] = [{ pageId: 'p1', relPath: 'Space/Keep.md' }];
+    const existing: ExistingEntry[] = [
+      { pageId: 'p1', relPath: 'Space/Keep.md' },
+      // A ghost: its id is not live and not a real page row.
+      { pageId: 'ghost', relPath: 'Space/Ghost.md' },
+      // A genuinely deleted page: absent from live but IS a real row.
+      { pageId: 'gone', relPath: 'Space/Gone.md' },
+    ];
+    // Only the real page row ('gone') is deletable; 'ghost' has no row.
+    const deletableIds = new Set(['gone']);
+    const plan = planReconciliation(live, existing, deletableIds);
+    expect(plan.toWrite).toEqual([{ pageId: 'p1', relPath: 'Space/Keep.md' }]);
+    // The genuine delete is applied; the ghost file is preserved.
+    expect(plan.toDelete).toEqual(['Space/Gone.md']);
+    expect(plan.toDelete).not.toContain('Space/Ghost.md');
+    expect(plan.moved).toEqual([]);
+  });
+
+  // The empty gate is the maximally-safe case: no id is a real row, so NOTHING
+  // is absence-deleted (every absent tracked file is treated as a ghost). This
+  // is what a cycle sees when `pageIdsExist` returns nothing for the candidates.
+  it('GHOST GUARD: an EMPTY deletableIds set suppresses every absence delete', () => {
+    const live: LiveEntry[] = [{ pageId: 'p1', relPath: 'Space/Keep.md' }];
+    const existing: ExistingEntry[] = [
+      { pageId: 'p1', relPath: 'Space/Keep.md' },
+      { pageId: 'gone', relPath: 'Space/Gone.md' },
+    ];
+    const plan = planReconciliation(live, existing, new Set<string>());
+    expect(plan.toDelete).toEqual([]);
+    expect(plan.moved).toEqual([]);
+  });
+
   it('NO-OP: live and existing identical -> writes (re-emit) but no deletes/moves', () => {
     const live: LiveEntry[] = [
       { pageId: 'p1', relPath: 'A.md' },

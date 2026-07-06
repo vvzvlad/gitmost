@@ -509,6 +509,99 @@ export class EnvironmentService {
       .filter(Boolean);
   }
 
+  // --- git-sync (issue #194 §7.2) -------------------------------------------------
+
+  /** Global master switch for the git-sync control plane (default false). */
+  isGitSyncEnabled(): boolean {
+    return (
+      this.configService.get<string>('GIT_SYNC_ENABLED', 'false').toLowerCase() ===
+      'true'
+    );
+  }
+
+  /**
+   * Whether gitmost serves the per-space vaults over smart-HTTP (the /git host).
+   * When GIT_SYNC_HTTP_ENABLED is UNSET it DEFAULTS to isGitSyncEnabled() — so
+   * enabling sync also enables the host unless explicitly disabled. When set, it
+   * is honored verbatim ('true' -> on, anything else -> off).
+   */
+  isGitSyncHttpEnabled(): boolean {
+    const raw = this.configService.get<string>('GIT_SYNC_HTTP_ENABLED');
+    if (raw === undefined) return this.isGitSyncEnabled();
+    return raw.toLowerCase() === 'true';
+  }
+
+  /**
+   * Root directory holding the per-space vault repos. Defaults to
+   * `<DATA_DIR or ./data>/git-sync`. `DATA_DIR` is read directly (no dedicated
+   * getter exists in this codebase) so the vault root tracks the data volume.
+   */
+  getGitSyncDataDir(): string {
+    const explicit = this.configService.get<string>('GIT_SYNC_DATA_DIR');
+    if (explicit) return explicit;
+    const dataDir = this.configService.get<string>('DATA_DIR') || './data';
+    return `${dataDir.replace(/\/+$/, '')}/git-sync`;
+  }
+
+  /**
+   * Optional remote template, e.g. `git@host:vault-{spaceId}.git` (`{spaceId}` is
+   * substituted per-space in the orchestrator). SCAFFOLDING for the deferred
+   * remote-push feature: the vendored engine has no remote-push path yet (SPEC
+   * §7), so this value is currently inert — kept so the wiring is ready when the
+   * engine grows a push path.
+   */
+  getGitSyncRemoteTemplate(): string | undefined {
+    return this.configService.get<string>('GIT_SYNC_REMOTE_TEMPLATE');
+  }
+
+  /**
+   * Poll-safety interval in ms (default 15000). A NaN / non-positive value falls
+   * back to the default so a bad override can never disable or zero the poll loop.
+   */
+  getGitSyncPollIntervalMs(): number {
+    const parsed = parseInt(
+      this.configService.get<string>('GIT_SYNC_POLL_INTERVAL_MS', '15000'),
+      10,
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 15000;
+  }
+
+  /**
+   * Spawned `git http-backend` watchdog timeout in ms (default 120000). Bounds a
+   * single smart-HTTP request so a stalled `git-receive-pack` cannot hold the
+   * per-space lock forever (the child is killed and a 500 sent on expiry). A NaN /
+   * non-positive value falls back to the default so a bad override can never
+   * disable the watchdog.
+   */
+  getGitSyncBackendTimeoutMs(): number {
+    const v = parseInt(
+      this.configService.get<string>('GIT_SYNC_BACKEND_TIMEOUT_MS', '120000'),
+      10,
+    );
+    return Number.isFinite(v) && v > 0 ? v : 120000;
+  }
+
+  /**
+   * Event debounce window in ms (default 2000). A NaN / non-positive value falls
+   * back to the default so a bad override can never disable the debounce.
+   */
+  getGitSyncDebounceMs(): number {
+    const parsed = parseInt(
+      this.configService.get<string>('GIT_SYNC_DEBOUNCE_MS', '2000'),
+      10,
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
+  }
+
+
+  /**
+   * The service user id git-sync writes are attributed to. Required when sync is
+   * enabled (validated in environment.validation.ts); optional otherwise.
+   */
+  getGitSyncServiceUserId(): string | undefined {
+    return this.configService.get<string>('GIT_SYNC_SERVICE_USER_ID');
+  }
+
   // --- Blob sandbox (in-RAM ephemeral blob transfer; see SandboxModule) ---
 
   // Base URL the sandbox `uri` is built from. It MUST be reachable over the

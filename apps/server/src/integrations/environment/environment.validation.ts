@@ -172,6 +172,55 @@ export class EnvironmentVariables {
   )
   CLICKHOUSE_URL: string;
 
+  // --- git-sync (issue #194 §7.2) — all OPTIONAL. The master switch defaults off; a
+  // required-if-enabled service user id is validated only when sync is on. ---
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  @IsString()
+  GIT_SYNC_ENABLED: string;
+
+  // Whether to serve the per-space vaults over smart-HTTP (the /git host).
+  // When unset, defaults to GIT_SYNC_ENABLED (see isGitSyncHttpEnabled).
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  @IsString()
+  GIT_SYNC_HTTP_ENABLED: string;
+
+  @IsOptional()
+  @IsString()
+  GIT_SYNC_DATA_DIR: string;
+
+  // SCAFFOLDING for the deferred remote-push feature: the vendored engine does
+  // not consume gitRemote yet (SPEC §7), so this is currently inert — validated
+  // here so the wiring is ready when remote push lands.
+  @IsOptional()
+  @IsString()
+  GIT_SYNC_REMOTE_TEMPLATE: string;
+
+  @IsOptional()
+  @IsString()
+  GIT_SYNC_POLL_INTERVAL_MS: string;
+
+  @IsOptional()
+  @IsString()
+  GIT_SYNC_DEBOUNCE_MS: string;
+
+  // Watchdog timeout (ms) for the spawned `git http-backend` process (default
+  // 120000): a stalled receive-pack is killed so it cannot hold the per-space
+  // lock forever. Optional int (validated as a string env).
+  @IsOptional()
+  @IsString()
+  GIT_SYNC_BACKEND_TIMEOUT_MS: string;
+
+
+  // Required when git-sync is enabled: the service user create/move/rename/delete
+  // are attributed to (issue #194 §7.2). Optional otherwise.
+  @ValidateIf((obj) => obj.GIT_SYNC_ENABLED === 'true')
+  @IsNotEmpty()
+  @IsString()
+  GIT_SYNC_SERVICE_USER_ID: string;
+
   // --- Blob sandbox (in-RAM ephemeral blob transfer; see SandboxModule) ---
 
   @IsOptional()

@@ -28,6 +28,7 @@ import { ClsModule } from 'nestjs-cls';
 import { AuditModule } from './integrations/audit/audit.module';
 import { ThrottleModule } from './integrations/throttle/throttle.module';
 import { McpModule } from './integrations/mcp/mcp.module';
+import { GitSyncModule } from './integrations/git-sync/git-sync.module';
 import { SandboxModule } from './integrations/sandbox/sandbox.module';
 import { AiModule } from './integrations/ai/ai.module';
 import { AiChatModule } from './core/ai-chat/ai-chat.module';
@@ -92,6 +93,7 @@ try {
     TelemetryModule,
     ThrottleModule,
     McpModule,
+    GitSyncModule,
     SandboxModule,
     AiModule,
     AiChatModule,

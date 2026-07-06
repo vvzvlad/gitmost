@@ -55,9 +55,15 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
   private instance!: Hocuspocus;
   private readonly customEvents: TCE;
   private replyIdCounter: number = 0;
-  // @ts-ignore
-  private pendingReplies: Record<number, PromiseWithResolvers<any>['resolve']> =
-    {};
+  private pendingReplies: Record<
+    number,
+    {
+      // @ts-ignore
+      resolve: PromiseWithResolvers<any>['resolve'];
+      // @ts-ignore
+      reject: PromiseWithResolvers<any>['reject'];
+    }
+  > = {};
 
   constructor(configuration: Configuration<TCE>) {
     const {
@@ -182,25 +188,45 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
     }
     if (type === 'customEventStart') {
       const { documentName, eventName, payload, replyTo, replyId } = msg;
-      const res = await this.handleEventLocally(
-        eventName as Extract<keyof TCE, string>,
-        documentName,
-        payload,
-      );
-      const reply: RSAMessageCustomEventComplete = {
-        type: 'customEventComplete',
-        replyId,
-        payload: res,
-      };
+      let reply: RSAMessageCustomEventComplete;
+      try {
+        const res = await this.handleEventLocally(
+          eventName as Extract<keyof TCE, string>,
+          documentName,
+          payload,
+        );
+        reply = {
+          type: 'customEventComplete',
+          replyId,
+          payload: res,
+        };
+      } catch (err) {
+        // The remote handler threw (e.g. the markdown->ProseMirror transform in
+        // gitSyncWriteBody can throw on a malformed body). Reply with the error on
+        // the SAME correlation channel so the origin rejects promptly with the real
+        // message instead of waiting out customEventTTL as a generic 'TIMEOUT'.
+        // Catching here also keeps the throw from escaping this async messageBuffer
+        // listener as an unhandledRejection on the owning instance.
+        reply = {
+          type: 'customEventComplete',
+          replyId,
+          payload: undefined,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
       this.pub.publish(`${replyTo}`, this.pack(reply));
       return;
     }
     if (type === 'customEventComplete') {
-      const { replyId, payload } = msg;
-      const resolveFn = this.pendingReplies[replyId];
-      if (!resolveFn) return;
+      const { replyId, payload, error } = msg;
+      const pending = this.pendingReplies[replyId];
+      if (!pending) return;
       delete this.pendingReplies[replyId];
-      resolveFn(payload);
+      if (error !== undefined) {
+        pending.reject(new Error(error));
+      } else {
+        pending.resolve(payload);
+      }
       return;
     }
     const { socketId } = msg;
@@ -286,11 +312,22 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
       };
       const msg = this.pack(proxyMessage);
       this.pub.publish(`${this.msgChannel}:${proxyTo}`, msg);
-      // @ts-ignore
-      const { promise, resolve, reject } = Promise.withResolvers();
-      this.pendingReplies[replyId] = resolve;
+      // Manual deferred (no Promise.withResolvers) so this runs on Node < 22 too.
+      let resolve!: (v: unknown) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      this.pendingReplies[replyId] = { resolve, reject };
       setTimeout(() => {
-        reject('TIMEOUT');
+        // Fallback for a genuinely lost reply. A handler that threw now rejects
+        // promptly via the error-carrying customEventComplete above; this TIMEOUT
+        // only fires when no reply ever comes back.
+        if (this.pendingReplies[replyId]) {
+          delete this.pendingReplies[replyId];
+          reject('TIMEOUT');
+        }
       }, this.customEventTTL);
       return promise as Promise<ReturnType<TCE[TName]>>;
     }
@@ -386,12 +423,17 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
     // Plain `new Promise` (not `Promise.withResolvers`, which is Node 22+) so the
     // read probe is portable across the server's supported runtimes.
     return new Promise<unknown>((resolve, reject) => {
-      this.pendingReplies[replyId] = resolve;
+      // `pendingReplies` stores {resolve, reject} (the shared reply handler calls
+      // pending.resolve/pending.reject on customEventComplete); mirror that shape
+      // here so the #647 read probe uses the same map as handleEvent.
+      this.pendingReplies[replyId] = { resolve, reject };
       setTimeout(() => {
         // Drop the pending resolver so a late reply cannot leak or resolve a
         // reused id; the awaiting caller has already gone down the reject path.
-        delete this.pendingReplies[replyId];
-        reject(new Error('TIMEOUT'));
+        if (this.pendingReplies[replyId]) {
+          delete this.pendingReplies[replyId];
+          reject(new Error('TIMEOUT'));
+        }
       }, timeoutMs);
     });
   }

@@ -1,8 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import { PageService } from './page.service';
 import { MovePageDto } from '../dto/move-page.dto';
-import { Page } from '@docmost/db/types/entity.types';
+import { CreatePageDto } from '../dto/create-page.dto';
+import { UpdatePageDto } from '../dto/update-page.dto';
+import { Page, User } from '@docmost/db/types/entity.types';
 import { DEFAULT_TEMPORARY_NOTE_HOURS } from '../constants/temporary-note.constants';
+import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
 
 // Direct instantiation with stub deps. The Test.createTestingModule form failed
 // to resolve the @InjectKysely()/@InjectQueue() tokens at compile(), and this
@@ -494,6 +497,299 @@ describe('PageService', () => {
       );
       expect(payload.temporaryExpiresAt).toBeUndefined();
       expect(db.selectFrom).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('git-sync provenance stamping (#1)', () => {
+    const GIT_SYNC: AuthProvenanceData = { actor: 'git-sync', aiChatId: null };
+    const USER_PROVENANCE: AuthProvenanceData = { actor: 'user', aiChatId: null };
+
+    describe('create()', () => {
+      // Build a service whose insertPage/generalQueue are observable and whose
+      // nextPagePosition (a DB query) is stubbed, so create() reaches insertPage
+      // without a real database.
+      const makeService = () => {
+        const insertedPage = { id: 'page-1', slugId: 'slug-1' };
+        const pageRepo = {
+          insertPage: jest.fn().mockResolvedValue(insertedPage),
+        };
+        // add() is fire-and-forget (the service .catch()es it); resolve so no
+        // unhandled rejection leaks.
+        const generalQueue = { add: jest.fn().mockResolvedValue(undefined) };
+
+        const svc = new PageService(
+          pageRepo as any, // pageRepo
+          {} as any, // pagePermissionRepo
+          {} as any, // attachmentRepo
+          {} as any, // db
+          {} as any, // storageService
+          {} as any, // attachmentQueue
+          {} as any, // aiQueue
+          generalQueue as any, // generalQueue
+          {} as any, // eventEmitter
+          {} as any, // collaborationGateway
+          {} as any, // watcherService
+          {} as any, // transclusionService
+        );
+
+        // nextPagePosition runs a kysely query; stub it so create() never hits
+        // the db. No DTO content is provided, so parseProsemirrorContent is
+        // skipped entirely (content/textContent/ydoc stay undefined).
+        jest.spyOn(svc, 'nextPagePosition').mockResolvedValue('a0');
+
+        return { svc, pageRepo };
+      };
+
+      const createDto: CreatePageDto = {
+        title: 'New page',
+        spaceId: 'space-1',
+      } as any;
+
+      it("stamps lastUpdatedSource:'git-sync' on the insertPage payload", async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.create('user-1', 'ws-1', createDto, GIT_SYNC);
+
+        expect(pageRepo.insertPage).toHaveBeenCalledTimes(1);
+        expect(pageRepo.insertPage).toHaveBeenCalledWith(
+          expect.objectContaining({ lastUpdatedSource: 'git-sync' }),
+        );
+        // git-sync carries no aiChatId (unlike the agent branch).
+        const payload = pageRepo.insertPage.mock.calls[0][0];
+        expect(payload.lastUpdatedAiChatId).toBeUndefined();
+        // The human stays the responsible author.
+        expect(payload.creatorId).toBe('user-1');
+        expect(payload.lastUpdatedById).toBe('user-1');
+      });
+
+      it('leaves the source column unset for a plain user create', async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.create('user-1', 'ws-1', createDto, USER_PROVENANCE);
+
+        const payload = pageRepo.insertPage.mock.calls[0][0];
+        expect(payload.lastUpdatedSource).toBeUndefined();
+      });
+    });
+
+    describe('update() (rename)', () => {
+      const makeService = () => {
+        const pageRepo = {
+          updatePage: jest.fn().mockResolvedValue({ numUpdatedRows: 1n }),
+          // update() re-reads the row at the end to return the refreshed page.
+          findById: jest.fn().mockResolvedValue({ id: 'page-1' }),
+        };
+        const generalQueue = { add: jest.fn().mockResolvedValue(undefined) };
+        const aiQueue = { add: jest.fn().mockResolvedValue(undefined) };
+
+        const svc = new PageService(
+          pageRepo as any, // pageRepo
+          {} as any, // pagePermissionRepo
+          {} as any, // attachmentRepo
+          {} as any, // db
+          {} as any, // storageService
+          {} as any, // attachmentQueue
+          aiQueue as any, // aiQueue
+          generalQueue as any, // generalQueue
+          {} as any, // eventEmitter
+          {} as any, // collaborationGateway
+          {} as any, // watcherService
+          {} as any, // transclusionService
+        );
+
+        return { svc, pageRepo };
+      };
+
+      const page: Page = {
+        id: 'page-1',
+        slugId: 'slug-1',
+        spaceId: 'space-1',
+        workspaceId: 'ws-1',
+        title: 'Old title',
+        icon: null,
+        parentPageId: null,
+        contributorIds: [],
+      } as any;
+
+      const user: User = { id: 'user-1' } as any;
+
+      it("stamps lastUpdatedSource:'git-sync' on the updatePage payload", async () => {
+        const { svc, pageRepo } = makeService();
+        const dto: UpdatePageDto = { title: 'New title' } as any;
+
+        await svc.update(page, dto, user, GIT_SYNC);
+
+        expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+        const payload = pageRepo.updatePage.mock.calls[0][0];
+        expect(payload.lastUpdatedSource).toBe('git-sync');
+        expect(payload.lastUpdatedAiChatId).toBeUndefined();
+        // The acting user stays the responsible author.
+        expect(payload.lastUpdatedById).toBe('user-1');
+      });
+
+      it('leaves the source column unset for a plain user rename', async () => {
+        const { svc, pageRepo } = makeService();
+        const dto: UpdatePageDto = { title: 'New title' } as any;
+
+        await svc.update(page, dto, user, USER_PROVENANCE);
+
+        const payload = pageRepo.updatePage.mock.calls[0][0];
+        expect(payload.lastUpdatedSource).toBeUndefined();
+      });
+    });
+
+    describe('movePage()', () => {
+      const SPACE_ID = 'space-1';
+      const VALID_POSITION = 'a0';
+
+      const makeService = () => {
+        const pageRepo = {
+          findById: jest.fn().mockResolvedValue({
+            id: 'dest-parent',
+            deletedAt: null,
+            spaceId: SPACE_ID,
+          }),
+          updatePage: jest.fn().mockResolvedValue({ numUpdatedRows: 1n }),
+        };
+        const eventEmitter = { emit: jest.fn() };
+
+        // movePage now runs the cycle-check + UPDATE inside executeTx(this.db),
+        // i.e. this.db.transaction().execute(fn => fn(trx)). A permissive
+        // chainable Proxy stands in for the Kysely trx so the per-space
+        // advisory-lock `sql``.execute(trx)` resolves and updatePage runs.
+        const trxStub: any = new Proxy(function () {}, {
+          get: (_t, p) =>
+            p === 'then'
+              ? undefined
+              : p === 'execute' || p === 'executeTakeFirst'
+                ? () => Promise.resolve([])
+                : () => trxStub,
+        });
+        const db = {
+          transaction: () => ({ execute: (fn: any) => fn(trxStub) }),
+        };
+
+        const svc = new PageService(
+          pageRepo as any, // pageRepo
+          {} as any, // pagePermissionRepo
+          {} as any, // attachmentRepo
+          db as any, // db
+          {} as any, // storageService
+          {} as any, // attachmentQueue
+          {} as any, // aiQueue
+          {} as any, // generalQueue
+          eventEmitter as any, // eventEmitter
+          {} as any, // collaborationGateway
+          {} as any, // watcherService
+          {} as any, // transclusionService
+        );
+
+        // No cycle: the destination's ancestor chain does not contain the moved
+        // page, so movePage reaches updatePage.
+        jest
+          .spyOn(svc, 'getPageBreadCrumbs')
+          .mockResolvedValue([{ id: 'dest-parent' }, { id: 'root' }] as any);
+
+        return { svc, pageRepo };
+      };
+
+      const movedPage: Page = {
+        id: 'page-1',
+        parentPageId: 'old-parent',
+        spaceId: SPACE_ID,
+        workspaceId: 'ws-1',
+        slugId: 'slug-1',
+        title: 'Page 1',
+        icon: null,
+      } as any;
+
+      const dto: MovePageDto = {
+        pageId: 'page-1',
+        position: VALID_POSITION,
+        parentPageId: 'dest-parent',
+      };
+
+      it("stamps lastUpdatedSource:'git-sync' on the updatePage payload", async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.movePage(dto, movedPage, GIT_SYNC);
+
+        expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+        const payload = pageRepo.updatePage.mock.calls[0][0];
+        expect(payload.lastUpdatedSource).toBe('git-sync');
+        expect(payload.lastUpdatedAiChatId).toBeUndefined();
+      });
+
+      it('leaves the source column unset for a plain user move', async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.movePage(dto, movedPage, USER_PROVENANCE);
+
+        const payload = pageRepo.updatePage.mock.calls[0][0];
+        expect(payload.lastUpdatedSource).toBeUndefined();
+      });
+    });
+
+    describe('removePage()', () => {
+      // removePage forwards a `source` 5th arg to pageRepo.removePage: 'git-sync'
+      // for a git-sync-driven soft-delete (so the change-listener loop-guard skips
+      // its own write), undefined otherwise. The 4th arg is the optional caller
+      // transaction (existingTrx), which the git-sync path leaves undefined.
+      const makeService = () => {
+        const pageRepo = {
+          removePage: jest.fn().mockResolvedValue(undefined),
+        };
+
+        const svc = new PageService(
+          pageRepo as any, // pageRepo
+          {} as any, // pagePermissionRepo
+          {} as any, // attachmentRepo
+          {} as any, // db
+          {} as any, // storageService
+          {} as any, // attachmentQueue
+          {} as any, // aiQueue
+          {} as any, // generalQueue
+          {} as any, // eventEmitter
+          {} as any, // collaborationGateway
+          {} as any, // watcherService
+          {} as any, // transclusionService
+        );
+
+        return { svc, pageRepo };
+      };
+
+      it("forwards 'git-sync' as the source for a git-sync soft-delete", async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.removePage('page-1', 'user-1', 'ws-1', GIT_SYNC);
+
+        expect(pageRepo.removePage).toHaveBeenCalledTimes(1);
+        const [pageId, userId, workspaceId, existingTrx, source] =
+          pageRepo.removePage.mock.calls[0];
+        expect(pageId).toBe('page-1');
+        expect(userId).toBe('user-1');
+        expect(workspaceId).toBe('ws-1');
+        expect(existingTrx).toBeUndefined();
+        expect(source).toBe('git-sync');
+      });
+
+      it('forwards undefined as the source for a plain user delete', async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.removePage('page-1', 'user-1', 'ws-1', USER_PROVENANCE);
+
+        const [, , , , source] = pageRepo.removePage.mock.calls[0];
+        expect(source).toBeUndefined();
+      });
+
+      it('forwards undefined as the source when no provenance is given', async () => {
+        const { svc, pageRepo } = makeService();
+
+        await svc.removePage('page-1', 'user-1', 'ws-1');
+
+        const [, , , , source] = pageRepo.removePage.mock.calls[0];
+        expect(source).toBeUndefined();
+      });
     });
   });
 });

@@ -148,6 +148,14 @@ export interface PullActionsInput {
   treeComplete: boolean;
   /** Parsed tracked files: `{ pageId, relPath }` (from `readExisting`). */
   existing: { pageId: string; relPath: string }[];
+  /**
+   * The subset of tracked pageIds that correspond to a REAL page row (D-P3-1
+   * ghost guard, from `client.pageIdsExist`). Only ids in this set may be
+   * absence-deleted; a ghost id (never a page) is preserved. When omitted, all
+   * absent ids are deletable (the historical behavior; pure unit callers that
+   * do not model ghosts).
+   */
+  deletableIds?: string[];
 }
 
 /**
@@ -191,7 +199,7 @@ export interface PullActions {
  * thin `applyPullActions`.
  */
 export function computePullActions(input: PullActionsInput): PullActions {
-  const { pages, treeComplete, existing } = input;
+  const { pages, treeComplete, existing, deletableIds } = input;
   const layout = buildVaultLayout(pages);
 
   const live: LiveEntry[] = [];
@@ -206,8 +214,14 @@ export function computePullActions(input: PullActionsInput): PullActions {
   }
 
   // Plan reconciliation (pure). `plan.toDelete` is ABSENCE-based only;
-  // `plan.moved` carries move old-path removals separately.
-  const plan = planReconciliation(live, existing);
+  // `plan.moved` carries move old-path removals separately. The ghost guard
+  // (D-P3-1) gates absence-deletes to ids that are a real page row; when
+  // `deletableIds` is omitted, all absent ids are deletable (historical).
+  const plan = planReconciliation(
+    live,
+    existing,
+    deletableIds === undefined ? undefined : new Set(deletableIds),
+  );
 
   // Decide whether the ABSENCE-based deletions may be applied this cycle
   // (SPEC §8): incomplete-fetch suppression + empty-live + mass-delete guard.

@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { pathToFileURL } from 'node:url';
+import { esmImport } from '../../common/helpers/esm-import';
 import { IncomingMessage } from 'node:http';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
@@ -66,13 +67,9 @@ const MCP_RESOLVED = Symbol('mcpResolvedConfig');
 // (never the token value) so operators can migrate without log spam.
 let warnedLegacyMcpAuth = false;
 
-// TS with module:commonjs downlevels a literal import() to require(), which
-// cannot load the ESM-only @docmost/mcp package. Indirect through Function so
-// the real dynamic import() survives compilation and can load ESM from
-// CommonJS at runtime.
-const esmImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string,
-) => Promise<unknown>;
+// The CJS->ESM dynamic-import bridge lives in one shared helper
+// (common/helpers/esm-import.ts); see it for why import() must be hidden from the
+// TS commonjs downleveler.
 
 /**
  * Route ONE dependency-neutral metric sample emitted by the @docmost/mcp package

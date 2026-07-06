@@ -155,7 +155,7 @@ jobs:
       # build/ is gitignored, and plain `pnpm -r test` does NOT honour nx
       # `dependsOn: ^build`, so its consumers (mcp `pretest: tsc`, git-sync vitest
       # typecheck) fail with TS2307 Cannot find module '@docmost/prosemirror-markdown'
-      # unless it is built first. Build it before the recursive test run.
+      # unless it is built first. Build it BEFORE git-sync/mcp (which import it).
       - name: Build prosemirror-markdown
         run: pnpm --filter @docmost/prosemirror-markdown build
 
@@ -179,6 +179,14 @@ jobs:
       # that is the point: #624's four errors were all in test files.
       - name: Typecheck client
         run: pnpm --filter client typecheck
+
+      # git-sync and mcp are no longer committed in built form (build/ is
+      # gitignored), so CI must compile them: the server resolves both via their
+      # built build/index.js (git-sync's runtime consumer lands on this branch,
+      # #119). The server pretest also builds them, but building here keeps it
+      # explicit and independent of pnpm lifecycle ordering.
+      - name: Build git-sync and mcp
+        run: pnpm --filter @docmost/git-sync build && pnpm --filter @docmost/mcp build
 
       - name: Run unit tests
         run: pnpm -r test

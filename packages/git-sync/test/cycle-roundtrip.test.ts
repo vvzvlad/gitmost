@@ -77,6 +77,8 @@ const nodeFs: CycleFs = {
 function makeEmptyClientFake() {
   return {
     listSpaceTree: vi.fn(async () => ({ pages: [], complete: true })),
+    // Default: every candidate id is a real page row (historical behavior).
+    pageIdsExist: vi.fn(async (ids: string[]) => ids),
     getPageJson: vi.fn(),
     importPageMarkdown: vi.fn(async () => ({ updatedAt: "2026-06-20T00:00:00.000Z" })),
     createPage: vi.fn(async (title: string) => ({

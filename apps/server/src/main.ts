@@ -20,6 +20,7 @@ import { resolveTrustProxy } from './integrations/environment/trust-proxy.util';
 import { isMetricsEnabled } from './integrations/metrics/metrics.registry';
 import { recordHttpResponse } from './integrations/metrics/http-metrics.hook';
 import { startMetricsServer } from './integrations/metrics/metrics.server';
+import { GitHttpService } from './integrations/git-sync/http/git-http.service';
 
 async function bootstrap() {
   // Fastify JSON body cap. Fastify defaults to 1 MiB, which a long AI-chat
@@ -149,6 +150,23 @@ async function bootstrap() {
       },
     );
 
+  // git smart-HTTP POST bodies use these media types. Register PASSTHROUGH
+  // content-type parsers so Fastify does NOT buffer/parse them (it would
+  // otherwise reject the unknown type with 415); the /git handler streams the
+  // raw Node request (request.raw) to `git http-backend` stdin instead. A
+  // passthrough parser also bypasses the bodyLimit, so large pushes are not
+  // truncated (the bytes are never buffered by Fastify).
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addContentTypeParser(
+      [
+        'application/x-git-upload-pack-request',
+        'application/x-git-receive-pack-request',
+      ],
+      (_req, payload, done) => done(null, payload),
+    );
+
   app
     .getHttpAdapter()
     .getInstance()
@@ -206,6 +224,25 @@ async function bootstrap() {
   app.enableCors({ exposedHeaders: ['WWW-Authenticate'] });
   app.useGlobalInterceptors(new TransformHttpResponseInterceptor(reflector));
   app.enableShutdownHooks();
+
+  // git smart-HTTP host (the /git/<spaceId>.git/... subtree). Registered as a
+  // RAW Fastify route — NOT a Nest controller under the global '/api' prefix —
+  // so it lives at the ROOT and a single wildcard reliably captures the whole
+  // multi-segment subtree (avoiding the path-to-regexp v8 wildcard / global-
+  // prefix-exclude ambiguity in NestJS v11). The handler is resolved from the
+  // Nest container so all auth/authz/gating still runs. NOTE: Nest middleware
+  // (DomainMiddleware) does NOT run for this raw root route — it is bound to the
+  // Nest router under the global '/api' prefix — so request.raw.workspaceId is
+  // NOT populated here; GitHttpService resolves the workspace itself (mirroring
+  // DomainMiddleware). The Fastify wildcard '/git/*' captures the multi-segment
+  // subpath; the handler re-parses req.url itself.
+  const gitHttpService = app.get(GitHttpService);
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .all('/git/*', async (request, reply) => {
+      await gitHttpService.handle(request as any, reply as any);
+    });
 
   const logger = new Logger('NestApplication');
 

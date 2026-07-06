@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { runCycle, type RunCycleDeps } from "../src/engine/cycle";
+import { serializePageFile } from "@docmost/prosemirror-markdown";
 
 // A fake VaultGit recording the staging calls. An EMPTY vault/tree lets the real
 // readExisting/computePullActions/applyPullActions/runPush run trivially (no
@@ -46,6 +47,8 @@ function baseDeps(vault: any, over: Partial<RunCycleDeps> = {}): RunCycleDeps {
     spaceId: "space-1",
     client: {
       listSpaceTree: vi.fn(async () => ({ pages: [], complete: true })),
+      // Default: every candidate id is a real page row (historical behavior).
+      pageIdsExist: vi.fn(async (ids: string[]) => ids),
       getPageJson: vi.fn(),
       importPageMarkdown: vi.fn(),
       createPage: vi.fn(),
@@ -234,5 +237,89 @@ describe("runCycle (composition)", () => {
     // Pull planning ran but the push never did (aborted at a checkpoint).
     expect(deps.client.listSpaceTree).toHaveBeenCalledTimes(1);
     expect(vault.diffNameStatus).not.toHaveBeenCalled();
+  });
+
+  // D-P3-1 ghost guard, end-to-end through runCycle: a tracked file whose id is
+  // absent from live AND is NOT returned by `pageIdsExist` (a ghost — never a
+  // page) must SURVIVE the whole cycle (no rm), while a sibling id that IS
+  // returned (a genuinely deleted page row) is absence-deleted. This proves the
+  // guard flows from pageIdsExist -> computePullActions -> applyPullActions,
+  // not just at the pure `planReconciliation` unit.
+  it("GHOST GUARD (e2e): a ghost tracked file SURVIVES runCycle; a real deleted-page file is removed", async () => {
+    const ghostId = "019f2500-dead-7000-8000-000000000009"; // never a page
+    const deletedId = "019f2500-0000-7000-8000-000000000001"; // a real (deleted) row
+    const liveId = "019f2500-0000-7000-8000-0000000000aa"; // keeps empty-live from firing
+
+    // Two tracked files, both ABSENT from the live tree (deletion candidates).
+    const vault = fakeVault({
+      listTrackedFiles: vi.fn(async () => ["Ghost.md", "Deleted.md"]),
+    });
+
+    // The datasource reports ONLY the deleted page as a real row; the ghost has
+    // no row (a PROPER SUBSET of the probed ids, not the identity shim).
+    const pageIdsExist = vi.fn(async (ids: string[]) =>
+      ids.filter((id) => id === deletedId),
+    );
+    const rm = vi.fn(async () => undefined);
+
+    const deps = baseDeps(vault, {
+      fs: {
+        readFile: vi.fn(async (absPath: string) => {
+          if (absPath.includes("Ghost.md"))
+            return serializePageFile(ghostId, "a body authored in git");
+          if (absPath.includes("Deleted.md"))
+            return serializePageFile(deletedId, "a deleted page body");
+          return "";
+        }),
+        writeFile: vi.fn(async () => undefined),
+        mkdir: vi.fn(async () => undefined),
+        rm,
+        lstat: vi.fn(async () => ({ isSymbolicLink: false })),
+        realpath: vi.fn(async (p: string) => p),
+      },
+      client: {
+        ...baseDeps(vault).client,
+        // A single live page so the empty-live suppression does NOT fire (which
+        // would mask the guard by suppressing every delete this cycle).
+        listSpaceTree: vi.fn(async () => ({
+          pages: [
+            {
+              id: liveId,
+              slugId: "live",
+              title: "Live",
+              parentPageId: null,
+              position: "a0",
+              hasChildren: false,
+            },
+          ],
+          complete: true,
+        })),
+        pageIdsExist,
+        getPageJson: vi.fn(async (pageId: string) => ({
+          id: pageId,
+          slugId: "live",
+          title: "Live",
+          parentPageId: null,
+          spaceId: "space-1",
+          updatedAt: "2026-06-20T00:00:00.000Z",
+          content: { type: "doc", content: [] },
+        })),
+      } as any,
+    });
+
+    const res = await runCycle(deps);
+    expect(res.ran).toBe(true);
+
+    // The guard probed the datasource for EXACTLY the absent candidate ids.
+    expect(pageIdsExist).toHaveBeenCalledTimes(1);
+    expect(new Set(pageIdsExist.mock.calls[0][0])).toEqual(
+      new Set([ghostId, deletedId]),
+    );
+
+    // The real deleted-page file is removed; the ghost file is PRESERVED.
+    const rmPaths = rm.mock.calls.map((c) => c[0] as string);
+    expect(rmPaths.some((p) => p.includes("Deleted.md"))).toBe(true);
+    expect(rmPaths.some((p) => p.includes("Ghost.md"))).toBe(false);
+    expect(res.pull?.deleted).toBe(1);
   });
 });

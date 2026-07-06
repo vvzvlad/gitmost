@@ -9,6 +9,8 @@ import { ProvenanceSource } from '../../core/auth/dto/jwt-payload';
  * cannot fake an 'agent' marker.
  */
 export interface AuthProvenanceData {
+  // ProvenanceSource includes 'git-sync' — set by the in-process git-sync data
+  // plane (issue #194 §8.1) when it drives PageService writes; never from a request token.
   actor: ProvenanceSource;
   aiChatId: string | null;
   // #559 — the api_key that authenticated this write, when it came in over an
@@ -99,6 +101,16 @@ export function agentSourceFields<
     Record<C, string | null> &
     Record<K, string | null>
 > {
+  // git-sync data-plane write (issue #194 §8.1): stamp the source 'git-sync' with NO
+  // aiChatId (it has no internal ai_chats row). Mirrors the agent branch; each
+  // write has a single actor, so precedence is irrelevant here.
+  if (provenance?.actor === 'git-sync') {
+    return { [sourceKey]: 'git-sync' } as Partial<
+      Record<S, ProvenanceSource> &
+        Record<C, string | null> &
+        Record<K, string | null>
+    >;
+  }
   if (provenance?.actor !== 'agent') return {};
   const fields: Record<string, ProvenanceSource | string | null> = {
     [sourceKey]: 'agent',

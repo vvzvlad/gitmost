@@ -52,6 +52,23 @@ export interface GitSyncClient {
   ): Promise<{ pages: GitSyncPageNodeLite[]; complete: boolean }>;
 
   /**
+   * Existence probe for the pull-side ghost guard (D-P3-1). Given a set of
+   * candidate pageIds, return the subset that corresponds to a REAL page ROW —
+   * INCLUDING soft-deleted (trashed) and pages in ANY OTHER space, i.e. any
+   * `id` that has ever been a page (`SELECT id FROM pages WHERE id = ANY(...)`,
+   * workspace-scoped). Malformed (non-UUID) ids are filtered out before the
+   * query and are never returned.
+   *
+   * The pull reconciler only absence-deletes a tracked file whose pageId is
+   * returned here: a deleted/moved/trashed page HAS a row -> its vault file is
+   * cleaned up; a GHOST id (a git file whose id was NEVER a page) has NO row ->
+   * it is preserved rather than silently deleted (the data-loss bug). Called on
+   * only the small candidate-delete set (tracked ids absent from the live tree),
+   * so the query is bounded and usually empty.
+   */
+  pageIdsExist(pageIds: string[]): Promise<string[]>;
+
+  /**
    * One page WITH its ProseMirror body content. `applyPullActions` reads
    * `id`, `slugId`, `title`, `parentPageId`, `spaceId` (for the file meta) and
    * `content` (to stabilize/serialize). `updatedAt` is carried for the

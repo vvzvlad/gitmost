@@ -447,6 +447,20 @@ table.
   reload loop while a second deploy in the same tab still recovers. When the
   build carries no version info the feature stays inert. (#481)
 
+- **Native two-way Docmost ↔ git Markdown sync.** Opt-in per space (Space
+  settings → a git-sync toggle, plus an `autoMergeConflicts` toggle that controls
+  whether a still-conflicted page is held back or pushed with its conflict
+  markers stripped): each enabled space is mirrored to an on-disk git "vault" of
+  Markdown files and reconciled in both directions (Docmost → vault and vault →
+  Docmost) on a debounced + poll-backstop cycle, under a per-space lock, writing
+  through the collaboration layer so concurrent human edits aren't clobbered.
+  Git-originated changes are attributed to a configurable service account and
+  carry a "git-sync" provenance badge in page history. Optionally exposes a `/git`
+  smart-HTTP host so you can `git clone`/`fetch`/`push` a space directly (HTTP
+  Basic auth, space-permission authorized). Off by default and configured via the
+  `GIT_SYNC_*` environment variables, including `GIT_SYNC_ENABLED`,
+  `GIT_SYNC_SERVICE_USER_ID`, and `GIT_SYNC_HTTP_ENABLED` (see `.env.example`).
+  (#119)
 - **Place several images side by side in a row.** A new "Inline (side by
   side)" alignment mode in the image bubble menu renders consecutive inline
   images as a row that wraps onto the next line on narrow screens. The row is

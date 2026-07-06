@@ -23,7 +23,7 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "pretest": "pnpm --filter @docmost/editor-ext build && pnpm --filter @docmost/prosemirror-markdown build && pnpm --filter @docmost/token-estimate build && pnpm --filter @docmost/mcp build",
+    "pretest": "pnpm --filter @docmost/editor-ext build && pnpm --filter @docmost/prosemirror-markdown build && pnpm --filter @docmost/token-estimate build && pnpm --filter @docmost/git-sync build && pnpm --filter @docmost/mcp build",
     "test": "jest",
     "test:int": "jest --config test/jest-integration.json",
     "test:watch": "jest --watch",
@@ -42,6 +42,7 @@
     "@azure/storage-blob": "12.31.0",
     "@clickhouse/client": "^1.18.2",
     "@docmost/editor-ext": "workspace:*",
+    "@docmost/git-sync": "workspace:*",
     "@docmost/mcp": "workspace:*",
     "@docmost/pdf-inspector": "1.9.6",
     "@docmost/prosemirror-markdown": "workspace:*",
@@ -197,7 +198,12 @@
           ]
         }
       ],
-      "^.+\\.(t|j)sx?$": "ts-jest"
+      "^.+\\.(t|j)sx?$": [
+        "ts-jest",
+        {
+          "isolatedModules": true
+        }
+      ]
     },
     "transformIgnorePatterns": [
       "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0|@docmost/prosemirror-markdown)(@|/))"
@@ -207,13 +213,19 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
+    "setupFiles": [
+      "<rootDir>/../test/jest.setup.ts"
+    ],
     "moduleNameMapper": {
       "^@docmost/db/(.*)$": "<rootDir>/database/$1",
       "^@docmost/transactional/(.*)$": "<rootDir>/integrations/transactional/$1",
       "^@docmost/ee/(.*)$": "<rootDir>/ee/$1",
       "^@docmost/token-estimate$": "<rootDir>/../../../packages/token-estimate/src/index.ts",
       "^src/(.*)$": "<rootDir>/$1",
-      "^@tiptap/react$": "<rootDir>/../test/stubs/tiptap-react.js"
+      "^@tiptap/react$": "<rootDir>/../test/stubs/tiptap-react.js",
+      "^@docmost/git-sync$": "<rootDir>/../../../packages/git-sync/src/index.ts",
+      "^@docmost/git-sync/(.*)$": "<rootDir>/../../../packages/git-sync/src/$1",
+      "^(\\.{1,2}/.*)\\.js$": "$1"
     }
   }
 }

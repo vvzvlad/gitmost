@@ -736,6 +736,7 @@
   "AI search": "Поиск ИИ",
   "AI Answer": "Ответ ИИ",
   "Ask AI": "Спросить ИИ",
+  "Edited by AI agent on behalf of {{name}}": "Отредактировано AI-агентом от имени {{name}}",
   "AI is thinking...": "ИИ обрабатывает запрос...",
   "Thinking": "Думаю",
   "Ask a question...": "Задайте вопрос...",

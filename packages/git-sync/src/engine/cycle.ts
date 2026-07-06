@@ -170,10 +170,38 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
     });
 
     const tree = await client.listSpaceTree(spaceId);
+
+    // D-P3-1 ghost guard: an absence-delete must not silently remove a git file
+    // whose pageId was NEVER a page (a hand-authored file with an unknown id).
+    // Compute the candidate-delete set (tracked ids absent from the live tree)
+    // and ask the datasource which of them are REAL page rows (incl. trashed /
+    // other spaces). Only those may be absence-deleted; a ghost id is preserved
+    // (adopted/skipped by the push side).
+    //
+    // Size note: on a COMPLETE fetch this set is usually small/empty (only
+    // genuinely removed pages look absent), so the `id IN (...)` probe is cheap.
+    // On an INCOMPLETE fetch (`tree.complete === false`) MANY live pages look
+    // absent, so the set — and the probe — can be large. That is only a perf
+    // consideration, not a correctness one: `decideAbsenceDeletions` (inside
+    // `computePullActions`) still SUPPRESSES every absence delete on an
+    // incomplete fetch, so no ghost-guarded deletion is applied that cycle
+    // regardless of what the probe returns.
+    const livePageIds = new Set(
+      tree.pages.filter((p) => p && p.id).map((p) => p.id),
+    );
+    const candidateDeleteIds = existing
+      .map((e) => e.pageId)
+      .filter((id) => !livePageIds.has(id));
+    const deletableIds =
+      candidateDeleteIds.length > 0
+        ? await client.pageIdsExist(candidateDeleteIds)
+        : [];
+
     const pullActions = computePullActions({
       pages: tree.pages,
       treeComplete: tree.complete,
       existing,
+      deletableIds,
     });
 
     // Bail before the first destructive write phase if the lock was lost.

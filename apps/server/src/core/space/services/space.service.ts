@@ -213,6 +213,41 @@ export class SpaceService {
         );
       }
 
+      if (typeof updateSpaceDto.gitSyncEnabled !== 'undefined') {
+        const prev = settingsBefore?.gitSync?.enabled ?? false;
+        if (prev !== updateSpaceDto.gitSyncEnabled) {
+          before.gitSyncEnabled = prev;
+          after.gitSyncEnabled = updateSpaceDto.gitSyncEnabled;
+        }
+
+        await this.spaceRepo.updateGitSyncSettings(
+          updateSpaceDto.spaceId,
+          workspaceId,
+          'enabled',
+          updateSpaceDto.gitSyncEnabled,
+          trx,
+        );
+      }
+
+      if (typeof updateSpaceDto.autoMergeConflicts !== 'undefined') {
+        const prev = settingsBefore?.gitSync?.autoMergeConflicts ?? false;
+        if (prev !== updateSpaceDto.autoMergeConflicts) {
+          before.autoMergeConflicts = prev;
+          after.autoMergeConflicts = updateSpaceDto.autoMergeConflicts;
+        }
+
+        // Merges into the SAME `gitSync` jsonb object as `enabled` (the repo's
+        // jsonb-merge preserves sibling keys), so toggling one never clobbers the
+        // other.
+        await this.spaceRepo.updateGitSyncSettings(
+          updateSpaceDto.spaceId,
+          workspaceId,
+          'autoMergeConflicts',
+          updateSpaceDto.autoMergeConflicts,
+          trx,
+        );
+      }
+
       updatedSpace = await this.spaceRepo.updateSpace(
         {
           name: updateSpaceDto.name,

@@ -283,6 +283,45 @@ export class CollaborationGateway {
     return { loaded: false };
   }
 
+  /**
+   * Write a git-originated body into a page, applying the merge on the instance
+   * that OWNS the live Y.Doc so a connected editor CONVERGES on the change.
+   *
+   * git-sync must NOT use openDirectConnection directly for this: that opens the
+   * document on whichever instance/process runs git-sync (the API/worker). When
+   * an editor is connected to a DIFFERENT collab instance/process, that is a
+   * SEPARATE, detached Y.Doc — the merge lands in the detached doc and the DB,
+   * but the live editor never receives the Yjs update; its next debounced
+   * autosave then overwrites the DB with its stale state and SILENTLY REVERTS
+   * the git change (the data-loss bug). Routing through the custom-event channel
+   * runs the merge on the owning instance's shared Document, whose update is
+   * broadcast to every connection (handleUpdate), so the editor's CRDT converges
+   * on the merged result.
+   *
+   * Without redis there is a single instance, so the write runs locally — which
+   * is already the owning (and only) instance the editor is connected to.
+   */
+  async writePageBody(
+    documentName: string,
+    payload: {
+      prosemirrorJson: unknown;
+      baseProsemirrorJson?: unknown;
+      userId: string;
+    },
+  ): Promise<void> {
+    if (this.redisSync) {
+      await this.handleYjsEvent(
+        'gitSyncWriteBody',
+        documentName,
+        payload as any,
+      );
+      return;
+    }
+    await this.collabEventsService
+      .getHandlers(this.hocuspocus)
+      .gitSyncWriteBody(documentName, payload as any);
+  }
+
   /*
    *Can be used before calling openDirectConnection directly
    */
