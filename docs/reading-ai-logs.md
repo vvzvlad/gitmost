@@ -40,11 +40,14 @@ Read the **Gotchas** section before you trust any error count.
 
 ## Where the data lives
 
-Host `island.lc` (`10.31.40.120`), container `gitmost-postgresql`
-(`pgvector/pgvector:pg18`), database `docmost`.
+On the host that runs the wiki (its name and address are on the
+`gitmost_vvzvlad wiki/документация стек` page in the Netmap wiki): container
+`gitmost-postgresql` (`pgvector/pgvector:pg18`), database `docmost`.
 
 ```bash
-ssh island.lc
+# Host: Netmap -> `gitmost_vvzvlad wiki/документация стек`. That wiki runs on this
+# same host, so when it is down, take the host from your ~/.ssh/config instead.
+ssh <host>
 # one-off query:
 docker exec gitmost-postgresql psql -U docmost -d docmost -P pager=off -c "SELECT ..."
 # interactive:

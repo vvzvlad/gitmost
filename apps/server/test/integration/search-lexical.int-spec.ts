@@ -252,12 +252,12 @@ describe('SearchService #529 lexical overhaul [integration]', () => {
   });
 
   // 5. Identifier → substring branch.
-  it('#5 `10.31.41` (auto→substring) finds the page with that IP', async () => {
+  it('#5 `192.0.2` (auto→substring) finds the page with that IP', async () => {
     const page = await insertPage({
       title: 'Сетевой узел',
-      textContent: 'Адрес устройства: 10.31.41.7 в сети.',
+      textContent: 'Адрес устройства: 192.0.2.7 в сети.',
     });
-    const res = await search(buildService(), { query: '10.31.41', spaceId });
+    const res = await search(buildService(), { query: '192.0.2', spaceId });
     const hit = res.items.find((i: any) => i.id === page);
     expect(hit).toBeDefined();
     expect(hit.matchedFields).toContain('text');

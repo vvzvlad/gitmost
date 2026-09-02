@@ -76,7 +76,7 @@ interface RawToken {
 const TSQUERY_META = /[:&|!()*<>\\]+/g;
 
 // A term is "identifier-like" when it carries a digit or one of . _ : / - AND is
-// not purely alphabetic (letters only). Such tokens (10.31.41, esp32,
+// not purely alphabetic (letters only). Such tokens (192.0.2, esp32,
 // WB-MGE-30D86B) are mangled by the FTS tokenizer, so `match: auto` routes them
 // to the substring branch. A purely-alphabetic word (печат, ресторан) stays FTS.
 const IDENTIFIER_SIGNAL = /[0-9._:/\\-]/;
