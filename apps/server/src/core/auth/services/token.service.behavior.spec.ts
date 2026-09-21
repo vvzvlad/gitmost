@@ -1,4 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import * as jwt from 'jsonwebtoken';
 import { TokenService } from './token.service';
 import { JwtType } from '../dto/jwt-payload';
 
@@ -213,4 +214,210 @@ describe('TokenService.generateCollabToken', () => {
       aiChatId: 'chat-456',
     });
   });
+
+  // #501 fail-closed discriminator: EVERY collab token carries a principal.
+  it("defaults principal to 'session' with NO apiKeyId (normal/internal-agent path)", async () => {
+    const { service, jwtService } = makeTokenService();
+    await service.generateCollabToken(makeUser() as never, 'ws-1');
+    const [payload] = jwtService.sign.mock.calls[0];
+    expect(payload.principal).toBe('session');
+    expect(payload).not.toHaveProperty('apiKeyId');
+  });
+
+  it("the internal agent (provenance, NO apiKey) still gets principal='session'", async () => {
+    const { service, jwtService } = makeTokenService();
+    await service.generateCollabToken(
+      makeUser() as never,
+      'ws-1',
+      { actor: 'agent', aiChatId: 'chat-1' },
+    );
+    const [payload] = jwtService.sign.mock.calls[0];
+    // Keyed on api-key ORIGIN, not actor: an is_agent session token is 'session'.
+    expect(payload.principal).toBe('session');
+    expect(payload).not.toHaveProperty('apiKeyId');
+  });
+
+  it("stamps principal='api_key' + apiKeyId when minted by an api-key principal", async () => {
+    const { service, jwtService } = makeTokenService();
+    await service.generateCollabToken(
+      makeUser() as never,
+      'ws-1',
+      undefined,
+      { apiKeyId: 'key-9' },
+    );
+    const [payload] = jwtService.sign.mock.calls[0];
+    expect(payload.principal).toBe('api_key');
+    expect(payload.apiKeyId).toBe('key-9');
+  });
 });
+
+/**
+ * API-key token minting MUST carry NO `exp` claim — the ONLY source of truth for
+ * a key's lifetime/revocation is its `api_keys` row, checked on every request.
+ *
+ * This is a LIVE-bug regression: the shared JwtService is registered with a
+ * global `signOptions.expiresIn` (default '90d') that merges into every sign(),
+ * so an api-key minted through it silently gets exp=now+90d and an "unlimited"
+ * key dies in 90 days. TokenService.generateApiToken mints through a dedicated
+ * no-expiry signer instead. These tests construct the REAL signer (a real secret
+ * via the stubbed EnvironmentService) and decode the produced JWT to assert the
+ * observable property: no `exp`.
+ */
+describe('TokenService.generateApiToken (no exp claim ever)', () => {
+  const APP_SECRET_LOCAL = 'apikey-secret';
+
+  function makeRealSignerService() {
+    // Give the SHARED jwtService a global expiresIn so a regression (minting
+    // through it) would show up as an exp claim — the exact live bug.
+    const { JwtService } = require('@nestjs/jwt');
+    const sharedJwt = new JwtService({
+      secret: APP_SECRET_LOCAL,
+      signOptions: { expiresIn: '90d', issuer: 'Docmost' },
+    });
+    const environmentService = {
+      getAppSecret: () => APP_SECRET_LOCAL,
+    };
+    const service = new (TokenService as unknown as new (
+      ...args: unknown[]
+    ) => TokenService)(sharedJwt, environmentService);
+    return { service };
+  }
+
+  const user = makeUser({ id: 'svc-1', workspaceId: 'ws-1' });
+
+  it('mints an api-key JWT with NO exp claim and issuer Docmost', async () => {
+    const { service } = makeRealSignerService();
+
+    const token = await service.generateApiToken({
+      apiKeyId: 'key-1',
+      user: user as never,
+      workspaceId: 'ws-1',
+    });
+
+    const decoded = jwt.decode(token) as Record<string, unknown>;
+    // The observable security property: no expiry lives in the JWT.
+    expect(decoded.exp).toBeUndefined();
+    expect(decoded).toMatchObject({
+      sub: 'svc-1',
+      apiKeyId: 'key-1',
+      workspaceId: 'ws-1',
+      type: JwtType.API_KEY,
+      iss: 'Docmost',
+    });
+  });
+
+  // #557: the copyable-key contract. noTimestamp suppresses `iat`, so the token
+  // is a pure deterministic function of (payload, secret) — re-minting the SAME
+  // key yields a BYTE-IDENTICAL value, which is what makes "reveal" a safe
+  // re-mint rather than a stored secret.
+  it('mints an api-key JWT with NEITHER exp NOR iat (deterministic)', async () => {
+    const { service } = makeRealSignerService();
+
+    const token = await service.generateApiToken({
+      apiKeyId: 'key-1',
+      user: user as never,
+      workspaceId: 'ws-1',
+    });
+
+    const decoded = jwt.decode(token) as Record<string, unknown>;
+    expect(decoded.exp).toBeUndefined();
+    expect(decoded.iat).toBeUndefined();
+  });
+
+  it('two mints of the SAME key are byte-identical (re-mint = reveal)', async () => {
+    const { service } = makeRealSignerService();
+    const opts = {
+      apiKeyId: 'key-1',
+      user: user as never,
+      workspaceId: 'ws-1',
+    };
+
+    const first = await service.generateApiToken(opts);
+    // A different time (and a fresh signer instance) must not change the bytes.
+    await new Promise((r) => setTimeout(r, 1100));
+    const { service: service2 } = makeRealSignerService();
+    const second = await service2.generateApiToken(opts);
+
+    expect(second).toBe(first);
+  });
+
+  it('demonstrates the live bug it guards: the SHARED signer WOULD add exp', () => {
+    const { JwtService } = require('@nestjs/jwt');
+    const sharedJwt = new JwtService({
+      secret: APP_SECRET_LOCAL,
+      signOptions: { expiresIn: '90d', issuer: 'Docmost' },
+    });
+    // Even with empty per-call options the global expiresIn merges in.
+    const leaky = sharedJwt.sign({ sub: 'x', type: JwtType.API_KEY }, {});
+    expect((jwt.decode(leaky) as Record<string, unknown>).exp).toBeDefined();
+  });
+
+  it('refuses to mint for a disabled user', async () => {
+    const { service } = makeRealSignerService();
+    await expect(
+      service.generateApiToken({
+        apiKeyId: 'key-1',
+        user: makeUser({ deactivatedAt: new Date() }) as never,
+        workspaceId: 'ws-1',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+/**
+ * verifyJwtOneOf is the type-routing primitive: verify the signature once and
+ * assert the token type is on an explicit allowlist. It must NOT degrade into a
+ * "return whatever type" helper — a token whose type is off the allowlist is
+ * rejected with the same generic error as a single-type mismatch.
+ */
+describe('TokenService.verifyJwtOneOf (allowlist type-routing)', () => {
+  it('returns the payload when the type is on the allowlist', async () => {
+    const verifyAsync = jest
+      .fn()
+      .mockResolvedValue({ type: JwtType.API_KEY, sub: 'u-1' });
+    const { service } = makeTokenService({ verifyAsync });
+
+    const payload = await service.verifyJwtOneOf(token123(), [
+      JwtType.ACCESS,
+      JwtType.API_KEY,
+    ]);
+
+    expect(payload).toMatchObject({ type: JwtType.API_KEY, sub: 'u-1' });
+    expect(verifyAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts the OTHER allowed type too', async () => {
+    const verifyAsync = jest
+      .fn()
+      .mockResolvedValue({ type: JwtType.ACCESS, sub: 'u-1' });
+    const { service } = makeTokenService({ verifyAsync });
+
+    await expect(
+      service.verifyJwtOneOf(token123(), [JwtType.ACCESS, JwtType.API_KEY]),
+    ).resolves.toMatchObject({ type: JwtType.ACCESS });
+  });
+
+  it('rejects a token whose type is OFF the allowlist (confused-deputy guard)', async () => {
+    const verifyAsync = jest
+      .fn()
+      .mockResolvedValue({ type: JwtType.COLLAB, sub: 'u-1' });
+    const { service } = makeTokenService({ verifyAsync });
+
+    await expect(
+      service.verifyJwtOneOf(token123(), [JwtType.ACCESS, JwtType.API_KEY]),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('verifies the signature exactly ONCE', async () => {
+    const verifyAsync = jest
+      .fn()
+      .mockResolvedValue({ type: JwtType.ACCESS });
+    const { service } = makeTokenService({ verifyAsync });
+    await service.verifyJwtOneOf(token123(), [JwtType.ACCESS]);
+    expect(verifyAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+function token123(): string {
+  return 'a.b.c';
+}

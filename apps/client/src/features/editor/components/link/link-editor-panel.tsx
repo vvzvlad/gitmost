@@ -6,7 +6,8 @@ import {
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
-import { IconFileDescription, IconLink, IconWorld } from "@tabler/icons-react";
+import { IconLink, IconWorld } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { useLinkEditorState } from "@/features/editor/components/link/use-link-editor-state.tsx";
 import { LinkEditorPanelProps } from "@/features/editor/components/link/types.ts";
 import { useTranslation } from "react-i18next";
@@ -181,7 +182,7 @@ export const LinkEditorPanel = ({
                 >
                   <Group gap={10} wrap="nowrap" align="flex-start">
                     <span className={classes.pageIcon}>
-                      {page.icon || <IconFileDescription size={18} stroke={1.5} />}
+                      <PageIcon value={page.icon} size={18} />
                     </span>
 
                     <div style={{ flex: 1, minWidth: 0 }}>

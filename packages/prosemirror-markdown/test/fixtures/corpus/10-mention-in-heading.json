@@ -1,0 +1,13 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [
+        { "type": "text", "text": "Notes for " },
+        { "type": "mention", "attrs": { "id": "m-2", "label": "Bob", "entityType": "user", "entityId": "u-2", "slugId": "s-2", "creatorId": "c-2" } }
+      ]
+    }
+  ]
+}

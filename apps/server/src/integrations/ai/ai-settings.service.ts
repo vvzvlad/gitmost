@@ -1,13 +1,18 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { QueueName, QueueJob } from '../queue/constants';
+import {
+  QueueName,
+  QueueJob,
+  workspaceReindexJobOptions,
+} from '../queue/constants';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { SecretBoxService } from '../crypto/secret-box';
+import { EmbeddingReindexProgressService } from './embedding-reindex-progress.service';
 import {
   AiDriver,
   AiProviderSettings,
@@ -29,6 +34,30 @@ export function parsePositiveInt(raw: unknown): number | undefined {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
+
+/**
+ * TTL (seconds) for the enqueue-time progress PRE-SEED written by `reindex()`
+ * before the worker starts. Deliberately SHORT relative to the full 1h record
+ * TTL: if `aiQueue.add()` de-duplicates against a job that is just finishing
+ * (the worker's finally already ran `clear()` but removeOnComplete hasn't yet
+ * removed the job), no new worker runs to overwrite/clear this seed — so this
+ * shorter TTL lets the phantom "reindexing: 0 of N" expire instead of sticking
+ * for the full 1h record TTL. A worker that DOES start re-seeds with the full
+ * TTL, so a real run is unaffected.
+ *
+ * It MUST be >= the client poll cap (REINDEX_POLL_CAP_MS = 120000ms in
+ * ai-provider-settings.tsx) though: the AI_QUEUE worker runs at concurrency 1
+ * and shares the queue with page-level embedding jobs, so a queued reindex can
+ * wait well beyond a few dozen seconds before the worker re-seeds with the full
+ * TTL. If the pre-seed expired while the job is still pending, `get()` returns
+ * null and getMasked() falls back to the steady-state COUNT (indexedPages ==
+ * totalPages, reindexing=false) — the client reads that as "done & fully
+ * indexed", clears its deadline and STOPS polling, so the admin never sees the
+ * real climb. Pinning the pre-seed TTL to the client cap means a deduped phantom
+ * is bounded to ~120s — the same window the client already polls — and a genuine
+ * pending run never expires-into-"done" inside that window.
+ */
+const PRE_SEED_TTL_SECONDS = 120;
 
 /**
  * Shape of the partial update accepted by `update`. Mirrors the validated
@@ -74,6 +103,7 @@ export class AiSettingsService {
     private readonly pageEmbeddingRepo: PageEmbeddingRepo,
     private readonly pageRepo: PageRepo,
     private readonly secretBox: SecretBoxService,
+    private readonly reindexProgress: EmbeddingReindexProgressService,
     @InjectQueue(QueueName.AI_QUEUE) private readonly aiQueue: Queue,
   ) {}
 
@@ -90,6 +120,15 @@ export class AiSettingsService {
    * pass is kept and no duplicate is started. The .catch only guards against
    * transport/Redis errors.
    *
+   * #599 (review F1) — that dedupe means a CONFIG CHANGE during an active run
+   * enqueues NOTHING, so the new fingerprint gets no job of its own. What builds
+   * it is the running job itself: it finishes its (now stale) target, sees the
+   * drift in EmbeddingGenerationService.completeRun, and FAILS with
+   * StaleReindexTargetError so BullMQ retries it — and the retry re-resolves the
+   * provider and builds the current target. Kept deliberately: adding a second job
+   * would race the departing one for the same jobId (and lose, which is how the
+   * new generation was silently lost before).
+   *
    * Also cancels any pending delayed WORKSPACE_DELETE_EMBEDDINGS job (scheduled
    * when AI Search was disabled) so it cannot wipe the embeddings we are about
    * to rebuild. The job no-ops if embeddings are unconfigured.
@@ -100,21 +139,62 @@ export class AiSettingsService {
       .remove(`ai-search-disabled-${workspaceId}`)
       .catch(() => undefined);
 
-    const jobId = `ai-reindex-${workspaceId}`;
+    // Seed a live progress record BEFORE enqueueing so the very first status
+    // poll already reports done=0 (the reindex POST returns the PRE-job counts,
+    // so without this seed the first poll would still show "total of total").
+    // `totalPages` uses countEmbeddablePages — the SAME set the worker iterates
+    // and the SAME denominator the status endpoint reports, so the live and
+    // steady-state totals match.
+    //
+    // ONLY seed when no run is active: aiQueue.add() de-duplicates an already-
+    // running reindex, so a mid-run re-trigger (second click / second admin /
+    // second tab) must NOT reset the visible counter to 0 — that would
+    // understate the live worker's real position for the rest of the run. The
+    // worker's own start() at run begin is the single authoritative reset.
+    let seeded = false;
+    if ((await this.reindexProgress.get(workspaceId)) === null) {
+      const totalPages = await this.pageRepo.countEmbeddablePages(workspaceId);
+      // Short TTL (vs the full 1h record TTL): if add() below de-duplicates
+      // against a just-finishing job whose worker already clear()ed but isn't
+      // removed yet, no worker runs to clear this seed — the shorter TTL expires
+      // the phantom record rather than leaving a stuck "reindexing: 0 of N" for
+      // the full record TTL. It is kept >= the client poll cap (120s) so a
+      // genuine but still-pending run never expires into a false "done" while
+      // the client is still polling (see PRE_SEED_TTL_SECONDS).
+      await this.reindexProgress.start(
+        workspaceId,
+        totalPages,
+        PRE_SEED_TTL_SECONDS,
+      );
+      seeded = true;
+    }
+
+    // Shared with the AI-Search enable toggle and the automatic
+    // fingerprint-change reindex: same jobId (dedupe) + same retry policy (#599).
+    const jobOptions = workspaceReindexJobOptions(workspaceId);
+    const jobId = jobOptions.jobId;
     // Clear a prior non-active entry so a stale job can't block this reindex.
     // A locked/active job is left in place (remove() no-ops) and the add() below
     // de-duplicates against it, keeping the in-progress pass.
     await this.aiQueue.remove(jobId).catch(() => undefined);
 
-    await this.aiQueue.add(
-      QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
-      { workspaceId },
-      {
-        jobId,
-        removeOnComplete: true,
-        removeOnFail: true,
-      },
-    );
+    try {
+      await this.aiQueue.add(
+        QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
+        { workspaceId },
+        jobOptions,
+      );
+    } catch (err) {
+      // If the enqueue fails (Redis hiccup/shutdown) the worker never runs, so
+      // its finally->clear() never fires. Roll back the seed WE just wrote so
+      // the status endpoint doesn't report a stuck "reindexing: 0 of N" for the
+      // full TTL. Only clear when this call did the seed — never wipe a
+      // concurrent active run's record (get() was non-null, seeded=false).
+      if (seeded) {
+        await this.reindexProgress.clear(workspaceId);
+      }
+      throw err;
+    }
   }
 
   /**
@@ -177,6 +257,9 @@ export class AiSettingsService {
       // Max context window for the chat header badge denominator. Stored as
       // ::text; 0/unset/invalid = no limit (undefined).
       chatContextWindow: parsePositiveInt(provider.chatContextWindow),
+      // RAW stored value (#490): the replay budgeter reads this to distinguish an
+      // explicit `0` (off-switch) from unset, which parsePositiveInt cannot.
+      chatContextWindowRaw: provider.chatContextWindow,
       // Plain passthrough; getChatModel defaults unset to 'openai-compatible'.
       chatApiStyle: provider.chatApiStyle,
       // Cheap model id for the anonymous public-share assistant; reuses the chat
@@ -253,13 +336,55 @@ export class AiSettingsService {
       hasSttApiKey = !!creds?.sttApiKeyEnc;
     }
 
-    // totalPages now counts only pages with embeddable content (non-empty text
-    // or already-stored embeddings), so empty/text-less pages don't keep the
-    // "Indexed N of M pages" bar below 100% forever.
-    const [indexedPages, totalPages] = await Promise.all([
-      this.pageEmbeddingRepo.countIndexedPages(workspaceId),
-      this.pageRepo.countEmbeddablePages(workspaceId),
-    ]);
+    // While a reindex run is active, report its LIVE progress (done climbs 0 ->
+    // total) so the settings UI can watch it advance. Read progress FIRST and
+    // short-circuit: this endpoint is polled every ~5s for the whole run, so when
+    // a record is active we skip the two coverage COUNTs entirely (their results
+    // would be discarded anyway). Without the live progress the counter never
+    // drops: the per-page reindex hard-replaces rows in its own small
+    // transaction, so countIndexedPages stays ~= total for the whole run. With no
+    // active record we fall back to the steady-state DB coverage count, which
+    // preserves the existing display and the client's "done == total -> stop
+    // polling" condition (the run ends -> record cleared -> DB count == total).
+    //
+    // The fallback `totalPages` counts only pages with embeddable content
+    // (non-empty text, content-borne text, or already-stored embeddings), so
+    // empty/text-less pages don't keep the "Indexed N of M pages" bar below 100%
+    // forever.
+    // #599 (R8a) — the steady-state numerator counts the pages of the ACTIVE
+    // generation, not "any row of any generation". countIndexedPages() is
+    // generation-blind, so during a swap window (a model change being reindexed)
+    // the target generation's fresh rows counted toward it and the panel happily
+    // showed "Indexed 478 of 478" — a green, complete-looking bar — while the search
+    // API was correctly reporting `semantic.state: 'stale'` for the very same
+    // workspace, because the pointer had not flipped and the vector arm was serving
+    // (or refusing to serve) the OLD generation. Two contradictory truths in one UI.
+    // Counting the active fingerprint makes the panel agree with search: the bar
+    // climbs only when the generation that is actually SERVED grows.
+    //
+    // A workspace whose pointer was never flipped (legacy rows / a fresh instance
+    // that has not completed a run) has no active fingerprint: there is no generation
+    // to scope to, so we keep the generation-blind count — the pre-#599 behavior and
+    // the only meaningful number available there.
+    const progress = await this.reindexProgress.get(workspaceId);
+    let indexedPages: number;
+    let totalPages: number;
+    if (progress) {
+      indexedPages = progress.done;
+      totalPages = progress.total;
+    } else {
+      const { activeFingerprint } =
+        await this.workspaceRepo.getEmbeddingGeneration(workspaceId);
+      [indexedPages, totalPages] = await Promise.all([
+        activeFingerprint
+          ? this.pageEmbeddingRepo.countPagesByFingerprint(
+              workspaceId,
+              activeFingerprint,
+            )
+          : this.pageEmbeddingRepo.countIndexedPages(workspaceId),
+        this.pageRepo.countEmbeddablePages(workspaceId),
+      ]);
+    }
 
     return {
       driver: provider.driver,
@@ -281,6 +406,14 @@ export class AiSettingsService {
       hasSttApiKey,
       indexedPages,
       totalPages,
+      // Optional hint for the client: a reindex run is currently in progress.
+      reindexing: progress != null,
+      // Per-run identity so the client can key its poll on a stable run id and
+      // reset its per-run state when a NEW run starts. Present only while a run
+      // is active; `runId` may be '' for a legacy/degraded record (the client
+      // treats that as "no identity").
+      runId: progress?.runId,
+      reindexStartedAt: progress?.startedAt,
     };
   }
 

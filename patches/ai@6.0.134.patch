@@ -1,0 +1,176 @@
+diff --git a/dist/index.js b/dist/index.js
+index ae447a12f7823ec0a00837ee9f0eb809a610d5f8..210b5a9009e5cf1537cb2007c524007c1a01253c 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -5036,9 +5036,40 @@ function writeToServerResponse({
+           break;
+         const canContinue = response.write(value);
+         if (!canContinue) {
+-          await new Promise((resolve3) => {
+-            response.once("drain", resolve3);
++          // PATCH(docmost #486): race "drain" against "close"/"error". The
++          // original awaited ONLY "drain", so a client that disconnected mid-write
++          // (the socket never drains) parked this loop FOREVER: the finally never
++          // ran, response.end() was unreachable, and the reader + buffered chunks
++          // were held until process restart. On close/error we cancel the reader
++          // and break so the finally always runs (safe for detached runs:
++          // consumeStream drains the SDK stream independently). Listener hygiene:
++          // all three once-listeners are removed on the first settle, so they
++          // cannot pile up one-per-stall.
++          const closed = await new Promise((resolve3) => {
++            function finish(isClosed) {
++              response.removeListener("drain", onDrain);
++              response.removeListener("close", onClose);
++              response.removeListener("error", onError);
++              resolve3(isClosed);
++            }
++            function onDrain() {
++              finish(false);
++            }
++            function onClose() {
++              finish(true);
++            }
++            function onError() {
++              finish(true);
++            }
++            response.once("drain", onDrain);
++            response.once("close", onClose);
++            response.once("error", onError);
+           });
++          if (closed) {
++            await reader.cancel().catch(() => {
++            });
++            break;
++          }
+         }
+       }
+     } catch (error) {
+@@ -5047,7 +5078,9 @@ function writeToServerResponse({
+       response.end();
+     }
+   };
+-  read();
++  read().catch((error) => {
++    console.error("ai writeToServerResponse read() failed:", error);
++  });
+ }
+ 
+ // src/text-stream/pipe-text-stream-to-response.ts
+@@ -6578,9 +6611,19 @@ function createOutputTransformStream(output) {
+         controller.enqueue({ part: chunk, partialOutput: void 0 });
+         return;
+       }
+-      text2 += chunk.text;
+       textChunk += chunk.text;
+       textProviderMetadata = (_a21 = chunk.providerMetadata) != null ? _a21 : textProviderMetadata;
++      if (output == null) {
++        // PATCH(docmost #OOM): no output strategy requested -> publish each
++        // text-delta immediately and do NOT build cumulative partialOutput
++        // snapshots. Unpatched, the default text() output snapshots the ENTIRE
++        // accumulated turn text on every delta (O(n^2) memory) and those
++        // snapshots pile up in the never-consumed leftover tee branch of
++        // DefaultStreamTextResult.baseStream -> heap OOM on long agent turns.
++        publishTextChunk({ controller });
++        return;
++      }
++      text2 += chunk.text;
+       const result = await output.parsePartialOutput({ text: text2 });
+       if (result !== void 0) {
+         const currentJson = JSON.stringify(result.partial);
+@@ -6959,7 +7002,7 @@ var DefaultStreamTextResult = class {
+         })
+       );
+     }
+-    this.baseStream = stream.pipeThrough(createOutputTransformStream(output != null ? output : text())).pipeThrough(eventProcessor);
++    this.baseStream = stream.pipeThrough(createOutputTransformStream(output)).pipeThrough(eventProcessor);
+     const { maxRetries, retry } = prepareRetries({
+       maxRetries: maxRetriesArg,
+       abortSignal
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 663875332e3f9a9bd167c25583c515876f42951b..a51514a390d22811a407edd8b703e21793586cc8 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -4957,9 +4957,40 @@ function writeToServerResponse({
+           break;
+         const canContinue = response.write(value);
+         if (!canContinue) {
+-          await new Promise((resolve3) => {
+-            response.once("drain", resolve3);
++          // PATCH(docmost #486): race "drain" against "close"/"error". The
++          // original awaited ONLY "drain", so a client that disconnected mid-write
++          // (the socket never drains) parked this loop FOREVER: the finally never
++          // ran, response.end() was unreachable, and the reader + buffered chunks
++          // were held until process restart. On close/error we cancel the reader
++          // and break so the finally always runs (safe for detached runs:
++          // consumeStream drains the SDK stream independently). Listener hygiene:
++          // all three once-listeners are removed on the first settle, so they
++          // cannot pile up one-per-stall.
++          const closed = await new Promise((resolve3) => {
++            function finish(isClosed) {
++              response.removeListener("drain", onDrain);
++              response.removeListener("close", onClose);
++              response.removeListener("error", onError);
++              resolve3(isClosed);
++            }
++            function onDrain() {
++              finish(false);
++            }
++            function onClose() {
++              finish(true);
++            }
++            function onError() {
++              finish(true);
++            }
++            response.once("drain", onDrain);
++            response.once("close", onClose);
++            response.once("error", onError);
+           });
++          if (closed) {
++            await reader.cancel().catch(() => {
++            });
++            break;
++          }
+         }
+       }
+     } catch (error) {
+@@ -4968,7 +4999,9 @@ function writeToServerResponse({
+       response.end();
+     }
+   };
+-  read();
++  read().catch((error) => {
++    console.error("ai writeToServerResponse read() failed:", error);
++  });
+ }
+ 
+ // src/text-stream/pipe-text-stream-to-response.ts
+@@ -6501,9 +6534,19 @@ function createOutputTransformStream(output) {
+         controller.enqueue({ part: chunk, partialOutput: void 0 });
+         return;
+       }
+-      text2 += chunk.text;
+       textChunk += chunk.text;
+       textProviderMetadata = (_a21 = chunk.providerMetadata) != null ? _a21 : textProviderMetadata;
++      if (output == null) {
++        // PATCH(docmost #OOM): no output strategy requested -> publish each
++        // text-delta immediately and do NOT build cumulative partialOutput
++        // snapshots. Unpatched, the default text() output snapshots the ENTIRE
++        // accumulated turn text on every delta (O(n^2) memory) and those
++        // snapshots pile up in the never-consumed leftover tee branch of
++        // DefaultStreamTextResult.baseStream -> heap OOM on long agent turns.
++        publishTextChunk({ controller });
++        return;
++      }
++      text2 += chunk.text;
+       const result = await output.parsePartialOutput({ text: text2 });
+       if (result !== void 0) {
+         const currentJson = JSON.stringify(result.partial);
+@@ -6882,7 +6925,7 @@ var DefaultStreamTextResult = class {
+         })
+       );
+     }
+-    this.baseStream = stream.pipeThrough(createOutputTransformStream(output != null ? output : text())).pipeThrough(eventProcessor);
++    this.baseStream = stream.pipeThrough(createOutputTransformStream(output)).pipeThrough(eventProcessor);
+     const { maxRetries, retry } = prepareRetries({
+       maxRetries: maxRetriesArg,
+       abortSignal

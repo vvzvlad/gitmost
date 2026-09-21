@@ -62,6 +62,7 @@ function buildService(opts: {
     tokenService as any,
     {} as any, // transclusionService (unused)
     workspaceRepo as any,
+    {} as any, // pageHistoryRepo (unused on this path)
   );
 
   // getSharedPage resolves the share via getShareForPage (a raw db query).
@@ -181,6 +182,7 @@ describe('ShareService.lookupTransclusionForShare htmlEmbed kill-switch (real co
       tokenService as any,
       transclusionService as any,
       workspaceRepo as any,
+      {} as any, // pageHistoryRepo (unused on this path)
     );
 
     // isSharingAllowed and getShareForPage hit the raw db; stub them so the

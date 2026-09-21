@@ -22,14 +22,14 @@ are debounced server-side, so the script waits ~16 s before reading back via RES
 
 | # | Tool / path | What is checked | Expected |
 |---|-------------|-----------------|----------|
-| 1 | `create_page` | title with spaces, slugId returned | page created, title intact |
+| 1 | `createPage` | title with spaces, slugId returned | page created, title intact |
 | 2 | `update_page` (markdown) | headings, **bold**/*italic*/~~strike~~/`code`/link, nested bullet + ordered lists, blockquote, code block, `:::callout:::`, table | all structures survive re-import |
-| 3 | `get_page_json` | lossless ProseMirror, block ids, callout/table nodes | present (note: reads the **debounced** REST snapshot — recent collab writes may lag a few seconds) |
-| 4 | `edit_page_text` | surgical replace; block ids + marks preserved; ambiguous match rejected; missing match reported | edits applied, ids stable, errors correct |
-| 5 | `update_page_json` | full lossless write; custom block ids preserved; existing content (text edits, images, callout, table) not lost | round-trips intact |
+| 3 | `getPageJson` | lossless ProseMirror, block ids, callout/table nodes | present (note: reads the **debounced** REST snapshot — recent collab writes may lag a few seconds) |
+| 4 | `editPageText` | surgical replace; block ids + marks preserved; ambiguous match rejected; missing match reported | edits applied, ids stable, errors correct |
+| 5 | `updatePageJson` | full lossless write; custom block ids preserved; existing content (text edits, images, callout, table) not lost | round-trips intact |
 | 6 | `upload_image` | uploads attachment, returns node | src is a **clean** `/api/files/<id>/<file>` URL, served `200 image/*` |
-| 7 | `insert_image` (append / `replaceText` / `afterText`) | three placements | image lands in the right place, all other block ids preserved |
-| 8 | **`replace_image`** | swap an existing figure for new bytes; comments/align/alt preserved; **the new URL must actually serve the image** | new image renders (`200`), old node repointed |
+| 7 | `insertImage` (append / `replaceText` / `afterText`) | three placements | image lands in the right place, all other block ids preserved |
+| 8 | **`replaceImage`** | swap an existing figure for new bytes; comments/align/alt preserved; **the new URL must actually serve the image** | new image renders (`200`), old node repointed |
 
 ## Image-specific assertions (the recurring bug area)
 
@@ -39,7 +39,7 @@ For every uploaded/inserted/replaced image, assert at the HTTP level that the
 * `GET <src>` → `200`, `Content-Type: image/*`, body starts with the image magic
   (`89 50 4E 47` for PNG, etc.).
 * `src` does **not** contain a `?v=` query (see "Known pitfalls").
-* After `replace_image`: the returned `newAttachmentId` **differs** from the old
+* After `replaceImage`: the returned `newAttachmentId` **differs** from the old
   one (replacement uses a fresh attachment → fresh URL), and `GET <new src>` → `200`.
 * The old image node on the page is repointed to the new attachmentId.
 
@@ -64,7 +64,7 @@ broken/empty figure.
    Uploading with an existing `attachmentId` (`POST /files/upload` + `attachmentId`)
    overwrites the bytes in place. On this Docmost the attachment then returns
    **500 for every URL** (clean, `?v=`, any filename) → broken image. Therefore
-   `replace_image` must upload a **new** attachment and repoint the nodes; the new
+   `replaceImage` must upload a **new** attachment and repoint the nodes; the new
    id yields a new URL that both renders and busts the browser cache. The old
    attachment is left as an unreferenced orphan: Docmost exposes **no HTTP API to
    delete a single content attachment** (verified against the attachment
@@ -80,9 +80,9 @@ broken/empty figure.
    from `?v=`. Image `src` is kept clean (`/api/files/<id>/<file>`); cache-busting
    on replace is achieved by the new attachment id.
 
-3. **REST snapshot lag.** `get_page_json` reads the debounced DB snapshot, so a
+3. **REST snapshot lag.** `getPageJson` reads the debounced DB snapshot, so a
    write made moments earlier may not be visible yet. Wait (~16 s) before reading
-   back, and never feed a possibly-stale snapshot straight into `update_page_json`.
+   back, and never feed a possibly-stale snapshot straight into `updatePageJson`.
 
 4. **Callout type narrowing (minor, open).** A `:::warning` callout is imported as
    `type: "info"` — the markdown→callout conversion does not carry non-`info`

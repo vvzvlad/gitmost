@@ -1,0 +1,11 @@
+{
+  "name": "agent-roles-catalog",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "yaml": "^2.8.3"
+  }
+}

@@ -7,6 +7,7 @@ import {
   offset,
   shift,
 } from "@floating-ui/dom";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 
 const renderEmojiItems = () => {
   let component: ReactRenderer | null = null;
@@ -62,20 +63,26 @@ const renderEmojiItems = () => {
         },
       };
 
-      cleanup = autoUpdate(virtualElement, popup, () => {
-        if (!popup) return;
-
-        computePosition(virtualElement, popup, {
-          placement: "bottom-start",
-          middleware: [offset(10), flip(), shift()],
-        }).then(({ x, y }) => {
+      // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+      cleanup = autoUpdate(
+        virtualElement,
+        popup,
+        () => {
           if (!popup) return;
 
-          Object.assign(popup.style, {
-            transform: `translate(${x}px, ${y}px)`,
+          computePosition(virtualElement, popup, {
+            placement: "bottom-start",
+            middleware: [offset(10), flip(), shift()],
+          }).then(({ x, y }) => {
+            if (!popup) return;
+
+            Object.assign(popup.style, {
+              transform: `translate(${x}px, ${y}px)`,
+            });
           });
-        });
-      });
+        },
+        EDITOR_AUTO_UPDATE_OPTIONS,
+      );
     },
     onStart: (props: {
       editor: ReturnType<typeof useEditor>;

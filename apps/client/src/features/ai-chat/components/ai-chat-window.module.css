@@ -35,6 +35,35 @@
     background: transparent;
 }
 
+/* Docked into the sidebar: the window pins itself to the live navbar rect
+   (position/size supplied inline). It sits flush inside the navbar area, so we
+   drop the floating chrome — no border-radius, drop shadow or user resize — and
+   remove the floating min/max clamps so the size is driven ENTIRELY by the
+   inline navbar rect (which may be narrower than the floating min-width of
+   300px, e.g. the 220px navbar minimum). z-index 105 keeps it above the page
+   tree (navbar 101) but below the header and Mantine overlays. */
+.docked {
+    border-radius: 0;
+    box-shadow: none;
+    resize: none;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+}
+
+/* Drop-zone highlight shown over the navbar bounds while a floating window is
+   dragged onto the sidebar. Sits just above the docked window (106) so the cue
+   is visible; purely decorative, so it never intercepts pointer events. */
+.dockHighlight {
+    position: fixed;
+    z-index: 106;
+    border: 2px dashed light-dark(var(--mantine-color-blue-5), var(--mantine-color-blue-4));
+    background: light-dark(rgba(34, 139, 230, 0.08), rgba(34, 139, 230, 0.14));
+    border-radius: var(--mantine-radius-sm);
+    pointer-events: none;
+}
+
 /* When minimized the window collapses to the header only: auto height, no
    resize. Width/height inline values are overridden. */
 .minimized {

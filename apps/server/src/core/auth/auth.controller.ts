@@ -16,6 +16,7 @@ import {
   AUTH_THROTTLER,
   PAGE_TEMPLATE_THROTTLER,
   PUBLIC_SHARE_AI_THROTTLER,
+  VITALS_THROTTLER,
 } from '../../integrations/throttle/throttler-names';
 import { LoginDto } from './dto/login.dto';
 import { AuthService } from './services/auth.service';
@@ -184,16 +185,21 @@ export class AuthController {
   }
 
   // The global ThrottlerGuard applies ALL named throttlers to every route by
-  // default, so each non-AUTH bucket (AI chat, page template, public-share AI)
-  // is explicitly skipped here. collab-token is auth-guarded (JwtAuthGuard),
-  // per-user and client-cached, so those feature buckets are irrelevant to it;
-  // skipping them avoids spurious 429s when a user opens many pages in a short
-  // window. The AUTH bucket is skipped too for the same per-user, cached reason.
+  // default, so each non-AUTH bucket (AI chat, page template, public-share AI,
+  // client vitals) is explicitly skipped here. collab-token is auth-guarded
+  // (JwtAuthGuard), per-user and client-cached, so those feature buckets are
+  // irrelevant to it; skipping them avoids spurious 429s when a user opens many
+  // pages in a short window. The VITALS bucket must be skipped too: it is a
+  // process-wide named throttler, so without this skip its per-IP limit would
+  // silently cap collab-token (the one route that opts out of every other
+  // bucket) and break editing behind shared/NAT IPs. The AUTH bucket is skipped
+  // for the same per-user, cached reason.
   @SkipThrottle({
     [AUTH_THROTTLER]: true,
     [AI_CHAT_THROTTLER]: true,
     [PAGE_TEMPLATE_THROTTLER]: true,
     [PUBLIC_SHARE_AI_THROTTLER]: true,
+    [VITALS_THROTTLER]: true,
   })
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -201,8 +207,20 @@ export class AuthController {
   async collabToken(
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
+    @Req() req: FastifyRequest,
   ) {
-    return this.authService.getCollabToken(user, workspace.id);
+    // Thread the api-key origin (#501): when the requester authenticated with an
+    // api key (jwt.strategy stamped req.raw.authType/apiKeyId), the minted collab
+    // token carries principal='api_key' + apiKeyId so a later revoke of the key
+    // rejects NEW collab connections. A normal session request mints a
+    // principal='session' token. Reading the SIGNED-derived req.raw fields (never
+    // a client body) keeps it unspoofable.
+    const raw = req.raw as { authType?: string; apiKeyId?: string };
+    const apiKey =
+      raw.authType === 'api_key' && raw.apiKeyId
+        ? { apiKeyId: raw.apiKeyId }
+        : undefined;
+    return this.authService.getCollabToken(user, workspace.id, apiKey);
   }
 
   @SkipThrottle({ [AUTH_THROTTLER]: true })

@@ -3,6 +3,7 @@ import { PageService } from './services/page.service';
 import { PageController } from './page.controller';
 import { PageHistoryService } from './services/page-history.service';
 import { TrashCleanupService } from './services/trash-cleanup.service';
+import { TemporaryNoteCleanupService } from './services/temporary-note-cleanup.service';
 import { BacklinkService } from './services/backlink.service';
 import { StorageModule } from '../../integrations/storage/storage.module';
 import { CollaborationModule } from '../../collaboration/collaboration.module';
@@ -16,6 +17,7 @@ import { LabelModule } from '../label/label.module';
     PageService,
     PageHistoryService,
     TrashCleanupService,
+    TemporaryNoteCleanupService,
     BacklinkService,
   ],
   exports: [PageService, PageHistoryService],

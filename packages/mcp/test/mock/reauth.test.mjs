@@ -297,12 +297,12 @@ test("a response with ONLY authTokenRefresh (no authToken) rejects login", async
 // -----------------------------------------------------------------------------
 // 5) paginateAll loop guards.
 // -----------------------------------------------------------------------------
-test("paginateAll stops at the MAX_PAGES cap when hasNextPage is always true", async () => {
+test("paginateAll stops at the MAX_PAGES cap when the server always issues a fresh cursor", async () => {
   let pageRequests = 0;
   const LIMIT = 100;
 
   const { baseURL } = await spawn(async (req, res) => {
-    await readBody(req);
+    const body = JSON.parse((await readBody(req)) || "{}");
     if (req.url === "/api/auth/login") {
       sendJson(res, 200, { success: true }, {
         "Set-Cookie": "authToken=t; Path=/; HttpOnly",
@@ -311,15 +311,18 @@ test("paginateAll stops at the MAX_PAGES cap when hasNextPage is always true", a
     }
     if (req.url === "/api/spaces") {
       pageRequests++;
-      // Always return a FULL page (== requested limit) AND hasNextPage:true.
-      // Both the page-length check and the hasNextPage flag say "keep going",
-      // so only the MAX_PAGES ceiling can stop the loop.
+      // Always return a FULL page AND hasNextPage:true with a FRESH nextCursor
+      // that differs from the one the client just sent, so the immovable-cursor
+      // guard never trips — only the MAX_PAGES ceiling can stop the loop.
       const items = Array.from({ length: LIMIT }, (_, i) => ({
         id: `s-${pageRequests}-${i}`,
       }));
       sendJson(res, 200, {
         success: true,
-        data: { items, meta: { hasNextPage: true } },
+        data: {
+          items,
+          meta: { hasNextPage: true, nextCursor: `cursor-${pageRequests}` },
+        },
       });
       return;
     }
@@ -338,7 +341,7 @@ test("paginateAll stops at the MAX_PAGES cap when hasNextPage is always true", a
   assert.equal(all.length, 50 * LIMIT, "accumulates one full page per request");
 });
 
-test("paginateAll stops early on a short page even if hasNextPage is true", async () => {
+test("paginateAll stops on the immovable-cursor guard when the server ignores the cursor param", async () => {
   let pageRequests = 0;
   const LIMIT = 100;
 
@@ -352,15 +355,17 @@ test("paginateAll stops early on a short page even if hasNextPage is true", asyn
     }
     if (req.url === "/api/spaces") {
       pageRequests++;
-      // First page is full; second page is SHORT (fewer than limit). The short
-      // page must stop the loop immediately even though hasNextPage stays true.
-      const count = pageRequests === 1 ? LIMIT : 3;
-      const items = Array.from({ length: count }, (_, i) => ({
-        id: `s-${pageRequests}-${i}`,
-      }));
+      // The bug class: the server IGNORES the pagination param and keeps
+      // returning page one with hasNextPage:true and the SAME nextCursor. The
+      // immovable-cursor guard must stop the loop instead of spinning to
+      // MAX_PAGES and duplicating items.
+      const items = Array.from({ length: LIMIT }, (_, i) => ({ id: `s-${i}` }));
       sendJson(res, 200, {
         success: true,
-        data: { items, meta: { hasNextPage: true } },
+        data: {
+          items,
+          meta: { hasNextPage: true, nextCursor: "stuck" },
+        },
       });
       return;
     }
@@ -370,8 +375,10 @@ test("paginateAll stops early on a short page even if hasNextPage is true", asyn
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
   const all = await client.paginateAll("/spaces", {}, LIMIT);
 
-  assert.equal(pageRequests, 2, "stops right after the first short page");
-  assert.equal(all.length, LIMIT + 3, "full page + short page accumulated");
+  // Request 1 sends no cursor and receives "stuck"; request 2 sends "stuck" and
+  // receives "stuck" again -> guard trips after exactly two requests, no dups.
+  assert.equal(pageRequests, 2, "stops once the cursor stops moving");
+  assert.equal(all.length, 2 * LIMIT, "no runaway accumulation past the guard");
 });
 
 test("paginateAll handles both {data:{items,meta}} and {items,meta} envelopes", async () => {
@@ -387,16 +394,16 @@ test("paginateAll handles both {data:{items,meta}} and {items,meta} envelopes", 
     }
     if (req.url === "/api/groups") {
       bareRequests.push(1);
-      // Page 1: full page, hasNextPage true. Page 2: short page -> stop.
+      // Page 1: hasNextPage true with a next cursor. Page 2: no next -> stop.
       if (bareRequests.length === 1) {
         sendJson(res, 200, {
           items: Array.from({ length: 100 }, (_, i) => ({ id: `g${i}` })),
-          meta: { hasNextPage: true },
+          meta: { hasNextPage: true, nextCursor: "c2" },
         });
       } else {
         sendJson(res, 200, {
           items: [{ id: "tail" }],
-          meta: { hasNextPage: false },
+          meta: { hasNextPage: false, nextCursor: null },
         });
       }
       return;

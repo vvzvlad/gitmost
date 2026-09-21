@@ -1,4 +1,4 @@
-import { useAtom } from "jotai";
+import { useSetAtom, useStore } from "jotai";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { ActionIcon, Menu, rem } from "@mantine/core";
@@ -6,6 +6,7 @@ import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import {
   IconArrowRight,
+  IconClockHour4,
   IconCopy,
   IconDotsVertical,
   IconFileExport,
@@ -30,9 +31,13 @@ import {
   useRemoveFavoriteMutation,
 } from "@/features/favorite/queries/favorite-query";
 
-import { useToggleTemplateMutation } from "@/features/page-embed/queries/page-embed-query";
+import {
+  useToggleTemplateMutation,
+  useToggleTemporaryMutation,
+} from "@/features/page-embed/queries/page-embed-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
+import { pageToTreeNode } from "@/features/page/tree/utils";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import classes from "@/features/page/tree/styles/tree.module.css";
@@ -47,7 +52,11 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const clipboard = useClipboard({ timeout: 500 });
   const { spaceSlug } = useParams();
   const { handleDelete } = useTreeMutation(node.spaceId);
-  const [data, setData] = useAtom(treeDataAtom);
+  // Setter-only: the tree value is read only imperatively inside the duplicate
+  // handler (via `store` below), never at render, so useSetAtom avoids
+  // re-rendering every row's NodeMenu on any tree event.
+  const setData = useSetAtom(treeDataAtom);
+  const store = useStore();
   const emit = useQueryEmit();
   const [exportOpened, { open: openExportModal, close: closeExportModal }] =
     useDisclosure(false);
@@ -65,6 +74,8 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
   const isFavorited = favoriteIds.has(node.id);
   const toggleTemplate = useToggleTemplateMutation();
   const isTemplate = !!node.isTemplate;
+  const toggleTemporary = useToggleTemporaryMutation();
+  const isTemporary = !!node.temporaryExpiresAt;
 
   const handleToggleTemplate = async () => {
     const next = !isTemplate;
@@ -84,6 +95,29 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
     }
   };
 
+  const handleToggleTemporary = async () => {
+    const next = !isTemporary;
+    try {
+      const res = await toggleTemporary.mutateAsync({
+        pageId: node.id,
+        temporary: next,
+      });
+      // Reflect the new deadline locally so the icon/menu update immediately.
+      setData((prev) =>
+        treeModel.update(prev, node.id, {
+          temporaryExpiresAt: res.temporaryExpiresAt,
+        } as any),
+      );
+      notifications.show({
+        message: next
+          ? t("Note will move to trash unless made permanent")
+          : t("Note is now permanent"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
+
   const handleCopyLink = () => {
     const pageUrl =
       getAppUrl() + buildPageUrl(spaceSlug, node.slugId, node.name);
@@ -95,24 +129,20 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
     try {
       const duplicatedPage = await duplicatePage({ pageId: node.id });
 
-      // figure out parent + insertion index
-      const siblings = treeModel.siblingsOf(data, node.id);
+      // figure out parent + insertion index (read the live tree imperatively)
+      const siblings = treeModel.siblingsOf(store.get(treeDataAtom), node.id);
       const parentId = siblings?.parentId ?? null;
       const currentIndex = siblings?.index ?? 0;
       const newIndex = currentIndex + 1;
 
-      const treeNodeData: SpaceTreeNode = {
-        id: duplicatedPage.id,
-        slugId: duplicatedPage.slugId,
-        name: duplicatedPage.title,
-        position: duplicatedPage.position,
-        spaceId: duplicatedPage.spaceId,
-        parentPageId: duplicatedPage.parentPageId,
-        icon: duplicatedPage.icon,
-        hasChildren: duplicatedPage.hasChildren,
+      // Routed through the canonical mapper so the field copy stays in lockstep
+      // with buildTree. The server does NOT arm a death timer on duplicate (the
+      // copy's `temporaryExpiresAt` defaults to null = permanent), so the mapper
+      // carries that null through and the duplicated node correctly shows no
+      // clock marker — matching the server without a reload.
+      const treeNodeData: SpaceTreeNode = pageToTreeNode(duplicatedPage, {
         canEdit: true,
-        children: [],
-      };
+      });
 
       setData((prev) =>
         treeModel.insert(prev, parentId, treeNodeData, newIndex),
@@ -246,6 +276,17 @@ export function NodeMenu({ node, canEdit }: NodeMenuProps) {
                 }}
               >
                 {isTemplate ? t("Unset as template") : t("Make template")}
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={<IconClockHour4 size={16} />}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleToggleTemporary();
+                }}
+              >
+                {isTemporary ? t("Make permanent") : t("Make temporary")}
               </Menu.Item>
 
               <Menu.Divider />

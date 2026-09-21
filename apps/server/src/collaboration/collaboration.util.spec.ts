@@ -44,6 +44,28 @@ describe('getPageId', () => {
   it('returns an empty string for a trailing dot', () => {
     expect(getPageId('page.')).toBe('');
   });
+
+  // #640, invariant 1 / acceptance 1 — the collab ROOM name the client sends
+  // MUST stay un-namespaced `page.<pageId>`. The client namespaces the ydoc
+  // IndexedDB DATABASE name by `<workspace>:<user>` for cross-user hygiene, but
+  // that scope key contains a ':' and, if it ever leaked into the room name
+  // (`page.<workspace>:<user>.<pageId>`), this resolver would return the
+  // workspace:user segment instead of the pageId — breaking auth + persistence on
+  // EVERY collab connection. Lock the contract from the server side.
+  it('resolves a page from the un-namespaced room name, but NOT from a scope-namespaced one', () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const userId = '22222222-2222-4222-8222-222222222222';
+    const pageId = '33333333-3333-4333-8333-333333333333';
+
+    // The correct room name → the real pageId.
+    expect(getPageId(`page.${pageId}`)).toBe(pageId);
+
+    // A scope-namespaced name (the client's DB name shape) would resolve to the
+    // `workspace:user` scope, NOT the page — the exact break invariant 1 forbids.
+    const scopeNamespaced = `page.${workspaceId}:${userId}.${pageId}`;
+    expect(getPageId(scopeNamespaced)).toBe(`${workspaceId}:${userId}`);
+    expect(getPageId(scopeNamespaced)).not.toBe(pageId);
+  });
 });
 
 describe('isEmptyParagraphDoc', () => {

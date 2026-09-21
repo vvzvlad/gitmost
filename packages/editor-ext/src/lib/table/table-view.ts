@@ -24,7 +24,6 @@ export function updateColumns(
           overrideCol === col
             ? overrideValue
             : ((colwidth && colwidth[j]) as number | undefined);
-        const cssWidth = hasWidth ? `${hasWidth}px` : '';
 
         totalWidth += hasWidth || cellMinWidth;
 
@@ -44,16 +43,29 @@ export function updateColumns(
 
           colgroup.appendChild(colElement);
         } else {
-          if ((nextDOM as HTMLTableColElement).style.width !== cssWidth) {
-            const [propertyKey, propertyValue] = getColStyleDeclaration(
-              cellMinWidth,
-              hasWidth,
-            );
-
-            (nextDOM as HTMLTableColElement).style.setProperty(
-              propertyKey,
-              propertyValue,
-            );
+          const existingCol = nextDOM as HTMLTableColElement;
+          const [propertyKey, propertyValue] = getColStyleDeclaration(
+            cellMinWidth,
+            hasWidth,
+          );
+          // `getColStyleDeclaration` writes EITHER `width` (sized column) or
+          // `min-width` (unsized one), so a column losing its width leaves the
+          // old `width` behind and the browser keeps honouring it. Upstream
+          // tiptap has the same bug — plus it compares `style.width` against a
+          // value it may write to `min-width`, so the compared and written
+          // properties diverge — but it was UNREACHABLE here until this branch
+          // installed columnResizing: without it `colwidth` never changed at
+          // runtime. Now undo-after-resize, restoring an older page version and
+          // remote collab edits all hit it, so the opposite property is cleared
+          // explicitly. (prosemirror-tables' own TableView does not suffer from
+          // this: it always assigns `style.width`, and the empty string clears.)
+          const otherKey = propertyKey === 'width' ? 'min-width' : 'width';
+          if (
+            existingCol.style.getPropertyValue(propertyKey) !== propertyValue ||
+            existingCol.style.getPropertyValue(otherKey)
+          ) {
+            existingCol.style.removeProperty(otherKey);
+            existingCol.style.setProperty(propertyKey, propertyValue);
           }
 
           nextDOM = nextDOM.nextSibling;
@@ -69,6 +81,10 @@ export function updateColumns(
     nextDOM = after;
   }
 
+  // `hasUserWidth` (and with it the divergence from `renderHTML`, which lets a
+  // user style win outright) is unreachable today: the `table` node carries no
+  // `style` attribute in any schema in this repo. Left as-is — it is upstream
+  // tiptap's code, copied verbatim so the two stay diffable.
   const hasUserWidth =
     node.attrs.style &&
     typeof node.attrs.style === 'string' &&
@@ -81,6 +97,17 @@ export function updateColumns(
     table.style.width = '';
     table.style.minWidth = `${totalWidth}px`;
   }
+}
+
+export interface TableViewOptions {
+  /**
+   * Computes the HTML attributes to put on the <table> element for a node.
+   * The render path (`CustomTable.renderHTML`) applies the node's rendered
+   * attributes to the <table>; without this hook the node view would silently
+   * drop them, so the edit DOM and the exported HTML would diverge. Called on
+   * construction AND on every update, so attribute changes reach the DOM.
+   */
+  renderAttributes?: (node: ProseMirrorNode) => Record<string, unknown>;
 }
 
 export class TableView implements NodeView {
@@ -96,26 +123,94 @@ export class TableView implements NodeView {
 
   contentDOM: HTMLTableSectionElement;
 
-  constructor(node: ProseMirrorNode, cellMinWidth: number) {
+  private readonly renderAttributes?: (
+    node: ProseMirrorNode,
+  ) => Record<string, unknown>;
+
+  // Only the attributes this view itself wrote are ever removed again, so
+  // attributes owned by other code on the <table> are left alone.
+  private appliedAttributeNames: string[] = [];
+
+  // The last `node.attrs.style` this view wrote as inline style, or null.
+  private appliedStyle: string | null = null;
+
+  // WARNING — do NOT hand this class to prosemirror-tables' `columnResizing({
+  // View })` (nor to tiptap's `Table.configure({ View })`, which forwards it
+  // there): that call site constructs `new View(node, cellMinWidth, editorView)`
+  // and would pass an EditorView into the third parameter. This view is
+  // installed via `CustomTable.addNodeView()` instead, which is a direct
+  // EditorView prop and wins `someProp('nodeViews')` over any plugin-provided
+  // one anyway.
+  constructor(
+    node: ProseMirrorNode,
+    cellMinWidth: number,
+    options: TableViewOptions = {},
+  ) {
     this.node = node;
     this.cellMinWidth = cellMinWidth;
+    this.renderAttributes = options.renderAttributes;
     this.dom = document.createElement('div');
     this.dom.className = 'tableWrapper';
     this.table = this.dom.appendChild(document.createElement('table'));
 
-    if (node.attrs.style) {
-      this.table.style.cssText = node.attrs.style;
-    }
+    this.applyAttributes(node);
 
     this.colgroup = this.table.appendChild(document.createElement('colgroup'));
     updateColumns(node, this.colgroup, this.table, cellMinWidth);
     this.contentDOM = this.table.appendChild(document.createElement('tbody'));
   }
 
+  // Mirrors what `renderHTML` puts on the <table>: the node's rendered HTML
+  // attributes, then `node.attrs.style` (kept for parity with the previous
+  // behaviour of this class). `updateColumns` runs afterwards and owns
+  // width/min-width, exactly as it does on construction.
+  private applyAttributes(node: ProseMirrorNode) {
+    const attributes = this.renderAttributes?.(node) ?? {};
+    const nextNames: string[] = [];
+
+    for (const name of this.appliedAttributeNames) {
+      if (!(name in attributes)) {
+        this.table.removeAttribute(name);
+      }
+    }
+
+    for (const [name, value] of Object.entries(attributes)) {
+      if (value === null || value === undefined) {
+        this.table.removeAttribute(name);
+        continue;
+      }
+      nextNames.push(name);
+      const next = String(value);
+      if (this.table.getAttribute(name) !== next) {
+        this.table.setAttribute(name, next);
+      }
+    }
+
+    this.appliedAttributeNames = nextNames;
+
+    // Symmetric on purpose: a node whose `style` attr goes away must lose the
+    // inline style again, otherwise update() could never clear it. Guarded by
+    // `appliedStyle` so cssText is only ever written when THIS view owns it —
+    // an inline style put on the <table> by anyone else is left alone.
+    // Inert in practice (no schema in this repo gives the `table` node a
+    // `style` attribute), but `updateColumns` below reads `node.attrs.style`,
+    // so the pair is kept consistent rather than half-implemented.
+    if (!('style' in attributes)) {
+      const style = (node.attrs.style as string | null) ?? null;
+      if (style !== this.appliedStyle) {
+        if (style || this.appliedStyle) {
+          this.table.style.cssText = style ?? '';
+        }
+        this.appliedStyle = style;
+      }
+    }
+  }
+
   update(node: ProseMirrorNode) {
     if (node.type !== this.node.type) return false;
 
     this.node = node;
+    this.applyAttributes(node);
     updateColumns(node, this.colgroup, this.table, this.cellMinWidth);
 
     return true;
@@ -136,23 +231,16 @@ export class TableView implements NodeView {
       }
     }
 
-    // Chevron span (.tableReadonlySortChevron) added/removed by sort plugin.
-    if (mutation.type === 'childList') {
-      const nodes = [
-        ...Array.from(mutation.addedNodes),
-        ...Array.from(mutation.removedNodes),
-      ];
-      if (
-        nodes.some(
-          (n) =>
-            n instanceof Element &&
-            n.classList.contains('tableReadonlySortChevron'),
-        )
-      ) {
-        return true;
-      }
-    }
-
+    // NOTE — this view CANNOT protect the readonly-sort chevrons
+    // (`.tableReadonlySortChevron`, appended into a <th> by
+    // `table-readonly-sort.ts`). ProseMirror dispatches ignoreMutation on
+    // `docView.nearestDesc(mutation.target)`, and a <th> has its own
+    // NodeViewDesc, so chevron mutations are decided by the CELL's desc and
+    // never reach this method — verified empirically by logging every call
+    // into this method in a real editor while adding a chevron and writing
+    // `data-sort` on it: zero calls. That is exactly why
+    // `table-readonly-sort.ts` carries a click-time self-heal instead of
+    // relying on the chevrons surviving.
     return false;
   }
 }

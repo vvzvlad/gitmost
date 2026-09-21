@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { UserModule } from './user/user.module';
 import { AuthModule } from './auth/auth.module';
+import { ApiKeyModule } from './api-key/api-key.module';
 import { WorkspaceModule } from './workspace/workspace.module';
 import { PageModule } from './page/page.module';
 import { AttachmentModule } from './attachment/attachment.module';
@@ -29,6 +30,7 @@ import { ClsMiddleware } from 'nestjs-cls';
   imports: [
     UserModule,
     AuthModule,
+    ApiKeyModule,
     WorkspaceModule,
     PageModule,
     AttachmentModule,

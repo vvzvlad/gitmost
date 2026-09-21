@@ -35,7 +35,20 @@ const INITIAL_STATE: TableHandleState = {
 
 export const TableDndKey = new PluginKey<TableHandleState>("table-handles");
 
-class TableHandlePluginSpec implements PluginSpec<TableHandleState> {
+// How long a blur waits before it drops the handles. A click on a floating
+// handle (or its menu target) blurs the editor BEFORE the click handler runs,
+// and Safari does not even move focus to the clicked div — so we cannot decide
+// from `relatedTarget`/`activeElement`. Instead we wait a beat and re-check the
+// plugin state: by then a menu has set `frozen` and a drag has set `dragging`.
+const BLUR_CLEAR_DELAY_MS = 250;
+// A pointer-down flag backed by an event this recent is trusted as live state.
+// Sized above the gap between the pointermove bursts of an actively moving
+// pointer (tens of ms) and well under a deliberate press-and-hold pause, so a
+// user who keeps interacting always reads as "fresh". Older than this we no
+// longer trust the flag either way — see _flushBlurClear.
+const STALE_POINTER_MS = 1500;
+
+export class TableHandlePluginSpec implements PluginSpec<TableHandleState> {
   key = TableDndKey;
   props: EditorProps<Plugin<TableHandleState>>;
 
@@ -50,6 +63,12 @@ class TableHandlePluginSpec implements PluginSpec<TableHandleState> {
   private _draggingDOMs?: DraggingDOMs;
   private _startCoords = { x: 0, y: 0 };
   private _dragging = false;
+  private _blurClearTimer: ReturnType<typeof setTimeout> | null = null;
+  // A clear that is waiting for the pointer to be released rather than for a
+  // timer. Parked state: no timer is running, the next pointer event resumes it.
+  private _blurClearDeferred = false;
+  private _pointerIsDown = false;
+  private _lastPointerEventAt = 0;
 
   state = {
     init: (): TableHandleState => INITIAL_STATE,
@@ -96,15 +115,183 @@ class TableHandlePluginSpec implements PluginSpec<TableHandleState> {
       this.editor.off("selectionUpdate", this._onSelectionUpdate),
     );
 
+    // Drop the handles when the editor loses focus. Without this, a single
+    // click into any cell leaves `hoveringCell` set for the rest of the
+    // session (there is no time- or focus-based clear), which keeps the three
+    // floating handles — and their `autoUpdate` watchers — mounted forever.
+    this.editor.on("blur", this._onBlur);
+    this._disposables.push(() => this.editor.off("blur", this._onBlur));
+    this.editor.on("focus", this._onFocus);
+    this._disposables.push(() => this.editor.off("focus", this._onFocus));
+
+    // Pointer-down tracking for the blur clear. The flag is derived from
+    // `event.buttons` on EVERY pointer event rather than latched by
+    // pointerdown/pointerup: pragmatic-dnd drags via native HTML5 DnD, and
+    // during a native drag the browser stops delivering pointer events and
+    // WebKit is not reliable about `pointercancel`. So the flag must be
+    // self-healing (any later pointer event with no button pressed clears it)
+    // and backed by `dragend` / `lostpointercapture` / window blur.
+    if (typeof document !== "undefined") {
+      const pointerEvents = [
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+      ];
+      for (const type of pointerEvents) {
+        document.addEventListener(type, this._onDocumentPointerEvent, true);
+      }
+      document.addEventListener("dragend", this._releasePointer, true);
+      document.addEventListener("drop", this._releasePointer, true);
+      document.addEventListener("lostpointercapture", this._releasePointer, true);
+      if (typeof window !== "undefined") {
+        window.addEventListener("blur", this._releasePointer);
+      }
+      this._disposables.push(() => {
+        for (const type of pointerEvents) {
+          document.removeEventListener(type, this._onDocumentPointerEvent, true);
+        }
+        document.removeEventListener("dragend", this._releasePointer, true);
+        document.removeEventListener("drop", this._releasePointer, true);
+        document.removeEventListener(
+          "lostpointercapture",
+          this._releasePointer,
+          true,
+        );
+        if (typeof window !== "undefined") {
+          window.removeEventListener("blur", this._releasePointer);
+        }
+      });
+    }
+
     return {
       destroy: this.destroy,
     };
   };
 
   destroy = () => {
+    this._cancelBlurClear();
     this._previewController.destroy();
     this._dropIndicatorController.destroy();
     this._disposables.forEach((d) => d());
+  };
+
+  private _onDocumentPointerEvent = (event: Event) => {
+    // `buttons` is a bitmask of the CURRENTLY pressed buttons, so it is true
+    // state rather than an edge — a stale `true` heals on the next pointer
+    // event, whatever we missed in between.
+    const buttons = (event as PointerEvent).buttons;
+    this._pointerIsDown = typeof buttons === "number" ? buttons !== 0 : false;
+    this._lastPointerEventAt = Date.now();
+    this._resumeDeferredBlurClear();
+  };
+
+  private _releasePointer = () => {
+    this._pointerIsDown = false;
+    this._lastPointerEventAt = Date.now();
+    this._resumeDeferredBlurClear();
+  };
+
+  // Restart a clear that parked itself waiting for the pointer to come up.
+  private _resumeDeferredBlurClear = () => {
+    if (!this._blurClearDeferred) return;
+    if (this._pointerIsDown) return;
+    this._blurClearDeferred = false;
+    if (this._blurClearTimer === null) {
+      this._blurClearTimer = setTimeout(
+        this._flushBlurClear,
+        BLUR_CLEAR_DELAY_MS,
+      );
+    }
+  };
+
+  private _cancelBlurClear = () => {
+    this._blurClearDeferred = false;
+    if (this._blurClearTimer === null) return;
+    clearTimeout(this._blurClearTimer);
+    this._blurClearTimer = null;
+  };
+
+  /**
+   * Cancel a pending clear and, if the blur already cleared the handles
+   * (alt-tab away, come back), re-derive them from the caret's cell.
+   * `selectionUpdate` does not fire on refocus, so without this the handles
+   * stay gone until the next pointermove or arrow key. `_onSelectionUpdate`
+   * carries the right guards (editable / frozen / dragging / unchanged-cell)
+   * and is a no-op when the caret is not in a cell.
+   */
+  private _onFocus = () => {
+    this._cancelBlurClear();
+    this._onSelectionUpdate();
+  };
+
+  private _onBlur = () => {
+    this._cancelBlurClear();
+    this._blurClearTimer = setTimeout(this._flushBlurClear, BLUR_CLEAR_DELAY_MS);
+  };
+
+  /**
+   * Clear the handle state after a blur — but only if the blur really ended
+   * the interaction. We bail out when the editor got focus back, while a menu
+   * holds the handles (`frozen`) or a drag is in flight (`dragging`), and
+   * while a pointer is still down (a click-and-hold on a handle that has not
+   * become a drag yet). Same early-return-when-already-clear idiom as
+   * `_pointerMove`, so a blurred editor does not dispatch a transaction on
+   * every blur forever.
+   *
+   * The pointer wait TERMINATES BY CONSTRUCTION without ever cancelling a
+   * drag the user is about to start:
+   *
+   *  - pointer down and BACKED BY A RECENT EVENT (< STALE_POINTER_MS): the
+   *    interaction is live, so re-arm the timer and keep waiting.
+   *  - pointer down but the last pointer event is OLD: this is either a
+   *    motionless press-and-hold on a grip (the user deciding where to drop —
+   *    clearing here would unmount the `draggable` element and make the drag
+   *    impossible) or a flag left stuck by a native HTML5 drag that swallowed
+   *    the pointer events / a button released outside the window. The two are
+   *    indistinguishable from timestamps, so we do NEITHER: we PARK. No timer
+   *    is left running (no perpetual 250ms wakeup), and the next pointer event
+   *    resumes the clear — which is exactly when the hold ends and when a
+   *    stuck flag heals via `event.buttons`.
+   *
+   * So every path reaches a terminal state: cleared, cancelled by refocus or
+   * destroy, or parked with nothing running.
+   */
+  private _flushBlurClear = () => {
+    this._blurClearTimer = null;
+    if (this.editor.isDestroyed) {
+      this._blurClearDeferred = false;
+      return;
+    }
+    if (this.editor.isFocused) {
+      this._blurClearDeferred = false;
+      return;
+    }
+    if (this._pointerIsDown) {
+      if (Date.now() - this._lastPointerEventAt < STALE_POINTER_MS) {
+        this._blurClearTimer = setTimeout(
+          this._flushBlurClear,
+          BLUR_CLEAR_DELAY_MS,
+        );
+        return;
+      }
+      this._blurClearDeferred = true;
+      return;
+    }
+    this._blurClearDeferred = false;
+
+    const current = TableDndKey.getState(this.editor.state);
+    if (current?.frozen || current?.dragging) return;
+    if (
+      current?.hoveringCell == null &&
+      current?.tableNode == null &&
+      current?.tablePos == null
+    ) {
+      return;
+    }
+
+    this._hoveringCell = undefined;
+    this._dispatchMeta({ hoveringCell: null, tableNode: null, tablePos: null });
   };
 
   private _pointerDown = (view: EditorView, _event: PointerEvent): boolean => {
@@ -320,8 +507,6 @@ class TableHandlePluginSpec implements PluginSpec<TableHandleState> {
     this._dispatchMeta({ dragging: null });
   };
 }
-
-export type { TableHandlePluginSpec };
 
 // Resolve via plugin key, not a module singleton — survives StrictMode / HMR.
 export function getTableHandlePluginSpec(

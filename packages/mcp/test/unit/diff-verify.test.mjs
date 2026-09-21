@@ -114,7 +114,7 @@ test("summarizeChange treats a key-order-only difference as no change", () => {
 // (v) CRITICAL: a structural change that touches no text/marks — adding an
 // image node (images 0 -> 1) — must report changed:true and surface the
 // integrity delta in structure + summary, closing the verify blind spot for
-// insert_image / delete_node on structural nodes.
+// insertImage / deleteNode on structural nodes.
 // ---------------------------------------------------------------------------
 test("summarizeChange surfaces an image-count change (0->1)", () => {
   const before = doc(para(t("caption")));
@@ -127,6 +127,129 @@ test("summarizeChange surfaces an image-count change (0->1)", () => {
   assert.equal(r.changed, true, "an added image is a change");
   assert.deepEqual(r.structure.images, [0, 1]);
   assert.match(r.summary, /images 0→1/);
+});
+
+// ---------------------------------------------------------------------------
+// codeBlock canary: a vanished code block must surface structure.codeBlocks.
+// Scope note: this flags codeBlock-count drops on any future MCP WRITE path
+// (a buggy transform, a full markdown rewrite dropping a fence, etc.). It
+// would NOT have flagged the incident's causal write itself — anchoring the
+// mark left the count at 1→1; the deletion happened later during browser
+// materialization, which is not an MCP write.
+// ---------------------------------------------------------------------------
+test("summarizeChange surfaces a codeBlock-count change (1->0)", () => {
+  const before = doc(
+    para(t("intro")),
+    { type: "codeBlock", attrs: { language: "c" }, content: [t("int x = 1;")] },
+  );
+  const after = doc(para(t("intro")));
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "a vanished codeBlock is a change");
+  assert.deepEqual(r.structure.codeBlocks, [1, 0]);
+  assert.match(r.summary, /codeBlocks 1→0/);
+});
+
+// ---------------------------------------------------------------------------
+// #600: the guard is symmetric — an ADDED code block is surfaced exactly like
+// an added table/image, with no text delta of its own to lean on.
+// ---------------------------------------------------------------------------
+test("summarizeChange surfaces a codeBlock-count change (0->1)", () => {
+  const before = doc(para(t("intro")));
+  const after = doc(
+    para(t("intro")),
+    { type: "codeBlock", attrs: { language: "c" }, content: [t("int x = 1;")] },
+  );
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "an added codeBlock is a change");
+  assert.deepEqual(r.structure.codeBlocks, [0, 1]);
+  assert.match(r.summary, /codeBlocks 0→1/);
+});
+
+// ---------------------------------------------------------------------------
+// #600: no false positive — a doc whose code blocks all survive must not report
+// a codeBlocks entry (only CHANGED kinds appear in `structure`).
+// ---------------------------------------------------------------------------
+test("summarizeChange omits codeBlocks when every code block survives", () => {
+  const code = { type: "codeBlock", attrs: { language: "c" }, content: [t("int x = 1;")] };
+  const before = doc(para(t("intro")), code);
+  const after = doc(para(t("intro, edited")), JSON.parse(JSON.stringify(code)));
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "the prose edit is still a change");
+  // The code block survived, so no structural flag is raised for it.
+  assert.equal("codeBlocks" in (r.structure ?? {}), false);
+  assert.ok(!r.summary.includes("codeBlocks"));
+});
+
+// ---------------------------------------------------------------------------
+// #600 (issue item 5): a vanished drawio diagram — pure attrs, no prose, no
+// marks — must raise the same class of flag as a vanished table/codeBlock.
+// Without the counter the only trace is a 1-char leaf placeholder, so the loss
+// is unnamed and reads like a typo fix.
+// ---------------------------------------------------------------------------
+test("summarizeChange surfaces a vanished drawio diagram (drawio 1->0)", () => {
+  const before = doc(
+    para(t("architecture")),
+    { type: "drawio", attrs: { src: "/api/files/d.svg", attachmentId: "d1" } },
+  );
+  const after = doc(para(t("architecture")));
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "a vanished drawio diagram is a change");
+  assert.deepEqual(r.structure.drawio, [1, 0]);
+  assert.match(r.summary, /drawio 1→0/);
+  // No marks moved, and the atom contributes only a leaf placeholder to the text
+  // diff (textBetween renders an atom as a single " "), so the prose deltas can
+  // neither prove nor name the loss — the count is the only real signal.
+  assert.deepEqual(r.marks, {});
+  assert.equal(r.textInserted, 0);
+  assert.ok(r.textDeleted <= 1, "at most the atom's leaf placeholder");
+});
+
+// The excalidraw MIRROR of the test above. Without it the two kinds are locked
+// asymmetrically: dropping only "excalidraw" from countTypes would keep the
+// whole suite green while a lost excalidraw stays UNNAMED in the very report a
+// writing agent reads (`changed: false` / "no content change").
+test("summarizeChange surfaces a vanished excalidraw diagram (excalidraw 1->0)", () => {
+  const before = doc(
+    para(t("architecture")),
+    { type: "excalidraw", attrs: { src: "/api/files/e.svg", attachmentId: "e1" } },
+  );
+  const after = doc(para(t("architecture")));
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "a vanished excalidraw diagram is a change");
+  assert.deepEqual(r.structure.excalidraw, [1, 0]);
+  assert.match(r.summary, /excalidraw 1→0/);
+  assert.deepEqual(r.marks, {});
+  assert.equal(r.textInserted, 0);
+  assert.ok(r.textDeleted <= 1, "at most the atom's leaf placeholder");
+});
+
+// The central design claim of #600, asserted where it actually BITES:
+// `structure` includes a kind only when old !== new, so a single "diagrams"
+// bucket would see a drawio->excalidraw swap as 1 -> 1 and omit it ENTIRELY —
+// `changed:false`, "no content change" — while a diagram was destroyed. Two
+// keys name both sides. (diff.test.mjs pins this against diffDocs.integrity;
+// this pins it against the VerifyReport the writing agent reads.)
+test("summarizeChange names a drawio->excalidraw swap (a bucket would report nothing)", () => {
+  const before = doc(
+    para(t("architecture")),
+    { type: "drawio", attrs: { src: "/api/files/d.svg", attachmentId: "d1" } },
+  );
+  const after = doc(
+    para(t("architecture")),
+    { type: "excalidraw", attrs: { src: "/api/files/e.svg", attachmentId: "e1" } },
+  );
+  const r = summarizeChange(before, after);
+
+  assert.equal(r.changed, true, "a destroyed diagram is a change");
+  assert.deepEqual(r.structure.drawio, [1, 0]);
+  assert.deepEqual(r.structure.excalidraw, [0, 1]);
+  assert.match(r.summary, /drawio 1→0/);
+  assert.match(r.summary, /excalidraw 0→1/);
 });
 
 // ---------------------------------------------------------------------------

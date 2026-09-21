@@ -20,14 +20,18 @@ export interface IWorkspace {
   plan?: string;
   enforceMfa?: boolean;
   aiSearch?: boolean;
-  generativeAi?: boolean;
   disablePublicSharing?: boolean;
   mcpEnabled?: boolean;
   aiChat?: boolean;
   aiDictation?: boolean;
   aiDictationStreaming?: boolean;
   aiPublicShareAssistant?: boolean;
+  // Write-only field for updateWorkspace({ autonomousRuns }). Read state lives at
+  // settings.ai.autonomousRuns.
+  autonomousRuns?: boolean;
   trashRetentionDays?: number;
+  // Default lifetime (HOURS) for new temporary notes; frozen per-note at creation.
+  temporaryNoteHours?: number;
   restrictApiToAdmins?: boolean;
   allowMemberTemplates?: boolean;
   isScimEnabled?: boolean;
@@ -59,16 +63,29 @@ export interface IWorkspaceApiSettings {
 
 export interface IWorkspaceAiSettings {
   search?: boolean;
-  generative?: boolean;
   mcp?: boolean;
   chat?: boolean;
   dictation?: boolean;
   dictationStreaming?: boolean;
   publicShareAssistant?: boolean;
+  // #184: detached agent runs (a run survives a browser disconnect and can be
+  // reconnected to / live-followed on reopen). Gates the run-reconnect polling.
+  autonomousRuns?: boolean;
 }
 
 export interface IWorkspaceSharingSettings {
   disabled?: boolean;
+}
+
+// Response of `POST /workspace/entitlements`. Kept loose (extra fields tolerated)
+// since it also carries license tier/feature data the client doesn't model here.
+export interface IWorkspaceEntitlements {
+  cloud: boolean;
+  tier: string;
+  features: string[];
+  // #686 kill-switch (MCP_PERSONAL_SERVERS_ENABLED). When false, the personal
+  // external MCP servers page is hidden/disabled. The server enforces it too.
+  mcpPersonalServersEnabled: boolean;
 }
 
 export interface IWorkspaceTemplateSettings {

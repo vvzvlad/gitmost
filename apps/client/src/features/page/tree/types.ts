@@ -9,5 +9,7 @@ export type SpaceTreeNode = {
   hasChildren: boolean;
   canEdit?: boolean;
   isTemplate?: boolean;
+  // Death-timer deadline. null/absent => permanent; ISO string => temporary note.
+  temporaryExpiresAt?: string | null;
   children: SpaceTreeNode[];
 };

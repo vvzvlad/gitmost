@@ -203,14 +203,16 @@ test("a reply creates without selection or anchoring and is stored as type 'page
     "reply body",
     "inline",
     undefined,
-    "parent-123",
+    // #437: a parentCommentId must be a full canonical UUID.
+    "019f499a-9f8c-7d68-b7be-ce100d7c6c56",
   );
 
   assert.equal(result.success, true, "a reply must resolve successfully");
   assert.ok(createPayload, "/comments/create must have been called");
   assert.equal(
     createPayload.parentCommentId,
-    "parent-123",
+    // #437: a parentCommentId must be a full canonical UUID.
+    "019f499a-9f8c-7d68-b7be-ce100d7c6c56",
     "the reply payload must carry the parentCommentId",
   );
   assert.equal(
@@ -228,4 +230,599 @@ test("a reply creates without selection or anchoring and is stored as type 'page
     0,
     "a reply must skip the pre-check/anchoring (no /pages/info read)",
   );
+});
+
+// -----------------------------------------------------------------------------
+// 4) suggestedText + a DUPLICATE selection is refused BEFORE creating anything:
+//    a suggestion must anchor to a unique location, so >=2 occurrences throws the
+//    ambiguity error (the /pages/info pre-check short-circuits before create).
+// -----------------------------------------------------------------------------
+test("suggestedText with an ambiguous selection is refused before creating", async () => {
+  let createCalls = 0;
+  let infoCalls = 0;
+
+  const { baseURL } = await spawn(async (req, res) => {
+    await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      infoCalls++;
+      // "target" appears in two blocks -> ambiguous for a suggestion.
+      sendJson(res, 200, {
+        data: {
+          id: "page-1",
+          content: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "first target here" }] },
+              { type: "paragraph", content: [{ type: "text", text: "second target here" }] },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createCalls++;
+      sendJson(res, 200, { data: { id: "should-not-happen" } });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+
+  await assert.rejects(
+    () =>
+      client.createComment(
+        "page-1",
+        "body",
+        "inline",
+        "target",
+        undefined,
+        "TARGET",
+      ),
+    /ambiguous/i,
+    "an ambiguous suggestion selection must reject with the ambiguity error",
+  );
+  assert.ok(infoCalls >= 1, "the pre-check must read the page via /pages/info");
+  assert.equal(
+    createCalls,
+    0,
+    "/comments/create must NEVER be called for an ambiguous suggestion",
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 5) suggestedText on a reply is refused immediately (before any HTTP).
+// -----------------------------------------------------------------------------
+test("suggestedText on a reply is rejected", async () => {
+  let anyCall = 0;
+  const { baseURL } = await spawn(async (req, res) => {
+    await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    anyCall++;
+    sendJson(res, 200, { data: { id: "x" } });
+  });
+
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+
+  await assert.rejects(
+    () =>
+      client.createComment(
+        "page-1",
+        "body",
+        "inline",
+        undefined,
+        // #437: use a valid full UUID so the reply+suggestion rejection fires
+        // (not the id-shape guard).
+        "019f499a-9f8c-7d68-b7be-ce100d7c6c56",
+        "replacement",
+      ),
+    /reply/i,
+    "suggestedText on a reply must be rejected",
+  );
+  assert.equal(anyCall, 0, "no create/info call for a rejected reply suggestion");
+});
+
+// -----------------------------------------------------------------------------
+// 6) suggestedText without a selection is refused immediately.
+// -----------------------------------------------------------------------------
+test("suggestedText without a selection is rejected", async () => {
+  const { baseURL } = await spawn(async (req, res) => {
+    await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    sendJson(res, 200, { data: { id: "x" } });
+  });
+
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+
+  await assert.rejects(
+    () =>
+      client.createComment(
+        "page-1",
+        "body",
+        "inline",
+        undefined,
+        undefined,
+        "replacement",
+      ),
+    /selection/i,
+    "suggestedText without a selection must be rejected",
+  );
+});
+
+// -----------------------------------------------------------------------------
+// 7) suggestedText + a UNIQUE selection succeeds: the pre-check passes, the
+//    create payload carries suggestedText, and the live anchoring step (stubbed
+//    via the mutatePage seam) writes the comment mark exactly once.
+// -----------------------------------------------------------------------------
+test("suggestedText with a unique selection succeeds and forwards the payload", async () => {
+  let createPayload = null;
+
+  const { baseURL } = await spawn(async (req, res) => {
+    const raw = await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      // "brave" is unique in the page.
+      sendJson(res, 200, {
+        data: {
+          id: "11111111-1111-1111-1111-111111111111",
+          content: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "Hello brave world" }] },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createPayload = JSON.parse(raw);
+      sendJson(res, 200, {
+        data: {
+          id: "cmt-ok-1",
+          content: createPayload.content,
+          selection: createPayload.selection,
+          suggestedText: createPayload.suggestedText,
+          type: createPayload.type,
+        },
+      });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  // Subclass to stub the collab write seam: no live Hocuspocus socket, but the
+  // wrapper's uniqueness gate + applyAnchorInDoc still run against `doc`.
+  class TestClient extends DocmostClient {
+    async getCollabTokenWithReauth() {
+      return "collab-token";
+    }
+    async resolvePageId(pageId) {
+      return "11111111-1111-1111-1111-111111111111";
+    }
+    async mutatePage(pageId, collabToken, apiUrl, transform) {
+      const doc = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Hello brave world" }] },
+        ],
+      };
+      const out = transform(doc);
+      return { doc: out, verify: { ok: true } };
+    }
+  }
+
+  const client = new TestClient(baseURL, "user@example.com", "pw");
+
+  const result = await client.createComment(
+    "11111111-1111-1111-1111-111111111111",
+    "please rename",
+    "inline",
+    "brave",
+    undefined,
+    "bold",
+  );
+
+  assert.equal(result.success, true, "a unique suggestion must resolve");
+  assert.equal(result.anchored, true, "the comment must be anchored");
+  assert.ok(createPayload, "/comments/create must have been called");
+  assert.equal(
+    createPayload.suggestedText,
+    "bold",
+    "the create payload must carry suggestedText for a top-level inline comment",
+  );
+  assert.equal(createPayload.selection, "brave");
+  assert.equal(result.data.suggestedText, "bold", "filterComment surfaces suggestedText");
+});
+
+// -----------------------------------------------------------------------------
+// 8) suggestedText where the DOC has TYPOGRAPHIC text and the agent selection is
+//    ASCII: the stored selection sent to /comments/create MUST be the doc's RAW
+//    typographic substring (what the mark covers), NOT the agent's ASCII input.
+//    This is the F1 contract that makes "Apply" succeed instead of a spurious
+//    409 (apply compares the stored selection to the marked doc text strictly).
+// -----------------------------------------------------------------------------
+test("suggestedText: the stored selection is the doc's RAW typographic substring, not the ASCII input", async () => {
+  let createPayload = null;
+
+  const { baseURL } = await spawn(async (req, res) => {
+    const raw = await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      // The doc holds SMART quotes; the agent will select the ASCII form.
+      sendJson(res, 200, {
+        data: {
+          id: "22222222-2222-2222-2222-222222222222",
+          content: {
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "he said “hello” loudly" }],
+              },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createPayload = JSON.parse(raw);
+      sendJson(res, 200, {
+        data: {
+          id: "cmt-typo-1",
+          content: createPayload.content,
+          selection: createPayload.selection,
+          suggestedText: createPayload.suggestedText,
+          type: createPayload.type,
+        },
+      });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  class TestClient extends DocmostClient {
+    async getCollabTokenWithReauth() {
+      return "collab-token";
+    }
+    async resolvePageId() {
+      return "22222222-2222-2222-2222-222222222222";
+    }
+    async mutatePage(pageId, collabToken, apiUrl, transform) {
+      const doc = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "he said “hello” loudly" }],
+          },
+        ],
+      };
+      const out = transform(doc);
+      return { doc: out, verify: { ok: true } };
+    }
+  }
+
+  const client = new TestClient(baseURL, "user@example.com", "pw");
+
+  const result = await client.createComment(
+    "22222222-2222-2222-2222-222222222222",
+    "please change",
+    "inline",
+    '"hello"', // ASCII quotes — the doc has smart quotes
+    undefined,
+    "goodbye",
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.anchored, true);
+  assert.ok(createPayload, "/comments/create must have been called");
+  assert.equal(
+    createPayload.selection,
+    "“hello”",
+    "the stored selection must be the doc's RAW typographic substring, not the ASCII input",
+  );
+  assert.equal(createPayload.suggestedText, "goodbye");
+});
+
+// -----------------------------------------------------------------------------
+// 8b) #496: the DEBOUNCED REST snapshot (pages/info) DIFFERS from the LIVE collab
+//     doc (mutatePage) — the doc moved on in the debounce window. The stored
+//     selection is captured from the snapshot at create time, but the mark is set
+//     in the live doc, so apply would 409 forever. After anchoring, the client
+//     re-reads the RAW substring under the mark from the LIVE doc and POSTs it to
+//     /comments/resync-suggestion-anchor so the stored expectedText matches.
+// -----------------------------------------------------------------------------
+test("suggestion: re-syncs the stored selection to the LIVE doc substring when the REST snapshot lagged", async () => {
+  let createPayload = null;
+  let resyncPayload = null;
+
+  const { baseURL } = await spawn(async (req, res) => {
+    const raw = await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      // DEBOUNCED snapshot: ASCII quotes (stale — the live doc has since been
+      // typographically corrected).
+      sendJson(res, 200, {
+        data: {
+          id: "33333333-3333-3333-3333-333333333333",
+          content: {
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: 'he said "hello" loudly' }],
+              },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createPayload = JSON.parse(raw);
+      sendJson(res, 200, {
+        data: {
+          id: "cmt-resync-1",
+          content: createPayload.content,
+          selection: createPayload.selection,
+          suggestedText: createPayload.suggestedText,
+          type: createPayload.type,
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/resync-suggestion-anchor") {
+      resyncPayload = JSON.parse(raw);
+      sendJson(res, 200, { data: { id: "cmt-resync-1" } });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  class TestClient extends DocmostClient {
+    async getCollabTokenWithReauth() {
+      return "collab-token";
+    }
+    async resolvePageId() {
+      return "33333333-3333-3333-3333-333333333333";
+    }
+    async mutatePage(pageId, collabToken, apiUrl, transform) {
+      // LIVE doc: SMART quotes (what the mark is actually set over).
+      const doc = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "he said “hello” loudly" }],
+          },
+        ],
+      };
+      const out = transform(doc);
+      return { doc: out, verify: { ok: true } };
+    }
+  }
+
+  const client = new TestClient(baseURL, "user@example.com", "pw");
+
+  const result = await client.createComment(
+    "33333333-3333-3333-3333-333333333333",
+    "please change",
+    "inline",
+    '"hello"', // ASCII quotes
+    undefined,
+    "goodbye",
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.anchored, true);
+  // Create stored the STALE snapshot substring (ASCII quotes).
+  assert.equal(createPayload.selection, '"hello"');
+  // …then the client re-synced to the LIVE marked substring (smart quotes).
+  assert.ok(resyncPayload, "/comments/resync-suggestion-anchor must be called");
+  assert.equal(resyncPayload.commentId, "cmt-resync-1");
+  assert.equal(resyncPayload.selection, "“hello”");
+  // The returned comment reflects the corrected anchor.
+  assert.equal(result.data.selection, "“hello”");
+});
+
+// -----------------------------------------------------------------------------
+// 8c) #496: when the REST snapshot and the LIVE doc AGREE, no resync round-trip
+//     is made (the common case must stay a single write).
+// -----------------------------------------------------------------------------
+test("suggestion: no resync call when the snapshot already matches the live doc", async () => {
+  let resyncCalls = 0;
+
+  const { baseURL } = await spawn(async (req, res) => {
+    const raw = await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      sendJson(res, 200, {
+        data: {
+          id: "44444444-4444-4444-4444-444444444444",
+          content: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "Hello brave world" }] },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      const p = JSON.parse(raw);
+      sendJson(res, 200, {
+        data: { id: "cmt-nosync-1", content: p.content, selection: p.selection, suggestedText: p.suggestedText, type: p.type },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/resync-suggestion-anchor") {
+      resyncCalls++;
+      sendJson(res, 200, { data: {} });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  class TestClient extends DocmostClient {
+    async getCollabTokenWithReauth() {
+      return "collab-token";
+    }
+    async resolvePageId() {
+      return "44444444-4444-4444-4444-444444444444";
+    }
+    async mutatePage(pageId, collabToken, apiUrl, transform) {
+      const doc = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Hello brave world" }] },
+        ],
+      };
+      const out = transform(doc);
+      return { doc: out, verify: { ok: true } };
+    }
+  }
+
+  const client = new TestClient(baseURL, "user@example.com", "pw");
+  const result = await client.createComment(
+    "44444444-4444-4444-4444-444444444444",
+    "rename",
+    "inline",
+    "brave",
+    undefined,
+    "bold",
+  );
+
+  assert.equal(result.anchored, true);
+  assert.equal(resyncCalls, 0, "matching snapshot must NOT trigger a resync round-trip");
+});
+
+// -----------------------------------------------------------------------------
+// 8) #408: a not-found selection error QUOTES the closest block text so the
+//    model can self-correct instead of blind-retrying.
+// -----------------------------------------------------------------------------
+test("a not-found selection error includes a 'Closest block text' hint", async () => {
+  let createCalls = 0;
+  const { baseURL } = await spawn(async (req, res) => {
+    await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      sendJson(res, 200, {
+        data: {
+          id: "page-1",
+          content: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "The quick brown fox jumps" }] },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createCalls++;
+      sendJson(res, 200, { data: { id: "should-not-happen" } });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+  await assert.rejects(
+    () => client.createComment("page-1", "body", "inline", "quick brown cat"),
+    /Closest block text: "The quick brown fox jumps"/,
+    "a not-found selection must quote the closest block text",
+  );
+  assert.equal(createCalls, 0, "/comments/create must NOT be called on a miss");
+});
+
+// -----------------------------------------------------------------------------
+// 9) #408: a selection that straddles two blocks gets the explicit
+//    "spans multiple blocks" message instead of a bare not-found.
+// -----------------------------------------------------------------------------
+test("a selection spanning multiple blocks gets the explicit spans-multiple-blocks message", async () => {
+  let createCalls = 0;
+  const { baseURL } = await spawn(async (req, res) => {
+    await readBody(req);
+    if (req.url === "/api/auth/login") {
+      sendJson(res, 200, { success: true }, {
+        "Set-Cookie": "authToken=t; Path=/; HttpOnly",
+      });
+      return;
+    }
+    if (req.url === "/api/pages/info") {
+      sendJson(res, 200, {
+        data: {
+          id: "page-1",
+          content: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "the quick brown" }] },
+              { type: "paragraph", content: [{ type: "text", text: "fox jumps over" }] },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (req.url === "/api/comments/create") {
+      createCalls++;
+      sendJson(res, 200, { data: { id: "should-not-happen" } });
+      return;
+    }
+    sendJson(res, 404, { message: "not found" });
+  });
+
+  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+  await assert.rejects(
+    () => client.createComment("page-1", "body", "inline", "brown fox"),
+    /spans multiple blocks/,
+    "a cross-block selection must report the spans-multiple-blocks hint",
+  );
+  assert.equal(createCalls, 0, "/comments/create must NOT be called on a miss");
 });

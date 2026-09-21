@@ -6,7 +6,7 @@ import {
   insertTableRow,
   deleteTableRow,
   updateTableCell,
-} from "../../build/lib/node-ops.js";
+} from "@docmost/prosemirror-markdown";
 
 // ---------------------------------------------------------------------------
 // Builders. Tables/rows/cells carry NO attrs.id — only the paragraph inside a
@@ -155,7 +155,7 @@ test("insertTableRow at index 0 inserts before the header and pads to 3 cells", 
 test("insertTableRow throws when given more cells than columns", () => {
   assert.throws(
     () => insertTableRow(makeDoc(), "#1", ["a", "b", "c", "d"]),
-    /table_insert_row: got 4 cell\(s\) but the table has 3 column\(s\)/,
+    /tableInsertRow: got 4 cell\(s\) but the table has 3 column\(s\)/,
   );
 });
 
@@ -232,7 +232,7 @@ test("insertTableRow uses the max column count across all rows (ragged table)", 
   // ...but 4 cells exceed the widest row and throw.
   assert.throws(
     () => insertTableRow(makeRaggedDoc(), "#0", ["a", "b", "c", "d"]),
-    /table_insert_row: got 4 cell\(s\) but the table has 3 column\(s\)/,
+    /tableInsertRow: got 4 cell\(s\) but the table has 3 column\(s\)/,
   );
 });
 
@@ -286,7 +286,7 @@ test("deleteTableRow removes the 3rd row -> rows:2", () => {
 test("deleteTableRow out-of-range index throws", () => {
   assert.throws(
     () => deleteTableRow(makeDoc(), "#1", 9),
-    /table_delete_row: row index 9 out of range \(table has 3 row\(s\)\)/,
+    /tableDeleteRow: row index 9 out of range \(table has 3 row\(s\)\)/,
   );
 });
 
@@ -329,10 +329,10 @@ test("updateTableCell sets cell [1,1] to 'Z' and preserves the paragraph id", ()
 test("updateTableCell out-of-range row/col throws", () => {
   assert.throws(
     () => updateTableCell(makeDoc(), "#1", 9, 0, "x"),
-    /table_update_cell: cell \[9,0\] out of range/,
+    /tableUpdateCell: cell \[9,0\] out of range/,
   );
   assert.throws(
     () => updateTableCell(makeDoc(), "#1", 0, 9, "x"),
-    /table_update_cell: cell \[0,9\] out of range/,
+    /tableUpdateCell: cell \[0,9\] out of range/,
   );
 });

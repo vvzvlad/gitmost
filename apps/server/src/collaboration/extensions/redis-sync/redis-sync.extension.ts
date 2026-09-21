@@ -22,6 +22,7 @@ import {
   RSAMessagePong,
   RSAMessageProxy,
   RSAMessageUnload,
+  ReadLiveResult,
   SerializedHTTPRequest,
   Unpack,
 } from './redis-sync.types';
@@ -47,6 +48,9 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
   private readonly msgChannel: string;
   private readonly serverId: ServerId;
   private readonly customEventTTL: number;
+  // #647 refinement C — short per-call timeout for the read probe, separate from
+  // the 30s write `customEventTTL`.
+  private readonly readProbeTTL: number;
   private readonly lockTTL: number;
   private instance!: Hocuspocus;
   private readonly customEvents: TCE;
@@ -65,6 +69,7 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
       prefix,
       customEvents,
       customEventTTL,
+      readProbeTTL,
     } = configuration;
     this.pub = redis.duplicate();
     this.sub = redis.duplicate();
@@ -73,6 +78,7 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
     this.serverId = serverId;
     this.lockTTL = lockTTL ?? 10_000;
     this.customEventTTL = customEventTTL ?? 30_000;
+    this.readProbeTTL = readProbeTTL ?? 1_500;
     this.prefix = prefix ?? 'collab';
     this.lockPrefix = `${this.prefix}Lock`;
     this.msgChannel = `${this.prefix}Msg`;
@@ -220,6 +226,13 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
   };
 
   async maintainLock(documentName: string) {
+    // #348 — clear any existing timer for this document before installing a new
+    // one. Without this, a second maintainLock for the same document (a
+    // reload-without-unload) overwrites this.locks[documentName] and leaks the
+    // previous interval, which keeps firing SET forever with no way to clear it.
+    if (this.locks[documentName]) {
+      clearInterval(this.locks[documentName]);
+    }
     this.locks[documentName] = setInterval(() => {
       this.pub.set(
         this.getKey(documentName),
@@ -283,6 +296,104 @@ export class RedisSyncExtension<TCE extends CustomEvents> implements Extension {
     }
     // This server owns the document, but hocuspocus hasn't loaded it yet
     return this.handleEventLocally(eventName, documentName, payload);
+  }
+
+  /**
+   * #647 refinement B — the `readLiveIfLoaded` primitive #654 gates on. Reads the
+   * live (fully hydrated) content of a document IF it is already loaded on SOME
+   * instance, WITHOUT force-loading it and WITHOUT claiming ownership.
+   *
+   * Contract (see redis-sync.types `ReadLiveResult` + collaboration.handler
+   * `readLiveContent`):
+   *  1. Caller passes the resolved `page.<uuid>` documentName (never a slug).
+   *  2. No force-load — a not-loaded doc returns `{loaded:false}`, never triggers
+   *     a DB hydrate.
+   *  3. Non-claiming — routing uses a plain `GET` of the lock key, NEVER the
+   *     `SET … NX` claim path (`getOrClaimLock`). A pure read on a non-owner does
+   *     not take ownership / cause misrouting.
+   *  4. Distinguishes `{loaded:false}` (no owner / not hydrated) from
+   *     `{loaded:false, unreachable:true}` (owner exists but the probe timed out).
+   *  5. `loaded:true ⇒ content` is the fully hydrated live doc (enforced by the
+   *     owner-side handler reading only docs already in `documents`).
+   *  6. Its OWN short timeout (`readProbeTTL`, per-call overridable), separate
+   *     from the 30s write `customEventTTL`.
+   */
+  async readLiveIfLoaded(
+    documentName: string,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<ReadLiveResult> {
+    // Loaded on THIS instance → read it directly (no lock touched, no load).
+    if (this.instance.documents.has(documentName)) {
+      return this.handleEventLocally(
+        'readLiveContent' as Extract<keyof TCE, string>,
+        documentName,
+        undefined,
+      ) as Promise<ReadLiveResult>;
+    }
+
+    // Not loaded here. Probe ownership with a NON-CLAIMING plain GET — never
+    // `SET … NX` (that would claim the doc and misroute future writes, #647 B2).
+    const owner = await this.pub.get(this.getKey(documentName));
+
+    // No owner recorded, or WE hold the lock but haven't hydrated the doc: it is
+    // not loaded anywhere we can read without forcing a load. `{loaded:false}`.
+    if (!owner || owner === this.serverId) {
+      return { loaded: false };
+    }
+
+    // Another instance owns it. Route a `readLiveContent` probe to that instance
+    // over the bridge, with the SHORT read timeout (not the 30s write TTL). The
+    // remote runs the same non-force-loading handler; a timeout means the owner is
+    // UNREACHABLE (distinct from not-loaded — contract point 4).
+    const timeoutMs = opts.timeoutMs ?? this.readProbeTTL;
+    try {
+      const res = await this.sendRemoteEvent(
+        'readLiveContent',
+        documentName,
+        undefined,
+        owner,
+        timeoutMs,
+      );
+      return res as ReadLiveResult;
+    } catch {
+      return { loaded: false, unreachable: true };
+    }
+  }
+
+  /**
+   * #647 — publish a custom event to a specific owner instance and await its
+   * reply with a caller-supplied timeout. Factored out of `handleEvent` so the
+   * read probe can use its own short TTL instead of the 30s write `customEventTTL`.
+   */
+  private sendRemoteEvent(
+    eventName: string,
+    documentName: string,
+    payload: unknown,
+    proxyTo: ServerId,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    ++this.replyIdCounter;
+    const replyId = this.replyIdCounter;
+    const proxyMessage: RSAMessageCustomEventStart = {
+      eventName,
+      documentName,
+      payload,
+      replyTo: `${this.msgChannel}:${this.serverId}`,
+      replyId,
+      type: 'customEventStart',
+    };
+    this.pub.publish(`${this.msgChannel}:${proxyTo}`, this.pack(proxyMessage));
+    // Plain `new Promise` (not `Promise.withResolvers`, which is Node 22+) so the
+    // read probe is portable across the server's supported runtimes.
+    return new Promise<unknown>((resolve, reject) => {
+      this.pendingReplies[replyId] = resolve;
+      setTimeout(() => {
+        // Drop the pending resolver so a late reply cannot leak or resolve a
+        // reused id; the awaiting caller has already gone down the reject path.
+        delete this.pendingReplies[replyId];
+        reject(new Error('TIMEOUT'));
+      }, timeoutMs);
+    });
   }
 
   async lockDocument(documentName: string) {

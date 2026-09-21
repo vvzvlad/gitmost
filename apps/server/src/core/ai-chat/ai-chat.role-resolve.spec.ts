@@ -46,12 +46,14 @@ describe('AiChatService.resolveRoleForRequest', () => {
       {} as never, // ai
       aiChatRepo as never,
       {} as never, // aiChatMessageRepo
+      {} as never, // aiChatPageSnapshotRepo
       {} as never, // aiSettings
       {} as never, // tools
       {} as never, // mcpClients
       aiAgentRoleRepo as never,
       {} as never, // pageRepo
       {} as never, // pageAccess
+      {} as never, // environment
     );
     return { service, aiChatRepo, aiAgentRoleRepo };
   }

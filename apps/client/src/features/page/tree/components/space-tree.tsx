@@ -15,7 +15,7 @@ import { notifications } from "@mantine/notifications";
 import {
   fetchAllAncestorChildren,
   useGetRootSidebarPagesQuery,
-  usePageQuery,
+  usePageMetaQuery,
 } from "@/features/page/queries/page-query.ts";
 import classes from "@/features/page/tree/styles/tree.module.css";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
@@ -30,6 +30,7 @@ import {
   openBranches,
   closeIds,
   loadedOpenBranchIds,
+  pruneCollapsedChildren,
 } from "@/features/page/tree/utils/utils.ts";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
@@ -41,7 +42,13 @@ import {
 import { IPage } from "@/features/page/types/page.types.ts";
 import { extractPageSlugId } from "@/lib";
 import { isCompactPageTreeEnabled } from "@/lib/config.ts";
-import { DocTree, ROW_HEIGHT_COMPACT, ROW_HEIGHT_STANDARD } from "./doc-tree";
+import {
+  DocTree,
+  ROW_HEIGHT_COMPACT,
+  ROW_HEIGHT_STANDARD,
+  TREE_ICON_SIZE_COMPACT,
+  TREE_ICON_SIZE_STANDARD,
+} from "./doc-tree";
 import { SpaceTreeRow } from "./space-tree-row";
 
 interface SpaceTreeProps {
@@ -75,7 +82,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const spaceIdRef = useRef(spaceId);
   spaceIdRef.current = spaceId;
-  const { data: currentPage } = usePageQuery({
+  const { data: currentPage } = usePageMetaQuery({
     pageId: extractPageSlugId(pageSlug),
   });
 
@@ -199,55 +206,93 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
   const openIdsRef = useRef(openIds);
   openIdsRef.current = openIds;
 
-  // Reconnect refresh (#159 #8): on a socket reconnect, re-fetch and reconcile
-  // the children of every currently-open, already-loaded branch of THIS space,
+  // Boot-cache hygiene (#159 #8): the localStorage-hydrated tree carries the
+  // children of every branch ever expanded, including ones now COLLAPSED. Their
+  // first expand would skip the lazy-load and render stale children (a
+  // rename/move/delete missed while offline). Drop the cached children of every
+  // COLLAPSED branch ONCE at mount so its first expand fetches fresh via
+  // handleToggle — exactly as it did before the tree was cached. OPEN branches
+  // keep their children and are refreshed by refreshOpenBranches instead, so
+  // this runs before any expand and never double-fetches an open branch.
+  const prunedBootCacheRef = useRef(false);
+  useEffect(() => {
+    if (prunedBootCacheRef.current) return;
+    prunedBootCacheRef.current = true;
+    setData((prev) => pruneCollapsedChildren(prev, openIdsRef.current));
+  }, [setData]);
+
+  // Re-fetch and reconcile the children of every currently-open, already-loaded
+  // branch of THIS space. Shared by the socket reconnect handler and the
+  // post-load cache refresh below. The ROOT level is reconciled separately by
+  // the root-query refetch + mergeRootTrees; an UNLOADED branch is skipped
+  // (lazy-load fetches it fresh on expand). Reads refs so it always sees the
+  // latest tree/open-state/space without re-creating the callback.
+  const refreshOpenBranches = useCallback(async () => {
+    const effectSpaceId = spaceIdRef.current;
+    const branchIds = loadedOpenBranchIds(
+      dataRef.current.filter((n) => n?.spaceId === effectSpaceId),
+      openIdsRef.current,
+    );
+    if (branchIds.length === 0) return;
+    for (const id of branchIds) {
+      try {
+        // `fresh: true` bypasses the 30-min sidebar-pages cache so the
+        // reconcile sees the server's CURRENT children (handler-order
+        // independent — no reliance on the global reconnect invalidation).
+        const fresh = await fetchAllAncestorChildren(
+          { pageId: id, spaceId: effectSpaceId },
+          { fresh: true },
+        );
+        if (spaceIdRef.current !== effectSpaceId) return; // space switched
+        setData((prev) => treeModel.reconcileChildren(prev, id, fresh));
+      } catch (err) {
+        console.error("[tree] open branch refresh failed", err);
+      }
+    }
+  }, [setData]);
+
+  // Reconnect refresh (#159 #8): on a socket reconnect, refresh open branches
   // so a move/rename/delete that happened INSIDE a loaded branch while events
   // were missed (laptop sleep / wifi gap) is reflected instead of left stale.
-  // The ROOT level is reconciled separately by the root-query refetch +
-  // mergeRootTrees; an UNLOADED branch is skipped (lazy-load fetches it fresh on
-  // expand). No first-connect guard is needed: space-tree usually mounts AFTER
-  // the initial connect, so every `connect` it sees is a reconnect; the rare
+  // No first-connect guard is needed: space-tree usually mounts AFTER the
+  // initial connect, so every `connect` it sees is a reconnect; the rare
   // initial-connect case has an empty tree, so the refresh is a harmless no-op.
   useEffect(() => {
     if (!socket) return;
-    const onConnect = async () => {
-      const effectSpaceId = spaceIdRef.current;
-      const branchIds = loadedOpenBranchIds(
-        dataRef.current.filter((n) => n?.spaceId === effectSpaceId),
-        openIdsRef.current,
-      );
-      if (branchIds.length === 0) return;
-      for (const id of branchIds) {
-        try {
-          // `fresh: true` bypasses the 30-min sidebar-pages cache so the
-          // reconcile sees the server's CURRENT children (handler-order
-          // independent — no reliance on the global reconnect invalidation).
-          const fresh = await fetchAllAncestorChildren(
-            { pageId: id, spaceId: effectSpaceId },
-            { fresh: true },
-          );
-          if (spaceIdRef.current !== effectSpaceId) return; // space switched
-          setData((prev) => treeModel.reconcileChildren(prev, id, fresh));
-        } catch (err) {
-          console.error("[tree] reconnect branch refresh failed", err);
-        }
-      }
+    const onConnect = () => {
+      refreshOpenBranches();
     };
     socket.on("connect", onConnect);
     return () => {
       socket.off("connect", onConnect);
     };
-  }, [socket, setData]);
+  }, [socket, refreshOpenBranches]);
+
+  // Post-load cache refresh: the sidebar paints instantly from the
+  // localStorage-cached tree, so children of open branches may be stale. Once
+  // the server root set has been merged for this space (isDataLoaded flips
+  // true), refresh every open, already-loaded branch ONCE per space per mount.
+  // dataRef.current is already up to date here: refs are assigned during
+  // render, and this effect runs after the merge-triggered re-render commit.
+  const refreshedSpacesRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    if (refreshedSpacesRef.current.has(spaceId)) return;
+    refreshedSpacesRef.current.add(spaceId);
+    refreshOpenBranches();
+  }, [isDataLoaded, spaceId, refreshOpenBranches]);
 
   const handleToggle = useCallback(
     async (id: string, isOpen: boolean) => {
       setOpenTreeNodes((prev) => ({ ...prev, [id]: isOpen }));
       if (isOpen) {
         const node = treeModel.find(data, id) as SpaceTreeNode | null;
-        if (
-          node?.hasChildren &&
-          (!node.children || node.children.length === 0)
-        ) {
+        // Same "unloaded branch" predicate the realtime insert paths use
+        // (`isUnloadedBranch`) so the lazy-load gate and the realtime inserts
+        // (`insertByPosition` / `placeByPosition`) can never disagree about what
+        // counts as unloaded (#525). Note: local raw `insert` (DnD/create-page)
+        // does not yet route through it — see #525 follow-up.
+        if (treeModel.isUnloadedBranch(node)) {
           const fetched = await fetchAllAncestorChildren({
             pageId: id,
             spaceId: node.spaceId,
@@ -318,9 +363,13 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
   // defeating memo(DocTreeRow).
   const renderRow = useCallback(
     (rowProps: Parameters<typeof SpaceTreeRow>[0]) => (
-      <SpaceTreeRow {...rowProps} readOnly={readOnly} />
+      <SpaceTreeRow
+        {...rowProps}
+        readOnly={readOnly}
+        iconSize={compactTree ? TREE_ICON_SIZE_COMPACT : TREE_ICON_SIZE_STANDARD}
+      />
     ),
-    [readOnly],
+    [readOnly, compactTree],
   );
   const disableDragDrop = useCallback(
     (n: SpaceTreeNode) => n.canEdit === false,
@@ -333,12 +382,17 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
 
   return (
     <div className={classes.treeContainer}>
+      {/* "No pages yet" only after the SERVER confirmed the space is empty —
+          never while just the localStorage cache is empty. */}
       {isDataLoaded && filteredData.length === 0 && (
         <Text size="xs" c="dimmed" py="xs" px="sm">
           {t("No pages yet")}
         </Text>
       )}
-      {isDataLoaded && filteredData.length > 0 && (
+      {/* Cache-first paint: render as soon as ANY data exists (synchronous
+          localStorage hydration) instead of waiting for the server round-trip;
+          the background merge/refresh reconciles it afterwards. */}
+      {filteredData.length > 0 && (
         <DocTree<SpaceTreeNode>
           data={filteredData}
           openIds={openIds}

@@ -14,6 +14,7 @@ const APP_ROUTE = {
     ACCOUNT: {
       PROFILE: "/settings/account/profile",
       PREFERENCES: "/settings/account/preferences",
+      MCP_SERVERS: "/settings/account/mcp-servers",
     },
     WORKSPACE: {
       GENERAL: "/settings/workspace",

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   enqueueMessage,
   dequeue,
+  promoteToHead,
   removeQueuedById,
   type QueuedMessage,
 } from "./queue-helpers";
@@ -82,6 +83,52 @@ describe("removeQueuedById", () => {
       { id: "b", text: "second" },
     ];
     removeQueuedById(queue, "a");
+    expect(queue).toEqual([
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ]);
+  });
+});
+
+describe("promoteToHead", () => {
+  it("moves the matching id to the front, preserving the rest's order", () => {
+    const queue: QueuedMessage[] = [
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+      { id: "c", text: "third" },
+    ];
+    expect(promoteToHead(queue, "c")).toEqual([
+      { id: "c", text: "third" },
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ]);
+  });
+
+  it("is a no-op order-wise when the id is already the head", () => {
+    const queue: QueuedMessage[] = [
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ];
+    expect(promoteToHead(queue, "a")).toEqual([
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ]);
+  });
+
+  it("returns an equivalent list when the id is not present", () => {
+    const queue: QueuedMessage[] = [
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ];
+    expect(promoteToHead(queue, "missing")).toEqual(queue);
+  });
+
+  it("does not mutate the input queue", () => {
+    const queue: QueuedMessage[] = [
+      { id: "a", text: "first" },
+      { id: "b", text: "second" },
+    ];
+    promoteToHead(queue, "b");
     expect(queue).toEqual([
       { id: "a", text: "first" },
       { id: "b", text: "second" },

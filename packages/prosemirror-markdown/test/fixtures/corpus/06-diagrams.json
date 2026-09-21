@@ -1,0 +1,17 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "A drawio and an excalidraw diagram follow." }]
+    },
+    {
+      "type": "drawio",
+      "attrs": { "src": "/api/files/def/flow.drawio", "align": "center", "attachmentId": "att-1" }
+    },
+    {
+      "type": "excalidraw",
+      "attrs": { "src": "/api/files/ghi/sketch.excalidraw", "align": "center", "attachmentId": "att-2" }
+    }
+  ]
+}

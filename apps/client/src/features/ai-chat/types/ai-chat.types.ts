@@ -48,6 +48,8 @@ export interface IAiRoleModelConfig {
 export interface IAiRole {
   id: string;
   name: string;
+  // The role glyph. Holds a serialized IconRef JSON (a Lucide icon; see
+  // lib/icon-ref.ts) — NOT a native emoji, despite the retained column name.
   emoji: string | null;
   description: string | null;
   instructions?: string;
@@ -57,9 +59,91 @@ export interface IAiRole {
   autoStart: boolean;
   // Custom auto-start text; null/empty => the default launch message is sent.
   launchMessage: string | null;
+  // Catalog origin of an imported role, or null for a manually-created one.
+  // Admin-only (present only in the admin list view); the picker view omits it.
+  // The admin UI compares `version` against the catalog to offer an update.
+  source?: { slug: string; language: string; version: number } | null;
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** One bundle's summary in the catalog index (mirrors `getCatalog().bundles[]`). */
+export interface IAiRoleCatalogBundleSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  languages: string[];
+  roles: { slug: string; version: number }[];
+}
+
+/** The browsable catalog index (mirrors `getCatalog()`). */
+export interface IAiRoleCatalog {
+  languages: string[];
+  bundles: IAiRoleCatalogBundleSummary[];
+}
+
+/** A single role inside an opened catalog bundle (localized content + version). */
+export interface IAiRoleCatalogRole {
+  slug: string;
+  emoji: string | null;
+  name: string;
+  description: string | null;
+  instructions: string;
+  autoStart: boolean;
+  launchMessage: string | null;
+  version: number;
+}
+
+/** An opened catalog bundle (mirrors `getCatalogBundle()`). */
+export interface IAiRoleCatalogBundle {
+  bundleId: string;
+  language: string;
+  roles: IAiRoleCatalogRole[];
+}
+
+/** Import payload (mirrors the server `ImportFromCatalogDto`). */
+export interface IAiRoleImportPayload {
+  bundleId: string;
+  language: string;
+  // Omitted => import the whole bundle; otherwise only these slugs.
+  slugs?: string[];
+  conflict: "skip" | "rename";
+}
+
+/**
+ * Import result (mirrors `importFromCatalog()`). The counters (`created`,
+ * `skipped`, `renamed`) drive the summary notification; the per-role lists
+ * (`createdRoles`, `skippedRoles`) drive the redesigned catalog modal's inline
+ * result plaque — which roles were installed (and any rename) and which were
+ * skipped and why (so the plaque can name the conflicting role and offer
+ * "Rename & install").
+ */
+export interface IAiRoleImportResult {
+  created: number;
+  skipped: number;
+  renamed: number;
+  errors: { slug: string; message: string }[];
+  createdRoles: { slug: string; name: string; renamedTo?: string }[];
+  skippedRoles: {
+    slug: string;
+    name: string;
+    reason: "name-conflict" | "already-installed";
+  }[];
+}
+
+/**
+ * Update-from-catalog result (mirrors the server `updateFromCatalog()`). A
+ * discriminated union on `updated`: a no-op carries a typed `reason` the UI maps
+ * to a specific message; a successful update carries the version bump + new role.
+ * Keeping the union (not a widened `reason?: string`) lets the consumer's literal
+ * comparisons be compiler-checked.
+ */
+export type IAiRoleUpdateFromCatalogResult =
+  | {
+      updated: false;
+      reason: "not-in-catalog" | "up-to-date" | "language-unavailable";
+    }
+  | { updated: true; fromVersion: number; toVersion: number; role: IAiRole };
 
 /** Admin create payload for a role. */
 export interface IAiRoleCreate {
@@ -99,6 +183,12 @@ export interface IAiChatMessageRow {
   toolCalls?: unknown;
   metadata?: {
     parts?: UIMessage["parts"];
+    // #491 step-alignment anchor: the count of FINISHED steps whose parts are in
+    // THIS row, written atomically with `parts` server-side (flushAssistant). The
+    // resume client reads it as its persisted step frontier N — the tail-only
+    // attach asks the run-stream registry for the frames of step N onward (the
+    // seed already carries steps 0..N-1). Absent on pre-#491 rows -> read as 0.
+    stepsPersisted?: number;
     // AI SDK v6 `totalUsage` persisted on assistant rows. Legacy cumulative
     // figure (sum of every step's usage for the turn); kept for back-compat and
     // as the fallback for older rows that have no `contextTokens`.
@@ -128,6 +218,11 @@ export interface IAiChatMessageRow {
     // renders a "stopped" marker on interrupted turns.
     finishReason?: string;
   } | null;
+  // Persisted lifecycle status of the row's turn, carried on the wire by
+  // `baseFields`. 'streaming' marks a still-in-progress assistant row (used by
+  // the resume machinery to decide whether a tail is a live stream to attach to
+  // or a settled row that must not be replayed).
+  status?: string;
   createdAt: string;
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDocmostMcpServer } from "./index.js";
+import { destroyAllSessions } from "./lib/collab-session.js";
 
 // Standalone stdio entrypoint. This restores the original behavior of the
 // package when run as a CLI (`docmost-mcp`): it reads credentials from the
@@ -32,6 +33,20 @@ async function run() {
   process.on("uncaughtException", (error) => {
     console.error("Uncaught exception:", error);
   });
+
+  // Teardown hook (issue #400): destroy every cached live CollabSession on exit
+  // so a hanging session does not keep a doc loaded on the server (which would
+  // also defer the server's afterUnloadDocument cleanup). `exit` runs the
+  // synchronous idempotent teardown; SIGINT/SIGTERM also run it, then exit.
+  process.on("exit", () => {
+    destroyAllSessions();
+  });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      destroyAllSessions();
+      process.exit(0);
+    });
+  }
 
   const server = createDocmostMcpServer({
     apiUrl: API_URL!,

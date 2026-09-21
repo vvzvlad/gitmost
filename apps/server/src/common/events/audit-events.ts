@@ -22,6 +22,9 @@ export const AuditEvent = {
   API_KEY_CREATED: 'api_key.created',
   API_KEY_UPDATED: 'api_key.updated',
   API_KEY_DELETED: 'api_key.deleted',
+  // A copyable key was re-minted and returned to its owner under a password
+  // step-up (see ApiKeyController.reveal). Durable via DatabaseAuditService.
+  API_KEY_REVEALED: 'api_key.revealed',
 
   // SCIM Tokens
   SCIM_TOKEN_CREATED: 'scim_token.created',
@@ -51,6 +54,8 @@ export const AuditEvent = {
   COMMENT_UPDATED: 'comment.updated',
   COMMENT_RESOLVED: 'comment.resolved',
   COMMENT_REOPENED: 'comment.reopened',
+  COMMENT_SUGGESTION_APPLIED: 'comment.suggestion_applied',
+  COMMENT_SUGGESTION_DISMISSED: 'comment.suggestion_dismissed',
 
   // Page
   PAGE_CREATED: 'page.created',

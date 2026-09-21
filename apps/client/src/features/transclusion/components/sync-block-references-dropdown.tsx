@@ -3,10 +3,10 @@ import { Loader, Popover } from "@mantine/core";
 import {
   IconChevronDown,
   IconCornerDownLeft,
-  IconFile,
   IconInfoCircle,
 } from "@tabler/icons-react";
 import { Link } from "react-router-dom";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { Trans, useTranslation } from "react-i18next";
 import { useReferencesQuery } from "@/features/transclusion/queries/transclusion-query";
 import type { ReferencingPage } from "@/features/transclusion/types/transclusion.types";
@@ -152,13 +152,9 @@ export default function SyncBlockReferencesDropdown({
                       className={classes.row}
                       onClick={() => handleOpenChange(false)}
                     >
-                      {page.icon ? (
-                        <span className={classes.rowEmoji}>{page.icon}</span>
-                      ) : (
-                        <span className={classes.rowIcon}>
-                          <IconFile size={16} stroke={1.6} />
-                        </span>
-                      )}
+                      <span className={classes.rowIcon}>
+                        <PageIcon value={page.icon} size={16} />
+                      </span>
                       <span className={classes.rowTitle} title={title}>
                         {title}
                       </span>

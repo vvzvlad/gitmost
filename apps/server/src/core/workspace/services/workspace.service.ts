@@ -33,7 +33,11 @@ import { DISALLOWED_HOSTNAMES, WorkspaceStatus } from '../workspace.constants';
 import { isAdminActingOnOwner } from '../workspace.util';
 import { v4 } from 'uuid';
 import { InjectQueue } from '@nestjs/bullmq';
-import { QueueJob, QueueName } from '../../../integrations/queue/constants';
+import {
+  QueueJob,
+  QueueName,
+  workspaceReindexJobOptions,
+} from '../../../integrations/queue/constants';
 import { Queue } from 'bullmq';
 import {
   generateRandomSuffixNumbers,
@@ -45,6 +49,7 @@ import { ShareRepo } from '@docmost/db/repos/share/share.repo';
 import { WatcherRepo } from '@docmost/db/repos/watcher/watcher.repo';
 import { FavoriteRepo } from '@docmost/db/repos/favorite/favorite.repo';
 import { AuditEvent, AuditResource } from '../../../common/events/audit-events';
+import { McpClientsService } from '../../ai-chat/external-mcp/mcp-clients.service';
 import {
   AUDIT_SERVICE,
   IAuditService,
@@ -73,6 +78,8 @@ export class WorkspaceService {
     @InjectQueue(QueueName.AI_QUEUE) private aiQueue: Queue,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
     private userSessionRepo: UserSessionRepo,
+    // #686: evict a deleted user's per-user external-MCP toolset cache.
+    private readonly mcpClients: McpClientsService,
   ) {}
 
   async findById(workspaceId: string) {
@@ -91,7 +98,15 @@ export class WorkspaceService {
   async getWorkspacePublicData(workspaceId: string) {
     const workspace = await this.db
       .selectFrom('workspaces')
-      .select(['id', 'name', 'logo', 'hostname', 'enforceSso', 'licenseKey', 'plan'])
+      .select([
+        'id',
+        'name',
+        'logo',
+        'hostname',
+        'enforceSso',
+        'licenseKey',
+        'plan',
+      ])
       .select((eb) =>
         jsonArrayFrom(
           eb
@@ -145,7 +160,7 @@ export class WorkspaceService {
           status = WorkspaceStatus.Active;
           plan = 'standard';
           billingEmail = user.email;
-          settings = { ai: { generative: true, chat: true } };
+          settings = { ai: { chat: true } };
         }
 
         // create workspace
@@ -330,6 +345,7 @@ export class WorkspaceService {
     if (
       typeof updateWorkspaceDto.disablePublicSharing !== 'undefined' ||
       typeof updateWorkspaceDto.trashRetentionDays !== 'undefined' ||
+      typeof updateWorkspaceDto.temporaryNoteHours !== 'undefined' ||
       typeof updateWorkspaceDto.mcpEnabled !== 'undefined' ||
       typeof updateWorkspaceDto.restrictApiToAdmins !== 'undefined' ||
       typeof updateWorkspaceDto.allowMemberTemplates !== 'undefined' ||
@@ -337,7 +353,13 @@ export class WorkspaceService {
     ) {
       const ws = await this.db
         .selectFrom('workspaces')
-        .select(['id', 'licenseKey', 'plan', 'trashRetentionDays'])
+        .select([
+          'id',
+          'licenseKey',
+          'plan',
+          'trashRetentionDays',
+          'temporaryNoteHours',
+        ])
         .where('id', '=', workspaceId)
         .executeTakeFirst();
 
@@ -351,10 +373,14 @@ export class WorkspaceService {
       // updateAiSettings(workspaceId, 'mcp', ...) below.
 
       if (typeof updateWorkspaceDto.isScimEnabled !== 'undefined') {
-        if (!this.licenseCheckService.hasFeature(ws.licenseKey, Feature.SCIM, ws.plan)) {
-          throw new ForbiddenException(
-            'This feature requires a valid license',
-          );
+        if (
+          !this.licenseCheckService.hasFeature(
+            ws.licenseKey,
+            Feature.SCIM,
+            ws.plan,
+          )
+        ) {
+          throw new ForbiddenException('This feature requires a valid license');
         }
       }
 
@@ -364,10 +390,14 @@ export class WorkspaceService {
         typeof updateWorkspaceDto.restrictApiToAdmins !== 'undefined' ||
         typeof updateWorkspaceDto.allowMemberTemplates !== 'undefined'
       ) {
-        if (!this.licenseCheckService.hasFeature(ws.licenseKey, Feature.SECURITY_SETTINGS, ws.plan)) {
-          throw new ForbiddenException(
-            'This feature requires a valid license',
-          );
+        if (
+          !this.licenseCheckService.hasFeature(
+            ws.licenseKey,
+            Feature.SECURITY_SETTINGS,
+            ws.plan,
+          )
+        ) {
+          throw new ForbiddenException('This feature requires a valid license');
         }
       }
 
@@ -377,6 +407,14 @@ export class WorkspaceService {
       ) {
         before.trashRetentionDays = ws.trashRetentionDays;
         after.trashRetentionDays = updateWorkspaceDto.trashRetentionDays;
+      }
+
+      if (
+        typeof updateWorkspaceDto.temporaryNoteHours !== 'undefined' &&
+        updateWorkspaceDto.temporaryNoteHours !== ws.temporaryNoteHours
+      ) {
+        before.temporaryNoteHours = ws.temporaryNoteHours;
+        after.temporaryNoteHours = updateWorkspaceDto.temporaryNoteHours;
       }
     }
 
@@ -420,20 +458,6 @@ export class WorkspaceService {
           workspaceId,
           'search',
           updateWorkspaceDto.aiSearch,
-          trx,
-        );
-      }
-
-      if (typeof updateWorkspaceDto.generativeAi !== 'undefined') {
-        const prev = settingsBefore?.ai?.generative ?? false;
-        if (prev !== updateWorkspaceDto.generativeAi) {
-          before.generativeAi = prev;
-          after.generativeAi = updateWorkspaceDto.generativeAi;
-        }
-        await this.workspaceRepo.updateAiSettings(
-          workspaceId,
-          'generative',
-          updateWorkspaceDto.generativeAi,
           trx,
         );
       }
@@ -525,6 +549,20 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.autonomousRuns !== 'undefined') {
+        const prev = settingsBefore?.ai?.autonomousRuns ?? false;
+        if (prev !== updateWorkspaceDto.autonomousRuns) {
+          before.autonomousRuns = prev;
+          after.autonomousRuns = updateWorkspaceDto.autonomousRuns;
+        }
+        await this.workspaceRepo.updateAiSettings(
+          workspaceId,
+          'autonomousRuns',
+          updateWorkspaceDto.autonomousRuns,
+          trx,
+        );
+      }
+
       if (typeof updateWorkspaceDto.htmlEmbed !== 'undefined') {
         const prev = settingsBefore?.htmlEmbed ?? false;
         if (prev !== updateWorkspaceDto.htmlEmbed) {
@@ -572,13 +610,13 @@ export class WorkspaceService {
 
       delete updateWorkspaceDto.restrictApiToAdmins;
       delete updateWorkspaceDto.aiSearch;
-      delete updateWorkspaceDto.generativeAi;
       delete updateWorkspaceDto.disablePublicSharing;
       delete updateWorkspaceDto.mcpEnabled;
       delete updateWorkspaceDto.allowMemberTemplates;
       delete updateWorkspaceDto.aiChat;
       delete updateWorkspaceDto.aiDictation;
       delete updateWorkspaceDto.aiDictationStreaming;
+      delete updateWorkspaceDto.autonomousRuns;
       delete updateWorkspaceDto.htmlEmbed;
       delete updateWorkspaceDto.trackerHead;
       delete updateWorkspaceDto.aiPublicShareAssistant;
@@ -598,16 +636,15 @@ export class WorkspaceService {
       await this.aiQueue
         .remove(`ai-search-disabled-${workspaceId}`)
         .catch(() => undefined);
-      // Stable jobId de-duplicates with the manual "Reindex now" path and with
-      // repeated enable toggles (one full reindex at a time).
+      // Stable jobId de-duplicates with the manual "Reindex now" path, with the
+      // automatic fingerprint-change reindex, and with repeated enable toggles (one
+      // full reindex at a time). The shared options also carry the #599 retry policy
+      // (attempts: 3 + backoff) — a run left partial by a transient embedding failure
+      // must be RE-RUN, or the workspace stays in the swap window forever.
       await this.aiQueue.add(
         QueueJob.WORKSPACE_CREATE_EMBEDDINGS,
         { workspaceId },
-        {
-          jobId: `ai-reindex-${workspaceId}`,
-          removeOnComplete: true,
-          removeOnFail: true,
-        },
+        workspaceReindexJobOptions(workspaceId),
       );
     } else if (after.aiSearch === false) {
       const deleteJobId = `ai-search-disabled-${workspaceId}`;
@@ -933,7 +970,23 @@ export class WorkspaceService {
       });
 
       await this.userSessionRepo.revokeByUserId(userId, workspaceId, trx);
+
+      // #686: destroy the user's PERSONAL external MCP servers. The FK is
+      // `ON DELETE CASCADE`, but this is a SOFT delete (the users row survives),
+      // so nothing cascades — delete them explicitly here. Their encrypted
+      // per-user auth blobs (`headersEnc`) must NOT outlive the user, and a
+      // personal row must never be left ownerless (that would leak it into the
+      // whole workspace's agent). Admin rows (`user_id IS NULL`) are untouched.
+      await trx
+        .deleteFrom('aiMcpServers')
+        .where('userId', '=', userId)
+        .execute();
     });
+
+    // Evict this user's per-user external-MCP toolset cache (process-local). Their
+    // sessions are revoked above so they can't start a turn, but drop any warm
+    // entry now rather than waiting out the TTL.
+    this.mcpClients.invalidateUser(workspaceId, userId);
 
     this.auditService.log({
       event: AuditEvent.USER_DELETED,

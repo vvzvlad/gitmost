@@ -156,9 +156,22 @@ export interface Billing {
   workspaceId: string;
 }
 
+export interface ClientMetrics {
+  id: Generated<Int8>;
+  createdAt: Generated<Timestamp>;
+  name: string;
+  value: number;
+  rating: string | null;
+  route: string | null;
+  attr: string | null;
+  docSize: number | null;
+  workspaceId: string | null;
+}
+
 export interface Comments {
   aiChatId: string | null;
   content: Json | null;
+  createdApiKeyId: string | null;
   createdAt: Generated<Timestamp>;
   createdSource: Generated<string>;
   creatorId: string | null;
@@ -173,6 +186,9 @@ export interface Comments {
   resolvedSource: string | null;
   selection: string | null;
   spaceId: string;
+  suggestedText: string | null;
+  suggestionAppliedAt: Timestamp | null;
+  suggestionAppliedById: string | null;
   type: string | null;
   updatedAt: Generated<Timestamp>;
   workspaceId: string;
@@ -265,7 +281,9 @@ export interface PageHistory {
   createdAt: Generated<Timestamp>;
   icon: string | null;
   id: Generated<string>;
+  kind: string | null;
   lastUpdatedAiChatId: string | null;
+  lastUpdatedApiKeyId: string | null;
   lastUpdatedById: string | null;
   lastUpdatedSource: string | null;
   pageId: string;
@@ -291,18 +309,30 @@ export interface Pages {
   isLocked: Generated<boolean>;
   isTemplate: Generated<boolean>;
   lastUpdatedAiChatId: string | null;
+  lastUpdatedApiKeyId: string | null;
   lastUpdatedById: string | null;
   lastUpdatedSource: Generated<string>;
   parentPageId: string | null;
   position: string | null;
   slugId: string;
   spaceId: string;
+  temporaryExpiresAt: Timestamp | null;
   textContent: string | null;
   title: string | null;
   tsv: string | null;
   updatedAt: Generated<Timestamp>;
   workspaceId: string;
   ydoc: Buffer | null;
+}
+
+export interface ShareAliases {
+  alias: string;
+  createdAt: Generated<Timestamp>;
+  creatorId: string | null;
+  id: Generated<string>;
+  pageId: string | null;
+  updatedAt: Generated<Timestamp>;
+  workspaceId: string;
 }
 
 export interface Shares {
@@ -313,6 +343,7 @@ export interface Shares {
   includeSubPages: Generated<boolean | null>;
   key: string;
   pageId: string | null;
+  publishedMode: Generated<string>;
   searchIndexing: Generated<boolean | null>;
   spaceId: string;
   updatedAt: Generated<Timestamp>;
@@ -409,6 +440,7 @@ export interface WorkspaceInvitations {
 export interface Workspaces {
   auditRetentionDays: Generated<number>;
   trashRetentionDays: Generated<number>;
+  temporaryNoteHours: Generated<number>;
   billingEmail: string | null;
   createdAt: Generated<Timestamp>;
   customDomain: string | null;
@@ -579,6 +611,9 @@ export interface AiChats {
   // The document the chat was created in (open page at first message). NULL =>
   // started outside any document. ON DELETE SET NULL on the page FK.
   pageId: string | null;
+  // Chat-level metadata bag (#490). jsonb, defaulted to '{}'. First key:
+  // `activatedTools` — the deferred-tool activation set persisted across turns.
+  metadata: Generated<Json>;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;
@@ -606,6 +641,8 @@ export interface AiAgentRoles {
   autoStart: Generated<boolean>;
   // Optional custom auto-start text. null/empty => client default launch message.
   launchMessage: string | null;
+  // Catalog origin of an imported role: { slug, language, version } | null. null => manually created.
+  source: Json | null;
   createdAt: Generated<Timestamp>;
   updatedAt: Generated<Timestamp>;
   deletedAt: Timestamp | null;
@@ -630,6 +667,84 @@ export interface AiChatMessages {
   deletedAt: Timestamp | null;
 }
 
+// The agent RUN as a first-class server-side lifecycle object (#184 phase 1).
+// Mirrors migration 20260704T130000-ai-chat-runs.ts. A run is created when an
+// agent turn starts and survives the browser disconnecting; the DB is the source
+// of truth a later client reconnects to. `assistantMessageId` links to the #183
+// projection row (the assistant message this run materializes).
+export interface AiChatRuns {
+  id: Generated<string>;
+  chatId: string;
+  workspaceId: string;
+  // SET NULL on user deletion (the run history outlives its author); also NULL
+  // for a future non-human trigger (cron/api).
+  createdBy: string | null;
+  // The assistant message this run materializes; SET NULL if it is pruned.
+  assistantMessageId: string | null;
+  // 'user' | 'autostart' | 'schedule' | 'api' | 'continue' (only 'user' is
+  // produced in phase 1; the rest are reserved for the deferred autonomy triggers).
+  trigger: Generated<string>;
+  // 'pending' | 'running' | 'succeeded' | 'failed' | 'aborted'.
+  status: Generated<string>;
+  error: string | null;
+  stepCount: Generated<number>;
+  // Set when an EXPLICIT user stop is requested (distinct from a disconnect).
+  stopRequestedAt: Timestamp | null;
+  startedAt: Timestamp | null;
+  finishedAt: Timestamp | null;
+  createdAt: Generated<Timestamp>;
+  updatedAt: Generated<Timestamp>;
+}
+
+// Append-only per-step persistence for an assistant turn (#492). Mirrors
+// migration 20260708T120000-ai-chat-run-steps.ts. Each finished agent step's UI
+// `parts` are INSERTed as their own row (instead of rewriting the message row's
+// growing `metadata.parts` jsonb every step — an O(n²) WAL/TOAST churn). The full
+// `metadata.parts` is assembled once at finalize; mid-run a resuming client's seed
+// is rebuilt by concatenating these rows in `stepIndex` order. Cascades with the
+// assistant message row it projects.
+export interface AiChatRunSteps {
+  id: Generated<string>;
+  messageId: string;
+  workspaceId: string;
+  stepIndex: number;
+  parts: Json;
+  createdAt: Generated<Timestamp>;
+}
+
+// Per-(chat,page) snapshot of the open page's Markdown at the END of the agent's
+// previous turn (#274). Mirrors migration 20260702T120000-ai-chat-page-snapshot.ts.
+// The next turn diffs the CURRENT Markdown against `contentMd` to surface edits a
+// human made between turns; `pageUpdatedAt` is the cheap "did anything change?"
+// fast path. One live row per (chatId, pageId) — the turn-end write upserts on
+// that key. Both FKs are ON DELETE CASCADE (derived, per-chat state).
+export interface AiChatPageSnapshots {
+  id: Generated<string>;
+  chatId: string;
+  pageId: string;
+  workspaceId: string;
+  contentMd: string;
+  pageUpdatedAt: Timestamp;
+  createdAt: Generated<Timestamp>;
+  updatedAt: Generated<Timestamp>;
+}
+
+// The MUTABLE page->chat binding (#665): "for THIS user, on THIS page, this is
+// the chat that opens." Mirrors migration 20260716T130000-ai-chat-page-bindings.ts.
+// Distinct from AiChats.pageId (immutable provenance): this is the STATE the
+// header button reads and the history-select / "New chat" / first-message writers
+// mutate. One row per (userId, pageId) — UNIQUE(user_id, page_id); the writes
+// upsert / delete on that key. All three FKs are ON DELETE CASCADE. Absence of a
+// row == "nothing bound" == an empty chat opens. NB: no `workspace_id` column (it
+// is functionally determined by page_id/chat_id — see the migration).
+export interface AiChatPageBindings {
+  id: Generated<string>;
+  userId: string;
+  pageId: string;
+  chatId: string;
+  updatedAt: Generated<Timestamp>;
+}
+
 export interface UserSessions {
   id: Generated<string>;
   userId: string;
@@ -649,6 +764,10 @@ export interface DB {
   aiAgentRoles: AiAgentRoles;
   aiChats: AiChats;
   aiChatMessages: AiChatMessages;
+  aiChatRuns: AiChatRuns;
+  aiChatRunSteps: AiChatRunSteps;
+  aiChatPageSnapshots: AiChatPageSnapshots;
+  aiChatPageBindings: AiChatPageBindings;
   apiKeys: ApiKeys;
   attachments: Attachments;
   audit: Audit;
@@ -656,6 +775,7 @@ export interface DB {
   authProviders: AuthProviders;
   backlinks: Backlinks;
   billing: Billing;
+  clientMetrics: ClientMetrics;
   comments: Comments;
   favorites: Favorites;
   fileTasks: FileTasks;
@@ -674,6 +794,7 @@ export interface DB {
   pageVerifiers: PageVerifiers;
   pages: Pages;
   scimTokens: ScimTokens;
+  shareAliases: ShareAliases;
   shares: Shares;
   spaceMembers: SpaceMembers;
   spaces: Spaces;

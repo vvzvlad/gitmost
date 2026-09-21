@@ -77,3 +77,174 @@
   flex: 1;
   padding: rem(16px) rem(40px);
 }
+
+/* #568 — redesigned desktop history window */
+
+.desktopRoot {
+  display: flex;
+  flex-direction: column;
+  /* #605 Fix B — centered popup (not fullScreen). The height MUST be
+     viewport-defined: Modal.Body is auto-height and not a flex column, so
+     height:100% would collapse to auto and the inner ScrollAreas would lose
+     their bounded height and clip (the same reason #583 could not use
+     height:100%). 90vh sits inside Mantine's content max height
+     calc(100dvh − 2·yOffset) = 94vh at yOffset=3vh, and gives this flex column
+     (toolbar flex:none 56px + body flex:1 min-height:0) a correct bounded height
+     so both ScrollAreas scroll internally. */
+  height: 90vh;
+}
+
+.desktopToolbar {
+  flex: none;
+  height: rem(56px);
+  padding: 0 rem(16px);
+  border-bottom: rem(1px) solid
+    light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5));
+}
+
+.desktopBody {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.navPanel {
+  flex: none;
+  width: rem(280px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: rem(1px) solid
+    light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5));
+  /* #583 Fix C — after .rightView becomes --mantine-color-body (= dark-7 in dark),
+     the sidebar must stay distinct from the content. Keep light gray-0, but use
+     dark-8 (darker than the dark-7 content surface) in dark theme so the panel
+     reads as a separate, recessed column. .dayHeading sticky bg MUST match this. */
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
+}
+
+.navFilterRow {
+  flex: none;
+  height: rem(44px);
+  padding: 0 rem(16px);
+  border-bottom: rem(1px) solid
+    light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5));
+}
+
+.rightView {
+  flex: 1;
+  min-width: 0;
+  /* #583 Fix C — remove the gray backdrop under the article. --mantine-color-body
+     is white in light and dark-7 in dark; the ProseMirror content itself is
+     light-dark(white, dark-7), so the article now sits on a matching surface with
+     no visible tray. .desktopRoot/.desktopToolbar are transparent and inherit
+     Modal.Content's bg (also --mantine-color-body), so no change needed there. */
+  background: var(--mantine-color-body);
+}
+
+.dayHeading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: rem(9px) rem(16px) rem(5px);
+  font-size: rem(10.5px);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+  /* #583 Fix C — sticky heading bg MUST match .navPanel (dark-8 in dark) so rows
+     scrolling under it are cleanly occluded; kept in lockstep with .navPanel. */
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
+}
+
+.revisionRow {
+  margin: rem(1px) rem(6px);
+  border-radius: rem(7px);
+
+  @mixin hover {
+    background-color: light-dark(
+      var(--mantine-color-gray-1),
+      var(--mantine-color-dark-6)
+    );
+  }
+}
+
+.revisionRowActive {
+  background-color: light-dark(
+    var(--mantine-color-blue-0),
+    var(--mantine-color-dark-5)
+  );
+
+  @mixin hover {
+    background-color: light-dark(
+      var(--mantine-color-blue-0),
+      var(--mantine-color-dark-5)
+    );
+  }
+}
+
+/* mini-calendar heatmap */
+.calDay {
+  position: relative;
+  height: rem(26px);
+  border-radius: rem(6px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: rem(10.5px);
+  font-weight: 500;
+}
+
+/* #583 Fix A — hover response for in-month cells ONLY. An INSET box-shadow ring
+   (not a bg swap, not filter:brightness): a bg swap would put white heat-3 digits
+   on a light-grey fill and hide them; brightness is invisible on transparent
+   heat-0 (empty) days. The inset ring is visible over transparent heat-0,
+   translucent heat-1/2 and solid heat-3, and preserves digit contrast. Gated with
+   :not(.calDaySelected) so a selected day keeps its own (stronger) ring on hover —
+   .calDaySelected is only 0,1,0, this hover rule is 0,4,0 and would otherwise eat
+   it. Inset (not an outer outline) so the ring never crosses the 2px grid gap. */
+.calDay:not(.calDayOutside):not(.calDaySelected):hover {
+  box-shadow: inset 0 0 0 rem(2px)
+    light-dark(var(--mantine-color-gray-5), var(--mantine-color-dark-2));
+}
+
+.calHeat0 {
+  background: transparent;
+}
+/* #583 Fix A — raised tier distinguishability so a day with ≥1 version clearly
+   reads as "filled" against the panel (gray-0 light / dark-8 dark) in both themes.
+   Dark heat-1/2 are translucent and composite over the panel; these values are
+   tuned over dark-8 (Fix C), NOT the old dark-7. calHeat1 especially was near
+   invisible (light #e7f0ff on gray-0; dark 0.2α on dark-8). */
+.calHeat1 {
+  background: light-dark(#d0e2ff, rgba(51, 154, 240, 0.34));
+  color: light-dark(#1864ab, #a5d8ff);
+}
+.calHeat2 {
+  background: light-dark(#94bdff, rgba(51, 154, 240, 0.58));
+  color: light-dark(#0b3d91, #edf6ff);
+}
+.calHeat3 {
+  background: light-dark(#4c8dff, #4c8dff);
+  color: #ffffff;
+}
+
+/* #583 Fix A — the clicked/selected day must read over ANY heat tier in BOTH
+   themes. Two-layer inset ring: a 2px high-contrast band (dark-9 light / gray-0
+   dark) with a 1px opposite-color separator just inside it, so the ring stands out
+   whether it sits on transparent heat-0, translucent heat-1/2 or solid-blue heat-3,
+   without recoloring the fill (digit contrast preserved). */
+.calDaySelected {
+  box-shadow:
+    inset 0 0 0 rem(2px)
+      light-dark(var(--mantine-color-dark-9), var(--mantine-color-gray-0)),
+    inset 0 0 0 rem(3px)
+      light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-9));
+  font-weight: 700;
+}
+
+.calDayOutside {
+  color: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-4));
+  cursor: default;
+}

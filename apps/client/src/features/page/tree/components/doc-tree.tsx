@@ -21,6 +21,12 @@ import styles from '../styles/tree.module.css';
 export const ROW_HEIGHT_STANDARD = 32;
 export const ROW_HEIGHT_COMPACT = 26;
 
+// Page-icon tile size per density, shared by every page tree (space tree,
+// shared tree) so the two never drift apart. Each stays below its row height so
+// the row is not pushed taller.
+export const TREE_ICON_SIZE_STANDARD = 24;
+export const TREE_ICON_SIZE_COMPACT = 20;
+
 export type RenderRowProps<T extends object> = {
   node: TreeNode<T>;
   level: number;

@@ -55,6 +55,15 @@
     padding-inline-start: 1.4em;
 }
 
+/* The canonical converter renders list items through the editor schema, which
+   wraps each item's content in a <p> (listItem content is `paragraph+`). Drop
+   that paragraph's block margin so list items render TIGHT (no extra vertical
+   gap), matching the previous marked output — same rule already applied to
+   table cells above (issue #347). */
+.markdown li p {
+    margin: 0;
+}
+
 /* GFM tables in assistant markdown. The chat lives in a NARROW side panel, so a
    wide LLM table must scroll horizontally instead of collapsing its columns:
    `.markdown` sets `word-break: break-word`, which (with the default table
@@ -164,12 +173,20 @@
     /* NOTE: `white-space: pre-wrap` is intentionally NOT set here. On the
        rendered markdown <div> it would turn the newlines between block tags
        (</li>\n<li>, </p>\n<ol>) into visible blank lines/indents on top of the
-       margins. The plain-text fallback <Text> that needs pre-wrap sets it
-       inline itself (see reasoning-block.tsx). */
+       margins. The streaming plain-text path that needs pre-wrap sets it
+       per chunk instead, in PlainChunk (see streaming-plain-text.tsx). */
 }
 
 .reasoningText p {
     margin: 0 0 4px;
+}
+
+/* Same as `.markdown li p` above: the canonical converter wraps every list
+   item's content in a <p>, so without this each reasoning-panel list item would
+   pick up `.reasoningText p`'s 4px bottom margin and render too loose. Drop it
+   so Reasoning-panel lists stay tight, mirroring the pre-#347 marked output. */
+.reasoningText li p {
+    margin: 0;
 }
 
 .inputWrapper {

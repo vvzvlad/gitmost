@@ -1,8 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { CreatePageDto, ContentFormat } from '../dto/create-page.dto';
 import { ContentOperation, UpdatePageDto } from '../dto/update-page.dto';
@@ -35,7 +38,11 @@ import {
   htmlToJson,
   jsonToNode,
   jsonToText,
+  tiptapExtensions,
 } from 'src/collaboration/collaboration.util';
+import { pageContentHash } from 'src/collaboration/content-hash.util';
+import { TiptapTransformer } from '@hocuspocus/transformer';
+import * as Y from 'yjs';
 import {
   CopyPageMapEntry,
   ICopyPageAttachment,
@@ -52,7 +59,11 @@ import {
   INTERNAL_LINK_REGEX,
   extractPageSlugId,
 } from '../../../integrations/export/utils';
-import { markdownToHtml } from '@docmost/editor-ext';
+import { canonicalizeFootnotes } from '@docmost/editor-ext';
+import {
+  markdownToProseMirror,
+  normalizeAgentMarkdown,
+} from '@docmost/prosemirror-markdown';
 import { WatcherService } from '../../watcher/watcher.service';
 import { sql } from 'kysely';
 import { TransclusionService } from '../transclusion/transclusion.service';
@@ -61,6 +72,7 @@ import {
   AuthProvenanceData,
   agentSourceFields,
 } from '../../../common/decorators/auth-provenance.decorator';
+import { DEFAULT_TEMPORARY_NOTE_HOURS } from '../constants/temporary-note.constants';
 
 // Hard upper bound on how deep the recursive page-tree CTEs (ancestor /
 // descendant traversals) may walk. Real page trees are only a handful of levels
@@ -140,14 +152,33 @@ export class PageService {
       parentPageId = parentPage.id;
     }
 
+    // Freeze the death timer here so later changes to the workspace setting
+    // never reschedule existing temporary notes. NULL => permanent page.
+    let temporaryExpiresAt: Date | undefined;
+    if (createPageDto.temporary) {
+      const workspace = await this.db
+        .selectFrom('workspaces')
+        .select(['temporaryNoteHours'])
+        .where('id', '=', workspaceId)
+        .executeTakeFirst();
+      const hours =
+        workspace?.temporaryNoteHours ?? DEFAULT_TEMPORARY_NOTE_HOURS;
+      temporaryExpiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+    }
+
     let content = undefined;
     let textContent = undefined;
     let ydoc = undefined;
 
     if (createPageDto?.content && createPageDto?.format) {
-      const prosemirrorJson = await this.parseProsemirrorContent(
-        createPageDto.content,
-        createPageDto.format,
+      // createPage always writes a FULL document, so canonicalize footnotes to
+      // the editor's invariant before persisting (issue #228). Pure + idempotent
+      // + shape-safe: a doc with no footnotes is returned unchanged.
+      const prosemirrorJson = canonicalizeFootnotes(
+        await this.parseProsemirrorContent(
+          createPageDto.content,
+          createPageDto.format,
+        ),
       );
 
       content = prosemirrorJson;
@@ -171,7 +202,13 @@ export class PageService {
       // Agent-edit provenance. The human stays the responsible author
       // (creatorId/lastUpdatedById); these only annotate the source. A normal
       // user request leaves the column default ('user').
-      ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
+      ...agentSourceFields(
+        provenance,
+        'lastUpdatedSource',
+        'lastUpdatedAiChatId',
+        'lastUpdatedApiKeyId',
+      ),
+      temporaryExpiresAt,
       content,
       textContent,
       ydoc,
@@ -255,6 +292,28 @@ export class PageService {
     const iconChanged =
       updatePageDto.icon !== undefined && updatePageDto.icon !== page.icon;
 
+    // #647 §D — a guarded 'replace' (content + operation:'replace' + baseHash)
+    // runs the server-side write-CAS FIRST, before any metadata write, so a
+    // REJECTED write (409/422/503, thrown here) touches NOTHING — no bumped
+    // updatedAt/contributors and no history version. On success we fall through
+    // to the normal metadata/title write below (the bottom content block skips
+    // the already-applied guarded body). Non-guarded writes are unchanged.
+    const isGuardedReplace =
+      !!updatePageDto.content &&
+      updatePageDto.operation === 'replace' &&
+      !!updatePageDto.format &&
+      updatePageDto.baseHash !== undefined;
+    if (isGuardedReplace) {
+      await this.replacePageContentGuarded(
+        page.id,
+        updatePageDto.content!,
+        updatePageDto.format!,
+        updatePageDto.baseHash!,
+        user,
+        provenance,
+      );
+    }
+
     await this.pageRepo.updatePage(
       {
         title: updatePageDto.title,
@@ -263,7 +322,12 @@ export class PageService {
         // Agent-edit provenance: annotate the source without changing the
         // responsible author. A normal user request leaves the existing source
         // value unchanged.
-        ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
+        ...agentSourceFields(
+          provenance,
+          'lastUpdatedSource',
+          'lastUpdatedAiChatId',
+          'lastUpdatedApiKeyId',
+        ),
         updatedAt: new Date(),
         contributorIds: contributorIds,
       },
@@ -298,10 +362,13 @@ export class PageService {
       );
 
     if (
+      !isGuardedReplace &&
       updatePageDto.content &&
       updatePageDto.operation &&
       updatePageDto.format
     ) {
+      // Non-guarded write: append/prepend, or a legacy 'replace' WITHOUT baseHash
+      // (back-compat, unchanged). The guarded 'replace' already ran above.
       await this.updatePageContent(
         page.id,
         updatePageDto.content,
@@ -327,7 +394,17 @@ export class PageService {
     format: ContentFormat,
     user: User,
   ): Promise<void> {
-    const prosemirrorJson = await this.parseProsemirrorContent(content, format);
+    let prosemirrorJson = await this.parseProsemirrorContent(content, format);
+
+    // Canonicalize footnotes ONLY for a full-document write ('replace'). For an
+    // append/prepend FRAGMENT, canonicalizing is semantically wrong (it would
+    // drop a definition-only fragment's list, or synthesize a duplicate empty
+    // definition for a fragment reusing an existing id) — the fragment merges
+    // into the live doc where the editor's footnoteSyncPlugin keeps the invariant
+    // (issue #228, must-fix #1).
+    if (operation === 'replace') {
+      prosemirrorJson = canonicalizeFootnotes(prosemirrorJson);
+    }
 
     const documentName = `page.${pageId}`;
     await this.collaborationGateway.handleYjsEvent(
@@ -335,6 +412,190 @@ export class PageService {
       documentName,
       { operation, prosemirrorJson, user },
     );
+  }
+
+  /**
+   * #647 §C/§D — guarded full replace (server-side write-CAS). Parses + footnote-
+   * canonicalizes the incoming body exactly like `updatePageContent`'s 'replace',
+   * then routes `replaceIfMatch` to the document owner: the base-hash compare and
+   * the structural overwrite happen ATOMICALLY on the authoritative live doc.
+   *
+   * Fail-closed on every non-apply outcome (§R4):
+   *  - hash mismatch → HTTP 409 + `currentHash` (a concurrent edit landed; the
+   *    client re-reads and retries). No content written, no history version.
+   *  - empty-over-non-empty (§C/B4) → HTTP 422 (would clear the page; refused).
+   *  - owner unreachable / bridge timeout → HTTP 503 (retryable). We NEVER read a
+   *    stale DB snapshot to satisfy the compare, so an unreachable owner can never
+   *    be clobbered.
+   *
+   * B3 attribution: the request provenance (`actor`/`aiChatId`/`apiKeyId`) is
+   * threaded into the collab connection context so the debounced store stamps the
+   * write as agent-authored and preserves the api-key/ai-chat identity.
+   */
+  async replacePageContentGuarded(
+    pageId: string,
+    content: string | object,
+    format: ContentFormat,
+    baseHash: string,
+    user: User,
+    provenance?: AuthProvenanceData,
+  ): Promise<{ applied: true; newHash: string }> {
+    let prosemirrorJson = await this.parseProsemirrorContent(content, format);
+    prosemirrorJson = canonicalizeFootnotes(prosemirrorJson);
+
+    const documentName = `page.${pageId}`;
+    let result;
+    try {
+      result = await this.collaborationGateway.handleYjsEvent(
+        'replaceIfMatch',
+        documentName,
+        {
+          prosemirrorJson,
+          baseHash,
+          user,
+          actor: provenance?.actor,
+          aiChatId: provenance?.aiChatId ?? null,
+          apiKeyId: provenance?.apiKeyId ?? null,
+        },
+      );
+    } catch (err) {
+      // Bridge timeout / no live collaboration instance: the owner is
+      // unreachable. Fail CLOSED (retryable) — do NOT fall back to a DB compare.
+      this.logger.warn(
+        `Guarded replace for ${pageId} could not reach the collab owner: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      throw new ServiceUnavailableException(
+        'Could not reach the live document to verify baseHash; retry shortly.',
+      );
+    }
+
+    if (!result.applied) {
+      if (result.reason === 'empty-replace-refused') {
+        throw new UnprocessableEntityException(
+          'Refusing a guarded replace that would empty a non-empty page. ' +
+            'Clear the page explicitly instead of overwriting it with an empty body.',
+        );
+      }
+      // Hash mismatch → 409 with the current hash so the client can re-read.
+      throw new ConflictException({
+        message:
+          'Page changed since it was read (baseHash mismatch). Re-read the ' +
+          'page to get a fresh baseHash and retry the write.',
+        currentHash: result.currentHash,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * #647 §B/§E — coherent `{ content, contentHash }` for the opt-in
+   * `/pages/info?includeContentHash` read path (and the base hash a future
+   * guarded-replace re-checks). The hash is computed over `fromYdoc(D)`, NEVER the
+   * raw `page.content` (#647 B1: `fromYdoc(toYdoc(x)) !== x`, so hashing raw
+   * content would produce a permanent false 409), and the returned `content` is
+   * the SAME materialization, so a caller keying a cache by this hash gets true
+   * read-your-own-writes.
+   *
+   * When the collab doc is LOADED on some instance we take its live content via
+   * the non-claiming `readLiveIfLoaded` primitive (RYOW even while the DB row is
+   * debounce-stale). When it is NOT loaded we reconstruct a TRANSIENT ydoc from
+   * the DB exactly as `onLoadDocument` would (page.ydoc → applyUpdate, else
+   * toYdoc(page.content)) and hash that — WITHOUT force-loading the document.
+   */
+  async getLiveContentPair(
+    pageId: string,
+  ): Promise<{ content: any; contentHash: string }> {
+    const documentName = `page.${pageId}`;
+    const live = await this.collaborationGateway.readLiveIfLoaded(documentName);
+    if (live.loaded) {
+      return { content: live.content, contentHash: live.hash };
+    }
+
+    // Not loaded (or owner unreachable): reconstruct a transient ydoc from the DB
+    // and hash the SAME `fromYdoc` materialization the load path would produce.
+    const page = await this.pageRepo.findById(pageId, {
+      includeContent: true,
+      includeYdoc: true,
+    });
+    const content = this.reconstructContentFromDb(page);
+    return { content, contentHash: pageContentHash(content) };
+  }
+
+  /**
+   * #654 §Server — the read-your-own-writes resolution for the structural read
+   * tools' opt-in `preferLive` hint. Consumes the SAME non-claiming, non-force-
+   * loading `readLiveIfLoaded` primitive (#647) but, unlike getLiveContentPair,
+   * returns NO hash and falls back to the raw `page.content` DB row (NOT a
+   * transient ydoc reconstruction) — a stale read is acceptable here (this feeds
+   * structural views, not a CAS base hash), so we keep the fallback cheap.
+   *
+   * Three outcomes (contract point 4 of the primitive), mapped to a metric-
+   * distinguishable `fallbackReason`:
+   *  - loaded            -> live content, `contentSource:'live'`.
+   *  - not loaded        -> `dbContent`, `contentSource:'db'`, `not_loaded`.
+   *  - owner unreachable -> `dbContent`, `contentSource:'db'`, `owner_unreachable`.
+   *
+   * ALWAYS fails open to the DB row — it never throws, so a hung/absent owner
+   * degrades to a (possibly stale) read within the primitive's short probe
+   * timeout instead of erroring or stalling the hot read path.
+   */
+  async resolvePreferLiveContent(
+    pageId: string,
+    dbContent: any,
+  ): Promise<{
+    content: any;
+    contentSource: 'live' | 'db';
+    fallbackReason?: 'not_loaded' | 'owner_unreachable';
+  }> {
+    const documentName = `page.${pageId}`;
+    let live: Awaited<
+      ReturnType<typeof this.collaborationGateway.readLiveIfLoaded>
+    >;
+    try {
+      live = await this.collaborationGateway.readLiveIfLoaded(documentName);
+    } catch {
+      // Fail OPEN (the docstring's "never throws" contract): ANY error while
+      // probing the owner — e.g. an unwrapped redis reject in readLiveIfLoaded's
+      // non-remote pub.get branch — must degrade to the DB row, not 500 the hot
+      // /pages/info read path. Fail-CLOSED in the sense that matters: we return
+      // the SAME dbContent a plain read returns, never another page's content.
+      return { content: dbContent, contentSource: 'db', fallbackReason: 'owner_unreachable' };
+    }
+    if (live.loaded) {
+      return { content: live.content, contentSource: 'live' };
+    }
+    // Not loaded (no owner / not hydrated) vs owner present but the short probe
+    // timed out / errored — different metrics, same fail-open to the DB row.
+    const fallbackReason = (live as { unreachable?: boolean }).unreachable
+      ? 'owner_unreachable'
+      : 'not_loaded';
+    return { content: dbContent, contentSource: 'db', fallbackReason };
+  }
+
+  /**
+   * #647 B1 — materialize a page's ProseMirror JSON the SAME way onLoadDocument
+   * hydrates it, so a hash over the result matches what the collab process holds:
+   * prefer the persisted ydoc bytes, else convert `page.content`, else an empty
+   * doc. Uses a throwaway Y.Doc — it never touches the live collab instance.
+   */
+  private reconstructContentFromDb(page: Page | null | undefined): any {
+    if (page?.ydoc) {
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, new Uint8Array(page.ydoc as any));
+      return TiptapTransformer.fromYdoc(doc, 'default');
+    }
+    if (page?.content) {
+      const doc = TiptapTransformer.toYdoc(
+        page.content,
+        'default',
+        tiptapExtensions,
+      );
+      return TiptapTransformer.fromYdoc(doc, 'default');
+    }
+    return { type: 'doc', content: [] };
   }
 
   async getSidebarPages(
@@ -356,6 +617,7 @@ export class PageService {
         'spaceId',
         'creatorId',
         'isTemplate',
+        'temporaryExpiresAt',
         'deletedAt',
       ])
       .select((eb) => this.pageRepo.withHasChildren(eb))
@@ -496,7 +758,12 @@ export class PageService {
           // Agent-edit provenance on the moved root page. Child pages are bulk
           // re-parented to the new space (no content change), so the marker is
           // stamped on the root the agent acted on. Normal user: no change.
-          ...agentSourceFields(provenance, 'lastUpdatedSource', 'lastUpdatedAiChatId'),
+          ...agentSourceFields(
+            provenance,
+            'lastUpdatedSource',
+            'lastUpdatedAiChatId',
+            'lastUpdatedApiKeyId',
+          ),
         },
         rootPage.id,
         trx,
@@ -991,6 +1258,7 @@ export class PageService {
             provenance,
             'lastUpdatedSource',
             'lastUpdatedAiChatId',
+            'lastUpdatedApiKeyId',
           ),
         },
         dto.pageId,
@@ -1035,6 +1303,29 @@ export class PageService {
     });
   }
 
+  /**
+   * Walk the ancestor chain of `childPageId` up to the space root, filtered
+   * ONLY by `deletedAt` (+ MAX_PAGE_TREE_DEPTH) — WITHOUT per-ancestor
+   * permission filtering. Callers that expose this to a user (the
+   * `/breadcrumbs` endpoint) validate `validateCanView` on the TARGET page
+   * only, then return the whole chain of ancestor titles (#471).
+   *
+   * This is safe — NOT a title leak — because page restrictions inherit DOWN
+   * the tree: to view a page the caller must hold permission on EVERY
+   * restricted ancestor (`validateCanView` -> `canUserAccessPage` checks the
+   * full ancestor chain — see page-access.service.ts / page-permission.repo.ts
+   * `canUserEditPage`). A restricted ancestor the caller may not see would
+   * therefore already hide the TARGET page itself, so every ancestor reachable
+   * here is one the caller is already entitled to view (content stays gated
+   * regardless — getPage/getNode re-check permissions).
+   *
+   * Note the guarantee is the narrow "may view a descendant => may view its
+   * ancestors", NOT "space membership sees every page" — restricted subtrees do
+   * hide pages from members. Per-ancestor permission filtering here was
+   * considered and declined as redundant given the inheritance invariant above
+   * (#471). The same chain feeds the web-UI breadcrumb bar under identical CASL
+   * scope.
+   */
   async getPageBreadCrumbs(childPageId: string, trx?: KyselyTransaction) {
     const ancestors = await dbOrTx(this.db, trx)
       .withRecursive('page_ancestors', (db) =>
@@ -1131,6 +1422,7 @@ export class PageService {
   async getRecentPages(
     userId: string,
     pagination: PaginationOptions,
+    workspaceId?: string | null,
   ): Promise<CursorPaginationResult<Page>> {
     const result = await this.pageRepo.getRecentPages(userId, pagination);
 
@@ -1140,6 +1432,8 @@ export class PageService {
         await this.pagePermissionRepo.filterAccessiblePageIds({
           pageIds,
           userId,
+          // #348 — cross-space "recent"; enable the workspace short-circuit.
+          workspaceId,
         });
       const accessibleSet = new Set(accessibleIds);
       result.items = result.items.filter((p) => accessibleSet.has(p.id));
@@ -1153,6 +1447,7 @@ export class PageService {
     requestingUserId: string,
     pagination: PaginationOptions,
     spaceId?: string,
+    workspaceId?: string | null,
   ): Promise<CursorPaginationResult<Page>> {
     const result = await this.pageRepo.getCreatedByPages(
       creatorId,
@@ -1167,6 +1462,9 @@ export class PageService {
         await this.pagePermissionRepo.filterAccessiblePageIds({
           pageIds,
           userId: requestingUserId,
+          spaceId,
+          // #348 — enable the workspace short-circuit when not space-scoped.
+          workspaceId,
         });
       const accessibleSet = new Set(accessibleIds);
       result.items = result.items.filter((p) => accessibleSet.has(p.id));
@@ -1269,8 +1567,27 @@ export class PageService {
 
     switch (format) {
       case 'markdown': {
-        const html = await markdownToHtml(content as string);
-        prosemirrorJson = htmlToJson(html as string);
+        // Canonical markdown -> ProseMirror JSON directly via
+        // `@docmost/prosemirror-markdown` (issue #345) — no HTML intermediate,
+        // no editor-ext markdown layer. Foreign markdown surfaces the strict
+        // parser rejects (GFM `[^id]` reference footnotes) are normalized to the
+        // canonical inline form first.
+        //
+        // #555 (review of #514): use `normalizeAgentMarkdown`, NOT
+        // `normalizeForeignMarkdown`. This is the REST content-write path
+        // (createPage / updatePageContent — a user or client PUTting a full body
+        // or a fragment), which must be SYMMETRIC with the MCP agent-write path
+        // (`markdownToProseMirrorCanonical` -> `normalizeAgentMarkdown`): a leading
+        // `---…---` in a full-body write is (almost) always a `horizontalRule` the
+        // serializer emitted, so stripping it as YAML front-matter would silently
+        // delete the page's leading content. The front-matter strip stays a
+        // FILE-import concern (`normalizeForeignMarkdown` in import.service.ts /
+        // file-import-task.service.ts), where a `.md` really can open with an
+        // Obsidian/Hugo header. Both normalizers still rewrite GFM `[^id]`
+        // reference footnotes to the canonical inline form.
+        prosemirrorJson = await markdownToProseMirror(
+          normalizeAgentMarkdown(content as string),
+        );
         break;
       }
       case 'html': {
@@ -1284,6 +1601,24 @@ export class PageService {
       }
     }
 
+    // NOTE: footnote canonicalization is intentionally NOT done here. This
+    // method serves BOTH full writes (createPage / updatePageContent with
+    // operation 'replace') AND fragment writes (append / prepend). Canonicalizing
+    // a FRAGMENT is semantically wrong — e.g. a definition-only fragment has no
+    // references, so the canonicalizer would drop its whole footnotesList (lost
+    // footnotes), and a fragment reusing an existing id would synthesize an empty
+    // duplicate definition. The canonicalizer therefore runs only at the
+    // FULL-DOCUMENT callers (createPage, and updatePageContent for 'replace'),
+    // never on a fragment (issue #228, must-fix #1).
+    // (Future consolidation, architecture B: the import services persist via a
+    // different path; folding all of these into one "prepare JSON for persist"
+    // helper would centralize the canonicalize call — left as follow-up.)
+    //
+    // ENFORCEMENT RULE (#228): any NEW FULL-document persist path MUST call
+    // `canonicalizeFootnotes(json)` before writing (see createPage and
+    // updatePageContent 'replace'); append/prepend FRAGMENT writes MUST NOT (it
+    // would drop or duplicate footnotes — that is exactly why this is per-call-site
+    // rather than a single wrapper here).
     try {
       jsonToNode(prosemirrorJson);
     } catch (err) {

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
 import { dbOrTx, jsonbBind, parseJsonbValue } from '../../utils';
-import { AiAgentRole } from '@docmost/db/types/entity.types';
+import { AiAgentRole, RoleSource } from '@docmost/db/types/entity.types';
 
 /** The jsonb shape persisted in `model_config` (loosely typed for the column). */
 type ModelConfigValue = Record<string, unknown> | null;
@@ -81,6 +81,8 @@ export class AiAgentRoleRepo {
       autoStart?: boolean;
       // null/'' => stored as null (client default launch message).
       launchMessage?: string | null;
+      // Catalog origin { slug, language, version } | null. null => manual role.
+      source?: Record<string, unknown> | null;
     },
     trx?: KyselyTransaction,
   ): Promise<AiAgentRole> {
@@ -103,6 +105,9 @@ export class AiAgentRoleRepo {
         autoStart: values.autoStart ?? true,
         // Empty string is treated as "no custom text" => null.
         launchMessage: values.launchMessage || null,
+        // Same cast reason as modelConfig (see above).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        source: jsonbBind(values.source) as any,
       })
       .returningAll()
       .executeTakeFirst();
@@ -124,6 +129,8 @@ export class AiAgentRoleRepo {
       autoStart?: boolean;
       // undefined => unchanged; null/'' => clear to null; string => set.
       launchMessage?: string | null;
+      // undefined => unchanged; null => clear; object => set.
+      source?: Record<string, unknown> | null;
     },
     trx?: KyselyTransaction,
   ): Promise<void> {
@@ -141,6 +148,9 @@ export class AiAgentRoleRepo {
     if (patch.launchMessage !== undefined) {
       // Empty string clears to null (client default launch message).
       set.launchMessage = patch.launchMessage || null;
+    }
+    if (patch.source !== undefined) {
+      set.source = jsonbBind(patch.source);
     }
     await db
       .updateTable('aiAgentRoles')
@@ -192,14 +202,46 @@ export function parseModelConfig(
   );
 }
 
-/** Normalize a DB row so `modelConfig` is always an object or null. The cast
- *  bridges parseModelConfig's concrete `Record | null` to the column's broad
- *  generated `JsonValue` type (an object is a valid JsonValue at runtime). */
+/**
+ * THE single form validator for the `source` jsonb column: parse the value read
+ * from the DB into a fully-valid {@link RoleSource} or null. Same legacy
+ * double-encoding self-heal as {@link parseModelConfig} (a JSON string is parsed
+ * once), then validates the FULL shape — `slug` and `language` non-empty
+ * strings, `version` a number. A null / corrupt / partially-shaped value (e.g.
+ * `{}`, `{ slug: 123 }`, `{ slug: 'a' }` missing language/version) degrades to
+ * null (= manually created, no catalog provenance), so a bad row never breaks
+ * the read path AND never stamps a half-built object as a valid `RoleSource`.
+ * Both the repo read-path and the service share this so the contract cannot
+ * drift between layers.
+ */
+export function parseSource(value: unknown): RoleSource | null {
+  return parseJsonbValue(value, isRoleSource);
+}
+
+/** Full-shape guard for a persisted `source` jsonb value (see parseSource). */
+function isRoleSource(v: unknown): v is RoleSource {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const obj = v as Record<string, unknown>;
+  return (
+    typeof obj.slug === 'string' &&
+    obj.slug.length > 0 &&
+    typeof obj.language === 'string' &&
+    obj.language.length > 0 &&
+    typeof obj.version === 'number'
+  );
+}
+
+/** Normalize a DB row so `modelConfig` and `source` are always a valid object or
+ *  null. The casts bridge the concrete parsed types (`Record | null`,
+ *  `RoleSource | null`) to the column's broad generated `JsonValue` type — both
+ *  are valid JsonValues at runtime; RoleSource lacks the JsonObject index
+ *  signature so it routes through `unknown`. */
 function normalizeRow(row: AiAgentRole): AiAgentRole {
   return {
     ...row,
     modelConfig: parseModelConfig(
       row.modelConfig,
     ) as AiAgentRole['modelConfig'],
+    source: parseSource(row.source) as unknown as AiAgentRole['source'],
   };
 }

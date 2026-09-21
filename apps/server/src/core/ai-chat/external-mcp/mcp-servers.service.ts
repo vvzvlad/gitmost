@@ -3,27 +3,18 @@ import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
 import { AiMcpServer } from '@docmost/db/types/entity.types';
 import { SecretBoxService } from '../../../integrations/crypto/secret-box';
 import { McpClientsService } from './mcp-clients.service';
-import { isUrlAllowed } from './ssrf-guard';
 import { CreateMcpServerDto } from './dto/create-mcp-server.dto';
 import { UpdateMcpServerDto } from './dto/update-mcp-server.dto';
+import {
+  McpServerView,
+  assertMcpUrlAllowed,
+  encryptMcpHeaders,
+  toMcpServerView,
+} from './mcp-server-view.util';
 
-/**
- * Public (admin-facing) view of an external MCP server row. SECURITY (§8.10):
- * `headersEnc` is NEVER part of this shape — only `hasHeaders` signals whether
- * auth headers are configured.
- */
-export interface McpServerView {
-  id: string;
-  name: string;
-  transport: string;
-  url: string;
-  enabled: boolean;
-  toolAllowlist: string[] | null;
-  hasHeaders: boolean;
-  // Admin-authored prompt guidance (#180). NON-secret, so returned in the view.
-  // Null when no guidance is configured.
-  instructions: string | null;
-}
+// Re-export so existing importers of `McpServerView` from this module keep
+// working; the canonical definition now lives in mcp-server-view.util.ts.
+export { McpServerView } from './mcp-server-view.util';
 
 /**
  * Admin business logic for external MCP servers (§7.3): CRUD with write-only
@@ -100,7 +91,8 @@ export class McpServersService {
       transport: dto.transport,
       url: dto.url,
       headersEnc,
-      // undefined => unchanged; [] / value handled by repo (empty => null).
+      // undefined => unchanged; null => no restriction; `[]` is persisted
+      // verbatim and means deny-all (#476).
       toolAllowlist: dto.toolAllowlist,
       // undefined => unchanged; blank => cleared (null) by the repo.
       instructions: dto.instructions,
@@ -141,40 +133,19 @@ export class McpServersService {
   // --- internals ---
 
   /** Throw a clear BadRequest when the URL is disallowed by the SSRF policy. */
-  private async assertUrlAllowed(url: string): Promise<void> {
-    const check = await isUrlAllowed(url);
-    if (!check.ok) {
-      throw new BadRequestException(
-        `URL not allowed: ${check.reason ?? 'blocked by SSRF policy'}`,
-      );
-    }
+  private assertUrlAllowed(url: string): Promise<void> {
+    return assertMcpUrlAllowed(url);
   }
 
   /** Encrypt a non-empty header map to a blob; undefined for empty/absent. */
   private encryptHeaders(
     headers: Record<string, string> | undefined,
   ): string | undefined {
-    if (!headers) return undefined;
-    // Keep only string values; drop anything else defensively.
-    const clean: Record<string, string> = {};
-    for (const [k, v] of Object.entries(headers)) {
-      if (typeof v === 'string' && v.length > 0) clean[k] = v;
-    }
-    if (Object.keys(clean).length === 0) return undefined;
-    return this.secretBox.encryptSecret(JSON.stringify(clean));
+    return encryptMcpHeaders(this.secretBox, headers);
   }
 
   /** Project a row to the public admin view (NEVER includes headersEnc). */
   private toView(row: AiMcpServer): McpServerView {
-    return {
-      id: row.id,
-      name: row.name,
-      transport: row.transport,
-      url: row.url,
-      enabled: row.enabled,
-      toolAllowlist: row.toolAllowlist ?? null,
-      hasHeaders: Boolean(row.headersEnc),
-      instructions: row.instructions ?? null,
-    };
+    return toMcpServerView(row);
   }
 }

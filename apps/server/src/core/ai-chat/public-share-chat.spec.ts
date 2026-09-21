@@ -808,7 +808,7 @@ describe('PublicShareChatToolsService share scoping', () => {
     };
 
     await expect(getSharePage.execute({ pageId: 'p-outside' })).rejects.toThrow(
-      /not part of this published share/i,
+      /not available in this share/i,
     );
     // The tool delegated the resolve to the canonical boundary with the
     // forShare-scoped shareId, and returned NO content for a non-resolving page.
@@ -841,7 +841,7 @@ describe('PublicShareChatToolsService share scoping', () => {
 
     await expect(
       getSharePage.execute({ pageId: 'p-restricted' }),
-    ).rejects.toThrow(/not part of this published share/i);
+    ).rejects.toThrow(/not available in this share/i);
     // No content was ever sanitized/returned for the blocked page.
     expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();
   });
@@ -1003,7 +1003,7 @@ describe('public-share assistant boundary locks (red-team regression guards)', (
     };
     await expect(
       getSharePage.execute({ pageId: 'p-elsewhere' }),
-    ).rejects.toThrow(/not part of this published share/i);
+    ).rejects.toThrow(/not available in this share/i);
     // The forged share id is the scope the boundary re-derivation rejects against.
     expect(shareService.resolveReadableSharePage).toHaveBeenCalledWith(
       'FORGED-SHARE',

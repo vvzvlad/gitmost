@@ -9,8 +9,8 @@ import {
   AI_CHAT_THROTTLER,
   PAGE_TEMPLATE_THROTTLER,
   PUBLIC_SHARE_AI_THROTTLER,
+  VITALS_THROTTLER,
 } from './throttler-names';
-import Redis from 'ioredis';
 
 @Module({
   imports: [
@@ -30,18 +30,22 @@ import Redis from 'ioredis';
             { name: PAGE_TEMPLATE_THROTTLER, ttl: 60_000, limit: 30 },
             // Anonymous public-share assistant: ~5 req/min per IP.
             { name: PUBLIC_SHARE_AI_THROTTLER, ttl: 60_000, limit: 5 },
+            // Anonymous client perf-telemetry sink: 120 batched posts/min per IP.
+            { name: VITALS_THROTTLER, ttl: 60_000, limit: 120 },
           ],
           errorMessage: 'Too many requests',
-          storage: new ThrottlerStorageRedisService(
-            new Redis({
-              host: redisConfig.host,
-              port: redisConfig.port,
-              password: redisConfig.password,
-              db: redisConfig.db,
-              family: redisConfig.family,
-              keyPrefix: 'throttle:',
-            }),
-          ),
+          // Pass ioredis options (not a pre-built Redis instance) so
+          // ThrottlerStorageRedisService owns the connection and disconnects it
+          // in its onModuleDestroy. Passing an instance leaves disconnectRequired
+          // false, so the socket would leak on shutdown (e2e jest never exits).
+          storage: new ThrottlerStorageRedisService({
+            host: redisConfig.host,
+            port: redisConfig.port,
+            password: redisConfig.password,
+            db: redisConfig.db,
+            family: redisConfig.family,
+            keyPrefix: 'throttle:',
+          }),
         };
       },
       inject: [EnvironmentService],

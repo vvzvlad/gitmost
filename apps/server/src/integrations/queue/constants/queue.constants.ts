@@ -4,7 +4,6 @@ export enum QueueName {
   GENERAL_QUEUE = '{general-queue}',
   BILLING_QUEUE = '{billing-queue}',
   FILE_TASK_QUEUE = '{file-task-queue}',
-  SEARCH_QUEUE = '{search-queue}',
   AI_QUEUE = '{ai-queue}',
   HISTORY_QUEUE = '{history-queue}',
   NOTIFICATION_QUEUE = '{notification-queue}',
@@ -32,15 +31,6 @@ export enum QueueJob {
   IMPORT_TASK = 'import-task',
   EXPORT_TASK = 'export-task',
 
-  SEARCH_INDEX_PAGE = 'search-index-page',
-  SEARCH_INDEX_PAGES = 'search-index-pages',
-  SEARCH_INDEX_COMMENT = 'search-index-comment',
-  SEARCH_INDEX_COMMENTS = 'search-index-comments',
-  SEARCH_INDEX_ATTACHMENT = 'search-index-attachment',
-  SEARCH_INDEX_ATTACHMENTS = 'search-index-attachments',
-  SEARCH_REMOVE_PAGE = 'search-remove-page',
-  SEARCH_REMOVE_ASSET = 'search-remove-attachment',
-  SEARCH_REMOVE_FACE = 'search-remove-comment',
   TYPESENSE_FLUSH = 'typesense-flush',
 
   PAGE_CREATED = 'page-created',
@@ -68,6 +58,9 @@ export enum QueueJob {
 
   COMMENT_NOTIFICATION = 'comment-notification',
   COMMENT_RESOLVED_NOTIFICATION = 'comment-resolved-notification',
+  // #399: off-critical-path mirror of a comment's inline mark into the collab
+  // Y.Doc (resolve/unresolve flip, or ephemeral-suggestion anchor removal).
+  COMMENT_MARK_UPDATE = 'comment-mark-update',
   PAGE_MENTION_NOTIFICATION = 'page-mention-notification',
   PAGE_PERMISSION_GRANTED = 'page-permission-granted',
   PAGE_UPDATE_DIGEST = 'page-update-digest',
@@ -83,4 +76,39 @@ export enum QueueJob {
 
   PDF_EXPORT_TASK = 'pdf-export-task',
   PDF_EXPORT_CLEANUP = 'pdf-export-cleanup',
+}
+
+/**
+ * #599 (R2) — job options for the workspace-wide RAG reindex
+ * (WORKSPACE_CREATE_EMBEDDINGS), shared by EVERY enqueue site (the manual
+ * "Reindex now" button, the AI-Search enable toggle, and the automatic reindex
+ * fired when the embedding config's fingerprint changes) so they de-duplicate
+ * against each other and retry identically.
+ *
+ * `jobId` is per-workspace and STABLE: a second enqueue while a run is pending/in
+ * flight is de-duplicated by BullMQ rather than stacking a second full pass.
+ *
+ * `attempts: 3` + exponential backoff OVERRIDES the AI_QUEUE default of
+ * `attempts: 1`. A reindex that ends with failed pages (a TEI timeout, a 429)
+ * cannot flip the active generation, which leaves the workspace in the swap window
+ * (~2x pgvector rows, `semantic.state: 'stale'`, lexical-only after a model
+ * change). With a single attempt that state was PERMANENT — nothing ever re-ran the
+ * job. The run is idempotent (the start GC keeps the serving generation; the
+ * per-page replace is fingerprint-scoped), so retrying it is safe and simply
+ * re-attempts the pages that failed. Bounded at 3 so a permanently poisonous page
+ * cannot loop forever: after that the job stays failed and the workspace is left in
+ * its (visible, `stale`) degraded state.
+ *
+ * The 60s base backoff is deliberately long: the typical cause is a saturated or
+ * restarting embedding sidecar, and hammering it again seconds later would just
+ * reproduce the same timeouts (retry at ~60s, then ~120s).
+ */
+export function workspaceReindexJobOptions(workspaceId: string) {
+  return {
+    jobId: `ai-reindex-${workspaceId}`,
+    attempts: 3,
+    backoff: { type: 'exponential' as const, delay: 60_000 },
+    removeOnComplete: true,
+    removeOnFail: true,
+  };
 }

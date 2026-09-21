@@ -45,6 +45,7 @@ export class NotificationService {
     userId: string,
     pagination: PaginationOptions,
     type: NotificationTab = 'all',
+    workspaceId?: string | null,
   ) {
     const result = await this.notificationRepo.findByUserId(
       userId,
@@ -61,6 +62,8 @@ export class NotificationService {
         await this.pagePermissionRepo.filterAccessiblePageIds({
           pageIds,
           userId,
+          // #348 — notifications list; enable the workspace short-circuit.
+          workspaceId,
         });
       const accessibleSet = new Set(accessiblePageIds);
 

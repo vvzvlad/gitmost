@@ -1,6 +1,7 @@
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -13,35 +14,60 @@ import {
   deleteAiRole,
   getAiChatMessages,
   getAiChats,
+  getAiRoleCatalog,
+  getAiRoleCatalogBundle,
   getAiRoles,
+  importAiRolesFromCatalog,
   renameAiChat,
   updateAiRole,
+  updateAiRoleFromCatalog,
 } from "@/features/ai-chat/services/ai-chat-service.ts";
 import {
   IAiChat,
   IAiChatMessageRow,
   IAiRole,
+  IAiRoleCatalog,
+  IAiRoleCatalogBundle,
   IAiRoleCreate,
+  IAiRoleImportPayload,
+  IAiRoleImportResult,
   IAiRoleUpdate,
+  IAiRoleUpdateFromCatalogResult,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { IPagination } from "@/lib/types.ts";
 
 export const AI_CHATS_RQ_KEY = ["ai-chats"];
 export const AI_ROLES_RQ_KEY = ["ai-roles"];
+// Catalog reads resolve bundle names per language, so the language is part of
+// the cache key (a language switch refetches rather than reusing stale names).
+export const AI_ROLE_CATALOG_RQ_KEY = (language: string) => [
+  "ai-role-catalog",
+  language,
+];
+export const AI_ROLE_CATALOG_BUNDLE_RQ_KEY = (
+  bundleId: string,
+  language: string,
+) => ["ai-role-catalog-bundle", bundleId, language];
 export const AI_CHAT_MESSAGES_RQ_KEY = (chatId: string) => [
   "ai-chat-messages",
   chatId,
 ];
 
-/** Paginated list of the current user's chats (auto-loads further pages). */
-export function useAiChatsQuery() {
+/**
+ * Paginated list of the current user's chats (auto-loads further pages).
+ * `enabled` (default true) lets the AI chat window skip fetching while it is
+ * closed — the list is only needed once the window is open.
+ */
+export function useAiChatsQuery(enabled: boolean = true) {
   const query = useInfiniteQuery({
     queryKey: AI_CHATS_RQ_KEY,
-    queryFn: ({ pageParam }) =>
-      getAiChats({ cursor: pageParam, limit: 50 }),
+    queryFn: ({ pageParam }) => getAiChats({ cursor: pageParam, limit: 50 }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
-      lastPage.meta.hasNextPage ? (lastPage.meta.nextCursor ?? undefined) : undefined,
+      lastPage.meta.hasNextPage
+        ? (lastPage.meta.nextCursor ?? undefined)
+        : undefined,
+    enabled,
   });
 
   const data = useMemo<IPagination<IAiChat> | undefined>(() => {
@@ -64,15 +90,29 @@ export function useAiChatsQuery() {
  * Load all persisted messages of a chat (oldest first), flattening the
  * paginated server response. Used to seed `useChat` initial messages.
  */
-export function useAiChatMessagesQuery(chatId: string | undefined) {
+export function useAiChatMessagesQuery(
+  chatId: string | undefined,
+  // #184 phase 1.5: the degraded-poll fallback. When a tab could not attach to a
+  // still-running run (the attach returned 204 / the resumed stream ended with no
+  // terminal row), the window arms a dumb timed poll of the message history to
+  // follow the detached run to settle. The callback form lives in AiChatWindow;
+  // threaded here verbatim so this query owns the polling. Undefined => no poll.
+  refetchInterval?: number | false | (() => number | false),
+  // #344: gate the query so a backgrounded/hidden window stops issuing refetches
+  // and duplicating work. Defaults to enabled to preserve existing call-sites.
+  enabled: boolean = true,
+) {
   const query = useInfiniteQuery({
     queryKey: AI_CHAT_MESSAGES_RQ_KEY(chatId ?? ""),
     queryFn: ({ pageParam }) =>
       getAiChatMessages({ chatId: chatId as string, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
-      lastPage.meta.hasNextPage ? (lastPage.meta.nextCursor ?? undefined) : undefined,
-    enabled: !!chatId,
+      lastPage.meta.hasNextPage
+        ? (lastPage.meta.nextCursor ?? undefined)
+        : undefined,
+    enabled: !!chatId && enabled,
+    refetchInterval,
   });
 
   // useInfiniteQuery only fetches the first page on its own. The hook's contract
@@ -212,6 +252,138 @@ export function useDeleteAiRoleMutation() {
     onSuccess: () => {
       notifications.show({ message: t("Deleted successfully") });
       queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+    },
+    onError: (error) => {
+      const message = error["response"]?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    },
+  });
+}
+
+/**
+ * Browse the role catalog for a language. Gated by `enabled` so the (admin-only)
+ * fetch runs only when the catalog modal is open. The catalog can 502 when the
+ * curated source is unreachable; callers handle the error state in the UI.
+ */
+export function useAiRoleCatalogQuery(language: string, enabled: boolean) {
+  return useQuery<IAiRoleCatalog, Error>({
+    queryKey: AI_ROLE_CATALOG_RQ_KEY(language),
+    queryFn: () => getAiRoleCatalog(language),
+    enabled,
+  });
+}
+
+/**
+ * Open one catalog bundle (role content + versions). Gated by `enabled` so the
+ * fetch only runs when a bundle is actually expanded.
+ */
+export function useAiRoleCatalogBundleQuery(
+  bundleId: string,
+  language: string,
+  enabled: boolean,
+) {
+  return useQuery<IAiRoleCatalogBundle, Error>({
+    queryKey: AI_ROLE_CATALOG_BUNDLE_RQ_KEY(bundleId, language),
+    queryFn: () => getAiRoleCatalogBundle(bundleId, language),
+    enabled,
+  });
+}
+
+/**
+ * Eagerly open EVERY listed bundle's content in parallel for one language. The
+ * redesigned catalog shows each bundle's status summary in its COLLAPSED header,
+ * which needs every role's install state up front — so contents can no longer be
+ * lazy-loaded on expand. The catalog is small, so a fan-out of `useQueries` (one
+ * cached read per bundle, sharing the same cache keys as
+ * `useAiRoleCatalogBundleQuery`) is cheap. Gated by `enabled` (modal open + a
+ * resolved language) so nothing fetches while the modal is closed.
+ */
+export function useAiRoleCatalogBundlesQueries(
+  bundleIds: string[],
+  language: string,
+  enabled: boolean,
+) {
+  return useQueries({
+    queries: bundleIds.map((bundleId) => ({
+      queryKey: AI_ROLE_CATALOG_BUNDLE_RQ_KEY(bundleId, language),
+      queryFn: () => getAiRoleCatalogBundle(bundleId, language),
+      enabled: enabled && !!language,
+    })),
+  });
+}
+
+export function useImportAiRolesFromCatalogMutation() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation<IAiRoleImportResult, Error, IAiRoleImportPayload>({
+    mutationFn: (payload) => importAiRolesFromCatalog(payload),
+    onSuccess: (result) => {
+      notifications.show({
+        message: t(
+          "Imported {{created}}, renamed {{renamed}}, skipped {{skipped}}",
+          {
+            created: result.created,
+            renamed: result.renamed,
+            skipped: result.skipped,
+          },
+        ),
+      });
+      // Surface partial failures (e.g. unique-name races) as a red warning.
+      if (result.errors.length > 0) {
+        notifications.show({
+          color: "red",
+          message: t("Failed to import {{count}} role(s)", {
+            count: result.errors.length,
+          }),
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+      // Imported roles can appear in the chat picker / badges.
+      queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
+    },
+    onError: (error) => {
+      const message = error["response"]?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    },
+  });
+}
+
+export function useUpdateAiRoleFromCatalogMutation() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation<IAiRoleUpdateFromCatalogResult, Error, string>({
+    mutationFn: (id) => updateAiRoleFromCatalog(id),
+    onSuccess: (result) => {
+      // The server returns updated:false with a reason for a no-op (already
+      // up to date / removed from catalog / language no longer offered). Map
+      // each reason to a specific message instead of a generic "up to date".
+      // Narrow the discriminated union via `"reason" in result` (the `updated`
+      // boolean discriminant does not narrow under this project's
+      // strictNullChecks:false). Inside the branch, `reason` is the typed literal
+      // union, so the comparisons below are compiler-checked.
+      let message: string;
+      if (!("reason" in result)) {
+        message = t("Updated to the latest version");
+      } else if (result.reason === "not-in-catalog") {
+        message = t("This role is no longer in the catalog");
+      } else if (result.reason === "language-unavailable") {
+        message = t("This language is no longer available in the catalog");
+      } else {
+        // "up-to-date" (the only remaining reason).
+        message = t("Already up to date");
+      }
+      notifications.show({ message });
+      queryClient.invalidateQueries({ queryKey: AI_ROLES_RQ_KEY });
+      // The role badge denormalized onto the chat list may have changed.
       queryClient.invalidateQueries({ queryKey: AI_CHATS_RQ_KEY });
     },
     onError: (error) => {

@@ -33,10 +33,6 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
 
   @IsOptional()
   @IsBoolean()
-  generativeAi: boolean;
-
-  @IsOptional()
-  @IsBoolean()
   disablePublicSharing: boolean;
 
   @IsOptional()
@@ -58,6 +54,14 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsOptional()
   @IsBoolean()
   aiDictationStreaming: boolean;
+
+  // #184: detached/autonomous agent runs (settings.ai.autonomousRuns). When on, a
+  // chat turn becomes a server-side RUN that survives a browser disconnect; only
+  // an explicit /ai-chat/stop ends it. Off by default; single-instance-only in
+  // phase 1 (see AiChatRunService.warnIfMultiInstance / AGENTS.md).
+  @IsOptional()
+  @IsBoolean()
+  autonomousRuns: boolean;
 
   // Workspace master toggle that enables/disables the HTML embed block type.
   // Persisted at settings.htmlEmbed. ABSENT/false => OFF (default). The block
@@ -83,6 +87,13 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsInt()
   @Min(1)
   trashRetentionDays: number;
+
+  // Default lifetime for new temporary notes, in HOURS. Frozen per-note at
+  // creation, so changing this never reschedules existing notes.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  temporaryNoteHours: number;
 
   @IsOptional()
   @IsBoolean()

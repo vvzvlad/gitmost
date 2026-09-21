@@ -12,6 +12,12 @@ export interface CodeBlockLowlightOptions extends CodeBlockOptions {
    */
   lowlight: any;
   view: any;
+  /**
+   * #683 — optional hook fired with the ms of a REAL syntax-highlight decoration
+   * recompute (not every keystroke). The host wires it to client telemetry
+   * (`operation_ms{op=code_highlight}`); omitted ⇒ no timing cost.
+   */
+  onHighlight?: (durationMs: number) => void;
 }
 
 const TAB_CHAR = '\u00A0\u00A0';
@@ -37,6 +43,7 @@ export const CustomCodeBlock = CodeBlock.extend<CodeBlockLowlightOptions>({
       defaultLanguage: null,
       HTMLAttributes: {},
       view: null,
+      onHighlight: undefined,
     };
   },
 
@@ -175,6 +182,7 @@ export const CustomCodeBlock = CodeBlock.extend<CodeBlockLowlightOptions>({
         name: this.name,
         lowlight: this.options.lowlight,
         defaultLanguage: this.options.defaultLanguage,
+        onHighlight: this.options.onHighlight,
       }),
       // Mermaid hides its <pre> when unselected, so the browser's native
       // vertical caret movement skips past it. Land the cursor inside the

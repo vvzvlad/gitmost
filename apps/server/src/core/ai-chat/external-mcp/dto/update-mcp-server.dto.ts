@@ -38,10 +38,13 @@ export class UpdateMcpServerDto {
   @IsObject()
   headers?: Record<string, string>;
 
+  // Absent => unchanged; null => no restriction; `[]` is persisted verbatim
+  // and means deny-all (zero tools) since #476. @IsOptional() skips validation
+  // for null as well, so an explicit null is accepted.
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  toolAllowlist?: string[];
+  toolAllowlist?: string[] | null;
 
   // Admin-authored prompt guidance (#180). Absent => unchanged; blank => cleared
   // (stored as null by the repo). Capped to bound prompt/token size.

@@ -6,6 +6,9 @@ import {
   findAnchorInBlock,
   canAnchorInDoc,
   applyAnchorInDoc,
+  countAnchorMatches,
+  getAnchoredText,
+  resolveAnchorSelection,
 } from "../../build/lib/comment-anchor.js";
 
 const COMMENT_ID = "cmt-123";
@@ -207,4 +210,203 @@ test("anchoring works inside a nested block (e.g. list item) via DFS recursion",
   const marked = para.filter((p) => commentMark(p));
   assert.equal(marked.length, 1);
   assert.equal(marked[0].text, "target");
+});
+
+// ---------------------------------------------------------------------------
+// countAnchorMatches — the uniqueness gate for suggestions. Counts every
+// non-overlapping occurrence across the whole document (0 / 1 / N).
+// ---------------------------------------------------------------------------
+test("countAnchorMatches returns 0 when the selection is absent", () => {
+  const doc = paragraphDoc([{ type: "text", text: "hello world" }]);
+  assert.equal(countAnchorMatches(doc, "missing"), 0);
+});
+
+test("countAnchorMatches returns 1 for a unique selection", () => {
+  const doc = paragraphDoc([{ type: "text", text: "Hello brave world" }]);
+  assert.equal(countAnchorMatches(doc, "brave"), 1);
+});
+
+test("countAnchorMatches counts multiple occurrences within one block", () => {
+  const doc = paragraphDoc([{ type: "text", text: "ab ab ab" }]);
+  assert.equal(countAnchorMatches(doc, "ab"), 3);
+});
+
+test("countAnchorMatches sums occurrences across separate blocks", () => {
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "first target here" }] },
+      { type: "paragraph", content: [{ type: "text", text: "second target here" }] },
+    ],
+  };
+  assert.equal(countAnchorMatches(doc, "target"), 2);
+});
+
+test("countAnchorMatches counts a match spanning adjacent text nodes as one", () => {
+  const doc = paragraphDoc([
+    { type: "text", text: "запуска ", marks: [{ type: "italic" }] },
+    { type: "text", text: "перед блоком", marks: [{ type: "italic" }] },
+  ]);
+  assert.equal(countAnchorMatches(doc, "запуска перед"), 1);
+});
+
+test("countAnchorMatches counts matches inside nested (recursed) blocks", () => {
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "outer target" }] },
+      {
+        type: "bulletList",
+        content: [
+          {
+            type: "listItem",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "nested target" }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(countAnchorMatches(doc, "target"), 2);
+});
+
+test("countAnchorMatches applies the same normalization as anchoring", () => {
+  // Smart quotes in the doc match ASCII quotes in the selection.
+  const doc = paragraphDoc([{ type: "text", text: "say “hi” now" }]);
+  assert.equal(countAnchorMatches(doc, '"hi"'), 1);
+});
+
+// #494 — countAnchorMatches now delegates its exact-wins/strip-fallback DECISION
+// to the single resolver (resolveAnchorSelection) instead of a parallel copy.
+// This parity test REDDENS if the two ever disagree about whether — and in which
+// form — a selection anchors (e.g. if countAnchorMatches stops using the resolver
+// and the fallback logic drifts).
+test("#494: countAnchorMatches and resolveAnchorSelection agree across a corpus", () => {
+  const doc = paragraphDoc([
+    { type: "text", text: "say “hi” now and **bold** and plain hi" },
+  ]);
+  const corpus = [
+    '"hi"', // strip/normalize fallback (smart quotes)
+    "**bold**", // markdown-strip fallback (anchors as "bold")
+    "hi", // raw, multiple occurrences
+    "absent-string", // anchors nowhere
+    "plain hi", // raw, unique
+  ];
+  for (const sel of corpus) {
+    const count = countAnchorMatches(doc, sel);
+    const { found, selection: effective } = resolveAnchorSelection(doc, sel);
+    // found iff at least one match; and when found, the count is exactly the raw
+    // occurrence count of the resolver's WINNING form.
+    assert.equal(count > 0, found, `presence disagreement for ${JSON.stringify(sel)}`);
+    if (found) {
+      // Re-count the resolved form directly and require equality (proves the
+      // count is derived from the resolver's chosen form, not a parallel path).
+      assert.equal(
+        count,
+        countAnchorMatches(doc, effective),
+        `count/resolver form disagreement for ${JSON.stringify(sel)}`,
+      );
+    }
+  }
+});
+
+// -----------------------------------------------------------------------------
+// getAnchoredText: returns the RAW document substring the mark would cover (the
+// doc's original typographic characters), not the normalized ASCII selection.
+// This is what makes a suggestion's stored selection equal the apply-time
+// expectedText, so the strict equality in replaceYjsMarkedText holds.
+// -----------------------------------------------------------------------------
+test("getAnchoredText returns the RAW (typographic) doc substring for an ASCII selection", () => {
+  // Doc holds smart quotes; agent selection is the ASCII form.
+  const doc = paragraphDoc([{ type: "text", text: "he said “hello” loudly" }]);
+  assert.equal(getAnchoredText(doc, '"hello"'), "“hello”");
+});
+
+test("getAnchoredText undoes whitespace/dash normalization to the raw span", () => {
+  // Em-dash + nbsp in the doc; ASCII hyphen + single space in the selection.
+  const doc = paragraphDoc([{ type: "text", text: "a—b c" }]);
+  // selection "a-b c" (ascii dash) matches, raw substring keeps the em-dash+nbsp.
+  assert.equal(getAnchoredText(doc, "a-b c"), "a—b c");
+});
+
+test("getAnchoredText spans consecutive text nodes and returns their raw slices", () => {
+  const doc = paragraphDoc([
+    { type: "text", text: "Hello " },
+    { type: "text", text: "“brave”", marks: [{ type: "bold" }] },
+    { type: "text", text: " world" },
+  ]);
+  assert.equal(getAnchoredText(doc, '"brave" wor'), "“brave” wor");
+});
+
+test("getAnchoredText returns null when the selection does not anchor", () => {
+  const doc = paragraphDoc([{ type: "text", text: "hello world" }]);
+  assert.equal(getAnchoredText(doc, "not present"), null);
+});
+
+// ---------------------------------------------------------------------------
+// #408 MARKDOWN-STRIP FALLBACK. A selection copied with inline markdown still
+// carries `**`/`` ` ``/`[t](u)` markers the plain document text lacks. When the
+// verbatim selection anchors nowhere, all four entry points retry with the
+// markdown stripped — consistently, so the suggestion-uniqueness gate stays
+// coherent — while what gets STORED remains the raw document substring.
+// ---------------------------------------------------------------------------
+test("a markdown-styled selection anchors against plain doc text via the strip fallback", () => {
+  const doc = paragraphDoc([{ type: "text", text: "a bold word here" }]);
+  // The agent quoted "**bold** word" from a styled view; the doc is plain text.
+  const sel = "**bold** word";
+  const resolved = resolveAnchorSelection(doc, sel);
+  assert.equal(resolved.found, true, "strip fallback finds the anchor");
+  assert.equal(resolved.normalized, true, "reports the soft-warning flag");
+  assert.equal(canAnchorInDoc(doc, sel), true);
+  assert.equal(countAnchorMatches(doc, sel), 1);
+
+  const ok = applyAnchorInDoc(doc, sel, COMMENT_ID);
+  assert.equal(ok, true);
+  const marked = doc.content[0].content.filter((p) => commentMark(p));
+  assert.equal(marked.map((m) => m.text).join(""), "bold word",
+    "the mark lands on the plain-text span");
+});
+
+test("getAnchoredText stores the RAW doc substring even when matched via the strip fallback", () => {
+  // Doc uses a smart apostrophe; the agent typed ASCII + markdown emphasis.
+  const doc = paragraphDoc([{ type: "text", text: "it’s bold now" }]);
+  const stored = getAnchoredText(doc, "it's **bold**");
+  assert.equal(stored, "it’s bold",
+    "stored selection is the raw document text, not the stripped/ASCII locator");
+});
+
+test("the strip fallback does not flip a raw-unique selection to ambiguous", () => {
+  // "config" appears twice, but the raw phrase "config value" appears once.
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "the config value here" }] },
+      { type: "paragraph", content: [{ type: "text", text: "another config here" }] },
+    ],
+  };
+  // Raw phrase is unique -> exactly 1, and no strip happens (nothing to strip).
+  assert.equal(countAnchorMatches(doc, "config value"), 1);
+  assert.equal(resolveAnchorSelection(doc, "config value").normalized, false);
+});
+
+test("EXACT WINS: a raw match short-circuits the strip fallback (count reflects raw)", () => {
+  // A literal "**" run exists raw once; its stripped form would also appear.
+  const doc = paragraphDoc([{ type: "text", text: "use **stars** and stars" }]);
+  // Raw "**stars**" occurs once -> count 1 from the verbatim locator; the
+  // fallback (which would find two "stars") never runs.
+  assert.equal(countAnchorMatches(doc, "**stars**"), 1);
+  assert.equal(resolveAnchorSelection(doc, "**stars**").normalized, false);
+});
+
+test("a markdown selection whose stripped form is ambiguous is counted as ambiguous", () => {
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "first config here" }] },
+      { type: "paragraph", content: [{ type: "text", text: "second config here" }] },
+    ],
+  };
+  // Verbatim "**config**" matches nothing; stripped "config" matches twice.
+  assert.equal(countAnchorMatches(doc, "**config**"), 2);
 });

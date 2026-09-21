@@ -1,0 +1,38 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "blockquote",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A quoted line." }]
+        },
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A second quoted paragraph." }]
+        }
+      ]
+    },
+    {
+      "type": "horizontalRule"
+    },
+    {
+      "type": "codeBlock",
+      "attrs": { "language": "js" },
+      "content": [
+        { "type": "text", "text": "const a = 1;\nconsole.log(a);\n" }
+      ]
+    },
+    {
+      "type": "callout",
+      "attrs": { "type": "warning" },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "This is a warning callout." }]
+        }
+      ]
+    }
+  ]
+}

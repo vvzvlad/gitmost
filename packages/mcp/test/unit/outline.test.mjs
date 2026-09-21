@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildOutline, getNodeByRef } from "../../build/lib/node-ops.js";
+import { buildOutline, getNodeByRef } from "@docmost/prosemirror-markdown";
 
 // Helpers to build the small fixture doc.
 const textNode = (text) => ({ type: "text", text });

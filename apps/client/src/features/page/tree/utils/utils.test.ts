@@ -8,6 +8,9 @@ import {
   closeIds,
   mergeRootTrees,
   loadedOpenBranchIds,
+  pruneCollapsedChildren,
+  sortPositionKeys,
+  pageToTreeNode,
 } from "./utils";
 import type { IPage } from "@/features/page/types/page.types.ts";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -59,6 +62,82 @@ function treeNode(id: string, children: SpaceTreeNode[] = []): SpaceTreeNode {
     children,
   };
 }
+
+describe("sortPositionKeys", () => {
+  it("orders items ascending by their fractional `position` string", () => {
+    const items = [
+      { id: "c", position: "a5" },
+      { id: "a", position: "a1" },
+      { id: "b", position: "a3" },
+    ];
+    expect(sortPositionKeys(items).map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("is a stable sort: equal positions keep their input order", () => {
+    const items = [
+      { id: "x", position: "a1" },
+      { id: "y", position: "a1" },
+      { id: "z", position: "a1" },
+    ];
+    expect(sortPositionKeys(items).map((i) => i.id)).toEqual(["x", "y", "z"]);
+  });
+});
+
+describe("pageToTreeNode", () => {
+  function pageRow(over: Partial<IPage> = {}): IPage {
+    return {
+      id: "p1",
+      slugId: "slug-p1",
+      title: "My Page",
+      icon: "📄",
+      position: "a1",
+      hasChildren: true,
+      spaceId: "space-1",
+      parentPageId: null as unknown as string,
+      ...over,
+    } as IPage;
+  }
+
+  it("maps page.title -> node.name and copies the core fields", () => {
+    const node = pageToTreeNode(pageRow());
+    // The non-trivial transform: a page's `title` becomes the tree node's `name`.
+    expect(node.name).toBe("My Page");
+    expect(node.id).toBe("p1");
+    expect(node.slugId).toBe("slug-p1");
+    expect(node.icon).toBe("📄");
+    expect(node.position).toBe("a1");
+    expect(node.spaceId).toBe("space-1");
+    expect(node.hasChildren).toBe(true);
+    // Always materialized with an empty children array.
+    expect(node.children).toEqual([]);
+  });
+
+  it("derives canEdit from page.permissions.canEdit when the flat field is absent", () => {
+    const node = pageToTreeNode(
+      pageRow({ canEdit: undefined, permissions: { canEdit: true } } as Partial<IPage>),
+    );
+    expect(node.canEdit).toBe(true);
+  });
+
+  it("prefers the flat page.canEdit over permissions.canEdit", () => {
+    const node = pageToTreeNode(
+      pageRow({ canEdit: false, permissions: { canEdit: true } } as Partial<IPage>),
+    );
+    expect(node.canEdit).toBe(false);
+  });
+
+  it("carries temporaryExpiresAt straight off the page", () => {
+    const expiresAt = "2026-06-27T21:00:00.000Z";
+    expect(pageToTreeNode(pageRow({ temporaryExpiresAt: expiresAt })).temporaryExpiresAt).toBe(
+      expiresAt,
+    );
+  });
+
+  it("applies overrides on top of the mapped fields (e.g. optimistic blank name)", () => {
+    const node = pageToTreeNode(pageRow(), { name: "" });
+    expect(node.name).toBe("");
+  });
+});
 
 describe("buildTree", () => {
   it("builds one node per unique page", () => {
@@ -358,5 +437,64 @@ describe("loadedOpenBranchIds (#159 #8 reconnect refresh targets)", () => {
     const tree = [n("a", [n("a1", [n("a1a")])])];
     const ids = loadedOpenBranchIds(tree, new Set(["a", "a1"]));
     expect(ids.sort()).toEqual(["a", "a1"]);
+  });
+});
+
+describe("pruneCollapsedChildren", () => {
+  // Signature: pruneCollapsedChildren(tree: SpaceTreeNode[], openIds:
+  // ReadonlySet<string>): SpaceTreeNode[]. Collapsed nodes (id NOT in openIds)
+  // are reset to `children: []` (hasChildren untouched); open nodes keep their
+  // children but are recursed into so a collapsed branch nested under an open
+  // one is still pruned.
+  //
+  // Fixture:
+  //   open "p" (in openIds, hasChildren)
+  //     └─ collapsed "c" (NOT in openIds) with STALE child "g"
+  //   collapsed "t" (NOT in openIds) with child "t1"
+  // Only "p" is open.
+  function fixture() {
+    const grandchild = treeNode("g"); // stale, cached under the collapsed child
+    const collapsedChild = treeNode("c", [grandchild]);
+    const openParent = treeNode("p", [collapsedChild]);
+    const topCollapsed = treeNode("t", [treeNode("t1")]);
+    return { openParent, collapsedChild, topCollapsed };
+  }
+
+  it("keeps an OPEN parent's children and recurses to prune a nested collapsed branch; prunes a top-level collapsed node", () => {
+    const { openParent, topCollapsed } = fixture();
+    const tree = [openParent, topCollapsed];
+    const result = pruneCollapsedChildren(tree, new Set(["p"]));
+
+    // (a) OPEN parent keeps its children (not cleared) and hasChildren stays true.
+    const p = result[0];
+    expect(p.id).toBe("p");
+    expect(p.hasChildren).toBe(true);
+    expect(p.children).toHaveLength(1);
+
+    // (b) The nested COLLAPSED child under the open parent is pruned to
+    // `children: []` by the recursion, with hasChildren preserved. This is the
+    // open-keep + recurse branch that F1's empty-open-set fixture never hits.
+    const c = p.children[0];
+    expect(c.id).toBe("c");
+    expect(c.children).toEqual([]);
+    expect(c.hasChildren).toBe(true);
+
+    // (c) The top-level collapsed node is pruned to `children: []`, hasChildren kept.
+    const t = result[1];
+    expect(t.id).toBe("t");
+    expect(t.children).toEqual([]);
+    expect(t.hasChildren).toBe(true);
+  });
+
+  it("does not mutate the input tree (returns fresh nodes)", () => {
+    const { openParent, collapsedChild, topCollapsed } = fixture();
+    const tree = [openParent, topCollapsed];
+    pruneCollapsedChildren(tree, new Set(["p"]));
+
+    // Originals are untouched: the collapsed child still carries its stale grandchild.
+    expect(collapsedChild.children).toHaveLength(1);
+    expect(collapsedChild.children[0].id).toBe("g");
+    expect(openParent.children[0]).toBe(collapsedChild);
+    expect(topCollapsed.children).toHaveLength(1);
   });
 });

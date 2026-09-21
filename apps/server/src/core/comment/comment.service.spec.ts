@@ -14,6 +14,7 @@ describe('CommentService', () => {
       {} as any, // collaborationGateway
       {} as any, // generalQueue
       {} as any, // notificationQueue
+      {} as any, // auditService
     );
   });
 

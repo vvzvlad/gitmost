@@ -54,6 +54,7 @@ describe('WorkspaceService.update — htmlEmbed toggle persistence (real code)',
       {} as any, // aiQueue
       auditService as any, // auditService
       {} as any, // userSessionRepo
+      {} as any, // mcpClients (#686)
     );
 
     return { service, workspaceRepo, updateSetting, auditService };

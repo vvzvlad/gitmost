@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "0.94.0",
+  "version": "0.96.0",
   "description": "",
   "author": "",
   "private": true,
@@ -23,7 +23,7 @@
     "migration:reset": "tsx src/database/migrate.ts down-to NO_MIGRATIONS",
     "migration:codegen": "kysely-codegen --dialect=postgres --camel-case --env-file=../../.env --out-file=./src/database/types/db.d.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "pretest": "pnpm --filter @docmost/editor-ext build",
+    "pretest": "pnpm --filter @docmost/editor-ext build && pnpm --filter @docmost/prosemirror-markdown build && pnpm --filter @docmost/token-estimate build && pnpm --filter @docmost/mcp build",
     "test": "jest",
     "test:int": "jest --config test/jest-integration.json",
     "test:watch": "jest --watch",
@@ -41,8 +41,12 @@
     "@aws-sdk/s3-request-presigner": "3.1050.0",
     "@azure/storage-blob": "12.31.0",
     "@clickhouse/client": "^1.18.2",
+    "@docmost/editor-ext": "workspace:*",
     "@docmost/mcp": "workspace:*",
     "@docmost/pdf-inspector": "1.9.6",
+    "@docmost/prosemirror-markdown": "workspace:*",
+    "@docmost/token-estimate": "workspace:*",
+    "@fastify/compress": "^9.0.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/multipart": "^10.0.0",
     "@fastify/static": "^9.1.3",
@@ -68,6 +72,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.1.19",
     "@node-saml/passport-saml": "^5.1.0",
+    "@resvg/resvg-wasm": "^2.6",
     "@socket.io/redis-adapter": "^8.3.0",
     "ai": "^6.0.134",
     "ai-sdk-ollama": "^3.8.1",
@@ -111,6 +116,7 @@
     "pino-pretty": "^13.1.3",
     "postgres": "^3.4.8",
     "postmark": "^4.0.7",
+    "prom-client": "^15.1.3",
     "react": "^18.3.1",
     "react-email": "6.0.8",
     "reflect-metadata": "^0.2.2",
@@ -125,6 +131,7 @@
     "typesense": "^3.0.5",
     "undici": "7.24.0",
     "ws": "^8.20.1",
+    "yaml": "^2.8.3",
     "yauzl": "^3.2.1",
     "zod": "^4.3.6"
   },
@@ -142,6 +149,7 @@
     "@types/nodemailer": "^7.0.11",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/passport-jwt": "^4.0.1",
+    "@types/pngjs": "^6.0.5",
     "@types/supertest": "^6.0.3",
     "@types/ws": "^8.18.1",
     "@types/yauzl": "^2.10.3",
@@ -150,6 +158,7 @@
     "globals": "^17.4.0",
     "jest": "^30.3.0",
     "kysely-codegen": "^0.20.0",
+    "pngjs": "^7.0.0",
     "prettier": "^3.8.1",
     "source-map-support": "^0.5.21",
     "supertest": "^7.2.2",
@@ -173,7 +182,7 @@
       "/node_modules/"
     ],
     "transform": {
-      "happy-dom.+\\.js$": [
+      "(happy-dom.+|prosemirror-markdown/build/.+)\\.js$": [
         "babel-jest",
         {
           "presets": [
@@ -191,7 +200,7 @@
       "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
+      "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0|@docmost/prosemirror-markdown)(@|/))"
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
@@ -202,7 +211,9 @@
       "^@docmost/db/(.*)$": "<rootDir>/database/$1",
       "^@docmost/transactional/(.*)$": "<rootDir>/integrations/transactional/$1",
       "^@docmost/ee/(.*)$": "<rootDir>/ee/$1",
-      "^src/(.*)$": "<rootDir>/$1"
+      "^@docmost/token-estimate$": "<rootDir>/../../../packages/token-estimate/src/index.ts",
+      "^src/(.*)$": "<rootDir>/$1",
+      "^@tiptap/react$": "<rootDir>/../test/stubs/tiptap-react.js"
     }
   }
 }

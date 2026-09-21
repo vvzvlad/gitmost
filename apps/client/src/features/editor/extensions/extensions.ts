@@ -1,12 +1,11 @@
 import { markInputRule } from "@tiptap/core";
 import { StarterKit } from "@tiptap/starter-kit";
-import { Code } from "@tiptap/extension-code";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
 import { Placeholder, CharacterCount, UndoRedo } from "@tiptap/extensions";
 import { Superscript } from "@tiptap/extension-superscript";
 import SubScript from "@tiptap/extension-subscript";
-import { Typography } from "@tiptap/extension-typography";
+import { CustomTypography } from "./custom-typography";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import { Youtube } from "@tiptap/extension-youtube";
@@ -53,6 +52,7 @@ import {
   Subpages,
   Heading,
   Highlight,
+  Spoiler,
   Indent,
   UniqueID,
   SharedStorage,
@@ -62,10 +62,10 @@ import {
   TransclusionSource,
   TransclusionReference,
   PageEmbed,
-  TableView,
   FootnoteReference,
   FootnotesList,
   FootnoteDefinition,
+  Code,
 } from "@docmost/editor-ext";
 import {
   randomElement,
@@ -80,8 +80,8 @@ import {
   createResizeHandle,
   buildResizeClasses,
 } from "@/features/editor/components/common/node-resize-handles.ts";
-import MathInlineView from "@/features/editor/components/math/math-inline.tsx";
-import MathBlockView from "@/features/editor/components/math/math-block.tsx";
+import MathInlineView from "@/features/editor/components/math/math-inline-lazy.tsx";
+import MathBlockView from "@/features/editor/components/math/math-block-lazy.tsx";
 import ImageView from "@/features/editor/components/image/image-view.tsx";
 import CalloutView from "@/features/editor/components/callout/callout-view.tsx";
 import StatusView from "@/features/editor/components/status/status-view.tsx";
@@ -89,7 +89,7 @@ import VideoView from "@/features/editor/components/video/video-view.tsx";
 import AudioView from "@/features/editor/components/audio/audio-view.tsx";
 import AttachmentView from "@/features/editor/components/attachment/attachment-view.tsx";
 import CodeBlockView from "@/features/editor/components/code-block/code-block-view.tsx";
-import DrawioView from "../components/drawio/drawio-view";
+import DrawioView from "../components/drawio/drawio-view-lazy.tsx";
 import ExcalidrawView from "@/features/editor/components/excalidraw/excalidraw-view-lazy.tsx";
 import EmbedView from "@/features/editor/components/embed/embed-view.tsx";
 import HtmlEmbedView from "@/features/editor/components/html-embed/html-embed-view.tsx";
@@ -101,6 +101,8 @@ import FootnoteReferenceView from "@/features/editor/components/footnote/footnot
 import FootnotesListView from "@/features/editor/components/footnote/footnotes-list-view.tsx";
 import FootnoteDefinitionView from "@/features/editor/components/footnote/footnote-definition-view.tsx";
 import PageEmbedView from "@/features/editor/components/page-embed/page-embed-view.tsx";
+import { reportOperation } from "@/lib/telemetry/vitals";
+import { isClientTelemetryEnabled } from "@/lib/config";
 import { common, createLowlight } from "lowlight";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import powershell from "highlight.js/lib/languages/powershell";
@@ -116,6 +118,7 @@ import mentionRenderItems from "@/features/editor/components/mention/mention-sug
 import { ReactNodeViewRenderer, ReactMarkViewRenderer } from "@tiptap/react";
 import MentionView from "@/features/editor/components/mention/mention-view.tsx";
 import LinkView from "@/features/editor/components/link/link-view.tsx";
+import SpoilerView from "@/features/editor/components/spoiler/spoiler-view.tsx";
 import i18n from "@/i18n.ts";
 import { MarkdownClipboard } from "@/features/editor/extensions/markdown-clipboard.ts";
 import EmojiCommand from "./emoji-command";
@@ -123,6 +126,7 @@ import { countWords } from "alfaaz";
 import AutoJoiner from "@/features/editor/extensions/autojoiner.ts";
 import GlobalDragHandle from "@/features/editor/extensions/drag-handle.ts";
 import { CleanStyles } from "@/features/editor/extensions/clean-styles.ts";
+import { IntentionalClear } from "@/features/editor/extensions/intentional-clear.ts";
 
 const lowlight = createLowlight(common);
 lowlight.register("mermaid", plaintext);
@@ -150,6 +154,11 @@ export const mainExtensions = [
     codeBlock: false,
     code: false,
   }),
+  // The shared `Code` mark from @docmost/editor-ext (single source of the
+  // `excludes: "code"` policy — #515: inline code must be able to carry bold /
+  // italic / … like CommonMark) re-extended here with the CLIENT-only input
+  // rule and keyboard shortcut.
+  //
   // Override TipTap's Code extension to fix the inline code input rule.
   // The upstream regex /(^|[^`])`([^`]+)`(?!`)$/ captures the character
   // before the opening backtick as part of the match, causing markInputRule
@@ -237,7 +246,14 @@ export const mainExtensions = [
   Highlight.configure({
     multicolor: true,
   }),
-  Typography,
+  Spoiler.configure({}).extend({
+    addMarkView() {
+      return ReactMarkViewRenderer(SpoilerView);
+    },
+  }),
+  // Typography with an undo guard: does not re-apply a substitution the user
+  // just undid (e.g. Ctrl+Z on "1/2" -> "½" followed by another space).
+  CustomTypography,
   TrailingNode,
   GlobalDragHandle.configure({
     customNodes: ["transclusionSource", "transclusionReference", "pageEmbed"],
@@ -276,7 +292,12 @@ export const mainExtensions = [
     lastColumnResizable: true,
     allowTableNodeSelection: true,
     cellMinWidth: 49,
-    View: TableView,
+    // No `View:` here on purpose, and it would be ignored anyway: CustomTable
+    // builds the columnResizing plugin itself (so resizing survives the body
+    // editor being constructed read-only) and hard-codes `View: null` there,
+    // which stops prosemirror-tables installing a competing table node view.
+    // The one and only table node view is the one CustomTable registers via
+    // addNodeView() — see the comments there.
   }),
   TableRow,
   TableCell,
@@ -341,6 +362,21 @@ export const mainExtensions = [
     HTMLAttributes: {
       spellcheck: false,
     },
+    // #683 `code_highlight` — report a REAL syntax-highlight recompute (init +
+    // guarded recompute inside the plugin), never a plain keystroke (AC5).
+    // reportOperation is threshold-gated + isVitalsActive()-gated internally; the
+    // callback is wired ONLY when the operator flag is on, so a telemetry-off
+    // build passes no callback and the plugin skips timing entirely (zero cost).
+    //
+    // CADENCE (for the operator reading the metric): this emits ONE sample per
+    // recompute that exceeds the >8ms threshold — NOT one per diagram/open. Every
+    // edit that touches a code block recomputes its decorations, so typing inside
+    // a LARGE code block (where each recompute is >8ms) yields roughly one
+    // `code_highlight` sample per keystroke. Read the distribution as "per-
+    // recompute cost", and expect high sample counts on big code blocks.
+    onHighlight: isClientTelemetryEnabled()
+      ? (ms: number) => reportOperation("code_highlight", ms)
+      : undefined,
   }),
   Selection,
   Attachment.configure({
@@ -485,5 +521,11 @@ export const collabExtensions: CollabExtensions = (provider, user) => [
       name: user.name,
       color: randomElement(userColors),
     },
+  }),
+  // #251 — emit an intentional-clear signal to the server when the user
+  // deliberately empties the page, so the #248 store-side empty-guard lets that
+  // one clear through while still blocking accidental empties.
+  IntentionalClear.configure({
+    provider,
   }),
 ];

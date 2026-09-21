@@ -75,19 +75,40 @@ export function filterComment(comment: any, markdownContent?: string) {
     editedAt: comment.editedAt || null,
     resolvedAt: comment.resolvedAt || null,
     resolvedById: comment.resolvedById || null,
+    // Suggestion state: the proposed replacement text (if any) and, once a human
+    // applies it via the UI, when and by whom.
+    suggestedText: comment.suggestedText || null,
+    suggestionAppliedAt: comment.suggestionAppliedAt || null,
+    suggestionAppliedById: comment.suggestionAppliedById || null,
   };
 }
 
+// Map one server search hit to the MCP output contract (#443):
+//   { pageId, title, path, snippet, score }
+//
+// INVARIANT: the only page identifier exposed is `pageId` (the server `id`
+// UUID). The server also carries `slugId` — it is NEVER surfaced.
+//
+// GRACEFUL DEGRADATION: against a stock upstream server the opt-in lookup DTO
+// fields are stripped, so the response is the legacy FTS shape (no path/snippet/
+// score, a `highlight` + `rank` instead). We synthesize the contract from
+// whatever is present: `snippet` falls back to the FTS `highlight`, `score` to
+// the FTS `rank`, and `path` to [] (upstream has no path). This keeps the tool
+// usable even when the server has not been upgraded.
 export function filterSearchResult(result: any) {
   return {
-    id: result.id,
+    pageId: result.id,
     title: result.title,
-    parentPageId: result.parentPageId,
-    createdAt: result.createdAt,
-    updatedAt: result.updatedAt,
-    rank: result.rank,
-    highlight: result.highlight,
-    spaceId: result.space?.id,
-    spaceName: result.space?.name,
+    path: Array.isArray(result.path) ? result.path : [],
+    snippet:
+      typeof result.snippet === "string"
+        ? result.snippet
+        : (result.highlight ?? ""),
+    score:
+      typeof result.score === "number"
+        ? result.score
+        : typeof result.rank === "number"
+          ? result.rank
+          : 0,
   };
 }

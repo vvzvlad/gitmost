@@ -6,6 +6,7 @@ import {
   offset,
   shift,
 } from "@floating-ui/dom";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 import MentionList from "@/features/editor/components/mention/mention-list.tsx";
 
 function getWhitespaceCount(query: string) {
@@ -110,6 +111,8 @@ const mentionRenderItems = () => {
             });
           });
         },
+        // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+        EDITOR_AUTO_UPDATE_OPTIONS,
       );
     },
     onUpdate: (props: {

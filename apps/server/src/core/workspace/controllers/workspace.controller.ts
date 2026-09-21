@@ -76,6 +76,10 @@ export class WorkspaceController {
       cloud: this.environmentService.isCloud(),
       tier: this.licenseCheckService.resolveTier(licenseKey, plan),
       features: this.licenseCheckService.resolveFeatures(licenseKey, plan),
+      // #686 kill-switch surfaced to the client so the personal-MCP settings
+      // page (PR C) can gate itself; the server enforces it independently.
+      mcpPersonalServersEnabled:
+        this.environmentService.isMcpPersonalServersEnabled(),
     };
   }
 

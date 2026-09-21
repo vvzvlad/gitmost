@@ -7,7 +7,7 @@ import { useRestorePageModal } from "@/features/page/hooks/use-restore-page-moda
 import { useDeletePageModal } from "@/features/page/hooks/use-delete-page-modal.tsx";
 import {
   useDeletePageMutation,
-  usePageQuery,
+  usePageMetaQuery,
   useRestorePageMutation,
 } from "@/features/page/queries/page-query.ts";
 import { getSpaceUrl } from "@/lib/config.ts";
@@ -25,7 +25,7 @@ type DeletedPageBannerProps = {
 export function DeletedPageBanner({ slugId }: DeletedPageBannerProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { data: page } = usePageQuery({ pageId: slugId });
+  const { data: page } = usePageMetaQuery({ pageId: slugId });
   const { data: space } = useGetSpaceBySlugQuery(page?.space?.slug);
   const spaceAbility = useSpaceAbility(space?.membership?.permissions);
   const deletedTimeAgo = useTimeAgo(page?.deletedAt);

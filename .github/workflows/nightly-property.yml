@@ -1,0 +1,255 @@
+name: Nightly property fuzz
+
+# The daily heavy property run for the ProseMirror<->Markdown converter
+# (packages/prosemirror-markdown). The PR/CI test run keeps NUM_RUNS modest to
+# stay under budget; this cron cranks up total coverage with random seeds to hunt
+# for deeper round-trip counterexamples than a fixed-seed PR run can reach.
+#
+# WHY SHARDING: a single mega-run (~10000 fast-check runs) OOMs the vitest worker
+# (empirically ~1625 runs -> "JS heap out of memory", ~2GB) because heap
+# accumulates across the whole property run in one process. Instead this job runs
+# SHARDS fresh vitest processes, each a MODERATE per-shard count with a DISTINCT
+# derived seed, so total coverage ~= SHARDS x PER_SHARD_NUM_RUNS across processes
+# that never accumulate heap. On the first failing shard we stop and keep that
+# shard's output for triage.
+#
+# Counterexample -> fixture workflow: when a shard fails, fast-check prints the
+# SHRUNK minimal counterexample plus the reproducing seed. This job files a Gitea
+# issue containing that seed + counterexample ONLY when the output actually holds
+# a fast-check counterexample; an infra failure (OOM/tsc/install, no
+# counterexample) is filed under a DISTINCT title so it can never poison the
+# counterexample dedup. A human then commits the shrunk doc as a PERMANENT fixture
+# under packages/prosemirror-markdown/test/fixtures/counterexamples/ with a case in
+# counterexamples.test.ts, and FIXES the converter (never weakens a property to
+# hide the bug). See packages/prosemirror-markdown/README.md.
+
+on:
+  schedule:
+    # 03:00 UTC daily.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      num_runs:
+        description: 'fast-check runs PER SHARD (8 shards run in sequence)'
+        required: false
+        default: '600'
+      seed:
+        description: 'base fast-check seed (empty = random); shard i uses base+i'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  property-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No build step: the generative suite imports the converter from src/
+      # directly (e.g. `from '../../src/lib/markdown-converter.js'`), so it runs
+      # against source without the package's build/. Skipping the build also
+      # keeps a tsc build error from masquerading as a property-test failure and
+      # filing a bogus counterexample issue.
+      - name: Resolve base seed and per-shard run count
+        id: params
+        # Dispatch inputs are read via env (NOT interpolated into the shell body)
+        # to avoid script injection through a crafted input value.
+        env:
+          SEED_INPUT: ${{ inputs.seed }}
+          NUM_RUNS_INPUT: ${{ inputs.num_runs }}
+        run: |
+          set -euo pipefail
+          SEED="${SEED_INPUT:-}"
+          # Empty seed (cron, or a dispatch that left it blank) -> random. Combine
+          # two RANDOMs so the seed spans more than RANDOM's 0..32767 range.
+          [ -z "$SEED" ] && SEED=$(( (RANDOM << 15) | RANDOM ))
+          NUM_RUNS="${NUM_RUNS_INPUT:-}"
+          [ -z "$NUM_RUNS" ] && NUM_RUNS=600
+          echo "seed=$SEED" >> "$GITHUB_OUTPUT"
+          echo "num_runs=$NUM_RUNS" >> "$GITHUB_OUTPUT"
+          echo "Sharded property fuzz: BASE_SEED=$SEED PER_SHARD_NUM_RUNS=$NUM_RUNS SHARDS=8"
+
+      - name: Run generative property suite (sharded)
+        id: fuzz
+        env:
+          BASE_SEED: ${{ steps.params.outputs.seed }}
+          PER_SHARD_NUM_RUNS: ${{ steps.params.outputs.num_runs }}
+          SHARDS: '8'
+        run: |
+          set -uo pipefail
+          # Give each fresh process headroom, but rely on SHARDING (not a big heap)
+          # to avoid OOM: a moderate per-shard count in a process that starts clean.
+          export NODE_OPTIONS=--max-old-space-size=4096
+          : > property-output.txt
+          FAILED=0
+          FAIL_SEED=""
+          i=0
+          while [ "$i" -lt "$SHARDS" ]; do
+            SHARD_SEED=$(( BASE_SEED + i ))
+            echo "=== shard $((i + 1))/$SHARDS: PROPERTY_SEED=$SHARD_SEED PROPERTY_NUM_RUNS=$PER_SHARD_NUM_RUNS ==="
+            # tee OVERWRITES property-output.txt each shard; since we break on the
+            # first failure, the file ends up holding exactly the failing shard's
+            # output (which carries the shrunk counterexample + reproducing seed).
+            if PROPERTY_SEED="$SHARD_SEED" PROPERTY_NUM_RUNS="$PER_SHARD_NUM_RUNS" \
+                pnpm --filter @docmost/prosemirror-markdown exec \
+                  vitest run test/generative/ 2>&1 | tee property-output.txt; then
+              echo "shard $((i + 1)) passed"
+            else
+              echo "shard $((i + 1)) FAILED (seed=$SHARD_SEED) — stopping; keeping its output"
+              FAILED=1
+              FAIL_SEED="$SHARD_SEED"
+              break
+            fi
+            i=$(( i + 1 ))
+          done
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "fail_seed=$FAIL_SEED" >> "$GITHUB_OUTPUT"
+          exit "$FAILED"
+
+      # A GENUINE counterexample: fast-check printed a shrunk minimal case and its
+      # reproducing seed into property-output.txt. File a dedup-guarded issue.
+      #
+      # Dedup is keyed on a HASH of the SHRUNK COUNTEREXAMPLE (the minimal failing
+      # input), NOT on the issue title prefix. Keying on the prefix would let a
+      # single open issue swallow every OTHER counterexample (a different bug B whose
+      # title shares the prefix would be treated as a duplicate and stay silent until
+      # the first issue is closed). Hashing the shrunk example instead means two
+      # DIFFERENT counterexamples get two DIFFERENT issues, while a re-find of the
+      # SAME counterexample still dedupes onto the existing one. The infra-failure
+      # step (below) still keys on its own distinct title, so it can never poison
+      # this dedup either.
+      - name: File counterexample issue
+        # always() is REQUIRED: the fuzz step exits nonzero on a failing shard,
+        # so a bare `if:` (implicitly success() && ...) would skip this step
+        # exactly when it must run. always() lets it run on the failure path.
+        if: always() && steps.fuzz.outputs.failed == '1'
+        env:
+          FAIL_SEED: ${{ steps.fuzz.outputs.fail_seed }}
+          NUM_RUNS: ${{ steps.params.outputs.num_runs }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE_PREFIX: 'Nightly property counterexample'
+        run: |
+          set -uo pipefail
+          # Discriminate counterexample vs infra failure by the fast-check
+          # signature. No signature -> leave it to the infra-failure step.
+          if ! grep -Eq 'Property failed after|Counterexample' property-output.txt; then
+            echo "No fast-check counterexample signature — infra failure, handled by the next step."
+            exit 0
+          fi
+          # Extract the SHRUNK counterexample block: the "Counterexample:" line(s)
+          # up to (but excluding) the "Shrunk N time(s)" / "Got error" line. This is
+          # the minimal failing INPUT and is STABLE across the different seeds/paths
+          # that reach the same bug — unlike the seed, path, or shrink count (which
+          # precede/follow this block and vary run-to-run) and unlike the whole
+          # output (which embeds those varying parts). Hashing THIS is what makes the
+          # dedup identity the bug itself rather than an incidental run detail.
+          CE_TEXT=$(awk '/Counterexample:/{c=1} /Shrunk [0-9]+ time|Got error/{c=0} c{print}' property-output.txt)
+          if [ -z "$CE_TEXT" ]; then
+            # No parseable shrunk block (unexpected — the signature check above
+            # already confirmed fast-check output). Fall back to the reproducing
+            # seed so we still emit a stable identity instead of silently deduping.
+            CE_TEXT="seed:${FAIL_SEED}"
+          fi
+          # Stable short id: first 12 hex chars of sha256 over the counterexample.
+          CE_HASH=$(printf '%s' "$CE_TEXT" | sha256sum | cut -c1-12)
+          # Machine-readable marker embedded in the issue body; the open-issue search
+          # below matches on it (and on the hash in the title) so identity travels
+          # with the issue regardless of any human title edits.
+          CE_MARKER="<!-- counterexample-hash: ${CE_HASH} -->"
+          export CE_HASH CE_MARKER
+          TITLE="${TITLE_PREFIX} [${CE_HASH}] (seed=${FAIL_SEED})"
+
+          # Dedup on the counterexample hash: skip only if an OPEN issue already
+          # carries this exact hash (in its title or its body marker). A different
+          # counterexample has a different hash and is NOT deduped. A failure of this
+          # check must NOT block creation.
+          EXISTING=""
+          if EXISTING=$(curl -sS \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues?state=open&limit=100"); then
+            if printf '%s' "$EXISTING" \
+                | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let a;try{a=JSON.parse(s)}catch{process.exit(1)}if(!Array.isArray(a))process.exit(1);const h=process.env.CE_HASH,m=process.env.CE_MARKER;process.exit(a.some(i=>(typeof i.title==="string"&&i.title.includes(h))||(typeof i.body==="string"&&i.body.includes(m)))?0:1)})'; then
+              echo "An open issue for counterexample ${CE_HASH} already exists — skipping creation."
+              exit 0
+            fi
+          fi
+
+          # Build the JSON body with the test output SAFELY escaped (never hand-
+          # interpolate the counterexample into JSON).
+          BODY_TEXT=$(printf 'A nightly property fuzz SHARD failed with a fast-check counterexample.\n\n- counterexample hash: `%s`\n- failing shard seed: `%s`\n- NUM_RUNS (per shard): `%s`\n- run: %s\n\nReproduce locally:\n\n```\nPROPERTY_SEED=%s PROPERTY_NUM_RUNS=%s pnpm --filter @docmost/prosemirror-markdown exec vitest run test/generative/\n```\n\nfast-check shrinks the failure to a minimal counterexample. Commit it as a permanent fixture under `packages/prosemirror-markdown/test/fixtures/counterexamples/` + a case in `counterexamples.test.ts`, then FIX the converter (do not weaken a property). See `packages/prosemirror-markdown/README.md`.\n\nTail of the test output (contains the shrunk counterexample):\n\n```\n%s\n```\n\n%s\n' \
+            "$CE_HASH" "$FAIL_SEED" "$NUM_RUNS" "$RUN_URL" "$FAIL_SEED" "$NUM_RUNS" "$(tail -n 120 property-output.txt)" "$CE_MARKER")
+
+          jq -n --arg title "$TITLE" --arg body "$BODY_TEXT" \
+            '{title: $title, body: $body}' > payload.json
+
+          curl -sS -X POST \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d @payload.json
+
+      # An INFRA failure (OOM, tsc, install) has NO counterexample signature. File
+      # it under a DISTINCT title so it is visible but keeps the counterexample
+      # dedup (above) uncontaminated — a real counterexample can still file even
+      # while an infra issue is open.
+      - name: File infra failure issue
+        # always() is REQUIRED: the fuzz step exits nonzero on a failing shard,
+        # so a bare `if:` (implicitly success() && ...) would skip this step
+        # exactly when it must run. always() lets it run on the failure path.
+        if: always() && steps.fuzz.outputs.failed == '1'
+        env:
+          FAIL_SEED: ${{ steps.fuzz.outputs.fail_seed }}
+          NUM_RUNS: ${{ steps.params.outputs.num_runs }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE_PREFIX: 'Nightly property run infra failure'
+        run: |
+          set -uo pipefail
+          # Only file when there is NO counterexample signature (else the
+          # counterexample step owns it).
+          if grep -Eq 'Property failed after|Counterexample' property-output.txt; then
+            echo "Counterexample present — owned by the counterexample step."
+            exit 0
+          fi
+          TITLE="${TITLE_PREFIX} (seed=${FAIL_SEED})"
+
+          EXISTING=""
+          if EXISTING=$(curl -sS \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues?state=open&limit=100"); then
+            if printf '%s' "$EXISTING" \
+                | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let a;try{a=JSON.parse(s)}catch{process.exit(1)}if(!Array.isArray(a))process.exit(1);const p=process.env.TITLE_PREFIX;process.exit(a.some(i=>typeof i.title==="string"&&i.title.startsWith(p))?0:1)})'; then
+              echo "An open '${TITLE_PREFIX}' issue already exists — skipping creation."
+              exit 0
+            fi
+          fi
+
+          BODY_TEXT=$(printf 'A nightly property fuzz SHARD failed WITHOUT a fast-check counterexample (infra failure: OOM / build / install). This is NOT a converter round-trip bug.\n\n- failing shard seed: `%s`\n- NUM_RUNS (per shard): `%s`\n- run: %s\n\nInvestigate the run log (memory, dependency install, or a tsc/import error). The nightly counterexample dedup is intentionally separate from this issue.\n\nTail of the test output:\n\n```\n%s\n```\n' \
+            "$FAIL_SEED" "$NUM_RUNS" "$RUN_URL" "$(tail -n 120 property-output.txt)")
+
+          jq -n --arg title "$TITLE" --arg body "$BODY_TEXT" \
+            '{title: $title, body: $body}' > payload.json
+
+          curl -sS -X POST \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d @payload.json

@@ -55,11 +55,22 @@ describe("computeHistoryDiff", () => {
     expect(diff.deleted).toBe(0);
     expect(diff.total).toBe(0);
     expect(diff.decorationSet.find()).toHaveLength(0);
+    // First version is a legitimate empty diff, NOT a failure.
+    expect(diff.failed).toBe(false);
   });
 
   it("returns an empty diff when content is missing", () => {
     const diff = computeHistoryDiff(schema, undefined, docOf(para("x")));
     expect(diff.total).toBe(0);
+    expect(diff.failed).toBe(false);
+  });
+
+  it("marks identical versions as an empty, NON-failed diff", () => {
+    const same = docOf(para("unchanged content"));
+    const diff = computeHistoryDiff(schema, same, same);
+    expect(diff.total).toBe(0);
+    // A successful diff with no changes is not a failure.
+    expect(diff.failed).toBe(false);
   });
 
   it("emits inline decorations and counts for a text edit", () => {
@@ -123,5 +134,7 @@ describe("computeHistoryDiff", () => {
     const diff = computeHistoryDiff(schema, malformed, docOf(para("x")));
     expect(diff.total).toBe(0);
     expect(diff.decorationSet.find()).toHaveLength(0);
+    // ONLY the catch branch sets failed:true.
+    expect(diff.failed).toBe(true);
   });
 });

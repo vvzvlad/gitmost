@@ -8,6 +8,10 @@ export interface HistoryDiff {
   added: number;
   deleted: number;
   total: number;
+  // True ONLY when the diff computation threw (malformed version / diff engine
+  // failure). Legitimately-empty diffs (first version, identical versions) are
+  // NOT failures. Drives the "highlighting unavailable" fallback in the UI.
+  failed: boolean;
 }
 
 // Block-level nodes that are diffed as a whole ("this image/table/callout was
@@ -46,6 +50,7 @@ export function computeHistoryDiff(
     added: 0,
     deleted: 0,
     total: 0,
+    failed: false,
   };
 
   if (!content || !previousContent) {
@@ -159,10 +164,17 @@ export function computeHistoryDiff(
 
     const decorationSet = DecorationSet.create(newContent, decorations);
     const total = addedCount + deletedCount;
-    return { decorationSet, added: addedCount, deleted: deletedCount, total };
+    return {
+      decorationSet,
+      added: addedCount,
+      deleted: deletedCount,
+      total,
+      failed: false,
+    };
   } catch (e) {
-    // Malformed version JSON: fall back to a plain (no-diff) render.
+    // Malformed version JSON / diff-engine failure: fall back to a plain (no-diff)
+    // render and flag the failure so the UI can say highlighting is unavailable.
     console.error("History diff failed:", e);
-    return empty;
+    return { ...empty, failed: true };
   }
 }

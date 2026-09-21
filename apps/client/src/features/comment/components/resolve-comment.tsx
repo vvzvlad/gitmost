@@ -3,6 +3,7 @@ import { IconCircleCheck, IconCircleCheckFilled } from "@tabler/icons-react";
 import { useResolveCommentMutation } from "@/features/comment/queries/comment-query";
 import { useTranslation } from "react-i18next";
 import { Editor } from "@tiptap/react";
+import { useBodyWriteBlocked } from "@/features/editor/hooks/use-body-write-blocked";
 
 interface ResolveCommentProps {
   editor: Editor | null;
@@ -19,10 +20,16 @@ function ResolveComment({
 }: ResolveCommentProps) {
   const { t } = useTranslation();
   const resolveCommentMutation = useResolveCommentMutation();
+  const { refuseIfBlocked } = useBodyWriteBlocked();
 
   const isResolved = resolvedAt != null;
 
   const handleResolveToggle = async () => {
+    // #564 — refuse BEFORE the mutation: in the local-first read-only window the
+    // `setCommentResolved` mark update below is dropped by the body write guard,
+    // so going ahead would flip the comment server-side while the document kept
+    // showing the old state.
+    if (refuseIfBlocked()) return;
     try {
       await resolveCommentMutation.mutateAsync({
         commentId,

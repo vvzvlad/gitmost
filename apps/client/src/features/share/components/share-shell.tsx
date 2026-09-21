@@ -24,6 +24,8 @@ import {
   desktopSidebarAtom,
   mobileSidebarAtom,
   sidebarWidthAtom,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
 } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import SidebarToggle from "@/components/ui/sidebar-toggle-button.tsx";
 import { useTranslation } from "react-i18next";
@@ -40,7 +42,7 @@ import {
   SearchMobileControl,
 } from "@/features/search/components/search-control.tsx";
 import { ShareSearchSpotlight } from "@/features/search/components/share-search-spotlight.tsx";
-import { shareSearchSpotlight } from "@/features/search/constants";
+import { openShareSearchSpotlight } from "@/features/search/constants";
 import ShareBranding from '@/features/share/components/share-branding.tsx';
 import { MAIN_CONTENT_ID, SkipToMain } from "@/components/ui/skip-to-main.tsx";
 
@@ -80,12 +82,12 @@ export default function ShareShell({
       if (!isResizing || !sidebarRef.current) return;
       const newWidth =
         e.clientX - sidebarRef.current.getBoundingClientRect().left;
-      if (newWidth < 220) {
-        setSidebarWidth(220);
+      if (newWidth < SIDEBAR_MIN_WIDTH) {
+        setSidebarWidth(SIDEBAR_MIN_WIDTH);
         return;
       }
-      if (newWidth > 600) {
-        setSidebarWidth(600);
+      if (newWidth > SIDEBAR_MAX_WIDTH) {
+        setSidebarWidth(SIDEBAR_MAX_WIDTH);
         return;
       }
       setSidebarWidth(newWidth);
@@ -177,7 +179,7 @@ export default function ShareShell({
 
           {shareId && (
             <Group visibleFrom="sm">
-              <SearchControl onClick={shareSearchSpotlight.open} />
+              <SearchControl onClick={openShareSearchSpotlight} />
             </Group>
           )}
 
@@ -185,7 +187,7 @@ export default function ShareShell({
             <>
               {shareId && (
                 <Group hiddenFrom="sm">
-                  <SearchMobileControl onSearch={shareSearchSpotlight.open} />
+                  <SearchMobileControl onSearch={openShareSearchSpotlight} />
                 </Group>
               )}
 

@@ -4,10 +4,14 @@
   "testRegex": ".*\\.int-spec\\.ts$",
   "testPathIgnorePatterns": ["/node_modules/"],
   "transform": {
+    "prosemirror-markdown/build/.+\\.js$": [
+      "babel-jest",
+      { "presets": [["@babel/preset-env", { "targets": { "node": "current" } }]] }
+    ],
     "^.+\\.(t|j)sx?$": "ts-jest"
   },
   "transformIgnorePatterns": [
-    "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0)(@|/))"
+    "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0|@docmost/prosemirror-markdown)(@|/))"
   ],
   "testEnvironment": "node",
   "testTimeout": 60000,
@@ -18,6 +22,7 @@
     "^@docmost/db/(.*)$": "<rootDir>/src/database/$1",
     "^@docmost/transactional/(.*)$": "<rootDir>/src/integrations/transactional/$1",
     "^@docmost/ee/(.*)$": "<rootDir>/src/ee/$1",
+    "^@docmost/token-estimate$": "<rootDir>/../../packages/token-estimate/src/index.ts",
     "^src/(.*)$": "<rootDir>/src/$1"
   }
 }

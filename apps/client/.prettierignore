@@ -1,0 +1,3 @@
+# The Lucide icon catalog (issue #696) is a committed, machine-generated
+# ~700 KB single-line artifact. Prettier must not rewrite it.
+src/components/ui/lucide/lucide-catalog.generated.ts

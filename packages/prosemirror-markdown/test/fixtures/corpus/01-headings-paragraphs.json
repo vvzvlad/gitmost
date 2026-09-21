@@ -1,0 +1,36 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": { "level": 1 },
+      "content": [{ "type": "text", "text": "Level one heading" }]
+    },
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "A plain paragraph of text." }]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "Level two heading" }]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        { "type": "text", "text": "First line of a paragraph" },
+        { "type": "hardBreak" },
+        { "type": "text", "text": "second line after a hard break." }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 3 },
+      "content": [{ "type": "text", "text": "Level three heading" }]
+    },
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "Closing paragraph." }]
+    }
+  ]
+}

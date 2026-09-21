@@ -55,7 +55,14 @@ type Props<T extends object> = {
 };
 
 const DRAG_TYPE = 'doc-tree-item';
-const AUTO_EXPAND_MS = 500;
+// Hover-hold before a collapsed row auto-expands during a drag. 2s (not ~0.5s)
+// so merely dragging the cursor THROUGH the tree never expands rows — only a
+// deliberate hold does (#523).
+const AUTO_EXPAND_MS = 2000;
+// How long the "a page just moved in here" cue stays on a collapsed target after
+// a make-child drop. Long enough to notice at a glance during frequent
+// collapsed-drops, short enough not to linger. Code-only UX constant (#523).
+const DROP_LANDED_HIGHLIGHT_MS = 1800;
 
 function DocTreeRowInner<T extends object>(props: Props<T>) {
   const {
@@ -93,7 +100,11 @@ function DocTreeRowInner<T extends object>(props: Props<T>) {
   const rowRef = useRef<HTMLElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [instruction, setInstruction] = useState<Instruction | null>(null);
+  // Transient "just received a child" cue: a make-child drop no longer expands
+  // the (collapsed) target, so flash the row instead so the move isn't invisible.
+  const [landedChild, setLandedChild] = useState(false);
   const autoExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const landedChildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelAutoExpand = useCallback(() => {
     if (autoExpandTimerRef.current) {
@@ -249,11 +260,24 @@ function DocTreeRowInner<T extends object>(props: Props<T>) {
               ? getDragLabel(sourceNode)
               : 'item';
             liveRegion.announce(`Moved ${sourceLabel} under ${parentName}.`);
-            // After a make-child drop, expand this row so the user sees the
-            // just-dropped child — especially important when the row had no
-            // children before (chevron just appeared) so the drop would
-            // otherwise be invisible.
-            if (op.kind === 'make-child') onToggle(node.id, true);
+            // Do NOT auto-expand the target on drop: a drop must leave the node
+            // collapsed. Intentional expansion is handled solely by the
+            // hover-hold timer (AUTO_EXPAND_MS). Feedback that the drop landed is
+            // given by the post-move flash + landed-cue highlight + live-region
+            // announce above. When the make-child target is collapsed, flash a
+            // distinct "child moved in here" cue on the row (it stays collapsed).
+            if (op.kind === 'make-child' && !isOpen) {
+              if (landedChildTimerRef.current) {
+                clearTimeout(landedChildTimerRef.current);
+              }
+              setLandedChild(true);
+              landedChildTimerRef.current = setTimeout(() => {
+                setLandedChild(false);
+                landedChildTimerRef.current = null;
+              }, DROP_LANDED_HIGHLIGHT_MS);
+            }
+            // Restore the openness of the MOVED page itself (source) — untouched
+            // by the above; the target is never expanded here.
             if (source.data.isOpenOnDragStart) onToggle(sourceId, true);
           },
         }),
@@ -280,6 +304,17 @@ function DocTreeRowInner<T extends object>(props: Props<T>) {
   ]);
 
   useEffect(() => () => cancelAutoExpand(), [cancelAutoExpand]);
+
+  // Clear the landed-child cue timer on unmount (mirrors autoExpandTimerRef).
+  useEffect(
+    () => () => {
+      if (landedChildTimerRef.current) {
+        clearTimeout(landedChildTimerRef.current);
+        landedChildTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const effectiveInst =
     instruction?.type === 'instruction-blocked'
@@ -317,6 +352,7 @@ function DocTreeRowInner<T extends object>(props: Props<T>) {
         className={styles.node}
         data-dragging={isDragging || undefined}
         data-selected={isSelected || undefined}
+        data-landed-child={landedChild || undefined}
         data-receiving-drop={
           receivingDrop === 'make-child'
             ? blocked

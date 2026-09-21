@@ -24,7 +24,6 @@ export function useFavoritesQuery(type?: FavoriteType, spaceId?: string) {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.meta.hasNextPage ? lastPage.meta.nextCursor : undefined,
-    refetchOnMount: true,
   });
 }
 
@@ -32,7 +31,6 @@ export function useFavoriteIds(type: FavoriteType, spaceId?: string): Set<string
   const { data } = useQuery({
     queryKey: ["favorite-ids", type, spaceId],
     queryFn: () => getFavoriteIds(type, spaceId),
-    refetchOnMount: true,
   });
 
   const items = data?.items;

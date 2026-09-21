@@ -31,6 +31,13 @@ export function VideoMenu({ editor }: EditorMenuProps) {
         return null;
       }
 
+      // #343 PART 1: skip getAttributes + alignment isActive() probes unless a
+      // video is active. The menu only shows for an active video (shouldShow),
+      // so the null state while inactive is never rendered — behavior unchanged.
+      if (!ctx.editor.isActive("video")) {
+        return null;
+      }
+
       const videoAttrs = ctx.editor.getAttributes("video");
 
       return {

@@ -63,8 +63,9 @@ export function generateFootnoteId(): string {
  * its own seen-set before requesting the next derived id.
  *
  * Used only inside editor-ext now (resolveCollisions for a re-id'd duplicate
- * DEFINITION, and footnotePastePlugin). The MCP/marked import paths no longer
- * derive ids — duplicate definitions there are first-wins-dropped (#166) — so
+ * DEFINITION, and footnotePastePlugin). The MCP / @docmost/prosemirror-markdown
+ * import paths no longer derive ids — duplicate definitions there are
+ * first-wins-dropped (#166) — so
  * there is no cross-package copy to keep in sync. The golden table in
  * footnote-util.derive-id.test.ts pins the scheme.
  */

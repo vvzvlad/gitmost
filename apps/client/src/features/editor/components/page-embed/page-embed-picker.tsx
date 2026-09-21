@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Modal, ScrollArea, TextInput, Text, UnstyledButton, Group } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { IconFileText, IconSearch } from "@tabler/icons-react";
+import { IconSearch } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import type { Editor, Range } from "@tiptap/core";
 import { searchSuggestions } from "@/features/search/services/search-service";
 import type { IPage } from "@/features/page/types/page.types";
@@ -93,11 +94,7 @@ export default function PageEmbedPicker() {
             style={{ display: "block", width: "100%", padding: "8px 4px" }}
           >
             <Group gap="xs" wrap="nowrap">
-              {page.icon ? (
-                <span>{page.icon}</span>
-              ) : (
-                <IconFileText size={16} />
-              )}
+              <PageIcon value={page.icon} size={16} />
               <Text size="sm" truncate>
                 {page.title || t("Untitled")}
               </Text>

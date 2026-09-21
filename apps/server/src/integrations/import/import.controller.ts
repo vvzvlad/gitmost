@@ -85,6 +85,14 @@ export class ImportController {
       throw new BadRequestException('spaceId is required');
     }
 
+    // #502: optional multipart field. Only the MCP agent `createPage` path sends
+    // `disableMarkdownExtensions=true` (its body is agent-authored plain prose /
+    // config, so a `$…$` span must stay literal and a bare `www.host` must not
+    // autolink). A HUMAN file upload omits the field, so it stays false and math
+    // + autolink remain ON for human imports. Settable ONLY via this API param.
+    const disableMarkdownExtensions =
+      file.fields?.disableMarkdownExtensions?.value === 'true';
+
     const ability = await this.spaceAbility.createForUser(user, spaceId);
     if (ability.cannot(SpaceCaslAction.Edit, SpaceCaslSubject.Page)) {
       throw new ForbiddenException();
@@ -95,6 +103,7 @@ export class ImportController {
       user.id,
       spaceId,
       workspace.id,
+      disableMarkdownExtensions,
     );
 
     const ext = path.extname(file.filename).toLowerCase();

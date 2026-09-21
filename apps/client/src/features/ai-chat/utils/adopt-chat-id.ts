@@ -57,6 +57,20 @@ export function extractServerChatId(
 }
 
 /**
+ * #488: read the authoritative RUN id off a streaming assistant message. The
+ * server attaches it as `message.metadata.runId` on the `start` part when a run
+ * wraps the turn (see server `chatStreamMetadata`, #184/#487). This is the live
+ * run-fact update the client FSM adopts (mirrors `extractServerChatId`). Returns
+ * it only when it is a string; undefined otherwise.
+ */
+export function extractRunId(
+  message: { metadata?: unknown } | undefined,
+): string | undefined {
+  const m = message?.metadata as { runId?: string } | undefined;
+  return typeof m?.runId === "string" ? m.runId : undefined;
+}
+
+/**
  * The deduped set of ids present in `afterIds` but not in `beforeIds`. A
  * paginated/flatMapped list can repeat the same id, so dedupe: one genuinely-new
  * chat must not read as multiple from a duplicate.

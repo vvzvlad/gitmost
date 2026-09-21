@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { ActionIcon, TextInput, ScrollArea, Loader } from "@mantine/core";
+import { TextInput, ScrollArea, Loader } from "@mantine/core";
 import { useDebouncedValue } from "@mantine/hooks";
-import { IconSearch, IconFileDescription } from "@tabler/icons-react";
+import { IconSearch } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { useGetSpacesQuery } from "@/features/space/queries/space-query";
 import { useSearchSuggestionsQuery } from "@/features/search/queries/search-query";
 import { ISpace } from "@/features/space/types/space.types";
@@ -170,18 +171,7 @@ export function DestinationPicker({
                     }}
                   >
                     <div className={classes.iconWrapper}>
-                      {page.icon ? (
-                        page.icon
-                      ) : (
-                        <ActionIcon
-                          component="div"
-                          variant="transparent"
-                          c="gray"
-                          size={22}
-                        >
-                          <IconFileDescription size={18} />
-                        </ActionIcon>
-                      )}
+                      <PageIcon value={page.icon} size={18} />
                     </div>
                     <div className={classes.pageTitle}>
                       {page.title || t("Untitled")}

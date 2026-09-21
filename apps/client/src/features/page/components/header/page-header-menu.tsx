@@ -2,6 +2,8 @@ import { ActionIcon, Button, Group, Menu, Text, ThemeIcon, Tooltip } from "@mant
 import {
   IconArrowRight,
   IconArrowsHorizontal,
+  IconClockHour4,
+  IconDeviceFloppy,
   IconDots,
   IconEye,
   IconEyeOff,
@@ -16,14 +18,18 @@ import {
   IconTrash,
   IconWifiOff,
 } from "@tabler/icons-react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
 import { useAtom, useAtomValue } from "jotai";
 import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { useParams } from "react-router-dom";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
+import {
+  useToggleTemporaryMutation,
+  syncTemporaryExpiresInCache,
+} from "@/features/page-embed/queries/page-embed-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { notifications } from "@mantine/notifications";
 import { getAppUrl } from "@/lib/config.ts";
@@ -32,14 +38,20 @@ import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts
 import { PageWidthToggle } from "@/features/user/components/page-width-pref.tsx";
 import { Trans, useTranslation } from "react-i18next";
 import ExportModal from "@/components/common/export-modal";
-import { htmlToMarkdown } from "@docmost/editor-ext";
+import { convertProseMirrorToMarkdown } from "@docmost/prosemirror-markdown/browser";
 import {
+  collabProviderAtom,
   pageEditorAtom,
   yjsConnectionStatusAtom,
 } from "@/features/editor/atoms/editor-atoms.ts";
+import {
+  SAVE_VERSION_MESSAGE_TYPE,
+  saveVersionPending,
+} from "@/features/page-history/version-messages.ts";
 import { formattedDate } from "@/lib/time.ts";
 import { PageEditModeToggle } from "@/features/user/components/page-state-pref.tsx";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
+import WorkTimeStat from "@/features/page-history/work-time/work-time-stat.tsx";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
 import {
   useFavoriteIds,
@@ -62,13 +74,43 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const commentsTriggerProps = useAsideTriggerProps("comments");
   const tocTriggerProps = useAsideTriggerProps("toc");
   const { pageSlug } = useParams();
-  const { data: page } = usePageQuery({
+  const { data: page } = usePageMetaQuery({
     pageId: extractPageSlugId(pageSlug),
   });
+  // #563 — the header is now rendered from the boot cache BEFORE this query
+  // resolves, so `page` is legitimately undefined on a reload. Nothing here may
+  // dereference it unguarded; the edit-only entry points additionally require the
+  // LIVE page (their mutations all need server-confirmed rights anyway).
+  const isPageLoaded = !!page;
   const isDeleted = !!page?.deletedAt;
   const [workspace] = useAtom(workspaceAtom);
+  const collabProvider = useAtomValue(collabProviderAtom);
   // Community public-sharing entry point (replaces the removed EE PageShareModal)
   const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
+
+  // #370 — explicit "save a version" (Cmd+S / Save button). One path for the
+  // human; the server derives the tier from the signed actor. Readers can't save
+  // (the button is hidden and the collab connection is read-only server-side).
+  const handleSaveVersion = useCallback(() => {
+    if (readOnly || !collabProvider) return;
+    // Flag this client as the initiator so only it shows the confirmation toast;
+    // a safety timeout clears it if no broadcast comes back (e.g. offline).
+    saveVersionPending.current = true;
+    window.setTimeout(() => {
+      saveVersionPending.current = false;
+    }, 5000);
+    collabProvider.sendStateless(
+      JSON.stringify({ type: SAVE_VERSION_MESSAGE_TYPE }),
+    );
+  }, [readOnly, collabProvider]);
+
+  // mod+S must also block the browser's "Save page" dialog. `triggerOnContent-
+  // Editable` + empty ignore-list so it fires while typing in the editor/title.
+  useHotkeys(
+    [["mod+S", handleSaveVersion, { preventDefault: true }]],
+    [],
+    true,
+  );
 
   useHotkeys(
     [
@@ -99,12 +141,12 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
     <>
       <ConnectionWarning />
 
-      {!readOnly && <PageEditModeToggle size="xs" />}
+      {isPageLoaded && !readOnly && <PageEditModeToggle size="xs" />}
 
       {/* Hide the Share entry point for readers; the toggle inside is inert
           without edit permission, so gate it like other edit-only actions
           (issue #133) */}
-      {!readOnly && !workspaceSharingDisabled && (
+      {isPageLoaded && !readOnly && !workspaceSharingDisabled && (
         <ShareModal readOnly={false} />
       )}
 
@@ -128,20 +170,21 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
         </ActionIcon>
       </Tooltip>
 
-      <PageActionMenu readOnly={readOnly} />
+      <PageActionMenu readOnly={readOnly} onSaveVersion={handleSaveVersion} />
     </>
   );
 }
 
 interface PageActionMenuProps {
   readOnly?: boolean;
+  onSaveVersion?: () => void;
 }
-function PageActionMenu({ readOnly }: PageActionMenuProps) {
+function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
   const { t } = useTranslation();
   const [, setHistoryModalOpen] = useAtom(historyAtoms);
   const clipboard = useClipboard({ timeout: 500 });
   const { pageSlug, spaceSlug } = useParams();
-  const { data: page, isLoading } = usePageQuery({
+  const { data: page } = usePageMetaQuery({
     pageId: extractPageSlugId(pageSlug),
   });
   const { handleDelete } = useTreeMutation(page?.spaceId ?? "");
@@ -160,6 +203,29 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
   const { data: watchStatus } = useWatchStatusQuery(page?.id);
   const watchPage = useWatchPageMutation();
   const unwatchPage = useUnwatchPageMutation();
+  const toggleTemporary = useToggleTemporaryMutation();
+  const isTemporary = !!page?.temporaryExpiresAt;
+
+  const handleToggleTemporary = async () => {
+    if (!page?.id) return;
+    const next = !isTemporary;
+    try {
+      const res = await toggleTemporary.mutateAsync({
+        pageId: page.id,
+        temporary: next,
+      });
+      // Reflect the new deadline in the page cache (menu label + banner) AND in
+      // the sidebar tree node so its clock marker updates immediately, no reload.
+      syncTemporaryExpiresInCache(page, res.temporaryExpiresAt);
+      notifications.show({
+        message: next
+          ? t("Note will move to trash unless made permanent")
+          : t("Note is now permanent"),
+      });
+    } catch {
+      // mutation surfaces the error via notifications
+    }
+  };
 
   const handleCopyLink = () => {
     const pageUrl =
@@ -171,8 +237,9 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
 
   const handleCopyAsMarkdown = () => {
     if (!pageEditor) return;
-    const html = pageEditor.getHTML();
-    const markdown = htmlToMarkdown(html);
+    // Copy the page as canonical markdown through the shared converter (issue
+    // #347), so "Copy as markdown" matches the server export byte-for-byte.
+    const markdown = convertProseMirrorToMarkdown(pageEditor.getJSON());
     const title = page?.title ? `# ${page.title}\n\n` : "";
     clipboard.copy(`${title}${markdown}`);
     notifications.show({ message: t("Copied") });
@@ -202,8 +269,31 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
     }
   };
 
+  // #563 — the chrome now paints from the boot cache BEFORE this query resolves,
+  // so on a reload `page` is undefined here while the header is already on
+  // screen. Every item below needs the LIVE page (its id/slugId drive copy-link,
+  // export, move, delete, watch…), and the boot cache deliberately carries no
+  // authority to act. So render the trigger INERT until the response lands —
+  // never a throw (the unguarded `page.id` / `page.lastUpdatedBy` reads below
+  // used to blow up the whole page through the ErrorBoundary), and never an
+  // action that could fire against a page we have not re-validated.
+  if (!page) {
+    return (
+      <ActionIcon
+        variant="subtle"
+        color="dark"
+        aria-label={t("Page actions")}
+        disabled
+      >
+        <IconDots size={20} />
+      </ActionIcon>
+    );
+  }
+
   return (
     <>
+      {page?.id && <WorkTimeStat pageId={page.id} />}
+
       <Menu
         shadow="xl"
         position="bottom-end"
@@ -274,6 +364,20 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
             </Group>
           </Menu.Item>
 
+          {!readOnly && (
+            <Menu.Item
+              leftSection={<IconDeviceFloppy size={16} />}
+              onClick={onSaveVersion}
+              rightSection={
+                <Text size="xs" c="dimmed">
+                  {t("Ctrl+S")}
+                </Text>
+              }
+            >
+              {t("Save version")}
+            </Menu.Item>
+          )}
+
           <Menu.Item
             leftSection={<IconHistory size={16} />}
             onClick={openHistoryModal}
@@ -309,6 +413,12 @@ function PageActionMenu({ readOnly }: PageActionMenuProps) {
           {!readOnly && (
             <>
               <Menu.Divider />
+              <Menu.Item
+                leftSection={<IconClockHour4 size={16} />}
+                onClick={handleToggleTemporary}
+              >
+                {isTemporary ? t("Make permanent") : t("Make temporary")}
+              </Menu.Item>
               <Menu.Item
                 color={"red"}
                 leftSection={<IconTrash size={16} />}

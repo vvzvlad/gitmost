@@ -56,7 +56,7 @@ async function mergedKeysFor(
   toolsByServerId: Record<string, Record<string, Tool>>,
 ): Promise<string[]> {
   const repoStub = {
-    listEnabled: jest.fn().mockResolvedValue(servers),
+    listEnabledForAgent: jest.fn().mockResolvedValue(servers),
   };
   const service = new McpClientsService(repoStub as never, {} as never);
 
@@ -71,7 +71,7 @@ async function mergedKeysFor(
       }),
     );
 
-  const toolset = await service.toolsFor('ws-1');
+  const toolset = await service.toolsFor('ws-1', 'user-1');
   // Release the lease so the service does not hold the fake clients open.
   await Promise.all(toolset.clients.map((c) => c.close()));
   return Object.keys(toolset.tools);

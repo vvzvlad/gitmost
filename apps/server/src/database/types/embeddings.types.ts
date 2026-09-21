@@ -7,6 +7,11 @@ export interface PageEmbeddings {
   spaceId: string;
   modelName: string;
   modelDimensions: number;
+  // #530 PR-1: the active embedding fingerprint (model id + revision + prefix
+  // scheme + dimensions). NULL on legacy rows written before this column existed.
+  // Search filters candidates by the ACTIVE fingerprint so a revision/prefix
+  // change never mixes incompatible vectors.
+  fingerprint: string | null;
   workspaceId: string;
   // Nullable: page-body embeddings have no attachment (only attachment chunks set it).
   attachmentId: string | null;

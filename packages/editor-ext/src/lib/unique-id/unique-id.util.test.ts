@@ -100,4 +100,51 @@ describe("addUniqueIdsToDoc", () => {
     const [id] = ids(out);
     expect(id).toBeTruthy();
   });
+
+  it("only assigns ids to configured node types, not to others", () => {
+    // `types` is ["heading","paragraph"]; a codeBlock is NOT addressed, so it
+    // must come back without an id while the sibling paragraph is filled. (The
+    // UniqueID attribute only exists on configured types in the schema.)
+    const doc = {
+      type: "doc",
+      content: [
+        { type: "codeBlock", content: [{ type: "text", text: "x = 1" }] },
+        para(undefined, "after"),
+      ],
+    };
+    const out = addUniqueIdsToDoc(doc, extensions);
+    const [codeId, paraId] = ids(out);
+    expect(codeId).toBeUndefined();
+    expect(paraId).toBeTruthy();
+  });
+
+  it("assigns ids to target nodes nested inside non-target containers", () => {
+    // findChildren walks the whole tree: a paragraph inside a blockquote still
+    // gets an id, while the (non-target) blockquote wrapper does not.
+    const doc = {
+      type: "doc",
+      content: [
+        { type: "blockquote", content: [para(undefined, "quoted")] },
+      ],
+    };
+    const out = addUniqueIdsToDoc(doc, extensions) as any;
+    const blockquote = out.content[0];
+    const nestedPara = blockquote.content[0];
+    expect(blockquote.attrs?.id).toBeUndefined();
+    expect(nestedPara.attrs.id).toBeTruthy();
+  });
+
+  it("is idempotent: a second pass keeps every already-unique id unchanged", () => {
+    // Once ids are assigned and unique, re-running must be a fixed point — no
+    // churn that would invalidate stored MCP anchors on every save.
+    const doc = {
+      type: "doc",
+      content: [para(undefined, "a"), para(undefined, "b"), para(undefined, "c")],
+    };
+    const once = addUniqueIdsToDoc(doc, extensions);
+    const twice = addUniqueIdsToDoc(once, extensions);
+    expect(ids(twice)).toEqual(ids(once));
+    // And all three are distinct, so the second pass had real ids to preserve.
+    expect(new Set(ids(once)).size).toBe(3);
+  });
 });

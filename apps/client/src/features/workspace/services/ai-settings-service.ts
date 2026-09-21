@@ -48,6 +48,17 @@ export interface IAiSettings {
   // RAG indexing coverage (pages indexed for semantic search).
   indexedPages: number;
   totalPages: number;
+  // True while a full workspace reindex is actively running; the counts above
+  // then reflect the live run progress (done climbs 0 -> total).
+  reindexing?: boolean;
+  // Identity of the ACTIVE reindex run (present only while `reindexing`). The
+  // poll keys on `runId`: a changed value means a NEW run (reset the per-run
+  // poll state the UI latched), the same value is the run already being watched.
+  // Absent/empty ('') => no identity available; the client keeps prior behaviour.
+  runId?: string;
+  // Epoch-ms the active run started; paired with `runId` so a restart with a
+  // recycled id is still detected as a new run.
+  reindexStartedAt?: number;
 }
 
 // Update payload. Key semantics (same for `apiKey` and `embeddingApiKey`):

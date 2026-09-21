@@ -1,0 +1,14 @@
+/* The page-icon tile. The two glyph tones arrive as inline custom properties
+   (see page-icon.tsx) so the scheme fork can live HERE, where
+   postcss-preset-mantine compiles light-dark() into a data-attribute rule —
+   an inline style would need native light-dark() support instead.
+   Only the layout rules and the glyph tone are static; width/height and the
+   background tint stay inline because they depend on runtime props. */
+.tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+  color: light-dark(var(--page-icon-fg-light), var(--page-icon-fg-dark));
+}

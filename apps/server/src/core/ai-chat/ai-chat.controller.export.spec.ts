@@ -53,8 +53,10 @@ describe('AiChatController.export', () => {
     };
     const controller = new AiChatController(
       {} as never,
+      {} as never, // aiChatRunService
       aiChatRepo as never,
       aiChatMessageRepo as never,
+      {} as never,
       {} as never,
     );
     return { controller, aiChatRepo, aiChatMessageRepo };
@@ -113,7 +115,7 @@ describe('finalizeAssistant dispatch (planFinalizeAssistant + applyFinalize)', (
 
   // Drive the SAME applyFinalize the service calls (no duplicated logic).
   async function dispatchFinalize(
-    repo: { insert: jest.Mock; update: jest.Mock },
+    repo: { insert: jest.Mock; finalizeOwner: jest.Mock },
     assistantId: string | undefined,
     flushed: AssistantFlush,
   ): Promise<void> {
@@ -133,21 +135,22 @@ describe('finalizeAssistant dispatch (planFinalizeAssistant + applyFinalize)', (
     expect(planFinalizeAssistant(undefined)).toEqual({ kind: 'insert' });
   });
 
-  it('(a) upfront insert succeeded -> finalize UPDATEs the row by id', async () => {
-    const repo = { insert: jest.fn(), update: jest.fn() };
+  it('(a) upfront insert succeeded -> finalize CONDITIONALLY updates the row by id (#487 owner-write)', async () => {
+    const repo = { insert: jest.fn(), finalizeOwner: jest.fn() };
     const flushed = flushAssistant([], 'final answer', 'completed', {
       finishReason: 'stop',
     });
     await dispatchFinalize(repo, 'a1', flushed);
-    expect(repo.update).toHaveBeenCalledWith('a1', workspaceId, flushed);
+    // #487: the owner write is the CONDITIONAL finalizeOwner, not a raw update.
+    expect(repo.finalizeOwner).toHaveBeenCalledWith('a1', workspaceId, flushed);
     expect(repo.insert).not.toHaveBeenCalled();
   });
 
   it('(b) upfront insert failed -> finalize INSERTs the terminal payload', async () => {
-    const repo = { insert: jest.fn(), update: jest.fn() };
+    const repo = { insert: jest.fn(), finalizeOwner: jest.fn() };
     const flushed = flushAssistant([], 'partial', 'error', { error: 'boom' });
     await dispatchFinalize(repo, undefined, flushed);
-    expect(repo.update).not.toHaveBeenCalled();
+    expect(repo.finalizeOwner).not.toHaveBeenCalled();
     expect(repo.insert).toHaveBeenCalledTimes(1);
     const arg = repo.insert.mock.calls[0][0];
     // The fallback insert carries the terminal content/status/metadata.

@@ -1,4 +1,4 @@
-// Mock collab regression for the AMBIGUOUS-id refusal in patch_node / delete_node
+// Mock collab regression for the AMBIGUOUS-id refusal in patchNode / deleteNode
 // (#159, PR #185 review pt 1). When a page has TWO blocks sharing one attrs.id
 // (Docmost duplicates block ids on copy/paste), the transform's
 // `if (replaced !== 1) return null` / `if (deleted !== 1) return null` guard must
@@ -126,18 +126,20 @@ after(async () => {
   );
 });
 
-test("patch_node REFUSES an ambiguous (duplicate) id without writing to collab", async () => {
+test("patchNode REFUSES an ambiguous (duplicate) id without writing to collab", async () => {
   const { state, baseURL } = await spawnCollabStack();
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
 
   await assert.rejects(
     () =>
-      client.patchNode("page-1", DUP_ID, {
-        type: "paragraph",
-        content: [{ type: "text", text: "replacement" }],
+      client.patchNode("11111111-1111-4111-8111-111111111111", DUP_ID, {
+        node: {
+          type: "paragraph",
+          content: [{ type: "text", text: "replacement" }],
+        },
       }),
     /ambiguous/i,
-    "patch_node must reject a duplicate-id target with an 'ambiguous' error",
+    "patchNode must reject a duplicate-id target with an 'ambiguous' error",
   );
 
   assert.equal(
@@ -147,14 +149,14 @@ test("patch_node REFUSES an ambiguous (duplicate) id without writing to collab",
   );
 });
 
-test("delete_node REFUSES an ambiguous (duplicate) id without writing to collab", async () => {
+test("deleteNode REFUSES an ambiguous (duplicate) id without writing to collab", async () => {
   const { state, baseURL } = await spawnCollabStack();
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
 
   await assert.rejects(
-    () => client.deleteNode("page-2", DUP_ID),
+    () => client.deleteNode("22222222-2222-4222-8222-222222222222", DUP_ID),
     /ambiguous/i,
-    "delete_node must reject a duplicate-id target with an 'ambiguous' error",
+    "deleteNode must reject a duplicate-id target with an 'ambiguous' error",
   );
 
   assert.equal(

@@ -1,5 +1,5 @@
 import "@/features/editor/styles/index.css";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Document } from "@tiptap/extension-document";
 import { Heading } from "@tiptap/extension-heading";
@@ -26,15 +26,25 @@ import EmojiCommand from "@/features/editor/extensions/emoji-command.ts";
 import { UpdateEvent } from "@/features/websocket/types";
 import localEmitter from "@/lib/local-emitter.ts";
 import { PageEditMode } from "@/features/user/types/user.types.ts";
-import { searchSpotlight } from "@/features/search/constants.ts";
+import { openSearchSpotlight } from "@/features/search/constants.ts";
 import { platformModifierKey } from "@/lib";
+import { useTitleAutofocus } from "@/features/editor/hooks/use-title-autofocus";
 
 export interface TitleEditorProps {
   pageId: string;
   slugId: string;
-  title: string;
+  // Ф7 (#643) — may be `null` (a page with no title) when mounted from the
+  // meta cache before `/pages/info` resolves.
+  title: string | null;
   spaceSlug: string;
   editable: boolean;
+  // Ф7 (#643) — whether the LIVE page of this pageId has resolved. `false` while
+  // mounted on cached meta with `/pages/info` still in flight. Gates the two
+  // operations that can erase/misroute a title from a non-authoritative value:
+  // the canonicalizing navigate and the force-save-on-unmount. Flag OFF (and the
+  // legacy `page && space` mount, which only renders after the live page is in
+  // hand): defaults to `true`, so behavior is unchanged.
+  pageResolved?: boolean;
 }
 
 export function TitleEditor({
@@ -43,6 +53,7 @@ export function TitleEditor({
   title,
   spaceSlug,
   editable,
+  pageResolved = true,
 }: TitleEditorProps) {
   const { t } = useTranslation();
   const { mutateAsync: updateTitlePageMutationAsync } =
@@ -53,6 +64,11 @@ export function TitleEditor({
   const navigate = useNavigate();
   const [activePageId, setActivePageId] = useState(pageId);
   const currentPageEditMode = useAtomValue(currentPageEditModeAtom);
+  // Ф7 (#643) — read the CURRENT resolution at unmount time (the cleanup below is
+  // registered once per pageId, so it would otherwise close over the mount-time
+  // value and force-save a page that only resolved after mount).
+  const pageResolvedRef = useRef(pageResolved);
+  pageResolvedRef.current = pageResolved;
 
   const titleEditor = useEditor({
     extensions: [
@@ -97,7 +113,7 @@ export function TitleEditor({
             return true;
           }
           if (platformModifierKey(event) && event.code === "KeyK") {
-            searchSpotlight.open();
+            openSearchSpotlight();
             return true;
           }
         },
@@ -106,19 +122,31 @@ export function TitleEditor({
   });
 
   useEffect(() => {
+    // Ф7 (#643) — the canonicalizing URL rewrite must not run until the LIVE page
+    // resolved. Before that, `title` is the cached/placeholder value; navigating
+    // on it could rewrite the route to a non-authoritative slug (and, with a
+    // route that already carries the real spaceSlug, needlessly churn). Once the
+    // live title lands this re-runs and canonicalizes. Flag OFF: `pageResolved`
+    // is always true, so this fires on mount + title change exactly as today.
+    if (!pageResolved) return;
     const anchorId = window.location.hash
       ? window.location.hash.substring(1)
       : undefined;
-    const pageSlug = buildPageUrl(spaceSlug, slugId, title, anchorId);
+    const pageSlug = buildPageUrl(spaceSlug, slugId, title ?? undefined, anchorId);
     navigate(pageSlug, { replace: true });
-  }, [title]);
+  }, [title, pageResolved]);
 
   const saveTitle = useCallback(() => {
     if (!titleEditor || activePageId !== pageId) return;
 
+    // Ф7 (#643) — treat an UNRESOLVED title (`undefined`, e.g. mounted on cached
+    // meta before `/pages/info`) exactly like `null`: an empty editor over an
+    // unresolved title must BAIL, never persist `title:""` over everyone's copy
+    // (the title-erasure trap). `null`/`undefined` collapse to the same guard.
+    const resolvedTitle = title ?? null;
     if (
-      titleEditor.getText() === title ||
-      (titleEditor.getText() === "" && title === null)
+      titleEditor.getText() === resolvedTitle ||
+      (titleEditor.getText() === "" && resolvedTitle === null)
     ) {
       return;
     }
@@ -167,18 +195,15 @@ export function TitleEditor({
     }
   }, [pageId, title, titleEditor]);
 
-  useEffect(() => {
-    setTimeout(() => {
-      // guard against Cannot access view['hasFocus'] error
-      if (!titleEditor?.isInitialized) return;
-      titleEditor?.commands?.focus("end");
-    }, 300);
-  }, [titleEditor]);
+  useTitleAutofocus(titleEditor, pageId, pageResolved);
 
   useEffect(() => {
     return () => {
-      // force-save title on navigation
-      saveTitle();
+      // force-save title on navigation. Ф7 (#643) — a NO-OP until the live page
+      // resolved: mounted on cached meta, an unmount before `/pages/info` must
+      // not persist a placeholder/cached title (the title-erasure trap). Read via
+      // the ref so the decision reflects resolution AT UNMOUNT, not at mount.
+      if (pageResolvedRef.current) saveTitle();
     };
   }, [pageId]);
 

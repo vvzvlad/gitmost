@@ -34,7 +34,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | --- | --- |
 | **EE code removed** | Stripped all client and server Enterprise-Edition code; ships as a clean community/AGPL build with no license checks. |
 | **Comment resolution** | Re-implemented from scratch as a community feature (resolve / re-open with Open/Resolved tabs). No EE code reused, available to anyone who can comment. |
-| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 38 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
+| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 40 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
 | **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
@@ -44,7 +44,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 ### Embedded MCP server
 
 Gitmost has **our own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
-which we wrote — **built directly into the app** and served at `/mcp`. It exposes **38
+which we wrote — **built directly into the app** and served at `/mcp`. It exposes **40
 agent-native tools**: surgical per-block edits (patch / insert / delete by id),
 structure-preserving find/replace, scripted `(doc) => doc` transforms with a dry-run diff,
 structured table editing, version history with diff / restore, comments, images and share
@@ -60,7 +60,7 @@ every little fix. And it needs no enterprise license.
 | | **Gitmost `/mcp` (our docmost-mcp)** | Docmost's built-in MCP |
 | --- | :---: | :---: |
 | **Enterprise license** | Not required | Required |
-| **Tools** | 38, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
+| **Tools** | 40, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
 | **Per-block edits / find-replace / scripted transforms** | ✅ | — |
 | **Structured table editing, version diff / restore** | ✅ | — |
 | **Comments, images, share links** | ✅ | — |
@@ -104,6 +104,7 @@ community feature, with no enterprise license. Open it from the page header; the
 - ✅ **Page templates** — flag a page as a template and embed its whole content live into other pages; edits to the template propagate to every place it is inserted (whole-page transclusion on top of the existing synced blocks).
 - ✅ **Public-share AI assistant** — anonymous visitors of a shared page can ask the AI agent, scoped strictly to that share's page tree (read-only, share-scoped search), behind a workspace toggle.
 - ✅ **Footnotes** — academic-style footnotes: a numbered superscript reference inline (read it in place via a hover popover), with the note text living as a real, editable block at the bottom of the page; auto-numbered, collaboration-safe, and round-trips through Markdown export/import and the AI agent / MCP.
+- ✅ **Temporary notes** — create a note as temporary and it auto-moves to Trash after a configurable per-workspace lifetime (default 24h) unless made permanent first; create one in a click from the Home screen, any space overview.
 
 ### In progress
 
@@ -123,6 +124,32 @@ community feature, with no enterprise license. Open it from the page header; the
 Gitmost follows the upstream Docmost setup. See the Docmost
 [documentation](https://docmost.com/docs) for self-hosting and development instructions; replace the
 `docmost/docmost` image with `ghcr.io/vvzvlad/gitmost` where applicable.
+
+### Reverse proxy: SSE streaming paths
+
+The AI agent streams its answers over Server-Sent Events. These endpoints produce a
+long-lived `text/event-stream` response and **must bypass response buffering AND response
+compression** at every proxy in front of the app:
+
+- `POST /api/ai-chat/stream` — the live agent turn stream
+- `GET /api/ai-chat/runs/<chatId>/stream` — attach/resume of a detached agent run
+  (`AI_CHAT_RESUMABLE_STREAM`)
+- `POST /api/shares/ai/stream` — the anonymous public-share assistant
+
+A buffering or compressing proxy does not break these with an error — it silently ruins them:
+the request hangs in `pending`, tokens stop streaming and arrive in one burst when the turn
+ends, or a reloaded tab falls back to coarse polling. The tell in DevTools is a
+`Content-Encoding: gzip/zstd` response header on a `text/event-stream` response.
+
+The server already sends `X-Accel-Buffering: no` (honored by nginx unless ignored), but
+compression middleware is applied by proxy configuration, not headers:
+
+- **nginx** — `proxy_buffering off; proxy_cache off; gzip off;` for these locations, e.g.
+  `location ~ ^/api/(ai-chat/(stream$|runs/.+/stream$)|shares/ai/) { ... }`
+- **Traefik** — route these paths through a dedicated router **without** the `compress`
+  middleware (a `compress` middleware buffers SSE frames until the response closes), e.g.
+  ``PathPrefix(`/api/ai-chat/stream`) || PathPrefix(`/api/ai-chat/runs/`)``. Belt-and-braces:
+  `traefik.http.middlewares.<name>.compress.excludedcontenttypes: text/event-stream`.
 
 ## Migration from Docmost
 
@@ -179,6 +206,137 @@ start the new migrations apply on top of your existing schema (`CREATE EXTENSION
   existing pages are indexed on their next edit. pgvector is still required for the migration to
   apply at all.
 
+## Local embeddings server
+
+The AI agent's semantic (RAG) search needs an **embeddings model**. Instead of paying a cloud
+provider (e.g. OpenAI `text-embedding-3-*`) to embed every page, you can run a small open-weights
+model yourself with Hugging Face
+[Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) (TEI), which
+serves an OpenAI-compatible `/v1/embeddings` endpoint. `intfloat/multilingual-e5-small` is a good
+default: multilingual, 384-dim, and comfortable on CPU (~1–2 GB RAM, 1–2 vCPU). Point Gitmost at it
+under **Workspace settings → AI → Embeddings**.
+
+### Option A — local (same Docker network as Gitmost)
+
+Run TEI as a container on the network Gitmost is already on. The port is never published, so the
+endpoint stays internal and needs no authentication.
+
+```yaml
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9   # pin version; use a cuda-* tag for GPU
+    container_name: embeddings
+    restart: unless-stopped
+    networks:
+      - gitmost_net          # same network Gitmost is on
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--auto-truncate"    # clamp over-long inputs instead of returning 413
+    volumes:
+      - tei-models:/data     # weights are downloaded once and cached here
+
+networks:
+  gitmost_net:
+    external: true           # the network Gitmost already uses
+
+volumes:
+  tei-models:
+```
+
+Gitmost settings (**Workspace settings → AI → Embeddings**):
+
+| Field             | Value                             |
+|-------------------|-----------------------------------|
+| Model             | `intfloat/multilingual-e5-small`  |
+| Base URL          | `http://embeddings:80/v1/`        |
+| Embedding API key | — (leave empty)                   |
+
+> `embeddings` is the container name — Gitmost resolves it over DNS inside the Docker network.
+> The port is not published, so the endpoint is reachable only by containers on that network and
+> no authorization is required.
+
+### Option B — separate host (public via Traefik + Let's Encrypt)
+
+This assumes the host already runs Traefik with an ACME resolver (the example below uses
+`letsEncrypt`, the `websecure` entrypoint and a shared `docker_main_net` network). Replace the
+domain / network / resolver with your own.
+
+**DNS:** add an A record `embeddings.example.com` → the IP of your Traefik host (same
+challenge / port 80 as the rest of your sites).
+
+```yaml
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9   # pin version; cuda-* tag for GPU
+    container_name: embeddings
+    restart: unless-stopped
+    networks:
+      - docker_main_net      # the network Traefik is attached to
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--auto-truncate"
+      - "--api-key"
+      - "sk-emb-REPLACE_WITH_YOUR_KEY"
+    volumes:
+      - tei-models:/data
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.embeddings.rule: "Host(`embeddings.example.com`)"
+      traefik.http.routers.embeddings.entrypoints: "websecure"
+      traefik.http.routers.embeddings.tls: "true"
+      traefik.http.routers.embeddings.tls.certresolver: "letsEncrypt"
+      traefik.http.routers.embeddings.service: "embeddings"
+      traefik.http.services.embeddings.loadbalancer.server.port: "80"
+      # TEI enforces the Bearer key itself; Traefik only rate-limits to protect the CPU
+      traefik.http.routers.embeddings.middlewares: "embeddings-rl"
+      traefik.http.middlewares.embeddings-rl.ratelimit.average: "20"
+      traefik.http.middlewares.embeddings-rl.ratelimit.burst: "40"
+      traefik.http.middlewares.embeddings-rl.ratelimit.period: "1s"
+
+networks:
+  docker_main_net:
+    external: true
+
+volumes:
+  tei-models:
+```
+
+Gitmost settings (**Workspace settings → AI → Embeddings**):
+
+| Field             | Value                                 |
+|-------------------|---------------------------------------|
+| Model             | `intfloat/multilingual-e5-small`      |
+| Base URL          | `https://embeddings.example.com/v1/`  |
+| Embedding API key | your `sk-emb-…`                       |
+
+Check it from outside:
+
+```bash
+curl -s https://embeddings.example.com/v1/embeddings \
+  -H "Authorization: Bearer sk-emb-REPLACE_WITH_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"intfloat/multilingual-e5-small","input":"query: hello"}' \
+  | python3 -c 'import sys,json;print("dims:",len(json.load(sys.stdin)["data"][0]["embedding"]))'
+# -> dims: 384
+```
+
+### Embeddings server notes
+
+- **Vector dimension is 384.** If this Gitmost was previously embedded with a different model
+  (e.g. `text-embedding-3-large` = 3072-dim), the old pgvector rows won't match the new dimension —
+  clear the existing embeddings / re-index before switching. Gitmost only compares vectors of the
+  same dimension, so mixed-dimension rows are silently ignored rather than searched.
+- **First start downloads the weights** (hundreds of MB) from `huggingface.co` into the
+  `tei-models` volume; every start after that reads from the volume.
+- **Pin the version.** Pin the image, and optionally the model: add `--revision <commit-sha>` to
+  `command` (the sha is on the model's page on Hugging Face).
+- **Air-gapped / no egress:** seed the `tei-models` volume ahead of time and add
+  `environment: [HF_HUB_OFFLINE=1]`.
+- **GPU:** use the cuda tag of the same release (e.g.
+  `ghcr.io/huggingface/text-embeddings-inference:cuda-1.9`) and start the container with `gpus: all`.
+
 ## Features
 
 - Real-time collaboration
@@ -186,14 +344,17 @@ start the new migrations apply on top of your existing schema (`CREATE EXTENSION
 - Spaces
 - Permissions management
 - Groups
-- Comments (with resolve / re-open)
+- Comments (with resolve / re-open and hover tooltips showing the comment text)
 - Page history
 - Search
 - File attachments
 - Embeds (Airtable, Loom, Miro and more)
 - Translations (10+ languages)
 - Embedded MCP server (`/mcp`)
-- AI agent chat over your wiki (read + write, RAG search, external MCP / web access)
+- AI agent chat over your wiki (read + write, RAG search, external MCP / web access); the chat window docks into the side menu, and the agent is told about your in-page edits between turns
+- Code-block buttons as an overlay, with the language selector revealed on hover
+- Stress-accent button (U+0301) in the bubble menu
+- Reading scroll position restored on reload
 
 ### Screenshots
 

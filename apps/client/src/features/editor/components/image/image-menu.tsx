@@ -15,6 +15,7 @@ import {
   IconLayoutAlignRight,
   IconFloatLeft,
   IconFloatRight,
+  IconLayoutColumns,
   IconDownload,
   IconRefresh,
   IconTrash,
@@ -23,6 +24,7 @@ import { useTranslation } from "react-i18next";
 import { getFileUrl } from "@/lib/config.ts";
 import { uploadImageAction } from "@/features/editor/components/image/upload-image-action.tsx";
 import { useAltTextControl } from "@/features/editor/components/common/use-alt-text-control.tsx";
+import { useCaptionControl } from "@/features/editor/components/common/use-caption-control.tsx";
 import classes from "../common/toolbar-menu.module.css";
 
 export function ImageMenu({ editor }: EditorMenuProps) {
@@ -36,6 +38,14 @@ export function ImageMenu({ editor }: EditorMenuProps) {
         return null;
       }
 
+      // #343 PART 1: skip the expensive per-keystroke work (getAttributes + the
+      // alignment isActive() probes) unless an image is actually active. The
+      // menu is only shown when an image is active (see shouldShow), so a null
+      // state while inactive is never rendered — behavior is unchanged.
+      if (!ctx.editor.isActive("image")) {
+        return null;
+      }
+
       const imageAttrs = ctx.editor.getAttributes("image");
 
       return {
@@ -45,8 +55,10 @@ export function ImageMenu({ editor }: EditorMenuProps) {
         isAlignRight: ctx.editor.isActive("image", { align: "right" }),
         isFloatLeft: ctx.editor.isActive("image", { align: "floatLeft" }),
         isFloatRight: ctx.editor.isActive("image", { align: "floatRight" }),
+        isInline: ctx.editor.isActive("image", { align: "inline" }),
         src: imageAttrs?.src || null,
         alt: imageAttrs?.alt || "",
+        caption: imageAttrs?.caption || "",
       };
     },
   });
@@ -124,6 +136,14 @@ export function ImageMenu({ editor }: EditorMenuProps) {
       .run();
   }, [editor]);
 
+  const alignImageInline = useCallback(() => {
+    editor
+      .chain()
+      .focus(undefined, { scrollIntoView: false })
+      .setImageAlign("inline")
+      .run();
+  }, [editor]);
+
   const handleDownload = useCallback(() => {
     if (!editorState?.src) return;
     const url = getFileUrl(editorState.src);
@@ -168,6 +188,16 @@ export function ImageMenu({ editor }: EditorMenuProps) {
     currentAlt: editorState?.alt || "",
   });
 
+  const {
+    button: captionButton,
+    panel: captionPanel,
+    isEditing: isEditingCaption,
+  } = useCaptionControl({
+    editor,
+    nodeName: "image",
+    currentCaption: editorState?.caption || "",
+  });
+
   return (
     <BaseBubbleMenu
       editor={editor}
@@ -183,6 +213,8 @@ export function ImageMenu({ editor }: EditorMenuProps) {
     >
       {isEditingAlt ? (
         altTextPanel
+      ) : isEditingCaption ? (
+        captionPanel
       ) : (
         <div className={classes.toolbar}>
         <Tooltip position="top" label={t("Align left")} withinPortal={false}>
@@ -245,9 +277,23 @@ export function ImageMenu({ editor }: EditorMenuProps) {
           </ActionIcon>
         </Tooltip>
 
+        <Tooltip position="top" label={t("Inline (side by side)")} withinPortal={false}>
+          <ActionIcon
+            onClick={alignImageInline}
+            size="lg"
+            aria-label={t("Inline (side by side)")}
+            variant="subtle"
+            className={clsx({ [classes.active]: editorState?.isInline })}
+          >
+            <IconLayoutColumns size={18} />
+          </ActionIcon>
+        </Tooltip>
+
         <div className={classes.divider} />
 
         {altTextButton}
+
+        {captionButton}
 
         <div className={classes.divider} />
 

@@ -23,8 +23,12 @@ export function useAiSettingsQuery(
   enabled: boolean = true,
   // While reindexing runs as an async background job, the counter only climbs
   // if the client keeps refetching. The component passes a refetchInterval
-  // function that polls until indexed === total or a bounded deadline, then
-  // returns false to stop. See AiProviderSettings.
+  // function (`nextReindexPollInterval`) that keeps polling while the server
+  // reports an active run (reindexing === true) OR we are still within the
+  // bounded deadline and not yet fully indexed; it returns false to stop only
+  // once the run has finished AND indexed >= total, or the deadline cap is hit
+  // (the cap always wins). Note: a transient indexed === total during an active
+  // run does NOT stop polling. See AiProviderSettings.
   refetchInterval?:
     | number
     | false

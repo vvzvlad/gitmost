@@ -103,8 +103,9 @@ interface CollisionPlan {
  * `X__2`, `X__3`, collision-bumped) so it survives as a distinct footnote — which,
  * having no matching reference, then falls under the normal orphan policy. It is
  * only ever dropped for lacking a reference, never for colliding. The IMPORT
- * paths (footnote.marked.ts / MCP extractFootnotes) instead apply first-wins +
- * drop + warn for duplicate definitions; that divergence is intentional — import
+ * paths (@docmost/prosemirror-markdown / MCP extractFootnotes) instead apply
+ * first-wins + drop + warn for duplicate definitions; that divergence is
+ * intentional — import
  * is an agent-authored artifact we sanitize, the editor is live user data we must
  * not lose.
  *

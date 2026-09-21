@@ -1,6 +1,6 @@
 // Mantine Idle hook to support reset handle  - MIT
 //src: https://github.com/mantinedev/mantine/blob/06018d0beff22caa7b36d796e56ad597cc5c23f7/packages/%40mantine/hooks/src/use-idle/use-idle.ts
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const DEFAULT_EVENTS: (keyof DocumentEventMap)[] = [
   "keypress",
@@ -25,7 +25,11 @@ export function useIdle(
   const [idle, setIdle] = useState<boolean>(initialState);
   const timer = useRef<number>(-1);
 
-  const reset = () => {
+  // `resetIdle` is a dependency of consumer effects (page-editor's socket
+  // connect/disconnect effect). Declared inline it got a fresh identity on
+  // every render, re-running those effects on every render. The timer lives in
+  // a ref and `setIdle` is stable, so `timeout` is the only real dependency.
+  const reset = useCallback(() => {
     setIdle(false);
     if (timer.current) {
       window.clearTimeout(timer.current);
@@ -33,7 +37,7 @@ export function useIdle(
     timer.current = window.setTimeout(() => {
       setIdle(true);
     }, timeout);
-  };
+  }, [timeout]);
 
   useEffect(() => {
     const handleEvents = () => {

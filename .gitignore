@@ -2,9 +2,43 @@
 .env.dev
 .env.prod
 data
+# Exception: the committed draw.io shape catalog (issue #424) lives in a `data/`
+# dir, but the bare `data` ignore above is meant for runtime state, not this
+# bundled build asset. Re-include the directory and its contents.
+!packages/mcp/data/
+!packages/mcp/data/**
 # compiled output
 /dist
-/node_modules
+node_modules
+
+# git-sync compiled output (built in CI/Docker via `pnpm build`, never committed,
+# so src/ and prod can never silently diverge).
+packages/git-sync/build/
+
+# prosemirror-markdown compiled output (built in CI/Docker via `pnpm build`,
+# never committed, so src/ and prod can never silently diverge).
+packages/prosemirror-markdown/build/
+
+# mcp compiled output (built in CI/Docker via `pnpm build`, never committed, so
+# src/ and prod can never silently diverge). Matches the git-sync/prosemirror-
+# markdown convention; the package is private and rebuilt at deploy.
+packages/mcp/build/
+
+# mcp REGISTRY_STAMP codegen output (issue #447). Regenerated into src/ by
+# scripts/gen-registry-stamp.mjs on every `build`/`pretest` (before tsc), so it
+# is a build artifact like build/ — never committed, always fresh.
+packages/mcp/src/registry-stamp.generated.ts
+
+# EXCEPTION to the "*.generated.* is never committed" convention above:
+# apps/client/src/components/ui/lucide/lucide-catalog.generated.ts IS committed.
+# Its generator (scripts/gen-lucide-catalog.mjs, issue #696) is hand-run and
+# reaches the network (a lucide repo-tag tarball), so it cannot run in the Docker
+# build; the committed artifact is what ships. A guard test protects it from
+# drift. Deliberately NOT ignored — do not add it here.
+
+# token-estimate compiled output (#490; built in CI/Docker via `pnpm build` /
+# the server `pretest`, never committed, so src/ and prod can never diverge).
+packages/token-estimate/dist/
 
 # Logs
 logs
@@ -42,6 +76,9 @@ lerna-debug.log*
 .nx/installation
 .nx/cache
 .claude/worktrees/
+.claude/tmp/
+# Local Chrome performance traces recorded by the AI-chat perf harness
+.claude/perf-traces/
 
 # TypeScript incremental build artifacts
 *.tsbuildinfo

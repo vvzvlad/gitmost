@@ -37,7 +37,7 @@ import {
   getAttachmentIds,
   getProsemirrorContent,
 } from '../../common/helpers/prosemirror/utils';
-import { htmlToMarkdown } from '@docmost/editor-ext';
+import { convertProseMirrorToMarkdown } from '@docmost/prosemirror-markdown';
 
 type AllowedAttachment = { id: string; fileName: string; filePath: string };
 
@@ -79,9 +79,8 @@ export class ExportService {
       prosemirrorJson.content.unshift(titleNode);
     }
 
-    const pageHtml = jsonToHtml(prosemirrorJson);
-
     if (format === ExportFormat.HTML) {
+      const pageHtml = jsonToHtml(prosemirrorJson);
       return `<!DOCTYPE html>
       <html>
         <head>
@@ -92,11 +91,14 @@ export class ExportService {
     }
 
     if (format === ExportFormat.Markdown) {
-      const newPageHtml = pageHtml.replace(
-        /<colgroup[^>]*>[\s\S]*?<\/colgroup>/gim,
-        '',
-      );
-      return htmlToMarkdown(newPageHtml);
+      // Direct ProseMirror JSON -> Markdown via the canonical converter
+      // (`@docmost/prosemirror-markdown`). This is the SAME serializer the
+      // git-sync vault writer feeds (see git-sync `stabilizePageBody`), so an
+      // exported page body is byte-identical to its vault representation — no
+      // HTML intermediate, no second markdown layer, no format drift (issue
+      // #345). The old `<colgroup>` scrub is gone with the HTML step: the
+      // converter emits GFM tables directly and never produces `<colgroup>`.
+      return convertProseMirrorToMarkdown(prosemirrorJson);
     }
 
     return;

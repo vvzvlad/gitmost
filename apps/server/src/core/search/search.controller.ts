@@ -60,6 +60,12 @@ export class SearchController {
       }
     }
 
+    // #443 graceful degradation: on EE/Typesense instances the request routes to
+    // the Typesense backend, which does NOT implement the opt-in agent-lookup
+    // mode. The `substring`/`parentPageId`/`titleOnly` fields are silently ignored
+    // and the response carries no `path`/`snippet`/`score` and no substring/tier
+    // ranking — it degrades to plain Typesense FTS. The native lookup mode below
+    // is Postgres-search-driver only.
     if (this.environmentService.getSearchDriver() === 'typesense') {
       return this.searchTypesense(searchDto, {
         userId: user.id,

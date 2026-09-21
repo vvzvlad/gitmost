@@ -181,25 +181,25 @@ describe('mcp timeout env helpers', () => {
     else process.env.AI_MCP_CALL_TIMEOUT_MS = ORIG_CALL;
   });
 
-  it('mcpStreamTimeoutMs defaults to 5 min and honors a positive override', () => {
+  it('mcpStreamTimeoutMs defaults to 1 min and honors a positive override', () => {
     delete process.env.AI_MCP_STREAM_TIMEOUT_MS;
-    expect(mcpStreamTimeoutMs()).toBe(300_000);
-    process.env.AI_MCP_STREAM_TIMEOUT_MS = '60000';
     expect(mcpStreamTimeoutMs()).toBe(60_000);
+    process.env.AI_MCP_STREAM_TIMEOUT_MS = '90000';
+    expect(mcpStreamTimeoutMs()).toBe(90_000);
     for (const bad of ['0', '-1', 'x', '']) {
       process.env.AI_MCP_STREAM_TIMEOUT_MS = bad;
-      expect(mcpStreamTimeoutMs()).toBe(300_000);
+      expect(mcpStreamTimeoutMs()).toBe(60_000);
     }
   });
 
-  it('mcpCallTimeoutMs defaults to 15 min and honors a positive override', () => {
+  it('mcpCallTimeoutMs defaults to 2 min and honors a positive override', () => {
     delete process.env.AI_MCP_CALL_TIMEOUT_MS;
-    expect(mcpCallTimeoutMs()).toBe(900_000);
-    process.env.AI_MCP_CALL_TIMEOUT_MS = '120000';
     expect(mcpCallTimeoutMs()).toBe(120_000);
+    process.env.AI_MCP_CALL_TIMEOUT_MS = '180000';
+    expect(mcpCallTimeoutMs()).toBe(180_000);
     for (const bad of ['0', '-1', 'x', '']) {
       process.env.AI_MCP_CALL_TIMEOUT_MS = bad;
-      expect(mcpCallTimeoutMs()).toBe(900_000);
+      expect(mcpCallTimeoutMs()).toBe(120_000);
     }
   });
 });

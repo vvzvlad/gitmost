@@ -1,10 +1,12 @@
 import {
   IsBoolean,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
 } from 'class-validator';
+import { PublishedMode } from '../published-mode.constants';
 
 export class CreateShareDto {
   @IsString()
@@ -18,6 +20,13 @@ export class CreateShareDto {
   @IsOptional()
   @IsBoolean()
   searchIndexing: boolean;
+
+  // #370 Stage B — publication mode. 'live' (default) serves the current draft;
+  // 'approved' serves the last manually-saved version (page_history.kind
+  // ='manual'). Mutually exclusive with includeSubPages (enforced server-side).
+  @IsOptional()
+  @IsIn(['live', 'approved'])
+  publishedMode?: PublishedMode;
 }
 
 export class UpdateShareDto extends CreateShareDto {

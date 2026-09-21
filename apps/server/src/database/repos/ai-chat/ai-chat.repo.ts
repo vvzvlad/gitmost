@@ -80,6 +80,30 @@ export class AiChatRepo {
     });
   }
 
+  /**
+   * The ownership triple for a chat id, WITHOUT filtering on any of its fields —
+   * the bind-page (#665) validation needs to distinguish four outcomes that
+   * findById collapses into one `undefined`: no such chat, a chat in a different
+   * workspace, a chat owned by someone else, and a soft-deleted chat. Selecting
+   * `creatorId + workspaceId + deletedAt` raw lets the caller tell "not owned"
+   * (fail-closed, reason=chat_not_owned) from "deleted" (reason=chat_deleted) and
+   * emit the right WARN + skip-counter. Returns undefined only when no row exists.
+   */
+  async findOwnershipById(id: string): Promise<
+    | {
+        creatorId: string;
+        workspaceId: string;
+        deletedAt: AiChat['deletedAt'];
+      }
+    | undefined
+  > {
+    return this.db
+      .selectFrom('aiChats')
+      .select(['creatorId', 'workspaceId', 'deletedAt'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+  }
+
   async insert(
     insertable: InsertableAiChat,
     trx?: KyselyTransaction,

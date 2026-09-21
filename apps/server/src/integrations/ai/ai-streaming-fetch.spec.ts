@@ -6,6 +6,8 @@ import {
   streamKeepAliveMs,
   streamingDispatcherOptions,
   isRetryableConnectError,
+  preResponseConnectRetries,
+  preResponseBackoffMs,
 } from './ai-streaming-fetch';
 
 /**
@@ -47,8 +49,8 @@ describe('streamTimeoutMs', () => {
     expect(streamingDispatcherOptions()).toEqual({
       headersTimeout: 900_000,
       bodyTimeout: 900_000,
-      keepAliveTimeout: 10_000,
-      keepAliveMaxTimeout: 10_000,
+      keepAliveTimeout: 4_000,
+      keepAliveMaxTimeout: 4_000,
     });
   });
 });
@@ -60,18 +62,88 @@ describe('streamKeepAliveMs', () => {
     else process.env.AI_STREAM_KEEPALIVE_MS = ORIG;
   });
 
-  it('defaults to 10s (recycle idle sockets so a NAT/proxy drop cannot poison reuse)', () => {
+  it('defaults to 4s (recycle idle sockets under common ~5s upstream idle cutoffs)', () => {
     delete process.env.AI_STREAM_KEEPALIVE_MS;
-    expect(streamKeepAliveMs()).toBe(10_000);
+    expect(streamKeepAliveMs()).toBe(4_000);
   });
 
   it('honours a positive override and ignores invalid/non-positive', () => {
-    process.env.AI_STREAM_KEEPALIVE_MS = '4000';
-    expect(streamKeepAliveMs()).toBe(4000);
+    process.env.AI_STREAM_KEEPALIVE_MS = '7000';
+    expect(streamKeepAliveMs()).toBe(7000);
     for (const bad of ['0', '-1', 'x', '']) {
       process.env.AI_STREAM_KEEPALIVE_MS = bad;
-      expect(streamKeepAliveMs()).toBe(10_000);
+      expect(streamKeepAliveMs()).toBe(4_000);
     }
+  });
+});
+
+/**
+ * #310: the PRE-RESPONSE retry budget was raised 2 -> 4 (5 total attempts) and
+ * made env-configurable so a BURST of upstream resets doesn't exhaust it.
+ */
+describe('preResponseConnectRetries', () => {
+  const ORIG = process.env.AI_STREAM_PRE_RESPONSE_RETRIES;
+  afterEach(() => {
+    if (ORIG === undefined) delete process.env.AI_STREAM_PRE_RESPONSE_RETRIES;
+    else process.env.AI_STREAM_PRE_RESPONSE_RETRIES = ORIG;
+  });
+
+  it('defaults to 4 retries (5 total attempts)', () => {
+    delete process.env.AI_STREAM_PRE_RESPONSE_RETRIES;
+    expect(preResponseConnectRetries()).toBe(4);
+  });
+
+  it('honours a non-negative override (incl. 0 = single attempt)', () => {
+    process.env.AI_STREAM_PRE_RESPONSE_RETRIES = '6';
+    expect(preResponseConnectRetries()).toBe(6);
+    process.env.AI_STREAM_PRE_RESPONSE_RETRIES = '0';
+    expect(preResponseConnectRetries()).toBe(0);
+  });
+
+  it('ignores an invalid / negative override (falls back to default 4)', () => {
+    for (const bad of ['-1', 'abc', '']) {
+      process.env.AI_STREAM_PRE_RESPONSE_RETRIES = bad;
+      expect(preResponseConnectRetries()).toBe(4);
+    }
+  });
+});
+
+/**
+ * #310: linear `150 * (attempt + 1)` backoff replaced with capped exponential +
+ * FULL jitter to avoid a thundering herd of lock-step reconnects. Bound-check the
+ * jitter by pinning the randomness source to its extremes.
+ */
+describe('preResponseBackoffMs', () => {
+  it('with rand=0 waits 0 (bottom of the full-jitter window)', () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      expect(preResponseBackoffMs(attempt, () => 0)).toBe(0);
+    }
+  });
+
+  it('with rand=1 returns the capped exponential top of the window', () => {
+    // base 150ms, exp = 150 * 2**attempt, capped at 2000ms.
+    expect(preResponseBackoffMs(0, () => 1)).toBe(150);
+    expect(preResponseBackoffMs(1, () => 1)).toBe(300);
+    expect(preResponseBackoffMs(2, () => 1)).toBe(600);
+    expect(preResponseBackoffMs(3, () => 1)).toBe(1200);
+    // 150 * 2**4 = 2400 -> capped to 2000.
+    expect(preResponseBackoffMs(4, () => 1)).toBe(2000);
+    expect(preResponseBackoffMs(10, () => 1)).toBe(2000);
+  });
+
+  it('stays within [0, cap] and is NOT the old fixed linear value', () => {
+    const cap = 2000;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      for (const r of [0, 0.5, 0.999, 1]) {
+        const d = preResponseBackoffMs(attempt, () => r);
+        expect(d).toBeGreaterThanOrEqual(0);
+        expect(d).toBeLessThanOrEqual(cap);
+      }
+    }
+    // The old formula gave a fixed 150*(attempt+1); the jittered one with a
+    // mid-range rand does not reproduce it (e.g. attempt 0 -> 75, not 150).
+    expect(preResponseBackoffMs(0, () => 0.5)).toBe(75);
+    expect(preResponseBackoffMs(0, () => 0.5)).not.toBe(150);
   });
 });
 
@@ -156,8 +228,12 @@ describe('createStreamingFetch — against a delayed server', () => {
 describe('withPreResponseRetry', () => {
   // The retry is the OUTERMOST layer (over the dispatcher-bound streaming fetch),
   // matching ai.service's withPreResponseRetry(instrument(createStreamingFetch())).
-  // PRE_RESPONSE_CONNECT_RETRIES is 2 -> at most 3 total attempts.
-  const MAX_ATTEMPTS = 3;
+  // The budget is env-driven (AI_STREAM_PRE_RESPONSE_RETRIES, default 4 -> 5
+  // total attempts). We PIN it to 2 here so the exhaustion test is fast and
+  // deterministic regardless of the default; total attempts = retries + 1 = 3.
+  const RETRIES = 2;
+  const MAX_ATTEMPTS = RETRIES + 1;
+  const ORIG_RETRIES = process.env.AI_STREAM_PRE_RESPONSE_RETRIES;
   let server: http.Server;
   let url: string;
   let requests = 0;
@@ -194,6 +270,13 @@ describe('withPreResponseRetry', () => {
   beforeEach(() => {
     requests = 0;
     resetMode = 'first';
+    process.env.AI_STREAM_PRE_RESPONSE_RETRIES = String(RETRIES);
+  });
+
+  afterEach(() => {
+    if (ORIG_RETRIES === undefined)
+      delete process.env.AI_STREAM_PRE_RESPONSE_RETRIES;
+    else process.env.AI_STREAM_PRE_RESPONSE_RETRIES = ORIG_RETRIES;
   });
 
   it('retries a pre-response reset on a fresh connection and succeeds', async () => {
@@ -216,10 +299,26 @@ describe('withPreResponseRetry', () => {
     expect(caught).toBeDefined();
     // A retryable connection error reached the caller (not swallowed).
     expect(isRetryableConnectError(caught)).toBe(true);
-    // Bounded: exactly PRE_RESPONSE_CONNECT_RETRIES + 1 attempts hit the server
+    // Bounded: exactly AI_STREAM_PRE_RESPONSE_RETRIES + 1 attempts hit the server
     // (pins both the limit and that the final error propagates — guards an
     // off-by-one or an infinite loop).
     expect(requests).toBe(MAX_ATTEMPTS);
+  });
+
+  it('honours a raised AI_STREAM_PRE_RESPONSE_RETRIES (more attempts before giving up)', async () => {
+    // Env-driven budget: 4 retries -> 5 total attempts against a persistently
+    // resetting connect.
+    process.env.AI_STREAM_PRE_RESPONSE_RETRIES = '4';
+    resetMode = 'all';
+    let caught: unknown;
+    try {
+      await retryingFetch()(url);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(isRetryableConnectError(caught)).toBe(true);
+    expect(requests).toBe(5);
   });
 
   it('does NOT retry an aborted request (no retry storm)', async () => {

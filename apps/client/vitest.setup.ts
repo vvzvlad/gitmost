@@ -63,3 +63,15 @@ vi.stubGlobal("matchMedia", (query: string) => ({
   removeEventListener: vi.fn(),
   dispatchEvent: vi.fn(),
 }));
+
+// Mantine's ScrollArea (used by Table.ScrollContainer, ScrollArea, etc.) reads
+// `ResizeObserver` in a layout effect on mount, which jsdom does not implement.
+// A no-op stub lets any test rendering those components mount cleanly.
+vi.stubGlobal(
+  "ResizeObserver",
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+);

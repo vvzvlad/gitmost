@@ -38,6 +38,8 @@ export class FavoriteService {
         await this.pagePermissionRepo.filterAccessiblePageIds({
           pageIds: result.items,
           userId,
+          // #348 — favorites load at app-start; enable the workspace short-circuit.
+          workspaceId,
         });
       const accessibleSet = new Set(accessibleIds);
       result.items = result.items.filter((id) => accessibleSet.has(id));
@@ -125,6 +127,8 @@ export class FavoriteService {
         await this.pagePermissionRepo.filterAccessiblePageIds({
           pageIds,
           userId,
+          // #348 — workspace-level short-circuit for the favorites list.
+          workspaceId,
         });
       accessiblePageSet = new Set(accessibleIds);
     }

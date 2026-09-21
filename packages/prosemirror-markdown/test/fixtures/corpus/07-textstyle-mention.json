@@ -1,0 +1,35 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        { "type": "text", "text": "Some " },
+        {
+          "type": "text",
+          "marks": [{ "type": "textStyle", "attrs": { "color": "#ff0000" } }],
+          "text": "red colored"
+        },
+        { "type": "text", "text": " text." }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        { "type": "text", "text": "Ping " },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "m-1",
+            "label": "Alice",
+            "entityType": "user",
+            "entityId": "u-1",
+            "slugId": "s-1",
+            "creatorId": "c-1"
+          }
+        },
+        { "type": "text", "text": " please." }
+      ]
+    }
+  ]
+}

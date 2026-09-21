@@ -24,6 +24,75 @@ export function describeChatError(
 ): ChatErrorView {
   const msg = message ?? "";
 
+  // Our own "could not start the run" gate (A_RUN_BEGIN_FAILED, #486): a 503
+  // whose body carries this code is a TEMPORARY server-side failure while
+  // starting the run (e.g. a DB-pool blip), NOT an unconfigured provider. It MUST
+  // be matched STRICTLY BEFORE the generic 503 branch below, which would
+  // otherwise mislabel it "The AI provider is not configured" and tell the user
+  // to call an admin instead of just retrying.
+  if (/"code"\s*:\s*"A_RUN_BEGIN_FAILED"/.test(msg)) {
+    return {
+      title: t("Could not start the run"),
+      detail: t(
+        "The agent run could not be started. This is usually temporary — please try again.",
+      ),
+    };
+  }
+
+  // #488 commit 5: the #487 concurrency-gate / supersede 409s. These arrive as a
+  // ConflictException(object) body carrying a `code` (and statusCode 409). They
+  // MUST be classified by `code` STRICTLY BEFORE any generic status branch, or the
+  // user sees the raw JSON `{"code":"A_RUN_ALREADY_ACTIVE",…}`. The code strings
+  // are the real #487 server contract (ai-chat.controller.ts) — do not invent.
+  if (/"code"\s*:\s*"A_RUN_ALREADY_ACTIVE"/.test(msg)) {
+    return {
+      title: t("The agent is already answering"),
+      detail: t(
+        "This chat already has a run in progress. Wait for it to finish, or interrupt it and send now.",
+      ),
+    };
+  }
+  if (/"code"\s*:\s*"SUPERSEDE_TARGET_MISMATCH"/.test(msg)) {
+    return {
+      title: t("Couldn't interrupt — the run changed"),
+      detail: t(
+        "The run you tried to interrupt is no longer the active one. Check the latest answer and try again.",
+      ),
+    };
+  }
+  if (/"code"\s*:\s*"SUPERSEDE_TIMEOUT"/.test(msg)) {
+    return {
+      title: t("Couldn't interrupt in time"),
+      detail: t(
+        "The previous run didn't stop in time. Nothing was sent — try sending again.",
+      ),
+    };
+  }
+  if (/"code"\s*:\s*"SUPERSEDE_INVALID"/.test(msg)) {
+    return {
+      title: t("Couldn't interrupt that run"),
+      detail: t(
+        "The run to interrupt doesn't belong to this chat. Reload and try again.",
+      ),
+    };
+  }
+
+  // Our own token-degeneration abort (#444): the server aborts a runaway
+  // repetition loop and persists this exact reason in metadata.error. LIVE, the
+  // same abort surfaces as the neutral "Response stopped." notice (the client
+  // cannot tell it from a manual Stop mid-stream), so the persisted banner must
+  // read the SAME "Response stopped." marker — otherwise the live view and a
+  // later refetch show two different texts for one event. The detail explains the
+  // loop-guard cause without contradicting the shared heading.
+  if (/output degeneration detected|repeated token loop/i.test(msg)) {
+    return {
+      title: t("Response stopped."),
+      detail: t(
+        "The answer was stopped automatically because the model fell into a repeated output loop.",
+      ),
+    };
+  }
+
   if (/"statusCode"\s*:\s*403\b/.test(msg)) {
     return {
       title: t("AI chat is disabled"),

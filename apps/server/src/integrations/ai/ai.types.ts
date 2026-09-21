@@ -105,6 +105,10 @@ export interface ResolvedAiConfig extends Partial<AiProviderSettings> {
   // Max context window in tokens; surfaced to the chat header badge as the
   // "current / max" denominator. 0/unset = no limit.
   chatContextWindow?: number;
+  // RAW stored context window (::text), BEFORE parsePositiveInt collapses `0` and
+  // unset to `undefined`. The #490 replay budgeter needs the raw value to honor an
+  // explicit `0` off-switch distinctly from "unset -> flat default".
+  chatContextWindowRaw?: string | number;
   // Cheap model id for the public-share assistant; reuses the chat creds.
   publicShareChatModel?: string;
   // Agent-role id whose persona the public-share assistant adopts (empty/unset
@@ -146,4 +150,17 @@ export interface MaskedAiSettings {
   // RAG indexing coverage for the settings UI.
   indexedPages: number;
   totalPages: number;
+  // True while a full workspace reindex is actively running (the counts above
+  // then reflect the live run progress rather than the steady-state DB count).
+  reindexing?: boolean;
+  // Identity of the ACTIVE reindex run (present only while `reindexing`). The
+  // client keys its poll on `runId`: a changed value means a NEW run (reset the
+  // per-run poll state it latched), the same value means the run it is already
+  // watching — removing the "same run or a fresh one?" ambiguity a stale
+  // pre-reindex snapshot otherwise causes. Absent/empty degrades gracefully.
+  runId?: string;
+  // Epoch-ms the active run started (present only while `reindexing`). Paired
+  // with `runId` so a run that restarts with the same (recycled) id is still
+  // seen as new.
+  reindexStartedAt?: number;
 }

@@ -1,0 +1,151 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": { "level": 1, "id": "h-1" },
+      "content": [{ "type": "text", "text": "Round-trip sample" }]
+    },
+    {
+      "type": "paragraph",
+      "attrs": { "id": "p-1" },
+      "content": [
+        { "type": "text", "text": "This paragraph has " },
+        { "type": "text", "marks": [{ "type": "bold" }], "text": "bold" },
+        { "type": "text", "text": ", " },
+        { "type": "text", "marks": [{ "type": "italic" }], "text": "italic" },
+        { "type": "text", "text": " and a " },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com"
+              }
+            }
+          ],
+          "text": "link"
+        },
+        { "type": "text", "text": "." }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "attrs": { "id": "p-2" },
+      "content": [
+        { "type": "text", "text": "Here is a " },
+        {
+          "type": "text",
+          "marks": [
+            { "type": "comment", "attrs": { "commentId": "cmt-abc123", "resolved": false } }
+          ],
+          "text": "commented span"
+        },
+        { "type": "text", "text": " that must survive the round-trip." }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "attrs": { "id": "ul-1" },
+      "content": [
+        {
+          "type": "listItem",
+          "attrs": { "id": "li-1" },
+          "content": [
+            {
+              "type": "paragraph",
+              "attrs": { "id": "p-3" },
+              "content": [{ "type": "text", "text": "First bullet" }]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "attrs": { "id": "li-2" },
+          "content": [
+            {
+              "type": "paragraph",
+              "attrs": { "id": "p-4" },
+              "content": [{ "type": "text", "text": "Second bullet" }]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "attrs": { "id": "tbl-1" },
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableHeader",
+              "attrs": { "colspan": 1, "rowspan": 1 },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "Name" }]
+                }
+              ]
+            },
+            {
+              "type": "tableHeader",
+              "attrs": { "colspan": 1, "rowspan": 1 },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "Value" }]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "attrs": { "colspan": 1, "rowspan": 1 },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "alpha" }]
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "attrs": { "colspan": 1, "rowspan": 1 },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "1" }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "attrs": { "type": "info", "id": "callout-1" },
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": { "id": "p-5" },
+          "content": [{ "type": "text", "text": "This is an info callout." }]
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": { "language": "js", "id": "code-1" },
+      "content": [
+        { "type": "text", "text": "const a = 1;\nconsole.log(a);\n" }
+      ]
+    }
+  ]
+}

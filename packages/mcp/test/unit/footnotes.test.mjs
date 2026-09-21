@@ -49,15 +49,19 @@ const footnoteDoc = {
   ],
 };
 
-test("JSON -> Markdown emits pandoc footnote syntax", () => {
+test("JSON -> Markdown emits canonical inline footnote syntax (#293 canon #2)", () => {
+  // Canonical markdown form is Pandoc/Obsidian INLINE footnotes: the note body is
+  // written at the reference point as `^[body]`. There is NO `[^id]` reference
+  // marker and NO trailing `[^id]: …` definition list; the schema id never
+  // reaches markdown.
   const md = convertProseMirrorToMarkdown(footnoteDoc);
-  assert.match(md, /\[\^fn1\]/);
-  assert.match(md, /\[\^fn2\]/);
-  assert.match(md, /\[\^fn1\]: First note\./);
-  assert.match(md, /\[\^fn2\]: Second note\./);
+  assert.match(md, /\^\[First note\.\]/);
+  assert.match(md, /\^\[Second note\.\]/);
+  assert.doesNotMatch(md, /\[\^/); // no reference-style markers
+  assert.doesNotMatch(md, /^\[\^.+\]:/m); // no bottom definition lines
 });
 
-test("Markdown -> JSON rebuilds footnote nodes", async () => {
+test("Markdown -> JSON rebuilds footnote nodes with sequential fn-N ids", async () => {
   const md = convertProseMirrorToMarkdown(footnoteDoc);
   const json = await markdownToProseMirror(md);
 
@@ -65,42 +69,39 @@ test("Markdown -> JSON rebuilds footnote nodes", async () => {
   const list = findAll(json, "footnotesList");
   const defs = findAll(json, "footnoteDefinition");
 
+  // Structure is preserved; ids are (re)assigned sequentially in first-reference
+  // order by the importer (fn-1, fn-2, …) — the concrete id is never carried in
+  // markdown, so it is derived on import.
   assert.equal(refs.length, 2);
   assert.deepEqual(
     refs.map((r) => r.attrs.id),
-    ["fn1", "fn2"],
+    ["fn-1", "fn-2"],
   );
   assert.equal(list.length, 1);
   assert.equal(defs.length, 2);
   assert.deepEqual(
     defs.map((d) => d.attrs.id),
-    ["fn1", "fn2"],
+    ["fn-1", "fn-2"],
   );
 });
 
-test("JSON -> MD -> JSON preserves footnote ids and text", async () => {
+test("JSON -> MD -> JSON is byte-stable and preserves footnote body text", async () => {
   const md = convertProseMirrorToMarkdown(footnoteDoc);
   const json = await markdownToProseMirror(md);
   const md2 = convertProseMirrorToMarkdown(json);
 
-  // The second markdown serialization carries the same markers + definitions.
-  assert.match(md2, /\[\^fn1\]/);
-  assert.match(md2, /\[\^fn2\]/);
-  assert.match(md2, /\[\^fn1\]: First note\./);
-  assert.match(md2, /\[\^fn2\]: Second note\./);
+  // The round trip is byte-stable (ids are not written to markdown, so the
+  // concrete import id cannot perturb the output) and the bodies survive.
+  assert.equal(md2, md);
+  assert.match(md2, /\^\[First note\.\]/);
+  assert.match(md2, /\^\[Second note\.\]/);
 });
 
-test("repeated references REUSE one footnote; duplicate definitions are first-wins (#166)", async () => {
-  // Reuse semantics: many `[^d]` references + several `[^d]:` definitions import
-  // as ONE footnote — the references all keep id "d" (reuse), and only the FIRST
-  // definition is kept (first-wins). Deterministic and stable across re-imports.
-  const md = [
-    "See[^d] one[^d] two[^d].",
-    "",
-    "[^d]: first",
-    "[^d]: second",
-    "[^d]: third",
-  ].join("\n");
+test("identical footnote bodies MERGE to one shared definition (#293 canon #2)", async () => {
+  // Two references whose bodies are byte-identical import as ONE definition
+  // shared by both references (dedup on the exact body text). Two DIFFERENT
+  // bodies stay distinct. Deterministic and stable across re-imports.
+  const md = "See^[same] and^[same], but^[other].";
 
   const idsOf = async () => {
     const json = await markdownToProseMirror(md);
@@ -120,11 +121,11 @@ test("repeated references REUSE one footnote; duplicate definitions are first-wi
 
   // Stable across runs.
   assert.deepEqual(a, b);
-  // Reuse: all three reference markers stay "d".
-  assert.deepEqual(a.refs, ["d", "d", "d"]);
-  // First-wins: a single definition "d" with the FIRST text.
-  assert.deepEqual(a.defIds, ["d"]);
-  assert.equal(a.defText, "first");
+  // Merge: the two "same" references share fn-1; the "other" reference is fn-2.
+  assert.deepEqual(a.refs, ["fn-1", "fn-1", "fn-2"]);
+  // One definition per unique body, in first-reference order.
+  assert.deepEqual(a.defIds, ["fn-1", "fn-2"]);
+  assert.equal(a.defText, "same|other");
 });
 
 test("a [^id]: line inside a fenced code block is NOT treated as a definition", async () => {

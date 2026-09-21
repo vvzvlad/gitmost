@@ -7,6 +7,7 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
+import { createServer } from "node:http";
 
 const API = process.env.DOCMOST_API_URL;
 if (!API || !process.env.DOCMOST_EMAIL || !process.env.DOCMOST_PASSWORD) {
@@ -83,20 +84,20 @@ async function main() {
   let pageId = null;
 
   try {
-    // 1. create_page: title with spaces must survive (was: underscores bug)
+    // 1. createPage: title with spaces must survive (was: underscores bug)
     const created = await client.createPage("Тест апгрейда MCP сервера", MD, spaceId);
     pageId = created.data.id;
-    check("create_page: title keeps spaces", created.data.title === "Тест апгрейда MCP сервера", created.data.title);
-    check("create_page: slugId exposed", typeof created.data.slugId === "string" && created.data.slugId.length > 0, created.data.slugId);
+    check("createPage: title keeps spaces", created.data.title === "Тест апгрейда MCP сервера", created.data.title);
+    check("createPage: slugId exposed", typeof created.data.slugId === "string" && created.data.slugId.length > 0, created.data.slugId);
 
-    // 2. get_page_json: raw ProseMirror with callout + table
+    // 2. getPageJson: raw ProseMirror with callout + table
     const pj = await client.getPageJson(pageId);
     const types = pj.content.content.map((n) => n.type);
-    check("get_page_json: callout node present", types.includes("callout"), types.join(","));
-    check("get_page_json: table node present", types.includes("table"));
-    check("get_page_json: slugId present", !!pj.slugId);
+    check("getPageJson: callout node present", types.includes("callout"), types.join(","));
+    check("getPageJson: table node present", types.includes("table"));
+    check("getPageJson: slugId present", !!pj.slugId);
 
-    // 3. edit_page_text: surgical replace, ids preserved
+    // 3. editPageText: surgical replace, ids preserved
     const idsBefore = JSON.stringify(
       pj.content.content.filter((n) => n.attrs?.id).map((n) => n.attrs.id),
     );
@@ -104,29 +105,31 @@ async function main() {
       { find: "БУКВОЕД", replace: "КНИГОЛЮБ" },
       { find: "[1]", replace: "[42]" },
     ]);
-    check("edit_page_text: both edits applied", editRes.edits.every((e) => e.replacements === 1));
+    check("editPageText: both edits applied", editRes.applied.every((e) => e.replacements === 1));
     await new Promise((r) => setTimeout(r, 16000)); // wait for server persistence
     const pj2 = await client.getPageJson(pageId);
     const text2 = JSON.stringify(pj2.content);
-    check("edit_page_text: replacement visible", text2.includes("КНИГОЛЮБ") && text2.includes("[42]"));
-    check("edit_page_text: old text gone", !text2.includes("БУКВОЕД"));
+    check("editPageText: replacement visible", text2.includes("КНИГОЛЮБ") && text2.includes("[42]"));
+    check("editPageText: old text gone", !text2.includes("БУКВОЕД"));
     const idsAfter = JSON.stringify(
       pj2.content.content.filter((n) => n.attrs?.id).map((n) => n.attrs.id),
     );
-    check("edit_page_text: block ids preserved", idsBefore === idsAfter);
-    check("edit_page_text: callout survived", JSON.stringify(pj2.content).includes('"callout"'));
-    check("edit_page_text: table survived", pj2.content.content.some((n) => n.type === "table"));
+    check("editPageText: block ids preserved", idsBefore === idsAfter);
+    check("editPageText: callout survived", JSON.stringify(pj2.content).includes('"callout"'));
+    check("editPageText: table survived", pj2.content.content.some((n) => n.type === "table"));
 
     // 4. error reporting: ambiguous and missing finds
     let err1 = "";
     try { await client.editPageText(pageId, [{ find: "Колонка", replace: "X" }]); } catch (e) { err1 = e.message; }
-    check("edit_page_text: ambiguous match rejected", err1.includes("matches"), err1);
+    check("editPageText: ambiguous match rejected", err1.includes("matches"), err1);
     let err2 = "";
     try { await client.editPageText(pageId, [{ find: "НЕСУЩЕСТВУЮЩЕЕ", replace: "X" }]); } catch (e) { err2 = e.message; }
-    check("edit_page_text: missing text reported", err2.includes("not found"), err2);
+    check("editPageText: missing text reported", err2.includes("not found"), err2);
 
     // 5. update_page (markdown): table + callout must survive the re-import
-    await client.updatePage(pageId, MD + "\nДобавленный абзац.\n");
+    // #647/#672 — full-body overwrite is baseHash-guarded: read fresh, then write WITH the hash.
+    const updMdBase = await client.getPageJson(pageId);
+    await client.updatePage(pageId, MD + "\nДобавленный абзац.\n", undefined, updMdBase.baseHash);
     await new Promise((r) => setTimeout(r, 16000));
     const pj3 = await client.getPageJson(pageId);
     const types3 = pj3.content.content.map((n) => n.type);
@@ -136,24 +139,38 @@ async function main() {
     const cellText = JSON.stringify(tableNode);
     check("update_page md: table cells intact", cellText.includes("четыре") && cellText.includes("Колонка А"));
 
-    // 6. update_page_json: lossless write round-trip
+    // 6. updatePageJson: lossless write round-trip
     pj3.content.content.push({
       type: "paragraph",
       attrs: { id: "testidjsonpush", indent: 0, textAlign: null },
-      content: [{ type: "text", text: "Абзац, добавленный через update_page_json." }],
+      content: [{ type: "text", text: "Абзац, добавленный через updatePageJson." }],
     });
-    await client.updatePageJson(pageId, pj3.content);
+    // #647/#672 — full-body overwrite is baseHash-guarded: reuse pj3's hash (no intervening write).
+    await client.updatePageJson(pageId, pj3.content, undefined, pj3.baseHash);
     await new Promise((r) => setTimeout(r, 16000));
     const pj4 = await client.getPageJson(pageId);
     const lastNode = pj4.content.content[pj4.content.content.length - 1];
-    check("update_page_json: paragraph appended", JSON.stringify(pj4.content).includes("добавленный через update_page_json"));
-    check("update_page_json: custom node id preserved", lastNode.attrs?.id === "testidjsonpush", lastNode.attrs?.id);
+    check("updatePageJson: paragraph appended", JSON.stringify(pj4.content).includes("добавленный через updatePageJson"));
+    check("updatePageJson: custom node id preserved", lastNode.attrs?.id === "testidjsonpush", lastNode.attrs?.id);
 
-    // 6b. images: upload / insert / replace (clean src, fresh attachment on replace)
-    const pngA = join(tmpdir(), `mcp-e2e-img-a-${Date.now()}.png`);
-    const pngB = join(tmpdir(), `mcp-e2e-img-b-${Date.now()}.png`);
-    writeFileSync(pngA, makePng(255, 0, 0)); // red
-    writeFileSync(pngB, makePng(0, 0, 255)); // blue (a DIFFERENT valid PNG)
+    // 6b. images: upload / insert / replace (clean src, fresh attachment on replace).
+    // insertImage / replaceImage take an http(s) URL that the SERVER fetches;
+    // local file paths are intentionally unsupported. The Docmost server runs on
+    // the same host as this test, so serve the PNG bytes over a throwaway
+    // localhost HTTP server it can reach.
+    const bytesA = makePng(255, 0, 0); // red
+    const bytesB = makePng(0, 0, 255); // blue (a DIFFERENT valid PNG)
+    const imgServer = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(req.url === "/b.png" ? bytesB : bytesA);
+    });
+    await new Promise((resolve, reject) => {
+      imgServer.once("error", reject);
+      imgServer.listen(0, "127.0.0.1", resolve);
+    });
+    const imgPort = imgServer.address().port;
+    const urlA = `http://127.0.0.1:${imgPort}/a.png`;
+    const urlB = `http://127.0.0.1:${imgPort}/b.png`;
     try {
       // Independent login to fetch file bytes with the same cookie the editor uses.
       const login = await axios.post(
@@ -172,13 +189,13 @@ async function main() {
           validateStatus: () => true,
         });
 
-      // insert_image: append the first PNG, src must be clean (no ?v=) and fetchable.
-      const ins = await client.insertImage(pageId, pngA);
-      check("insert_image: src has no ?v= cache-buster", !ins.src.includes("?v="), ins.src);
+      // insertImage: append the first PNG, src must be clean (no ?v=) and fetchable.
+      const ins = await client.insertImage(pageId, urlA);
+      check("insertImage: src has no ?v= cache-buster", !ins.src.includes("?v="), ins.src);
       const fileA = await fetchFile(ins.src);
-      check("insert_image: file fetch returns 200", fileA.status === 200, `status=${fileA.status}`);
+      check("insertImage: file fetch returns 200", fileA.status === 200, `status=${fileA.status}`);
       check(
-        "insert_image: content-type is image/*",
+        "insertImage: content-type is image/*",
         String(fileA.headers["content-type"] || "").startsWith("image/"),
         String(fileA.headers["content-type"]),
       );
@@ -195,28 +212,27 @@ async function main() {
       };
       const imgNode = findImage(pjImg.content.content);
       const oldAttachmentId = imgNode?.attrs?.attachmentId;
-      check("insert_image: image node present after persist", !!oldAttachmentId, oldAttachmentId);
+      check("insertImage: image node present after persist", !!oldAttachmentId, oldAttachmentId);
 
-      // replace_image: must create a NEW attachment with a clean, fetchable URL.
+      // replaceImage: must create a NEW attachment with a clean, fetchable URL.
       // The 200 fetch is the assertion that catches the in-place-overwrite HTTP 500 regression.
-      const rep = await client.replaceImage(pageId, oldAttachmentId, pngB);
-      check("replace_image: new attachment id differs from old", rep.newAttachmentId !== oldAttachmentId, `${oldAttachmentId} -> ${rep.newAttachmentId}`);
-      check("replace_image: src has no ?v= cache-buster", !rep.src.includes("?v="), rep.src);
+      const rep = await client.replaceImage(pageId, oldAttachmentId, urlB);
+      check("replaceImage: new attachment id differs from old", rep.newAttachmentId !== oldAttachmentId, `${oldAttachmentId} -> ${rep.newAttachmentId}`);
+      check("replaceImage: src has no ?v= cache-buster", !rep.src.includes("?v="), rep.src);
       const fileB = await fetchFile(rep.src);
-      check("replace_image: new file fetch returns 200", fileB.status === 200, `status=${fileB.status}`);
+      check("replaceImage: new file fetch returns 200", fileB.status === 200, `status=${fileB.status}`);
       check(
-        "replace_image: new content-type is image/*",
+        "replaceImage: new content-type is image/*",
         String(fileB.headers["content-type"] || "").startsWith("image/"),
         String(fileB.headers["content-type"]),
       );
 
       await new Promise((r) => setTimeout(r, 16000));
       const pjImg2 = await client.getPageJson(pageId);
-      check("replace_image: page has new attachment id", !!findImage(pjImg2.content.content, rep.newAttachmentId), rep.newAttachmentId);
-      check("replace_image: old attachment id repointed away", !findImage(pjImg2.content.content, oldAttachmentId), oldAttachmentId);
+      check("replaceImage: page has new attachment id", !!findImage(pjImg2.content.content, rep.newAttachmentId), rep.newAttachmentId);
+      check("replaceImage: old attachment id repointed away", !findImage(pjImg2.content.content, oldAttachmentId), oldAttachmentId);
     } finally {
-      try { unlinkSync(pngA); } catch {}
-      try { unlinkSync(pngB); } catch {}
+      imgServer.close();
     }
 
     // 6c. rich formatting: callout type, task list, inline marks, table alignment,
@@ -247,7 +263,9 @@ async function main() {
       const fp = await client.createPage("E2E features " + Date.now(), "init", spaceId);
       const fid = fp.data.id;
       try {
-        await client.updatePage(fid, FMD);
+        // #647/#672 — full-body overwrite is baseHash-guarded: read fresh, then write WITH the hash.
+        const featBase = await client.getPageJson(fid);
+        await client.updatePage(fid, FMD, undefined, featBase.baseHash);
         await new Promise((r) => setTimeout(r, 16000));
         const fj = (await client.getPageJson(fid)).content;
         check("feature: callout type 'warning' preserved (was coerced to info)", findNodes(fj, "callout").some((n) => n.attrs?.type === "warning"), JSON.stringify(findNodes(fj, "callout").map((n) => n.attrs?.type)));
@@ -262,10 +280,10 @@ async function main() {
         await client.editPageText(fid, [{ find: "PRICEMARK", replace: "$& costs $100" }]);
         await new Promise((r) => setTimeout(r, 16000));
         const ftext = JSON.stringify((await client.getPageJson(fid)).content);
-        check("feature: edit_page_text inserts $-pattern literally (no $& expansion)", ftext.includes("$& costs $100") && !ftext.includes("PRICEMARK costs"));
+        check("feature: editPageText inserts $-pattern literally (no $& expansion)", ftext.includes("$& costs $100") && !ftext.includes("PRICEMARK costs"));
         let badThrew = false;
         try { await client.replaceImage(fid, "00000000-0000-0000-0000-000000000000", featPng); } catch (e) { badThrew = /no image with attachmentId/.test(e.message); }
-        check("feature: replace_image with unknown id throws (no orphan upload)", badThrew);
+        check("feature: replaceImage with unknown id throws (no orphan upload)", badThrew);
       } finally {
         try { await client.deletePage(fid); } catch {}
         try { unlinkSync(featPng); } catch {}
@@ -273,7 +291,7 @@ async function main() {
     }
 
     // 6d. node ops: patch / insert / delete a block by id on a throwaway page.
-    // Three paragraphs are written with KNOWN ids via update_page_json so the
+    // Three paragraphs are written with KNOWN ids via updatePageJson so the
     // ids can be targeted directly; each op is verified via getPageJson after
     // the standard 16s persistence wait.
     {
@@ -286,6 +304,8 @@ async function main() {
           content: [{ type: "text", text }],
         });
         // Seed three paragraphs with known ids.
+        // #647/#672 — full-body overwrite is baseHash-guarded: read fresh, then write WITH the hash.
+        const nodeSeedBase = await client.getPageJson(nid);
         await client.updatePageJson(nid, {
           type: "doc",
           content: [
@@ -293,7 +313,7 @@ async function main() {
             mkPara("nodeops-b", "Bravo paragraph."),
             mkPara("nodeops-c", "Charlie paragraph."),
           ],
-        });
+        }, undefined, nodeSeedBase.baseHash);
         await new Promise((r) => setTimeout(r, 16000));
 
         // Read back the ids the server actually assigned.
@@ -303,7 +323,8 @@ async function main() {
         const [idA, idB, idC] = seedIds;
 
         // patchNode: replace the middle paragraph; siblings' ids must be unchanged.
-        await client.patchNode(nid, idB, mkPara(idB, "Bravo PATCHED."));
+        // #413 XOR input: the raw ProseMirror node goes under the `node` key.
+        await client.patchNode(nid, idB, { node: mkPara(idB, "Bravo PATCHED.") });
         await new Promise((r) => setTimeout(r, 16000));
         const afterPatch = (await client.getPageJson(nid)).content;
         const patchText = JSON.stringify(afterPatch);
@@ -314,7 +335,7 @@ async function main() {
         // insertNode: place a new block after the first paragraph.
         await client.insertNode(
           nid,
-          mkPara("nodeops-ins", "Inserted paragraph."),
+          { node: mkPara("nodeops-ins", "Inserted paragraph.") },
           { position: "after", anchorNodeId: idA },
         );
         await new Promise((r) => setTimeout(r, 16000));
@@ -335,7 +356,7 @@ async function main() {
       }
     }
 
-    // 6e. rename_page: title-only update must leave the content untouched.
+    // 6e. renamePage: title-only update must leave the content untouched.
     {
       const rp = await client.createPage("E2E rename before " + Date.now(), "Rename body marker RENAMEBODY.", spaceId);
       const rid = rp.data.id;
@@ -344,19 +365,19 @@ async function main() {
         const beforeContent = JSON.stringify(beforeJson);
         const newTitle = "E2E rename AFTER " + Date.now();
         const rr = await client.renamePage(rid, newTitle);
-        check("rename_page: returns success+title", rr.success === true && rr.title === newTitle, JSON.stringify(rr));
+        check("renamePage: returns success+title", rr.success === true && rr.title === newTitle, JSON.stringify(rr));
         await new Promise((r) => setTimeout(r, 16000));
         const afterJson = await client.getPageJson(rid);
-        check("rename_page: title changed", afterJson.title === newTitle, afterJson.title);
-        check("rename_page: content unchanged", JSON.stringify(afterJson.content) === beforeContent && beforeContent.includes("RENAMEBODY"));
+        check("renamePage: title changed", afterJson.title === newTitle, afterJson.title);
+        check("renamePage: content unchanged", JSON.stringify(afterJson.content) === beforeContent && beforeContent.includes("RENAMEBODY"));
         const afterMd = (await client.getPage(rid)).data;
-        check("rename_page: get_page reflects new title", afterMd.title === newTitle, afterMd.title);
+        check("renamePage: getPage reflects new title", afterMd.title === newTitle, afterMd.title);
       } finally {
         try { await client.deletePage(rid); } catch {}
       }
     }
 
-    // 6f. update_page_json title-only: omitting content updates the title and
+    // 6f. updatePageJson title-only: omitting content updates the title and
     // leaves the body intact; supplying neither content nor title throws.
     {
       const up = await client.createPage("E2E upj-title before " + Date.now(), "Title-only body marker UPJTITLEBODY.", spaceId);
@@ -365,20 +386,20 @@ async function main() {
         const beforeContent = JSON.stringify((await client.getPageJson(uid)).content);
         const newTitle = "E2E upj-title AFTER " + Date.now();
         const ur = await client.updatePageJson(uid, undefined, newTitle);
-        check("update_page_json title-only: succeeds", ur.success === true, JSON.stringify(ur));
+        check("updatePageJson title-only: succeeds", ur.success === true, JSON.stringify(ur));
         await new Promise((r) => setTimeout(r, 16000));
         const afterJson = await client.getPageJson(uid);
-        check("update_page_json title-only: title updated", afterJson.title === newTitle, afterJson.title);
-        check("update_page_json title-only: content intact", JSON.stringify(afterJson.content) === beforeContent && beforeContent.includes("UPJTITLEBODY"));
+        check("updatePageJson title-only: title updated", afterJson.title === newTitle, afterJson.title);
+        check("updatePageJson title-only: content intact", JSON.stringify(afterJson.content) === beforeContent && beforeContent.includes("UPJTITLEBODY"));
         let upjErr = "";
         try { await client.updatePageJson(uid); } catch (e) { upjErr = e.message; }
-        check("update_page_json: neither content nor title throws", upjErr.includes("nothing to update"), upjErr);
+        check("updatePageJson: neither content nor title throws", upjErr.includes("nothing to update"), upjErr);
       } finally {
         try { await client.deletePage(uid); } catch {}
       }
     }
 
-    // 6g. copy_page_content: B's body becomes a copy of A's body, server-side,
+    // 6g. copyPageContent: B's body becomes a copy of A's body, server-side,
     // while B's title/slugId stay put. Both pages are throwaways.
     {
       let aid = null;
@@ -396,67 +417,148 @@ async function main() {
         const aNodeCount = aJson.content.content.length;
 
         const cr = await client.copyPageContent(aid, bid);
-        check("copy_page_content: returns success + node count", cr.success === true && cr.copiedNodes === aNodeCount, JSON.stringify(cr));
+        check("copyPageContent: returns success + node count", cr.success === true && cr.copiedNodes === aNodeCount, JSON.stringify(cr));
         await new Promise((r) => setTimeout(r, 16000));
 
         const bAfter = await client.getPageJson(bid);
         const bText = JSON.stringify(bAfter.content);
-        check("copy_page_content: B now has A's marker", bText.includes("COPYSOURCE"));
-        check("copy_page_content: B's old marker gone", !bText.includes("COPYTARGET"));
-        check("copy_page_content: B node count equals A's", bAfter.content.content.length === aNodeCount, `${bAfter.content.content.length} vs ${aNodeCount}`);
-        check("copy_page_content: B title unchanged", bAfter.title === bTitleBefore, bAfter.title);
-        check("copy_page_content: B slugId unchanged", bAfter.slugId === bSlugBefore, bAfter.slugId);
+        check("copyPageContent: B now has A's marker", bText.includes("COPYSOURCE"));
+        check("copyPageContent: B's old marker gone", !bText.includes("COPYTARGET"));
+        check("copyPageContent: B node count equals A's", bAfter.content.content.length === aNodeCount, `${bAfter.content.content.length} vs ${aNodeCount}`);
+        check("copyPageContent: B title unchanged", bAfter.title === bTitleBefore, bAfter.title);
+        check("copyPageContent: B slugId unchanged", bAfter.slugId === bSlugBefore, bAfter.slugId);
 
         // Source must be left untouched by the copy.
         const aAfter = JSON.stringify((await client.getPageJson(aid)).content);
-        check("copy_page_content: source page unchanged", aAfter === JSON.stringify(aJson.content) && aAfter.includes("COPYSOURCE"));
+        check("copyPageContent: source page unchanged", aAfter === JSON.stringify(aJson.content) && aAfter.includes("COPYSOURCE"));
 
         let copyErr = "";
         try { await client.copyPageContent(aid, aid); } catch (e) { copyErr = e.message; }
-        check("copy_page_content: self-copy rejected", copyErr.includes("same page"), copyErr);
+        check("copyPageContent: self-copy rejected", copyErr.includes("same page"), copyErr);
       } finally {
         try { if (bid) await client.deletePage(bid); } catch {}
         try { if (aid) await client.deletePage(aid); } catch {}
       }
     }
 
+    // 6h. markdown converter fixpoint (#476): pins the converter fixpoint
+    // THROUGH the live server/collab path, not just the package tests. The
+    // unit corpus (docmost-md-roundtrip) proves the converter alone is a
+    // fixpoint; this asserts the property survives the real pipeline — export
+    // (REST read, PM -> MD) -> import (MD -> PM -> collab replace -> server
+    // persistence) -> export — where the server schema, the Yjs structural
+    // diff or the collab write path could still mangle the doc while every
+    // unit test stays green. importPageMarkdown is the designed inverse of
+    // exportPageMarkdown (the self-contained envelope with meta/comments
+    // blocks); updatePageMarkdown (client.updatePage) takes plain authoring
+    // markdown and would re-import the envelope blocks as literal content.
+    {
+      const FIXMD = [
+        "# Fixpoint heading",
+        "",
+        "Paragraph with **bold**, *italic* and a [link](https://example.com).",
+        "",
+        "## Second level",
+        "",
+        "- bullet one",
+        "- bullet two",
+        "",
+        "1. ordered one",
+        "2. ordered two",
+        "",
+        "```js",
+        "const answer = 42; // code block must survive byte-identically",
+        "```",
+        "",
+        "| A | B |",
+        "| --- | --- |",
+        "| one | two |",
+        "",
+        ":::info",
+        "Callout body.",
+        ":::",
+      ].join("\n");
+      const fx = await client.createPage("E2E md fixpoint " + Date.now(), FIXMD, spaceId);
+      const fxid = fx.data.id;
+      try {
+        const md1 = await client.exportPageMarkdown(fxid);
+        await client.importPageMarkdown(fxid, md1);
+        await new Promise((r) => setTimeout(r, 16000)); // wait for server persistence
+        const md2 = await client.exportPageMarkdown(fxid);
+        // On failure, name the first diverging line of the two exports.
+        const firstDiff = (a, b) => {
+          const al = a.split("\n");
+          const bl = b.split("\n");
+          for (let i = 0; i < Math.max(al.length, bl.length); i++) {
+            if (al[i] !== bl[i]) {
+              return `first diff at line ${i + 1}: ${JSON.stringify(al[i] ?? "<EOF>")} -> ${JSON.stringify(bl[i] ?? "<EOF>")}`;
+            }
+          }
+          return "same lines, different bytes (line endings?)";
+        };
+        check(
+          "markdown fixpoint: export -> import -> export is byte-identical",
+          md1 === md2,
+          md1 === md2 ? "" : firstDiff(md1, md2),
+        );
+      } finally {
+        try { await client.deletePage(fxid); } catch {}
+      }
+    }
+
     // 7. shares: create (idempotent), public access, list, unshare
     const share = await client.sharePage(pageId);
-    check("share_page: returns public URL", share.publicUrl?.startsWith(`${APP}/share/`), share.publicUrl);
+    check("sharePage: returns public URL", share.publicUrl?.startsWith(`${APP}/share/`), share.publicUrl);
     const share2 = await client.sharePage(pageId);
-    check("share_page: idempotent", share2.key === share.key);
+    check("sharePage: idempotent", share2.key === share.key);
     const anon = await axios.post(`${API}/shares/page-info`, { pageId: pj4.slugId, shareId: share.key }, { validateStatus: () => true });
-    check("share_page: anonymous access works", anon.status === 200);
+    check("sharePage: anonymous access works", anon.status === 200);
     const shares = await client.listShares();
-    check("list_shares: contains our page", shares.some((s) => s.pageId === pageId && s.publicUrl === share.publicUrl));
+    check("listShares: contains our page", shares.some((s) => s.pageId === pageId && s.publicUrl === share.publicUrl));
     const un = await client.unsharePage(pageId);
-    check("unshare_page: success", un.success === true);
+    check("unsharePage: success", un.success === true);
     const anon2 = await axios.post(`${API}/shares/page-info`, { pageId: pj4.slugId, shareId: share.key }, { validateStatus: () => true });
-    check("unshare_page: public access revoked", anon2.status !== 200, `status=${anon2.status}`);
+    check("unsharePage: public access revoked", anon2.status !== 200, `status=${anon2.status}`);
 
-    // 8. get_page markdown round-trip sanity (table separator present)
+    // 8. getPage markdown round-trip sanity (table separator present)
     const md = await client.getPage(pageId);
-    check("get_page md: table separator emitted", md.data.content.includes("| --- |"), "");
-    check("get_page md: callout exported as :::", md.data.content.includes(":::info"));
+    check("getPage md: table separator emitted", md.data.content.includes("| --- |"), "");
+    check("getPage md: callout exported as Obsidian '> [!info]'", md.data.content.includes("> [!info]"));
 
     // 9. comments: create / list / reply / update / check_new / delete
     const beforeComments = new Date(Date.now() - 1000).toISOString();
-    const c1 = await client.createComment(pageId, "Первый **комментарий** с [ссылкой](https://example.com).");
-    check("create_comment: created", !!c1.data.id, c1.data.id);
-    check("create_comment: markdown round-trip", c1.data.content.includes("**комментарий**"), c1.data.content);
+    // A top-level comment requires an inline "selection": exact contiguous text
+    // that exists in the persisted page to anchor on. "Добавленный абзац." is a
+    // plain paragraph re-imported in section 5 and still present here.
+    const c1 = await client.createComment(pageId, "Первый **комментарий** с [ссылкой](https://example.com).", "inline", "Добавленный абзац.");
+    check("createComment: created", !!c1.data.id, c1.data.id);
+    check("createComment: markdown round-trip", c1.data.content.includes("**комментарий**"), c1.data.content);
     const reply = await client.createComment(pageId, "Ответ на комментарий.", "page", undefined, c1.data.id);
-    check("create_comment: reply has parent", reply.data.parentCommentId === c1.data.id);
-    const list = await client.listComments(pageId);
-    check("list_comments: both visible", list.length === 2, `count=${list.length}`);
+    check("createComment: reply has parent", reply.data.parentCommentId === c1.data.id);
+    const list = (await client.listComments(pageId)).items;
+    check("listComments: both visible", list.length === 2, `count=${list.length}`);
     await client.updateComment(c1.data.id, "Обновлённый текст комментария.");
     const got = await client.getComment(c1.data.id);
-    check("update_comment + get_comment: content updated", got.data.content.includes("Обновлённый"), got.data.content);
+    check("updateComment + get_comment: content updated", got.data.content.includes("Обновлённый"), got.data.content);
     const news = await client.checkNewComments(spaceId, beforeComments, pageId);
-    check("check_new_comments: finds new comments in subtree", news.totalNewComments >= 2, `total=${news.totalNewComments}`);
+    check("checkNewComments: finds new comments in subtree", news.totalNewComments >= 2, `total=${news.totalNewComments}`);
+    // resolveComment: close the top-level thread, verify resolvedAt surfaces, then reopen
+    const resolvedRes = await client.resolveComment(c1.data.id, true);
+    check("resolveComment: marks resolved", resolvedRes.success === true && resolvedRes.resolved === true);
+    // c1 is now resolved; the default feed hides resolved threads, so pass
+    // includeResolved:true to still see it and assert its resolvedAt (#328).
+    const listResolved = (await client.listComments(pageId, true)).items;
+    const c1Resolved = listResolved.find((c) => c.id === c1.data.id);
+    check("resolveComment: resolvedAt set in list", !!c1Resolved?.resolvedAt, `resolvedAt=${c1Resolved?.resolvedAt}`);
+    const reopenedRes = await client.resolveComment(c1.data.id, false);
+    check("resolveComment: reopen succeeds", reopenedRes.resolved === false);
+    const listReopened = (await client.listComments(pageId)).items;
+    const c1Reopened = listReopened.find((c) => c.id === c1.data.id);
+    check("resolveComment: resolvedAt cleared on reopen", !c1Reopened?.resolvedAt, `resolvedAt=${c1Reopened?.resolvedAt}`);
     await client.deleteComment(reply.data.id);
     await client.deleteComment(c1.data.id);
-    const listAfter = await client.listComments(pageId);
-    check("delete_comment: comments removed", listAfter.length === 0, `count=${listAfter.length}`);
+    const listAfter = (await client.listComments(pageId)).items;
+    check("deleteComment: comments removed", listAfter.length === 0, `count=${listAfter.length}`);
   } finally {
     if (pageId) {
       await client.deletePage(pageId);

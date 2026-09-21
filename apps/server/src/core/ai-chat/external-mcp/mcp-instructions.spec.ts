@@ -55,7 +55,7 @@ async function instructionsFor(
   }[]
 > {
   const repoStub = {
-    listEnabled: jest.fn().mockResolvedValue(servers),
+    listEnabledForAgent: jest.fn().mockResolvedValue(servers),
   };
   const service = new McpClientsService(repoStub as never, {} as never);
 
@@ -74,7 +74,7 @@ async function instructionsFor(
       });
     });
 
-  const toolset = await service.toolsFor('ws-1');
+  const toolset = await service.toolsFor('ws-1', 'user-1');
   await Promise.all(toolset.clients.map((c) => c.close()));
   return toolset.instructions;
 }

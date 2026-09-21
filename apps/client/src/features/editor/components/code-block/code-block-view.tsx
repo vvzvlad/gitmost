@@ -22,6 +22,12 @@ export default function CodeBlockView(props: NodeViewProps) {
   const [isSelected, setIsSelected] = useState(false);
 
   useEffect(() => {
+    // #343 PART 6: `isSelected` only drives the mermaid source's visibility (the
+    // `hidden` prop below). For every non-mermaid code block it is never read,
+    // so skip the per-block `selectionUpdate` listener entirely — otherwise N
+    // code blocks each add a global listener + a setState on every caret move.
+    if (language !== "mermaid") return;
+
     const updateSelection = () => {
       const { state } = editor;
       const { from, to } = state.selection;
@@ -32,11 +38,14 @@ export default function CodeBlockView(props: NodeViewProps) {
       setIsSelected(isNodeSelected);
     };
 
+    // Initialize on attach so switching a block's language to "mermaid" reflects
+    // the current selection immediately (the listener was not running before).
+    updateSelection();
     editor.on("selectionUpdate", updateSelection);
     return () => {
       editor.off("selectionUpdate", updateSelection);
     };
-  }, [editor, getPos(), node.nodeSize]);
+  }, [editor, getPos(), node.nodeSize, language]);
 
   function changeLanguage(language: string) {
     setLanguageValue(language);
@@ -50,10 +59,10 @@ export default function CodeBlockView(props: NodeViewProps) {
       {/* #146: the editable <pre><code> (contentDOM) MUST come first in the DOM.
           With the non-editable menu rendered before it, the browser's click
           hit-testing snapped the caret up one line. Render content first; the
-          menu is rendered after it and lifted back above visually via flex
-          `order: -1` (the `.codeBlock` wrapper is a flex column — see
-          code-block.module.css). It stays fully in flow as a full-width row
-          above the code: no overlay/absolute positioning. The second #146
+          menu is rendered after it and floated into the top-right corner as an
+          absolute overlay (see `.menuGroup` in code-block.module.css, anchored
+          to the `position: relative` `.codeBlock` wrapper in code.css). It no
+          longer takes a full-width row above the code. The second #146
           mitigation lives in editor-paste-handler.tsx (reflowAfterPaste). */}
       <pre
         spellCheck="false"
@@ -67,22 +76,23 @@ export default function CodeBlockView(props: NodeViewProps) {
         <NodeViewContent as="code" className={`language-${language}`} />
       </pre>
 
-      <Group
-        justify="flex-end"
-        contentEditable={false}
-        className={classes.menuGroup}
-      >
-        <Select
-          placeholder="auto"
-          checkIconPosition="right"
-          data={extension.options.lowlight.listLanguages().sort()}
-          value={languageValue}
-          onChange={changeLanguage}
-          searchable
-          style={{ maxWidth: "130px" }}
-          classNames={{ input: classes.selectInput }}
-          disabled={!editor.isEditable}
-        />
+      <Group contentEditable={false} className={classes.menuGroup}>
+        {/* In read-only (published) there is no language selector at all —
+            only the copy button. When editable the selector is hidden until
+            the block is hovered/focused (or its dropdown is open) via the
+            `.languageSelect` class (see code-block.module.css). */}
+        {editor.isEditable && (
+          <Select
+            placeholder="auto"
+            checkIconPosition="right"
+            data={extension.options.lowlight.listLanguages().sort()}
+            value={languageValue}
+            onChange={changeLanguage}
+            searchable
+            style={{ maxWidth: "130px" }}
+            classNames={{ root: classes.languageSelect, input: classes.selectInput }}
+          />
+        )}
 
         <CopyButton value={node?.textContent} timeout={2000}>
           {({ copied, copy }) => (

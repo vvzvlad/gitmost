@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { socketAtom } from "@/features/websocket/atoms/socket-atom.ts";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { WebSocketEvent } from "@/features/websocket/types";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -16,7 +16,10 @@ import localEmitter from "@/lib/local-emitter.ts";
 
 export const useTreeSocket = () => {
   const [socket] = useAtom(socketAtom);
-  const [, setTreeData] = useAtom(treeDataAtom);
+  // Setter-only: this hook writes the tree from socket events but never reads it
+  // reactively, so useSetAtom avoids re-rendering UserProvider (its host) on
+  // every tree event.
+  const setTreeData = useSetAtom(treeDataAtom);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -37,7 +40,11 @@ export const useTreeSocket = () => {
   }, []);
 
   useEffect(() => {
-    socket?.on("message", (event: WebSocketEvent) => {
+    if (!socket) return;
+    // Named handler + off() cleanup (mirrors use-notification-socket). Without
+    // cleanup, every socket recreation / effect re-run stacked another listener,
+    // so a single broadcast fired duplicated tree walks after each reconnect.
+    const handleMessage = (event: WebSocketEvent) => {
       switch (event.operation) {
         case "updateOne":
           if (event.entity[0] === "pages") {
@@ -64,6 +71,11 @@ export const useTreeSocket = () => {
           });
           break;
       }
-    });
-  }, [socket]);
+    };
+
+    socket.on("message", handleMessage);
+    return () => {
+      socket.off("message", handleMessage);
+    };
+  }, [socket, queryClient, setTreeData]);
 };

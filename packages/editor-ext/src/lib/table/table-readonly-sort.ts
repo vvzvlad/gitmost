@@ -124,7 +124,10 @@ const CHEVRON_SVG =
   '</svg>';
 
 function ensureChevron(th: HTMLTableCellElement): HTMLSpanElement {
-  let chevron = th.querySelector<HTMLSpanElement>(`.${CHEVRON_CLASS}`);
+  // `:scope >` — a plain descendant query would find the chevron of a NESTED
+  // table's header living inside this cell, then write this table's sort state
+  // onto the inner table's chevron.
+  let chevron = th.querySelector<HTMLSpanElement>(`:scope > .${CHEVRON_CLASS}`);
   if (!chevron) {
     chevron = document.createElement('span');
     chevron.className = CHEVRON_CLASS;
@@ -180,6 +183,10 @@ export const TableReadonlySort = Extension.create({
   addProseMirrorPlugins() {
     const editor = this.editor;
     let editorRoot: HTMLElement | null = null;
+    // Whether this plugin has any chevrons in the DOM. Lives here rather than
+    // inside view() because BOTH writers must maintain it: the plugin view's
+    // update() and the click-time self-heal below.
+    let chevronsPresent = false;
 
     const onClick = (event: MouseEvent) => {
       if (editor.isEditable) return;
@@ -188,13 +195,39 @@ export const TableReadonlySort = Extension.create({
       // accidentally triggering a sort.
       if (!(event.target instanceof Element)) return;
       const chevron = event.target.closest(`.${CHEVRON_CLASS}`);
-      if (!chevron) return;
+      if (!chevron) {
+        // Self-heal. A chevron is a foreign child of a cell's contentDOM, so
+        // ProseMirror's renderDescs drops it whenever that node is redrawn
+        // (a widget decoration at a block position inside the cell, a full
+        // docView rebuild) — with no doc change, which a read-only page may
+        // never produce. Rebuilding here means the affordance comes back on the
+        // user's first click into the header, without going back to sweeping
+        // the DOM on every transaction.
+        const headerCell = getHeaderTh(event.target);
+        if (!headerCell) return;
+        // Only rebuild when this cell's OWN chevron is missing: an ordinary click
+        // to select text in a header must not rewrite data-sort / data-tooltip /
+        // aria-label / title across the whole header row. `:scope >` so a nested
+        // table's surviving chevron inside this cell cannot mask the gap. One
+        // scoped querySelector is the entire cost of the check.
+        if (headerCell.querySelector(`:scope > .${CHEVRON_CLASS}`)) return;
+        const headerTable = headerCell.closest('table') as HTMLTableElement | null;
+        if (headerTable) {
+          updateChevrons(headerTable);
+          chevronsPresent = true;
+        }
+        return;
+      }
       const th = getHeaderTh(chevron);
       if (!th) return;
       const table = th.closest('table') as HTMLTableElement | null;
       if (!table) return;
       const colIndex = getColumnIndex(th);
       if (colIndex < 0) return;
+      // applySort() refreshes this table's chevrons itself (it ends with
+      // updateChevrons(table)), so the click path does not depend on the
+      // plugin view's update() running afterwards. That matters now that
+      // update() ignores selection-only transactions.
       applySort(table, colIndex);
     };
 
@@ -206,24 +239,51 @@ export const TableReadonlySort = Extension.create({
           editorRoot = editorView.dom as HTMLElement;
           editorRoot.addEventListener('click', onClick);
 
-          if (!editor.isEditable) {
+          // Tracked across updates so a transaction that changes nothing this
+          // plugin renders can be skipped entirely.
+          let lastEditable = editor.isEditable;
+          chevronsPresent = false;
+
+          if (!lastEditable) {
             addChevronsToAllTables(editorRoot);
+            chevronsPresent = true;
           }
 
           return {
-            update(view) {
+            update(view, prevState) {
+              const editable = editor.isEditable;
+              const docChanged = view.state.doc !== prevState.doc;
+              const editableChanged = editable !== lastEditable;
+              // Selection-only transactions (and every remote Yjs step that
+              // leaves the doc identity alone) must do nothing here. This used
+              // to run on EVERY transaction: a full-editor
+              // querySelectorAll('table'), then three setAttribute calls plus a
+              // `.title` write on every <th> of every table, plus a
+              // querySelector for the chevron in each. Table drag-and-drop
+              // dispatches hover meta-transactions on every mousemove, so that
+              // whole sweep ran per mouse move over a table — and again for each
+              // remote step on a busy collaborative page.
+              if (!docChanged && !editableChanged) return;
+              lastEditable = editable;
+
               const root = view.dom as HTMLElement;
-              if (!editor.isEditable) {
+              if (!editable) {
                 addChevronsToAllTables(root);
-              } else {
-                removeAllChevrons(root);
+                chevronsPresent = true;
+                return;
               }
+              // Skip the full-editor querySelectorAll when we know there is
+              // nothing to remove.
+              if (!chevronsPresent) return;
+              removeAllChevrons(root);
+              chevronsPresent = false;
             },
             destroy() {
               if (editorRoot) {
                 editorRoot.removeEventListener('click', onClick);
                 removeAllChevrons(editorRoot);
               }
+              chevronsPresent = false;
             },
           };
         },

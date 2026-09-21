@@ -1,4 +1,5 @@
-import { markdownToHtml, encodeHtmlEmbedSource } from '@docmost/editor-ext';
+import { markdownToProseMirror } from '@docmost/prosemirror-markdown';
+import { encodeHtmlEmbedSource } from '@docmost/editor-ext';
 import { htmlToJson } from '../../../collaboration/collaboration.util';
 import { hasHtmlEmbedNode, stripHtmlEmbedNodes } from './html-embed.util';
 
@@ -10,13 +11,12 @@ import { hasHtmlEmbedNode, stripHtmlEmbedNodes } from './html-embed.util';
  *
  * The block renders inside a sandboxed iframe, so this is not an XSS surface;
  * this exercises the REAL server import conversion path that ImportService uses
- * (`markdownToHtml` then `htmlToJson`; `processHTML` adds only a cheerio
- * link/iframe normalize pass which does not touch htmlEmbed divs) and asserts
- * that such a node is DETECTED and STRIPPABLE — so the share read path's
+ * (`markdownToProseMirror`, the canonical converter — issue #345/#347) and
+ * asserts that such a node is DETECTED and STRIPPABLE — so the share read path's
  * master-toggle strip can remove it when the workspace toggle is OFF.
  */
 describe('htmlEmbed smuggled via the raw serialized div in imported markdown/HTML', () => {
-  it('round-trips through markdownToHtml -> htmlToJson and is DETECTED (base64 data-source)', async () => {
+  it('round-trips through markdownToProseMirror and is DETECTED (base64 data-source)', async () => {
     const source = '<script>steal()</script>';
     const encoded = encodeHtmlEmbedSource(source);
     const md = [
@@ -27,12 +27,9 @@ describe('htmlEmbed smuggled via the raw serialized div in imported markdown/HTM
       'World',
     ].join('\n');
 
-    const html = await markdownToHtml(md);
-    // marked preserves the raw block-level div verbatim.
-    expect(html).toContain('data-type="htmlEmbed"');
-
-    const json = htmlToJson(html);
-    // The div parses into a real htmlEmbed node carrying the decoded source.
+    // The canonical importer parses the raw block-level div into a real
+    // htmlEmbed node carrying the decoded source.
+    const json = await markdownToProseMirror(md);
     expect(hasHtmlEmbedNode(json)).toBe(true);
 
     // Because it is detected, the share master-toggle strip can remove it.
@@ -59,8 +56,7 @@ describe('htmlEmbed smuggled via the raw serialized div in imported markdown/HTM
     // therefore stripping) does not depend on the source being well-formed, so
     // the bypass cannot be hidden by sending a malformed data-source.
     const md = `<div data-type="htmlEmbed" data-source="&lt;script&gt;x&lt;/script&gt;"></div>`;
-    const html = await markdownToHtml(md);
-    const json = htmlToJson(html);
+    const json = await markdownToProseMirror(md);
     expect(hasHtmlEmbedNode(json)).toBe(true);
     expect(hasHtmlEmbedNode(stripHtmlEmbedNodes(json))).toBe(false);
   });

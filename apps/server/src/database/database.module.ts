@@ -23,6 +23,7 @@ import { UserTokenRepo } from './repos/user-token/user-token.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
 import { BacklinkRepo } from '@docmost/db/repos/backlink/backlink.repo';
 import { ShareRepo } from '@docmost/db/repos/share/share.repo';
+import { ShareAliasRepo } from '@docmost/db/repos/share-alias/share-alias.repo';
 import { NotificationRepo } from '@docmost/db/repos/notification/notification.repo';
 import { WatcherRepo } from '@docmost/db/repos/watcher/watcher.repo';
 import { LabelRepo } from '@docmost/db/repos/label/label.repo';
@@ -30,14 +31,24 @@ import { FavoriteRepo } from '@docmost/db/repos/favorite/favorite.repo';
 import { TemplateRepo } from '@docmost/db/repos/template/template.repo';
 import { AiChatRepo } from '@docmost/db/repos/ai-chat/ai-chat.repo';
 import { AiChatMessageRepo } from '@docmost/db/repos/ai-chat/ai-chat-message.repo';
+import { AiChatRunRepo } from '@docmost/db/repos/ai-chat/ai-chat-run.repo';
+import { AiChatRunStepRepo } from '@docmost/db/repos/ai-chat/ai-chat-run-step.repo';
+import { AiChatPageSnapshotRepo } from '@docmost/db/repos/ai-chat/ai-chat-page-snapshot.repo';
+import { AiChatPageBindingRepo } from '@docmost/db/repos/ai-chat/ai-chat-page-binding.repo';
 import { AiProviderCredentialsRepo } from '@docmost/db/repos/ai-chat/ai-provider-credentials.repo';
 import { AiMcpServerRepo } from '@docmost/db/repos/ai-chat/ai-mcp-server.repo';
 import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles.repo';
 import { PageEmbeddingRepo } from '@docmost/db/repos/ai-chat/page-embedding.repo';
+import { ApiKeyRepo } from '@docmost/db/repos/api-key/api-key.repo';
 import { PageListener } from '@docmost/db/listeners/page.listener';
 import { PostgresJSDialect } from 'kysely-postgres-js';
 import * as postgres from 'postgres';
 import { normalizePostgresUrl } from '../common/helpers';
+import {
+  observeDbQuery,
+  isMetricsEnabled,
+} from '../integrations/metrics/metrics.registry';
+import { firstSqlToken } from '../integrations/metrics/metrics.constants';
 
 @Global()
 @Module({
@@ -65,6 +76,18 @@ import { normalizePostgresUrl } from '../common/helpers';
         }),
         plugins: [new CamelCasePlugin()],
         log: (event: LogEvent) => {
+          // #355 — db_query_duration_seconds, labelled by the leading SQL token
+          // (bounded cardinality). Gated on isMetricsEnabled() so the token work
+          // (regex + Set lookup) is skipped entirely when metrics are OFF — not
+          // just observeDbQuery no-op'd — so a non-metrics deployment pays nothing
+          // per query. Runs independent of the dev-only debug logging below.
+          if (isMetricsEnabled()) {
+            observeDbQuery(
+              firstSqlToken(event.query.sql),
+              event.queryDurationMillis / 1000,
+            );
+          }
+
           if (environmentService.getNodeEnv() !== 'development') return;
           const logger = new Logger(DatabaseModule.name);
           if (process.env.DEBUG_DB?.toLowerCase() === 'true') {
@@ -96,16 +119,22 @@ import { normalizePostgresUrl } from '../common/helpers';
     UserSessionRepo,
     BacklinkRepo,
     ShareRepo,
+    ShareAliasRepo,
     NotificationRepo,
     WatcherRepo,
     LabelRepo,
     TemplateRepo,
     AiChatRepo,
     AiChatMessageRepo,
+    AiChatRunRepo,
+    AiChatRunStepRepo,
+    AiChatPageSnapshotRepo,
+    AiChatPageBindingRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
     AiAgentRoleRepo,
     PageEmbeddingRepo,
+    ApiKeyRepo,
     PageListener,
   ],
   exports: [
@@ -128,16 +157,22 @@ import { normalizePostgresUrl } from '../common/helpers';
     UserSessionRepo,
     BacklinkRepo,
     ShareRepo,
+    ShareAliasRepo,
     NotificationRepo,
     WatcherRepo,
     LabelRepo,
     TemplateRepo,
     AiChatRepo,
     AiChatMessageRepo,
+    AiChatRunRepo,
+    AiChatRunStepRepo,
+    AiChatPageSnapshotRepo,
+    AiChatPageBindingRepo,
     AiProviderCredentialsRepo,
     AiMcpServerRepo,
     AiAgentRoleRepo,
     PageEmbeddingRepo,
+    ApiKeyRepo,
   ],
 })
 export class DatabaseModule implements OnApplicationBootstrap {

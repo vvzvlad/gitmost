@@ -1,0 +1,15 @@
+{
+  // Test-infra tsconfig used ONLY by vitest's `test.typecheck` pass (Finding #1).
+  // The build tsconfig (`tsconfig.json`) scopes the compiler to `src/**` with
+  // `rootDir: ./src`, so it never type-checks the `test/` tree. This config
+  // inherits the same strict compiler options but widens the file set to the
+  // type-test files so `vitest run` can run `tsc` over them. It is NOT used by
+  // `npm run build` (that still uses `tsconfig.json`), so it has no effect on the
+  // shipped output.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["test/**/*.test-d.ts", "src/**/*"]
+}

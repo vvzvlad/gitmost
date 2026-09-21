@@ -5,7 +5,7 @@ import {
   insertNodeRelative,
   sanitizeForYjs,
   findUnstorableAttr,
-} from "../../build/lib/node-ops.js";
+} from "@docmost/prosemirror-markdown";
 
 // ProseMirror builders. Blocks carry a stable id in attrs.id.
 const textNode = (text) => ({ type: "text", text });

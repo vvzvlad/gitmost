@@ -97,6 +97,69 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** Collapse runs of whitespace/newlines to a single space and trim. */
+function collapse(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Truncate to ~140 chars, appending an ellipsis when it overflows. */
+function clamp(s: string): string {
+  const MAX = 140;
+  return s.length > MAX ? s.slice(0, MAX).trimEnd() + "…" : s;
+}
+
+/**
+ * Priority "primary" argument fields, in order. The first present one supplies
+ * the summary. `urls` is included (external MCP `read_pages`-style tools take a
+ * list of URLs) and is handled as an array; `url` covers the single-URL form.
+ */
+const PRIMARY_INPUT_FIELDS = [
+  "query",
+  "q",
+  "searchQuery",
+  "url",
+  "urls",
+  "title",
+  "name",
+  "text",
+  "prompt",
+] as const;
+
+/**
+ * A short, PLAIN-TEXT one-line summary of a tool call's arguments (e.g. the
+ * search query), or undefined when no recognizable primary field is present.
+ * Rendered under the tool label so tools without a friendly name (external MCP
+ * tools like `Search_web_search`) still show WHAT was requested, not just a
+ * generic "Ran tool {{name}}". The returned string is plain text and MUST be
+ * rendered React-escaped (Mantine `<Text>`), never as markdown/HTML.
+ *
+ * Streaming gate: while `state === "input-streaming"` the `input` object grows
+ * chunk by chunk but `messageSignature` deliberately does NOT track `input`, so
+ * a live summary computed here would freeze at its first captured value and go
+ * stale. We therefore return undefined until the state flips to
+ * `input-available` (input finalized) — that state change IS tracked by the
+ * signature, so the row re-renders and shows the complete summary. Do NOT add
+ * `input` to `message-signature.ts` to work around this.
+ */
+export function toolInputSummary(part: ToolUiPart): string | undefined {
+  if (part.state === "input-streaming") return undefined;
+  if (!part.input || typeof part.input !== "object") return undefined;
+  const input = part.input as Record<string, unknown>;
+
+  for (const field of PRIMARY_INPUT_FIELDS) {
+    const value = input[field];
+    if (typeof value === "string" && value.length > 0) {
+      return clamp(collapse(value));
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      const first = collapse(String(value[0]));
+      if (first.length === 0) continue;
+      return clamp(first + (value.length > 1 ? ` (+${value.length - 1})` : ""));
+    }
+  }
+  return undefined;
+}
+
 /**
  * Resolve the page citation(s) a tool part references, from its input/output.
  * Only output-available parts (the tool returned) yield citations. Search

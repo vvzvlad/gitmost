@@ -19,7 +19,11 @@ export const useQuerySubscription = () => {
   const [socket] = useAtom(socketAtom);
 
   React.useEffect(() => {
-    socket?.on("message", (event) => {
+    if (!socket) return;
+    // Named handler + off() cleanup (mirrors use-notification-socket). Without
+    // cleanup, every socket recreation / effect re-run stacked another listener,
+    // so a single broadcast fired duplicated invalidateQueries / setQueryData.
+    const handleMessage = (event) => {
       const data: WebSocketEvent = event;
 
       let entity = null;
@@ -163,6 +167,11 @@ export const useQuerySubscription = () => {
           });
           break;
       }
-    });
+    };
+
+    socket.on("message", handleMessage);
+    return () => {
+      socket.off("message", handleMessage);
+    };
   }, [queryClient, socket]);
 };

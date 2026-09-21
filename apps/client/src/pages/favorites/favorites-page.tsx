@@ -6,14 +6,14 @@ import {
   Table,
   Container,
   Title,
-  ThemeIcon,
   Button,
 } from "@mantine/core";
 import { Link } from "react-router-dom";
 import { buildPageUrl } from "@/features/page/page.utils";
 import { formattedDate } from "@/lib/time";
 import { useFavoritesQuery } from "@/features/favorite/queries/favorite-query";
-import { IconFileDescription, IconStar } from "@tabler/icons-react";
+import { IconStar } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getSpaceUrl } from "@/lib/config";
 import { useTranslation } from "react-i18next";
@@ -72,15 +72,8 @@ export default function FavoritesPage() {
                           )}
                         >
                           <Group wrap="nowrap">
-                            {fav.page.icon || (
-                              <ThemeIcon
-                                variant="transparent"
-                                color="gray"
-                                size={18}
-                              >
-                                <IconFileDescription size={18} />
-                              </ThemeIcon>
-                            )}
+                            <PageIcon value={fav.page.icon} size={18} />
+
                             <Text fw={500} size="md" lineClamp={1}>
                               {fav.page.title || t("Untitled")}
                             </Text>

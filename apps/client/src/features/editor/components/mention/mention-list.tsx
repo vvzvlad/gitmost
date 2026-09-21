@@ -21,11 +21,12 @@ import {
 import clsx from "clsx";
 import classes from "./mention.module.css";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { IconFileDescription, IconPlus } from "@tabler/icons-react";
+import { IconPlus } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon";
 import { useSpaceQuery } from "@/features/space/queries/space-query.ts";
 import { useParams } from "react-router-dom";
 import { v7 as uuid7 } from "uuid";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom, useStore } from "jotai";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom.ts";
 import {
   MentionListProps,
@@ -34,7 +35,7 @@ import {
 import { IPage } from "@/features/page/types/page.types";
 import {
   useCreatePageMutation,
-  usePageQuery,
+  usePageMetaQuery,
 } from "@/features/page/queries/page-query";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom";
 import { treeModel } from "@/features/page/tree/model/tree-model";
@@ -50,12 +51,16 @@ const MentionList = forwardRef<any, MentionListProps>((props, ref) => {
   const [countAnnouncement, setCountAnnouncement] = useState("");
   const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
   const { pageSlug, spaceSlug } = useParams();
-  const { data: page } = usePageQuery({ pageId: extractPageSlugId(pageSlug) });
+  const { data: page } = usePageMetaQuery({ pageId: extractPageSlugId(pageSlug) });
   const { data: space } = useSpaceQuery(spaceSlug);
   const [currentUser] = useAtom(currentUserAtom);
   const [renderItems, setRenderItems] = useState<MentionSuggestionItem[]>([]);
   const { t } = useTranslation();
-  const [data, setData] = useAtom(treeDataAtom);
+  // Setter-only: the tree value is read only imperatively inside createPage
+  // (via `store` below), never at render, so useSetAtom avoids re-rendering the
+  // mention popup on any tree event.
+  const setData = useSetAtom(treeDataAtom);
+  const store = useStore();
   const createPageMutation = useCreatePageMutation();
   const emit = useQueryEmit();
   const isInCommentContext = props.isInCommentContext ?? false;
@@ -272,9 +277,11 @@ const MentionList = forwardRef<any, MentionListProps>((props, ref) => {
         children: [],
       };
 
-      const lastIndex = data.length;
+      // Read the live tree imperatively at call time.
+      const currentTree = store.get(treeDataAtom);
+      const lastIndex = currentTree.length;
 
-      setData(treeModel.insert(data, parentId, newNode, lastIndex));
+      setData(treeModel.insert(currentTree, parentId, newNode, lastIndex));
 
       props.command({
         id: uuid7(),
@@ -427,9 +434,7 @@ const MentionList = forwardRef<any, MentionListProps>((props, ref) => {
                     color="gray"
                     size="sm"
                   >
-                    {item.icon || (
-                      <IconFileDescription size={18} stroke={1.5} />
-                    )}
+                    <PageIcon value={item.icon} size={18} />
                   </ActionIcon>
 
                   <div style={{ flex: 1, minWidth: 0 }}>

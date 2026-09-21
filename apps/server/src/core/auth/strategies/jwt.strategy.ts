@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy } from 'passport-jwt';
 import { EnvironmentService } from '../../../integrations/environment/environment.service';
@@ -8,21 +8,22 @@ import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { UserSessionRepo } from '@docmost/db/repos/session/user-session.repo';
 import { SessionActivityService } from '../../session/session-activity.service';
 import { FastifyRequest } from 'fastify';
-import { extractBearerTokenFromHeader, isUserDisabled } from '../../../common/helpers';
-import { ModuleRef } from '@nestjs/core';
+import {
+  extractBearerTokenFromHeader,
+  isUserDisabled,
+} from '../../../common/helpers';
 import { resolveProvenance } from '../../../common/decorators/auth-provenance.decorator';
+import { ApiKeyService } from '../../api-key/api-key.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  private logger = new Logger('JwtStrategy');
-
   constructor(
     private userRepo: UserRepo,
     private workspaceRepo: WorkspaceRepo,
     private userSessionRepo: UserSessionRepo,
     private sessionActivityService: SessionActivityService,
     private readonly environmentService: EnvironmentService,
-    private moduleRef: ModuleRef,
+    private readonly apiKeyService: ApiKeyService,
   ) {
     super({
       jwtFromRequest: (req: FastifyRequest) => {
@@ -51,14 +52,32 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new UnauthorizedException();
     }
 
-    const workspace = await this.workspaceRepo.findById(payload.workspaceId);
+    // #348 — reuse the workspace DomainMiddleware already loaded for this request
+    // instead of re-querying it. `validate()` above has confirmed
+    // `req.raw.workspaceId === payload.workspaceId` (or that it is unset), and the
+    // middleware sets `req.raw.workspace` alongside `req.raw.workspaceId` from the
+    // SAME workspace row, so when the ids match this is that row. NOTE it is the
+    // middleware's `selectAll` object (a superset of the fallback `findById` base
+    // fields — it also carries licenseKey/auditRetentionDays); that is harmless
+    // here because every consumer reads this workspace via the AuthWorkspace
+    // decorator, which already preferred `req.raw.workspace` (the selectAll object)
+    // over `req.user.workspace` before this change. Fall back to the query if the
+    // middleware did not populate it (a path that bypasses DomainMiddleware).
+    const workspace =
+      req.raw.workspace && req.raw.workspaceId === payload.workspaceId
+        ? req.raw.workspace
+        : await this.workspaceRepo.findById(payload.workspaceId);
 
     if (!workspace) {
       throw new UnauthorizedException();
     }
-    const user = await this.userRepo.findById(payload.sub, payload.workspaceId, {
-      includeIsAgent: true,
-    });
+    const user = await this.userRepo.findById(
+      payload.sub,
+      payload.workspaceId,
+      {
+        includeIsAgent: true,
+      },
+    );
 
     if (!user || isUserDisabled(user)) {
       throw new UnauthorizedException();
@@ -67,11 +86,19 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if ((payload as JwtPayload).sessionId) {
       const sessionId = (payload as JwtPayload).sessionId;
       const session = await this.userSessionRepo.findActiveById(sessionId);
-      if (!session || session.userId !== payload.sub || session.workspaceId !== payload.workspaceId) {
+      if (
+        !session ||
+        session.userId !== payload.sub ||
+        session.workspaceId !== payload.workspaceId
+      ) {
         throw new UnauthorizedException();
       }
       req.raw.sessionId = sessionId;
-      this.sessionActivityService.trackActivity(sessionId, payload.sub, payload.workspaceId);
+      this.sessionActivityService.trackActivity(
+        sessionId,
+        payload.sub,
+        payload.workspaceId,
+      );
     }
 
     // Propagate the agent-edit provenance onto the request so REST
@@ -88,28 +115,33 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   private async validateApiKey(req: any, payload: JwtApiKeyPayload) {
-    let ApiKeyModule: any;
-    let isApiKeyModuleReady = false;
+    // The fork ships the core `ApiKeyService` (the EE `ee/api-key` module is
+    // absent). `validate` throws a bare UnauthorizedException on any definite
+    // deny (missing/revoked/expired row, disabled user, kill-switch off) and
+    // propagates infra errors (→ 5xx) rather than masking them as a 401.
+    const result = await this.apiKeyService.validate(payload);
 
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      ApiKeyModule = require('./../../../ee/api-key/api-key.service');
-      isApiKeyModuleReady = true;
-    } catch (err) {
-      this.logger.debug(
-        'API Key module requested but enterprise module not bundled in this build',
-      );
-      isApiKeyModuleReady = false;
-    }
+    // Stamp the principal kind + key id so the /api-keys management surface can
+    // enforce "a token cannot manage tokens". Done in this branch because it
+    // returns before the shared ACCESS-path stamping below.
+    req.raw.authType = 'api_key';
+    req.raw.apiKeyId = payload.apiKeyId;
 
-    if (isApiKeyModuleReady) {
-      const ApiKeyService = this.moduleRef.get(ApiKeyModule.ApiKeyService, {
-        strict: false,
-      });
+    // Stamp the agent-edit provenance for the API-KEY path too (#486, #559).
+    // Unlike the access-token path above, it CANNOT be resolved before this point:
+    // the API-key payload carries no signed actor/aiChatId claim, and the user is
+    // unknown until the key is validated. #559 — EVERY api-key write is now an
+    // EXTERNAL MCP write: passing the verified `payload.apiKeyId` makes
+    // resolveProvenance stamp actor='agent' even for an ordinary user's PERSONAL
+    // key (intentional — the access is programmatic via api_key, so it is
+    // attributed to the "External MCP" persona named after the key, not shown as
+    // the human). An API key has no internal ai_chats row, so aiChatId stays null;
+    // the key id is what distinguishes the persona. Derived from the SERVER-side
+    // identity + the verified key id (never a client field), so unspoofable.
+    const provenance = resolveProvenance(result.user, null, payload.apiKeyId);
+    req.raw.actor = provenance.actor;
+    req.raw.aiChatId = provenance.aiChatId;
 
-      return ApiKeyService.validateApiKey(payload);
-    }
-
-    throw new UnauthorizedException('Enterprise API Key module missing');
+    return result;
   }
 }

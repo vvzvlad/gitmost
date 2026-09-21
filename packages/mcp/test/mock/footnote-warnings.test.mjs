@@ -1,7 +1,7 @@
 // Mock-HTTP test for the footnoteWarnings plumbing (#166). createPage is the
 // representative path that is fully plain-HTTP (import + getPage) and so is
 // mockable here; updatePage / importPageMarkdown attach footnoteWarnings with the
-// IDENTICAL wiring (`analyzeFootnotes(...)` + spread-when-non-empty) but run their
+// IDENTICAL wiring (`footnoteWarningsField(...)` spread-when-non-empty) but run their
 // mutation over the Hocuspocus collab WebSocket, which this plain-HTTP harness
 // does not stand up. The analyzer itself is unit-tested in footnote-analyze.test.
 import { test, after } from "node:test";
@@ -76,35 +76,29 @@ function pageHandler() {
   };
 }
 
-test("createPage attaches footnoteWarnings when the content has footnote problems", async () => {
+test("createPage attaches footnoteWarnings when the content uses legacy footnote syntax", async () => {
   const baseURL = await spawn(pageHandler());
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
-  // A dangling reference + a duplicate definition + a table marker.
-  const content = [
-    "Intro[^missing] and| cell[^t] |.",
-    "",
-    "[^d]: one",
-    "[^d]: two",
-    "[^t]: in table",
-  ].join("\n");
+  // Legacy reference-style `[^id]:` definitions — inert on import since #293.
+  const content = ["Intro[^a].", "", "[^a]: a definition"].join("\n");
   const result = await client.createPage("T", content, "sp-1");
   assert.ok(Array.isArray(result.footnoteWarnings), "footnoteWarnings present");
   const joined = result.footnoteWarnings.join("\n");
-  assert.match(joined, /no matching definition/); // dangling [^missing]
-  assert.match(joined, /defined more than once/); // duplicate [^d]
+  assert.match(joined, /reference-style footnotes/i);
+  assert.match(joined, /\^\[footnote text\]/); // nudge to the inline form
   // The page itself is still returned.
   assert.equal(result.success, true);
 });
 
-test("createPage omits footnoteWarnings when the content is clean", async () => {
+test("createPage omits footnoteWarnings when the content uses the inline form", async () => {
   const baseURL = await spawn(pageHandler());
   const client = new DocmostClient(baseURL, "user@example.com", "pw");
-  const content = ["A[^a] and reuse[^a].", "", "[^a]: fine"].join("\n");
+  const content = "A note.^[the body] and reuse.^[the body]";
   const result = await client.createPage("T", content, "sp-1");
   assert.equal(
     "footnoteWarnings" in result,
     false,
-    "no footnoteWarnings field on clean input",
+    "no footnoteWarnings field on inline-footnote input",
   );
   assert.equal(result.success, true);
 });

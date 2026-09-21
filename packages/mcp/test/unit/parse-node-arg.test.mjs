@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseNodeArg } from "../../build/lib/parse-node-arg.js";
+import { parseNodeArg } from "@docmost/prosemirror-markdown";
 
 test("parseNodeArg passes an object through unchanged", () => {
   const obj = { type: "paragraph", content: [] };

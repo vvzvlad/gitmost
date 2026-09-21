@@ -3,6 +3,7 @@ import WorkspaceNameForm from "@/features/workspace/components/settings/componen
 import WorkspaceIcon from "@/features/workspace/components/settings/components/workspace-icon.tsx";
 import HtmlEmbedSettings from "@/features/workspace/components/settings/components/html-embed-settings.tsx";
 import TrackerSettings from "@/features/workspace/components/settings/components/tracker-settings.tsx";
+import TemporaryNoteSettings from "@/features/workspace/components/settings/components/temporary-note-settings.tsx";
 import { useTranslation } from "react-i18next";
 import { getAppName } from "@/lib/config.ts";
 import { Helmet } from "react-helmet-async";
@@ -19,6 +20,7 @@ export default function WorkspaceSettings() {
       <WorkspaceNameForm />
       <HtmlEmbedSettings />
       <TrackerSettings />
+      <TemporaryNoteSettings />
     </>
   );
 }

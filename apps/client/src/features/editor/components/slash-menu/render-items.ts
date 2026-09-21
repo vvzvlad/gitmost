@@ -7,6 +7,7 @@ import {
   offset,
   shift,
 } from "@floating-ui/dom";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 
 const renderItems = () => {
   let component: ReactRenderer | null = null;
@@ -67,7 +68,9 @@ const renderItems = () => {
           },
         },
         popup,
-        updatePosition
+        updatePosition,
+        // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+        EDITOR_AUTO_UPDATE_OPTIONS
       );
     },
     onUpdate: (props: {

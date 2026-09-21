@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '../../types/kysely.types';
-import { dbOrTx, executeTx } from '../../utils';
+import { dbOrTx, executeTx, registerAfterCommit } from '../../utils';
 import {
   InsertablePage,
   Page,
@@ -12,11 +12,15 @@ import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagin
 import { validate as isValidUUID } from 'uuid';
 import { ExpressionBuilder, sql } from 'kysely';
 import { DB } from '@docmost/db/types/db';
+import { DbInterface } from '@docmost/db/types/db.interface';
 import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { SpaceMemberRepo } from '@docmost/db/repos/space/space-member.repo';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EventName } from '../../../common/events/event.contants';
-import { TreeUpdateSnapshot } from '../../listeners/page.listener';
+import {
+  TreeUpdateSnapshot,
+  toTreeNodeSnapshot,
+} from '../../listeners/page.listener';
 
 /**
  * Optional extras for the PAGE_UPDATED event emitted by updatePage(s). Lets the
@@ -47,10 +51,12 @@ export class PageRepo {
     'lastUpdatedById',
     'lastUpdatedSource',
     'lastUpdatedAiChatId',
+    'lastUpdatedApiKeyId',
     'spaceId',
     'workspaceId',
     'isLocked',
     'isTemplate',
+    'temporaryExpiresAt',
     'createdAt',
     'updatedAt',
     'deletedAt',
@@ -199,17 +205,10 @@ export class PageRepo {
     this.eventEmitter.emit(EventName.PAGE_CREATED, {
       pageIds: [result.id],
       workspaceId: result.workspaceId,
-      pages: [
-        {
-          id: result.id,
-          slugId: result.slugId,
-          title: result.title,
-          icon: result.icon,
-          position: result.position,
-          spaceId: result.spaceId,
-          parentPageId: result.parentPageId,
-        },
-      ],
+      // Built via the shared snapshot helper so the field copy (and the
+      // death-timer deadline that shows the sidebar clock marker without a
+      // reload) can't drift from the `addTreeNode` broadcast literal.
+      pages: [toTreeNodeSnapshot(result)],
     });
 
     return result;
@@ -236,9 +235,9 @@ export class PageRepo {
    * text-less pages (which legitimately store zero embeddings) don't keep the
    * bar below 100% forever.
    *
-   * A page qualifies if it has non-empty textContent OR already has stored
-   * embeddings. The second clause covers pages whose text the indexer extracted
-   * from the content JSON when textContent was null, and guarantees this total is
+   * A page qualifies if it has non-empty textContent, OR its content JSON has at
+   * least one text node (`"type":"text"`) when textContent was never backfilled,
+   * OR it already has stored embeddings. The last clause guarantees this total is
    * always >= countIndexedPages (the indexed count can never exceed it).
    */
   async countEmbeddablePages(workspaceId: string): Promise<number> {
@@ -246,37 +245,119 @@ export class PageRepo {
       .selectFrom('pages as p')
       .where('p.workspaceId', '=', workspaceId)
       .where('p.deletedAt', 'is', null)
-      .where((eb) =>
-        eb.or([
-          // Has extractable body text. The regex matches any non-whitespace
-          // character, mirroring the indexer's `text.trim().length === 0` check
-          // (raw SQL -> use the snake_case column name).
-          sql<boolean>`p.text_content ~ '[^[:space:]]'`,
-          // OR already has at least one (non-deleted) embedding row.
-          eb.exists(
-            eb
-              .selectFrom('pageEmbeddings as pe')
-              .select(sql`1`.as('one'))
-              .whereRef('pe.pageId', '=', 'p.id')
-              .where('pe.deletedAt', 'is', null),
-          ),
-        ]),
-      )
+      .where((eb) => this.embeddablePredicate(eb))
       .select((eb) => eb.fn.countAll().as('count'))
       .executeTakeFirst();
     return Number(row?.count ?? 0);
   }
 
   /**
-   * IDs of all non-deleted pages in a workspace. Used by the RAG bulk reindex to
-   * (re)build embeddings for every existing page.
+   * #599 (review F2) — the subset of `countEmbeddablePages` that was CREATED OR
+   * MODIFIED after `since` (the start of the reindex run that established the
+   * active generation's recorded coverage).
+   *
+   * These are exactly the pages the completed run's frozen coverage measurement
+   * does NOT describe: it never saw them (created later), or it saw different
+   * content (edited later). The coverage rule therefore excludes them from the
+   * run's measured "chunk-less gap" and counts them on their own, which is what
+   * stops a stale gap from excusing brand-new un-embedded pages (see
+   * computeCoverage). Uses the SAME embeddablePredicate as the denominator, so the
+   * two can never drift.
    */
-  async getIdsByWorkspace(workspaceId: string): Promise<string[]> {
+  async countEmbeddablePagesChangedSince(
+    workspaceId: string,
+    since: Date,
+  ): Promise<number> {
+    const row = await this.db
+      .selectFrom('pages as p')
+      .where('p.workspaceId', '=', workspaceId)
+      .where('p.deletedAt', 'is', null)
+      .where('p.updatedAt', '>', since)
+      .where((eb) => this.embeddablePredicate(eb))
+      .select((eb) => eb.fn.countAll().as('count'))
+      .executeTakeFirst();
+    return Number(row?.count ?? 0);
+  }
+
+  /**
+   * The "embeddable content" qualifying predicate, shared verbatim by
+   * countEmbeddablePages (the steady-state denominator) and getEmbeddablePageIds
+   * (the set the bulk reindex iterates). Both MUST use the exact same condition
+   * or the live total and steady-state total diverge — extracting it here is what
+   * guarantees that, replacing the previous hand-duplicated copy. Callers supply
+   * the trivial workspaceId/deletedAt filters inline; this returns only the
+   * non-trivial OR clause, evaluated against the `p` alias of `pages`.
+   *
+   * A page qualifies if it has non-empty textContent, OR its ProseMirror
+   * `content` JSON has at least one text node (`"type":"text"`) even though
+   * textContent was never backfilled, OR it already has a stored (non-deleted)
+   * embedding row.
+   */
+  private embeddablePredicate(
+    eb: ExpressionBuilder<DbInterface & { p: DbInterface['pages'] }, 'p'>,
+  ) {
+    return eb.or([
+      // Has extractable body text. The regex matches any non-whitespace
+      // character, mirroring the indexer's `text.trim().length === 0` check
+      // (raw SQL -> use the snake_case column name).
+      sql<boolean>`p.text_content ~ '[^[:space:]]'`,
+      // OR the ProseMirror `content` JSON has at least one text node (`"type":
+      // "text"`) the indexer can extract, even when `text_content` is null/empty
+      // (never backfilled): `reindexPage` runs `jsonToText` (generateText) over
+      // `content`, which only emits the text of ProseMirror text nodes, so such a
+      // page IS embeddable and a full reindex MUST visit it (otherwise it is
+      // silently skipped). A text node always serialises as
+      // `{"type":"text","text":"..."}`, so we key on the structural `"type":
+      // "text"` marker — NOT a bare `"text":` key, which also appears as the
+      // `attrs.text` of atom nodes that carry NO extractable text (e.g. math
+      // `mathBlock`/`mathInline`, whose LaTeX lives in `attrs.text` and has no
+      // text serializer). A math-only page thus produces empty `text_content` and
+      // zero embeddings; matching its `attrs.text` here would wrongly inflate the
+      // denominator and keep "Indexed N of M" below 100% forever. An empty doc
+      // (no text nodes) has no `"type":"text"` and is correctly excluded. A user
+      // who literally types `"type":"text"` in their prose can't false-positive:
+      // in `content::text` that text value's quotes are escaped (`\"type\"...`),
+      // so the literal-quote regex won't match the escaped form (and such a page
+      // is a real text node anyway).
+      sql<boolean>`p.content::text ~ '"type"[[:space:]]*:[[:space:]]*"text"'`,
+      // OR already has at least one (non-deleted) embedding row.
+      eb.exists(
+        eb
+          .selectFrom('pageEmbeddings as pe')
+          .select(sql`1`.as('one'))
+          .whereRef('pe.pageId', '=', 'p.id')
+          .where('pe.deletedAt', 'is', null),
+      ),
+    ]);
+  }
+
+  /**
+   * IDs of the EMBEDDABLE page set for a workspace — the exact same set that
+   * `countEmbeddablePages` counts (a page qualifies if it has non-empty
+   * textContent, OR content JSON with at least one text node (`"type":"text"`)
+   * and an empty/null textContent, OR already has a stored embedding row). The
+   * bulk reindex
+   * iterates THIS set so the live "done" counter reaches exactly
+   * `countEmbeddablePages` (the steady-state denominator), instead of iterating
+   * every non-deleted page (which would push the denominator above the
+   * steady-state value mid-run).
+   *
+   * IMPORTANT: the qualifying WHERE is shared with `countEmbeddablePages` via the
+   * private `embeddablePredicate` helper, so the two can no longer drift — if the
+   * embeddable definition changes, change it once there and both stay in lockstep
+   * (else the live total and steady-state total diverge again). Dropping
+   * text-less pages is correct: `reindexPage` no-ops on
+   * a page with no extractable content anyway, and a page that lost its text but
+   * still has stale embeddings IS in this set (the EXISTS clause), so it is still
+   * visited and its stale rows are cleared.
+   */
+  async getEmbeddablePageIds(workspaceId: string): Promise<string[]> {
     const rows = await this.db
-      .selectFrom('pages')
-      .select('id')
-      .where('workspaceId', '=', workspaceId)
-      .where('deletedAt', 'is', null)
+      .selectFrom('pages as p')
+      .select('p.id')
+      .where('p.workspaceId', '=', workspaceId)
+      .where('p.deletedAt', 'is', null)
+      .where((eb) => this.embeddablePredicate(eb))
       .execute();
     return rows.map((r) => r.id);
   }
@@ -297,14 +378,23 @@ export class PageRepo {
     pageId: string,
     deletedById: string,
     workspaceId: string,
+    // Optional caller transaction. When passed, the reads + soft-delete run in
+    // THAT transaction (so a caller holding a `FOR UPDATE` lock on the row — e.g.
+    // the temporary-note sweeper — can delete under the lock without deadlocking
+    // on a nested independent transaction) and the PAGE_SOFT_DELETED broadcast is
+    // deferred to the caller's COMMIT via registerAfterCommit (so a rolled-back
+    // delete never broadcasts). With no trx the behaviour is unchanged: own
+    // transaction, broadcast right after it commits.
+    existingTrx?: KyselyTransaction,
   ): Promise<void> {
     const currentDate = new Date();
+    const readDb = dbOrTx(this.db, existingTrx);
 
     // Read the root snapshot up front so PAGE_SOFT_DELETED can carry it without
     // a post-commit DB read (variant A). Only the root of the deleted subtree is
     // needed for the tree broadcast — the client `treeModel.remove` drops all
     // descendants, so we don't snapshot/broadcast every descendant.
-    const rootSnapshot = await this.db
+    const rootSnapshot = await readDb
       .selectFrom('pages')
       .select([
         'id',
@@ -319,7 +409,7 @@ export class PageRepo {
       .where('deletedAt', 'is', null)
       .executeTakeFirst();
 
-    const descendants = await this.db
+    const descendants = await readDb
       .withRecursive('page_descendants', (db) =>
         db
           .selectFrom('pages')
@@ -341,39 +431,60 @@ export class PageRepo {
     const pageIds = descendants.map((d) => d.id);
 
     if (pageIds.length > 0) {
-      await executeTx(this.db, async (trx) => {
-        await trx
-          .updateTable('pages')
-          .set({
-            deletedById: deletedById,
-            deletedAt: currentDate,
-          })
-          .where('id', 'in', pageIds)
-          .where('deletedAt', 'is', null)
-          .execute();
+      // Reuse the caller's transaction when given (executeTx passes it straight
+      // through), else own a fresh one.
+      await executeTx(
+        this.db,
+        async (trx) => {
+          await trx
+            .updateTable('pages')
+            .set({
+              deletedById: deletedById,
+              deletedAt: currentDate,
+            })
+            .where('id', 'in', pageIds)
+            .where('deletedAt', 'is', null)
+            .execute();
 
-        await trx.deleteFrom('shares').where('pageId', 'in', pageIds).execute();
-      });
+          await trx
+            .deleteFrom('shares')
+            .where('pageId', 'in', pageIds)
+            .execute();
+        },
+        existingTrx,
+      );
 
-      this.eventEmitter.emit(EventName.PAGE_SOFT_DELETED, {
-        pageIds: pageIds,
-        workspaceId,
-        // Root-only snapshot: one `deleteTreeNode` is enough, the client removes
-        // the whole subtree. Skip if the root vanished between the two reads.
-        pages: rootSnapshot
-          ? [
-              {
-                id: rootSnapshot.id,
-                slugId: rootSnapshot.slugId,
-                title: rootSnapshot.title,
-                icon: rootSnapshot.icon,
-                position: rootSnapshot.position,
-                spaceId: rootSnapshot.spaceId,
-                parentPageId: rootSnapshot.parentPageId,
-              },
-            ]
-          : [],
-      });
+      const emitSoftDeleted = () => {
+        this.eventEmitter.emit(EventName.PAGE_SOFT_DELETED, {
+          pageIds: pageIds,
+          workspaceId,
+          // Root-only snapshot: one `deleteTreeNode` is enough, the client
+          // removes the whole subtree. Skip if the root vanished between reads.
+          pages: rootSnapshot
+            ? [
+                {
+                  id: rootSnapshot.id,
+                  slugId: rootSnapshot.slugId,
+                  title: rootSnapshot.title,
+                  icon: rootSnapshot.icon,
+                  position: rootSnapshot.position,
+                  spaceId: rootSnapshot.spaceId,
+                  parentPageId: rootSnapshot.parentPageId,
+                },
+              ]
+            : [],
+        });
+      };
+
+      if (existingTrx) {
+        // Inside a caller transaction: the delete above is NOT committed yet.
+        // Defer the tree broadcast to the caller's commit so a rolled-back delete
+        // never broadcasts a phantom removal.
+        registerAfterCommit(existingTrx, emitSoftDeleted);
+      } else {
+        // Own transaction already committed above — broadcast now.
+        emitSoftDeleted();
+      }
     }
   }
 
@@ -425,7 +536,10 @@ export class PageRepo {
     // Restore all pages, but only detach the root page if its parent is deleted
     await this.db
       .updateTable('pages')
-      .set({ deletedById: null, deletedAt: null })
+      // On restore, disarm the death timer: pulling a note out of trash means
+      // "keep it". Otherwise a deadline now in the past would re-trash it on the
+      // next cleanup sweep.
+      .set({ deletedById: null, deletedAt: null, temporaryExpiresAt: null })
       .where('id', 'in', pageIds)
       .execute();
 
@@ -493,7 +607,12 @@ export class PageRepo {
     });
   }
 
-  async getCreatedByPages(creatorId: string, requestingUserId: string, pagination: PaginationOptions, spaceId?: string) {
+  async getCreatedByPages(
+    creatorId: string,
+    requestingUserId: string,
+    pagination: PaginationOptions,
+    spaceId?: string,
+  ) {
     let query = this.db
       .selectFrom('pages')
       .select(this.baseFields)
@@ -504,7 +623,11 @@ export class PageRepo {
     if (spaceId) {
       query = query.where('spaceId', '=', spaceId);
     } else {
-      query = query.where('spaceId', 'in', this.spaceMemberRepo.getUserSpaceIdsQuery(requestingUserId));
+      query = query.where(
+        'spaceId',
+        'in',
+        this.spaceMemberRepo.getUserSpaceIdsQuery(requestingUserId),
+      );
     }
 
     return executeWithCursorPagination(query, {
@@ -526,6 +649,9 @@ export class PageRepo {
     const query = this.db
       .selectFrom('pages')
       .select(this.baseFields)
+      // NOTE: `content` IS needed here — the trash UI reads page.content to render
+      // the deleted-page preview modal (trash.tsx handlePageClick ->
+      // TrashPageContentModal pageContent). Do NOT drop it (see #348 review F3).
       .select('content')
       .select((eb) => this.withSpace(eb))
       .select((eb) => this.withDeletedBy(eb))

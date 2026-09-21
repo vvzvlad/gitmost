@@ -26,8 +26,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
-import { getDrawioUrl, getFileUrl } from "@/lib/config.ts";
-import { uploadFile } from "@/features/page/services/page-service.ts";
+import { getDrawioUrl, getFileUrl, isDrawioRasterEnabled } from "@/lib/config.ts";
 import {
   DrawIoEmbed,
   DrawIoEmbedRef,
@@ -35,11 +34,16 @@ import {
   EventExport,
   EventSave,
 } from "react-drawio";
-import { decodeBase64ToSvgString, svgStringToFile } from "@/lib/utils";
-import { IAttachment } from "@/features/attachments/types/attachment.types";
+import { decodeBase64ToSvgString } from "@/lib/utils";
 import { modals } from "@mantine/modals";
 import { useAltTextControl } from "@/features/editor/components/common/use-alt-text-control.tsx";
+import { useDrawioRasterSave } from "./use-drawio-raster-save.ts";
 import classes from "../common/toolbar-menu.module.css";
+
+// The write target captured at the START of a save so the eventual node write
+// is pinned to the right diagram even if the selection moved during the async
+// save (A7). `attachmentId` is the identity guard.
+type DrawioMenuTarget = { pos: number | null; attachmentId: string | undefined };
 
 export function DrawioMenu({ editor }: EditorMenuProps) {
   const { t } = useTranslation();
@@ -48,8 +52,7 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
   const drawioRef = useRef<DrawIoEmbedRef>(null);
   const computedColorScheme = useComputedColorScheme();
   const isDirtyRef = useRef(false);
-  const isSavingRef = useRef(false);
-  const [isSaving, setIsSaving] = useState(false);
+  const savingTargetRef = useRef<DrawioMenuTarget | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const editorState = useEditorState({
@@ -152,41 +155,95 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
     currentAlt: editorState?.alt || "",
   });
 
-  const saveData = useCallback(async (svgXml: string) => {
-    if (isSavingRef.current) return;
-
-    isSavingRef.current = true;
-    setIsSaving(true);
-
-    try {
-      const svgString = decodeBase64ToSvgString(svgXml);
-      const fileName = "diagram.drawio.svg";
-      const drawioSVGFile = await svgStringToFile(svgString, fileName);
-
-      // @ts-ignore
-      const pageId = editor.storage?.pageId;
-      const attachmentId = editorState?.attachmentId;
-
-      let attachment: IAttachment = null;
-      if (attachmentId) {
-        attachment = await uploadFile(drawioSVGFile, pageId, attachmentId);
-      } else {
-        attachment = await uploadFile(drawioSVGFile, pageId);
-      }
-
-      editor.commands.updateAttributes("drawio", {
+  const raster = useDrawioRasterSave<DrawioMenuTarget>({
+    getDrawio: () => drawioRef.current,
+    // @ts-ignore — pageId is stashed on editor.storage by the editor host.
+    getPageId: () => editor.storage?.pageId,
+    // The attachment being overwritten is the one captured at save-start, not
+    // whatever is selected when the async save completes.
+    getAttachmentId: () =>
+      savingTargetRef.current?.attachmentId ?? editorState?.attachmentId,
+    // The bubble menu is NOT the destroyable nodeview (the diagram already has a
+    // src), so writing src from autosave is safe here.
+    updateSrcOnAutoSave: true,
+    rasterEnabled: isDrawioRasterEnabled(),
+    beginTarget: () => {
+      const target = captureDrawioTarget();
+      savingTargetRef.current = target;
+      return target;
+    },
+    applyAttributes: (attachment, _updateSrc, target) => {
+      writePinnedAttributes(target, {
         src: `/api/files/${attachment.id}/${attachment.fileName}?t=${new Date(attachment.updatedAt).getTime()}`,
         title: attachment.fileName,
         size: attachment.fileSize,
         attachmentId: attachment.id,
       });
-
       isDirtyRef.current = false;
-    } finally {
-      isSavingRef.current = false;
-      setIsSaving(false);
+    },
+    t,
+  });
+
+  // Capture the position + attachmentId of the drawio node being edited at the
+  // moment a save starts (A7).
+  const captureDrawioTarget = useCallback((): DrawioMenuTarget => {
+    const { selection } = editor.state;
+    let attachmentId = editorState?.attachmentId ?? undefined;
+    const nodeAtFrom = editor.state.doc.nodeAt(selection.from);
+    if (nodeAtFrom?.type.name === "drawio") {
+      return { pos: selection.from, attachmentId: nodeAtFrom.attrs.attachmentId };
     }
+    let pos: number | null = null;
+    if (attachmentId) {
+      editor.state.doc.descendants((n, p) => {
+        if (n.type.name === "drawio" && n.attrs.attachmentId === attachmentId) {
+          pos = p;
+          return false;
+        }
+        return true;
+      });
+    }
+    return { pos, attachmentId };
   }, [editor, editorState?.attachmentId]);
+
+  // Position-pinned write (A7): resolve the target node by the captured position
+  // when it still holds the same node, else by the captured attachmentId
+  // (identity guard), and setNodeMarkup there — never against the CURRENT
+  // selection, which may have moved during the async save.
+  const writePinnedAttributes = useCallback(
+    (target: DrawioMenuTarget, attrs: Record<string, unknown>) => {
+      const { state } = editor.view;
+      const capturedId = target.attachmentId;
+      let targetPos: number | null = null;
+
+      const nodeAtPos =
+        target.pos != null ? state.doc.nodeAt(target.pos) : null;
+      if (
+        nodeAtPos?.type.name === "drawio" &&
+        nodeAtPos.attrs.attachmentId === capturedId
+      ) {
+        targetPos = target.pos;
+      } else if (capturedId) {
+        state.doc.descendants((n, p) => {
+          if (n.type.name === "drawio" && n.attrs.attachmentId === capturedId) {
+            targetPos = p;
+            return false;
+          }
+          return true;
+        });
+      }
+
+      if (targetPos == null) return; // node gone — do not write the wrong node
+      const existing = state.doc.nodeAt(targetPos);
+      if (!existing) return;
+      const tr = state.tr.setNodeMarkup(targetPos, undefined, {
+        ...existing.attrs,
+        ...attrs,
+      });
+      editor.view.dispatch(tr);
+    },
+    [editor],
+  );
 
   const handleClose = useCallback(() => {
     if (!isDirtyRef.current) {
@@ -206,10 +263,12 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
       confirmProps: { color: "red" },
       onConfirm: () => {
         isDirtyRef.current = false;
+        // Cancel any in-flight save so it cannot upload / write after discard (A7).
+        raster.cancel();
         close();
       },
     });
-  }, [close, t]);
+  }, [close, t, raster]);
 
   const handleOpen = useCallback(async () => {
     if (!editorState?.src) return;
@@ -227,7 +286,20 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
       reader.readAsDataURL(blob);
       reader.onloadend = () => {
         const base64data = (reader.result || "") as string;
-        setInitialXML(base64data);
+        // draw.io atob-decodes a base64 data: URL as Latin-1, mojibaking every
+        // multibyte UTF-8 char (e.g. Cyrillic) inside the SVG content= payload.
+        // Hand the editor a proper UTF-8-decoded SVG string instead. This only
+        // decodes the OUTER data-URL base64 (the SVG wrapper); a legacy inner
+        // base64 content= is left verbatim, so old diagrams still open (#584).
+        // onloadend runs after this function's try/catch has returned, so guard
+        // the decode here: a non-SVG/empty blob (e.g. a 404 body) would make
+        // decodeBase64ToSvgString throw uncaught — fall back to the raw payload.
+        try {
+          setInitialXML(decodeBase64ToSvgString(base64data));
+        } catch (err) {
+          console.error(err);
+          setInitialXML(base64data);
+        }
       };
     } catch (err) {
       console.error(err);
@@ -238,16 +310,22 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
     }
   }, [editorState?.src, open]);
 
+  // Cancel any in-flight save on unmount so it cannot upload / write after the
+  // menu tears down (A7).
+  useEffect(() => {
+    return () => raster.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!opened) return;
 
     const interval = setInterval(() => {
-      if (isDirtyRef.current && !isSavingRef.current && drawioRef.current) {
-        drawioRef.current.exportDiagram({ format: "xmlsvg" });
-      }
+      raster.autoSaveTick();
     }, 60_000);
 
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened]);
 
   useEffect(() => {
@@ -369,7 +447,7 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
         <Modal.Overlay />
         <Modal.Content style={{ overflow: "hidden" }}>
           <Modal.Body pos="relative">
-            <LoadingOverlay visible={isSaving} />
+            <LoadingOverlay visible={raster.isSaving} />
             <div style={{ height: "100vh" }}>
               <DrawIoEmbed
                 ref={drawioRef}
@@ -387,7 +465,7 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
                   if (data.parentEvent !== "save") {
                     return;
                   }
-                  saveData(data.xml).then(() => close()).catch(() => {});
+                  raster.saveAndClose(data, close);
                 }}
                 onClose={(data: EventExit) => {
                   if (data.parentEvent) {
@@ -397,9 +475,10 @@ export function DrawioMenu({ editor }: EditorMenuProps) {
                 }}
                 onAutoSave={() => {
                   isDirtyRef.current = true;
+                  raster.markDirty();
                 }}
                 onExport={(data: EventExport) => {
-                  saveData(data.data).catch(() => {});
+                  raster.handleExport(data);
                 }}
               />
             </div>

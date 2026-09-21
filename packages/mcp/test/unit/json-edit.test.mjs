@@ -21,7 +21,7 @@ test("single-match replace preserves ids/marks and reports replacements===1", ()
     { find: "world", replace: "there" },
   ]);
 
-  assert.deepEqual(results, [{ find: "world", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "world", replacements: 1, matchedVia: "exact" }]);
 
   const para = out.content[0];
   // Paragraph id attribute is preserved.
@@ -61,7 +61,7 @@ test("text split across two text nodes (one bold) now applies, marks preserved",
     { find: "Hello world", replace: "Hello there" },
   ]);
 
-  assert.deepEqual(results, [{ find: "Hello world", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "Hello world", replacements: 1, matchedVia: "exact" }]);
   assert.deepEqual(failed, []);
 
   // The unchanged prefix "Hello " stays plain; the changed region "world" was
@@ -107,7 +107,7 @@ test("cross-run replace with mixed marks inherits left-neighbor marks", () => {
     { find: "BC", replace: "X" },
   ]);
 
-  assert.deepEqual(results, [{ find: "BC", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "BC", replacements: 1, matchedVia: "exact" }]);
   assert.deepEqual(failed, []);
 
   // "A" + "X"(plain) + "D" coalesce into a single plain text node "AXD".
@@ -131,7 +131,7 @@ test("cross-run replace at block start inherits [] marks", () => {
     { find: "BC", replace: "X" },
   ]);
 
-  assert.deepEqual(results, [{ find: "BC", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "BC", replacements: 1, matchedVia: "exact" }]);
   const para = out.content[0];
   assert.equal(para.content.length, 1);
   assert.equal(para.content[0].text, "X");
@@ -149,8 +149,8 @@ test("partial batch: good edits apply, the bad one goes to failed[]", () => {
 
   // The 2 matching edits applied; the missing one is reported.
   assert.deepEqual(results, [
-    { find: "alpha", replacements: 1 },
-    { find: "gamma", replacements: 1 },
+    { find: "alpha", replacements: 1, matchedVia: "exact" },
+    { find: "gamma", replacements: 1, matchedVia: "exact" },
   ]);
   assert.equal(failed.length, 1);
   assert.equal(failed[0].find, "absent");
@@ -193,7 +193,7 @@ test("a TEXT node containing a literal U+FFFC matches/replaces normally", () => 
     { find: "x￼y", replace: "done" },
   ]);
 
-  assert.deepEqual(results, [{ find: "x￼y", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "x￼y", replacements: 1, matchedVia: "exact" }]);
   assert.deepEqual(failed, []);
   assert.equal(out.content[0].content[0].text, "done");
 });
@@ -209,7 +209,7 @@ test("a no-op edit (find === replace) produces a doc deep-equal to the input", (
     { find: "unchanged", replace: "unchanged" },
   ]);
 
-  assert.deepEqual(results, [{ find: "unchanged", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "unchanged", replacements: 1, matchedVia: "exact" }]);
   // Deep-equal to the input despite the edit being reported as applied.
   assert.deepEqual(out, snapshot);
 });
@@ -225,7 +225,7 @@ test("replaceAll replaces all occurrences", () => {
   ]);
 
   // 2 in the first paragraph, 1 in the second = 3 total.
-  assert.deepEqual(results, [{ find: "foo", replacements: 3 }]);
+  assert.deepEqual(results, [{ find: "foo", replacements: 3, matchedVia: "exact" }]);
   assert.equal(out.content[0].content[0].text, "bar and bar");
   assert.equal(out.content[1].content[0].text, "more bar");
 });
@@ -268,7 +268,7 @@ test("empty replacement prunes the emptied text node", () => {
     { find: "DELETE", replace: "" },
   ]);
 
-  assert.deepEqual(results, [{ find: "DELETE", replacements: 1 }]);
+  assert.deepEqual(results, [{ find: "DELETE", replacements: 1, matchedVia: "exact" }]);
   const para = out.content[0];
   // The emptied first text node is gone; only the " kept" node remains.
   assert.equal(para.content.length, 1);
@@ -284,8 +284,8 @@ test("multi-edit array applied in order", () => {
   ]);
 
   assert.deepEqual(results, [
-    { find: "alpha", replacements: 1 },
-    { find: "beta", replacements: 1 },
+    { find: "alpha", replacements: 1, matchedVia: "exact" },
+    { find: "beta", replacements: 1, matchedVia: "exact" },
   ]);
   assert.equal(out.content[0].content[0].text, "ALPHA BETA");
 });
@@ -299,8 +299,8 @@ test("second edit can target text produced by the first (ordered application)", 
   ]);
 
   assert.deepEqual(results, [
-    { find: "one", replacements: 1 },
-    { find: "two", replacements: 1 },
+    { find: "one", replacements: 1, matchedVia: "exact" },
+    { find: "two", replacements: 1, matchedVia: "exact" },
   ]);
   assert.equal(out.content[0].content[0].text, "three");
 });

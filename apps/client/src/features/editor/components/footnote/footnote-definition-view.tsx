@@ -49,19 +49,14 @@ export default function FootnoteDefinitionView(props: NodeViewProps) {
       className={classes.definition}
       style={{ ["--footnote-number" as any]: `"${number}"` }}
     >
-      {/* #146: contentDOM MUST be the first child — a non-editable marker before
+      {/* #146: contentDOM MUST be the first child — non-editable chrome before
           it makes click hit-testing snap the caret above. Content first; the
-          marker + back-link follow in DOM and are placed left/right via CSS
-          flex `order`. The second #146 mitigation lives in
+          back-link follows in DOM and is placed on the right via CSS flex. The
+          decorative "N." number is rendered inline via the .definitionContent
+          ::before rule (from the --footnote-number var), so no marker element
+          precedes the content. The second #146 mitigation lives in
           editor-paste-handler.tsx (reflowAfterPaste). */}
       <NodeViewContent className={classes.definitionContent} />
-      <span
-        className={classes.definitionMarker}
-        contentEditable={false}
-        aria-hidden="true"
-      >
-        {number}.
-      </span>
       {refCount > 1 ? (
         // Multiple references -> ↩ followed by one lettered link per occurrence.
         <span

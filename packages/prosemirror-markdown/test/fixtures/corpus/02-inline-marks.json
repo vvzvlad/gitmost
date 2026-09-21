@@ -1,0 +1,62 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        { "type": "text", "marks": [{ "type": "bold" }], "text": "bold" },
+        { "type": "text", "text": " " },
+        { "type": "text", "marks": [{ "type": "italic" }], "text": "italic" },
+        { "type": "text", "text": " " },
+        { "type": "text", "marks": [{ "type": "code" }], "text": "code" },
+        { "type": "text", "text": " " },
+        { "type": "text", "marks": [{ "type": "strike" }], "text": "strike" }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/page"
+              }
+            }
+          ],
+          "text": "a link"
+        },
+        { "type": "text", "text": ", " },
+        {
+          "type": "text",
+          "marks": [{ "type": "highlight" }],
+          "text": "highlighted"
+        },
+        { "type": "text", "text": ", base" },
+        { "type": "text", "marks": [{ "type": "subscript" }], "text": "sub" },
+        { "type": "text", "text": " and base" },
+        { "type": "text", "marks": [{ "type": "superscript" }], "text": "sup" },
+        { "type": "text", "text": "." }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        { "type": "text", "text": "Here is a " },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "comment",
+              "attrs": { "commentId": "cmt-xyz789" }
+            }
+          ],
+          "text": "commented anchor span"
+        },
+        { "type": "text", "text": " that must survive (SPEC §3)." }
+      ]
+    }
+  ]
+}

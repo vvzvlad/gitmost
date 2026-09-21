@@ -23,6 +23,9 @@ function buildService(over: {
   resolvedShare?: unknown;
   page?: unknown;
   restricted?: boolean;
+  // #370 Stage B — the latest manual page-history row returned for the approved
+  // swap. `undefined` (the default) means the repo finds no manual version.
+  manualHistory?: unknown;
 } = {}) {
   const pageRepo = {
     findById: jest.fn(async () =>
@@ -34,6 +37,9 @@ function buildService(over: {
   const pagePermissionRepo = {
     hasRestrictedAncestor: jest.fn(async () => over.restricted ?? false),
   };
+  const pageHistoryRepo = {
+    findLatestByPageIdAndKind: jest.fn(async () => over.manualHistory ?? undefined),
+  };
 
   const service = new ShareService(
     {} as any, // shareRepo (unused on this path)
@@ -43,6 +49,7 @@ function buildService(over: {
     {} as any, // tokenService (unused)
     {} as any, // transclusionService (unused)
     {} as any, // workspaceRepo (unused)
+    pageHistoryRepo as any,
   );
 
   jest
@@ -53,7 +60,7 @@ function buildService(over: {
         : { id: SHARE, pageId: PAGE, spaceId: 'space-1' }) as any,
     );
 
-  return { service, pageRepo, pagePermissionRepo };
+  return { service, pageRepo, pagePermissionRepo, pageHistoryRepo };
 }
 
 describe('ShareService.resolveReadableSharePage (the share-access boundary)', () => {
@@ -131,6 +138,92 @@ describe('ShareService.resolveReadableSharePage (the share-access boundary)', ()
     expect(pageRepo.findById).toHaveBeenCalledWith(PAGE, {
       includeContent: true,
       includeCreator: true,
+    });
+  });
+
+  // #370 Stage B — "approved" publication freezes the served content/title to
+  // the latest manual page-history version, WITHOUT touching page.id or
+  // page.workspaceId (downstream attachment tokens are minted off those, so
+  // freezing them would mint tokens for the wrong owner).
+  describe('approved publication mode (content freeze)', () => {
+    const LIVE_PAGE = {
+      id: PAGE,
+      workspaceId: WS,
+      deletedAt: null,
+      title: 'Live draft title',
+      content: { type: 'doc', live: true },
+    };
+    const MANUAL = {
+      title: 'Saved version title',
+      content: { type: 'doc', saved: true },
+    };
+
+    it('swaps content + title to the latest manual version but PRESERVES id + workspaceId', async () => {
+      const { service, pageHistoryRepo } = buildService({
+        resolvedShare: {
+          id: SHARE,
+          pageId: PAGE,
+          spaceId: 'space-1',
+          publishedMode: 'approved',
+        },
+        page: { ...LIVE_PAGE },
+        manualHistory: MANUAL,
+      });
+
+      const out = await service.resolveReadableSharePage(SHARE, PAGE, WS);
+
+      expect(out).not.toBeNull();
+      // Content + title come from the saved version.
+      expect(out!.page.content).toEqual(MANUAL.content);
+      expect(out!.page.title).toBe(MANUAL.title);
+      // id + workspaceId stay LIVE (attachment-token ownership must not shift).
+      expect(out!.page.id).toBe(LIVE_PAGE.id);
+      expect(out!.page.workspaceId).toBe(LIVE_PAGE.workspaceId);
+      // Resolved against the LIVE page id and the manual tier, with content.
+      expect(pageHistoryRepo.findLatestByPageIdAndKind).toHaveBeenCalledWith(
+        LIVE_PAGE.id,
+        'manual',
+        { includeContent: true },
+      );
+    });
+
+    it('falls back to live content when no manual version exists yet', async () => {
+      const { service, pageHistoryRepo } = buildService({
+        resolvedShare: {
+          id: SHARE,
+          pageId: PAGE,
+          spaceId: 'space-1',
+          publishedMode: 'approved',
+        },
+        page: { ...LIVE_PAGE },
+        // manualHistory omitted → repo returns undefined
+      });
+
+      const out = await service.resolveReadableSharePage(SHARE, PAGE, WS);
+
+      expect(out).not.toBeNull();
+      expect(out!.page.content).toEqual(LIVE_PAGE.content);
+      expect(out!.page.title).toBe(LIVE_PAGE.title);
+      expect(pageHistoryRepo.findLatestByPageIdAndKind).toHaveBeenCalled();
+    });
+
+    it('does NOT consult page-history for a live share', async () => {
+      const { service, pageHistoryRepo } = buildService({
+        resolvedShare: {
+          id: SHARE,
+          pageId: PAGE,
+          spaceId: 'space-1',
+          publishedMode: 'live',
+        },
+        page: { ...LIVE_PAGE },
+        manualHistory: MANUAL,
+      });
+
+      const out = await service.resolveReadableSharePage(SHARE, PAGE, WS);
+
+      expect(out).not.toBeNull();
+      expect(out!.page.content).toEqual(LIVE_PAGE.content);
+      expect(pageHistoryRepo.findLatestByPageIdAndKind).not.toHaveBeenCalled();
     });
   });
 });

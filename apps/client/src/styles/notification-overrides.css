@@ -1,0 +1,66 @@
+/*
+ * Toast (Mantine Notification) visibility overrides.
+ * Mantine renders colorless toasts on --mantine-color-body (== the page
+ * background: white in light mode) with a faint shadow, so on white pages the
+ * card has no visible edge. These rules give every toast a type-tinted
+ * background, a WCAG-checked border and a stronger shadow so it separates from
+ * the page. The [data-mantine-color-scheme] + static-class selector (0,2,0)
+ * beats Mantine's own (0,1,0) rules regardless of stylesheet order (Mantine's
+ * bg/border rules wrap the scheme attribute in :where(), so they stay (0,1,0)).
+ * --notification-color is defined on the same element (defaults to primary,
+ * set per `color` prop), so tint/border follow the toast type. This also covers
+ * the loading/import toast (no accent bar, since the spinner takes the icon
+ * slot): its visibility comes from tone + border + shadow + the colored spinner.
+ */
+
+/*
+ * Anchor the top toast containers to the very top edge of the viewport (a small
+ * 8px gap), above the header/search chrome, per product request. The toast
+ * (z-index 10000) therefore renders over the header/toolbar (both z-index 99)
+ * for the few seconds it is visible — intentional, since it is the top-most,
+ * in-the-line-of-sight surface.
+ *
+ * Scoped to [data-position^='top'] on purpose. Mantine renders ALL SIX position
+ * containers simultaneously (`position` only routes toasts into one via the
+ * store); the root `style` prop would be applied to every one of them by
+ * getStyles("root"). A blanket `top` would land on the bottom-* containers too
+ * (which carry `bottom:16px`) → position:fixed + both edges + height:auto makes
+ * them stretch the full viewport height, and the container root has neither
+ * pointer-events:none nor a background, so those transparent z-10000 overlays
+ * would swallow clicks across the whole page. Restricting to top-* leaves the
+ * bottom containers at height:0.
+ *
+ * Specificity: `.mantine-Notifications-root[data-position^='top']` is (0,2,0)
+ * (class + attribute) and beats Mantine's own top rule
+ * `.m_b37d9ac7:where([data-position='top-center']){top:16px}` which is (0,1,0)
+ * (the :where() contributes 0), regardless of stylesheet order.
+ */
+.mantine-Notifications-root[data-position^='top'] {
+  top: 8px;
+}
+
+[data-mantine-color-scheme='light'] .mantine-Notification-root {
+  /* ~10% type color over white: clearly off-white, text contrast preserved */
+  background-color: color-mix(in srgb, var(--notification-color) 10%, var(--mantine-color-white));
+  /* Border must clear WCAG 3:1 non-text contrast on white. The repo rejects
+     gray-4 for this (a11y-overrides.css); gray-6 base (~3.32:1) darkened by the
+     type color stays >= 3:1. */
+  border: 1px solid color-mix(in srgb, var(--notification-color) 45%, var(--mantine-color-gray-6));
+  box-shadow: var(--mantine-shadow-xl);
+}
+
+[data-mantine-color-scheme='dark'] .mantine-Notification-root {
+  /* Dark page (dark-7/8) vs toast (dark-6) already separate a little; border +
+     shadow carry the type cue here (a 7% dark tint was near-invisible). */
+  background-color: color-mix(in srgb, var(--notification-color) 14%, var(--mantine-color-dark-6));
+  border: 1px solid color-mix(in srgb, var(--notification-color) 45%, var(--mantine-color-dark-3));
+  box-shadow: var(--mantine-shadow-xl);
+}
+
+/* Mantine's message-with-title color is gray-6 (#868e96, already only ~3.32:1
+   on white — below AA 4.5:1); the new tint pushes it lower. Bump to gray-7 to
+   keep multi-line colored toasts readable, consistent with the repo's existing
+   WCAG tuning (theme.ts already bumps this same gray-6 up elsewhere). */
+[data-mantine-color-scheme='light'] .mantine-Notification-description[data-with-title] {
+  color: var(--mantine-color-gray-7);
+}

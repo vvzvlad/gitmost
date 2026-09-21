@@ -13,7 +13,12 @@ import {
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { modals } from "@mantine/modals";
-import { IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import {
+  IconPackageImport,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+} from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import useUserRole from "@/hooks/use-user-role.tsx";
 import {
@@ -22,7 +27,10 @@ import {
   useUpdateAiRoleMutation,
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
 import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
+import { LucideGlyph } from "@/components/ui/lucide/lucide-glyph.tsx";
+import { parseIconRef } from "@/lib/icon-ref.ts";
 import AiAgentRoleForm from "./ai-agent-role-form.tsx";
+import AiAgentRolesCatalogModal from "./ai-agent-roles-catalog-modal.tsx";
 
 /**
  * Admin section: list / add / edit / delete reusable agent roles. A role
@@ -39,6 +47,9 @@ export default function AiAgentRoles() {
   const deleteMutation = useDeleteAiRoleMutation();
 
   const [opened, { open, close }] = useDisclosure(false);
+  // Separate disclosure for the catalog (import/update) modal.
+  const [catalogOpened, { open: openCatalog, close: closeCatalog }] =
+    useDisclosure(false);
   // The role being edited; undefined => the modal is in "create" mode.
   const [editing, setEditing] = useState<IAiRole | undefined>(undefined);
 
@@ -86,14 +97,24 @@ export default function AiAgentRoles() {
           />
           <Text fw={600}>{t("Agent roles")}</Text>
         </Group>
-        <Button
-          leftSection={<IconPlus size={16} />}
-          variant="default"
-          size="xs"
-          onClick={openCreate}
-        >
-          {t("Add role")}
-        </Button>
+        <Group gap="xs" wrap="nowrap">
+          <Button
+            leftSection={<IconPackageImport size={16} />}
+            variant="default"
+            size="xs"
+            onClick={openCatalog}
+          >
+            {t("Import from catalog")}
+          </Button>
+          <Button
+            leftSection={<IconPlus size={16} />}
+            variant="default"
+            size="xs"
+            onClick={openCreate}
+          >
+            {t("Add role")}
+          </Button>
+        </Group>
       </Group>
       <Text size="xs" c="dimmed" mt={4}>
         {t(
@@ -102,9 +123,19 @@ export default function AiAgentRoles() {
       </Text>
 
       {!isLoading && (!roles || roles.length === 0) && (
-        <Text size="sm" c="dimmed" mt="sm">
-          {t("No roles configured")}
-        </Text>
+        <Group gap="sm" mt="sm" align="center">
+          <Text size="sm" c="dimmed">
+            {t("No roles configured")}
+          </Text>
+          <Button
+            leftSection={<IconPackageImport size={16} />}
+            variant="light"
+            size="xs"
+            onClick={openCatalog}
+          >
+            {t("Browse the catalog")}
+          </Button>
+        </Group>
       )}
 
       <Stack gap="xs" mt="sm">
@@ -112,10 +143,14 @@ export default function AiAgentRoles() {
           <Group key={role.id} justify="space-between" wrap="nowrap">
             <Stack gap={2} style={{ minWidth: 0 }}>
               <Group gap="xs">
-                <Text fw={500} truncate>
-                  {role.emoji ? `${role.emoji} ` : ""}
-                  {role.name}
-                </Text>
+                <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                  {parseIconRef(role.emoji)?.name && (
+                    <LucideGlyph name={parseIconRef(role.emoji)?.name} size={16} />
+                  )}
+                  <Text fw={500} truncate>
+                    {role.name}
+                  </Text>
+                </Group>
                 {role.modelConfig?.chatModel && (
                   <Badge size="xs" variant="light">
                     {role.modelConfig.chatModel}
@@ -170,6 +205,12 @@ export default function AiAgentRoles() {
         {/* Remount the form per target so its internal state re-hydrates. */}
         <AiAgentRoleForm key={editing?.id ?? "new"} role={editing} onClose={close} />
       </Modal>
+
+      <AiAgentRolesCatalogModal
+        opened={catalogOpened}
+        onClose={closeCatalog}
+        roles={roles ?? []}
+      />
     </Paper>
   );
 }

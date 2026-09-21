@@ -3,6 +3,7 @@ import {
   applyAddTreeNode,
   applyMoveTreeNode,
   applyDeleteTreeNode,
+  applyUpdateOne,
 } from "./tree-socket-reducers";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -81,17 +82,19 @@ describe("applyMoveTreeNode", () => {
     ]);
   });
 
-  it("does NOT create a partial child list when the destination is loaded-but-collapsed (children unloaded) — keeps it lazy-loadable (#159)", () => {
-    // `dstCollapsed` is in the tree but its children were never lazy-loaded
-    // (children === undefined). The OLD behavior inserted `src` as the ONLY
-    // child ([src]), which defeated the lazy-load gate and HID the parent's
-    // other real children. Now the move leaves children unloaded (so expanding
-    // fetches the FULL set, including src) and just flags hasChildren.
+  it("does NOT create a partial child list when the destination is loaded-but-collapsed (children unloaded) — keeps it lazy-loadable (#159 #525)", () => {
+    // `dstCollapsed` is in the tree but its children were never lazy-loaded. The
+    // CANONICAL unloaded form here is `hasChildren: true` + `children: []` (from
+    // `pageToTreeNode` / `pruneCollapsedChildren`), NOT `children: undefined`.
+    // The pre-#525 predicate (`children === undefined`) missed this form and
+    // inserted `src` as the ONLY child ([src]), defeating the lazy-load gate and
+    // HIDING the parent's other real children. Now the move leaves children
+    // unloaded (so expanding fetches the FULL set, including src).
     const tree: SpaceTreeNode[] = [
       node("dstCollapsed", {
         position: "a0",
-        hasChildren: false,
-        children: undefined as unknown as SpaceTreeNode[],
+        hasChildren: true,
+        children: [],
       }),
       node("src", { position: "a9" }),
     ];
@@ -104,9 +107,10 @@ describe("applyMoveTreeNode", () => {
       pageData: {},
     });
     const dst = treeModel.find(next, "dstCollapsed");
-    // Children stay unloaded -> the lazy-load gate fetches the FULL set (incl.
-    // src) on expand, rather than showing a misleading partial [src] list.
-    expect(dst?.children).toBeUndefined();
+    // Children stay unloaded ([] not materialized to [src]) -> the lazy-load gate
+    // fetches the FULL set (incl. src) on expand. MUTATION: the pre-#525
+    // `=== undefined` predicate would insert [src] here and redden this.
+    expect(dst?.children).toEqual([]);
     expect(dst?.hasChildren).toBe(true);
     // src moved away from its old root slot (it lives under dstCollapsed
     // server-side and reappears when the parent is expanded/loaded).
@@ -322,5 +326,92 @@ describe("applyAddTreeNode", () => {
     expect(treeModel.find(next, "p")?.children?.map((n) => n.id)).toEqual([
       "child",
     ]);
+  });
+
+  it("carries temporaryExpiresAt onto the inserted node so the clock marker shows on create (no reload)", () => {
+    // A note created as temporary broadcasts addTreeNode with the death-timer
+    // deadline in its payload; the receiver's inserted node must keep it so
+    // space-tree-row renders the orange clock marker immediately.
+    const tree = roots();
+    const expiresAt = "2026-06-27T21:00:00.000Z";
+    const next = applyAddTreeNode(tree, {
+      parentId: null as unknown as string,
+      index: 0,
+      data: node("temp", { position: "a3", temporaryExpiresAt: expiresAt }),
+    });
+    expect(treeModel.find(next, "temp")?.temporaryExpiresAt).toBe(expiresAt);
+  });
+});
+
+describe("applyUpdateOne", () => {
+  // A loaded two-level tree so we can patch both a root and a nested node.
+  const buildTree = (): SpaceTreeNode[] => [
+    node("root", {
+      position: "a0",
+      name: "Root",
+      icon: "📁",
+      hasChildren: true,
+      children: [node("child", { position: "a1", parentPageId: "root", name: "Child", icon: "📄" })],
+    }),
+  ];
+
+  // Build the UpdateEvent envelope; only `id`/`payload` matter to the reducer.
+  const ev = (id: string, payload: Record<string, unknown>) =>
+    ({
+      operation: "updateOne",
+      spaceId: "space-1",
+      entity: ["pages"],
+      id,
+      payload,
+    }) as unknown as Parameters<typeof applyUpdateOne>[1];
+
+  it("applies a title-only update to the node's name (icon untouched)", () => {
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("child", { title: "Renamed" }));
+    const child = treeModel.find(next, "child");
+    expect(child?.name).toBe("Renamed");
+    // Icon is left as it was.
+    expect(child?.icon).toBe("📄");
+  });
+
+  it("applies an icon-only update to the node's icon (name untouched)", () => {
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("root", { icon: "🔥" }));
+    const root = treeModel.find(next, "root");
+    expect(root?.icon).toBe("🔥");
+    expect(root?.name).toBe("Root");
+  });
+
+  it("applies a combined title + icon update", () => {
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("child", { title: "Both", icon: "⭐" }));
+    const child = treeModel.find(next, "child");
+    expect(child?.name).toBe("Both");
+    expect(child?.icon).toBe("⭐");
+  });
+
+  it("returns prev UNCHANGED (same reference) when the id is not loaded", () => {
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("ghost", { title: "Nope" }));
+    expect(next).toBe(tree);
+  });
+
+  it("returns prev UNCHANGED (same reference) for a no-op payload (no title/icon)", () => {
+    // The node exists, but the payload carries neither title nor icon -> nothing
+    // to patch, so the reducer must hand back the same array reference.
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("child", {}));
+    expect(next).toBe(tree);
+  });
+
+  it("treats an explicit null icon/title as a value to apply (undefined check, not truthiness)", () => {
+    // The reducer guards on `!== undefined`, so a clearing null IS applied.
+    const tree = buildTree();
+    const next = applyUpdateOne(tree, ev("child", { title: "", icon: null }));
+    const child = treeModel.find(next, "child");
+    expect(child?.name).toBe("");
+    expect(child?.icon).toBeNull();
+    // And it did change something -> a fresh reference, not prev.
+    expect(next).not.toBe(tree);
   });
 });

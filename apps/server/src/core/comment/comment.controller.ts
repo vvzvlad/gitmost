@@ -14,6 +14,9 @@ import { CommentService } from './comment.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { UpdateCommentDto } from './dto/update-comment.dto';
 import { ResolveCommentDto } from './dto/resolve-comment.dto';
+import { ApplySuggestionDto } from './dto/apply-suggestion.dto';
+import { DismissSuggestionDto } from './dto/dismiss-suggestion.dto';
+import { ResyncSuggestionAnchorDto } from './dto/resync-suggestion-anchor.dto';
 import { PageIdDto, CommentIdDto } from './dto/comments.input';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
@@ -195,6 +198,128 @@ export class CommentController {
     });
 
     return updated;
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('apply-suggestion')
+  async applySuggestion(
+    @Body() dto: ApplySuggestionDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+    @AuthProvenance() provenance: AuthProvenanceData,
+  ) {
+    const comment = await this.commentRepo.findById(dto.commentId, {
+      includeCreator: true,
+      includeResolvedBy: true,
+    });
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    const page = await this.pageRepo.findById(comment.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    // Authorize BEFORE revealing any structural detail about the comment
+    // (metadata-disclosure hygiene). Applying a suggestion rewrites the page
+    // text, so require edit access (NOT just comment access). Running this
+    // first means a cross-workspace user with a guessed comment UUID gets a
+    // uniform 403 regardless of the comment's type or suggestion state — it can
+    // never distinguish those before the access check. The structural 400s
+    // (top-level / has-a-suggested-edit) are re-checked by the service below.
+    await this.pageAccessService.validateCanEdit(page, user);
+
+    // The service re-validates the comment's state, returns idempotent success
+    // for an already-applied suggestion, and lets ConflictException (409, with
+    // currentText in the payload) propagate untouched.
+    return this.commentService.applySuggestion(comment, user, provenance);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('resync-suggestion-anchor')
+  async resyncSuggestionAnchor(
+    @Body() dto: ResyncSuggestionAnchorDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    const comment = await this.commentRepo.findById(dto.commentId, {
+      includeCreator: true,
+      includeResolvedBy: true,
+    });
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    const page = await this.pageRepo.findById(comment.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    // Authorize BEFORE revealing structural detail (mirrors apply/dismiss).
+    // Re-anchoring does NOT change the page text — it only corrects the stored
+    // selection metadata — so the page-level gate is comment access. The service
+    // further restricts it to the suggestion's own author.
+    await this.pageAccessService.validateCanComment(page, user, workspace.id);
+
+    return this.commentService.resyncSuggestionAnchor(
+      comment,
+      dto.selection,
+      user,
+    );
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('dismiss-suggestion')
+  async dismissSuggestion(
+    @Body() dto: DismissSuggestionDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+    @AuthProvenance() provenance: AuthProvenanceData,
+  ) {
+    const comment = await this.commentRepo.findById(dto.commentId, {
+      includeCreator: true,
+      includeResolvedBy: true,
+    });
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    const page = await this.pageRepo.findById(comment.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    // Authorize BEFORE revealing any structural detail (metadata-disclosure
+    // hygiene, mirroring apply-suggestion). Dismissing a suggestion does NOT
+    // change the page text — it only removes/resolves the comment — so the
+    // page-level gate is comment access (canComment), NOT edit access. A viewer
+    // allowed to comment but not edit can still dismiss their own suggestion.
+    // The structural 400s (top-level / has-a-suggested-edit / not applied /
+    // not resolved) are re-checked by the service below.
+    await this.pageAccessService.validateCanComment(page, user, workspace.id);
+
+    // AUTHZ (#338): a childless dismiss IRREVERSIBLY hard-deletes the comment,
+    // so — beyond canComment — restrict it to the comment owner OR a space
+    // admin, exactly like POST /comments/delete. canComment alone is not enough:
+    // it would let any bystander commenter erase another user's suggestion for
+    // good. (apply-suggestion deliberately stays on canEdit: accepting an edit
+    // is the editor's semantics, not the suggestion author's.)
+    const isOwner = comment.creatorId === user.id;
+    if (!isOwner) {
+      const ability = await this.spaceAbility.createForUser(
+        user,
+        comment.spaceId,
+      );
+      // Space admin can dismiss any suggestion.
+      if (ability.cannot(SpaceCaslAction.Manage, SpaceCaslSubject.Settings)) {
+        throw new ForbiddenException(
+          'You can only dismiss your own suggestions',
+        );
+      }
+    }
+
+    return this.commentService.dismissSuggestion(comment, user, provenance);
   }
 
   @HttpCode(HttpStatus.OK)

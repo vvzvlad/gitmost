@@ -14,3 +14,9 @@ export type ToggleTemplateResponse = {
   pageId: string;
   isTemplate: boolean;
 };
+
+export type ToggleTemporaryResponse = {
+  pageId: string;
+  // null => the note was made permanent; ISO string => armed deadline.
+  temporaryExpiresAt: string | null;
+};

@@ -33,7 +33,7 @@
 | --- | --- |
 | **Удалён EE-код** | Вырезан весь код Enterprise-редакции на клиенте и сервере; это чистая community/AGPL-сборка без лицензионных проверок. |
 | **Резолв комментариев** | Переписан с нуля как community-функция (резолв / переоткрытие с вкладками «Открытые» / «Решённые»). EE-код не используется, доступно любому, кто может комментировать. |
-| **Встроенный MCP-сервер** | Community MCP-сервер (`@docmost/mcp`, 38 инструментов) отдаётся по HTTP на `/mcp` — без enterprise-лицензии. Заменяет удалённый лицензируемый EE MCP. |
+| **Встроенный MCP-сервер** | Community MCP-сервер (`@docmost/mcp`, 40 инструментов) отдаётся по HTTP на `/mcp` — без enterprise-лицензии. Заменяет удалённый лицензируемый EE MCP. |
 | **Чат с AI-агентом** | Встроенный чат с AI-агентом по содержимому вики, написанный с нуля как community-функция — без enterprise-лицензии. Агент читает и редактирует страницы от вашего имени (в рамках ваших прав), с полнотекстовым + векторным (RAG) поиском и опциональным доступом в интернет через внешние MCP-серверы. |
 | **Ребрендинг** | Логотип / название приложения изменены с *Docmost* на *Gitmost*. |
 | **Компактное дерево страниц** | Отступ дерева страниц по умолчанию уменьшен с 16px до 8px на уровень вложенности. |
@@ -44,7 +44,7 @@
 
 В Gitmost есть **наш собственный MCP-сервер** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
 который мы написали сами, — **встроенный прямо в приложение** и доступный на `/mcp`. Он даёт
-**38 agent-native инструментов**: точечное редактирование по блокам (patch / insert / delete
+**40 agent-native инструментов**: точечное редактирование по блокам (patch / insert / delete
 по id), find/replace с сохранением структуры, скриптовые трансформации `(doc) => doc` с
 предпросмотром диффа, структурное редактирование таблиц, история версий с диффом /
 восстановлением, комментарии, изображения и ссылки на шаринг — всё применяется через слой
@@ -60,7 +60,7 @@ real-time-коллаборации Docmost, поэтому запись нико
 | | **`/mcp` в Gitmost (наш docmost-mcp)** | Родной MCP у Docmost |
 | --- | :---: | :---: |
 | **Enterprise-лицензия** | Не нужна | Нужна |
-| **Инструменты** | 38, agent-native | Примитивные (Markdown, CRUD страниц, замена целиком) |
+| **Инструменты** | 40, agent-native | Примитивные (Markdown, CRUD страниц, замена целиком) |
 | **Правки по блокам / find-replace / скриптовые трансформации** | ✅ | — |
 | **Структурное редактирование таблиц, дифф / восстановление версий** | ✅ | — |
 | **Комментарии, изображения, ссылки на шаринг** | ✅ | — |
@@ -105,6 +105,7 @@ real-time-коллаборации Docmost, поэтому запись нико
 - ✅ **Шаблоны страниц** — пометить страницу шаблоном и вставлять её содержимое живой ссылкой в другие страницы; правки шаблона распространяются на все места вставки (whole-page-транслюзия поверх существующих synced-блоков).
 - ✅ **AI-ассистент на публичных шарах** — анонимный зритель расшаренной страницы может спросить AI-агента, который ищет строго по дереву этой шары (read-only, share-scoped поиск), за тумблером воркспейса.
 - ✅ **Сноски** — сноски академического вида: нумерованная ссылка-надстрочник прямо в тексте (читается на месте во всплывающем окне по наведению), а текст сноски живёт реальным редактируемым блоком внизу страницы; авто-нумерация, безопасна для совместного редактирования, переживает экспорт/импорт Markdown и доступна AI-агенту / MCP.
+- ✅ **Временные заметки** — создайте временную заметку, и она автоматически уедет в корзину по истечении настраиваемого срока жизни (по умолчанию 24 ч); создать такую можно в один клик с домашнего экрана, с обзора любого пространства или из сайдбара пространства.
 
 ### В процессе
 
@@ -124,6 +125,32 @@ real-time-коллаборации Docmost, поэтому запись нико
 Gitmost повторяет процесс установки upstream-Docmost. Инструкции по self-hosting и разработке
 смотрите в [документации](https://docmost.com/docs) Docmost; где это применимо, заменяйте образ
 `docmost/docmost` на `ghcr.io/vvzvlad/gitmost`.
+
+### Reverse proxy: SSE-стриминговые пути
+
+AI-агент стримит ответы через Server-Sent Events. Эти эндпоинты отдают долгоживущий
+`text/event-stream`-ответ и **обязаны обходить буферизацию И сжатие ответов** на каждом
+прокси перед приложением:
+
+- `POST /api/ai-chat/stream` — живой стрим хода агента
+- `GET /api/ai-chat/runs/<chatId>/stream` — подключение/резюм detached-рана
+  (`AI_CHAT_RESUMABLE_STREAM`)
+- `POST /api/shares/ai/stream` — анонимный ассистент публичных шар
+
+Буферизующий или сжимающий прокси не ломает эти пути с ошибкой — он тихо их портит:
+запрос висит в `pending`, токены не стримятся и вываливаются одним куском в конце хода,
+а перезагруженная вкладка падает в грубый поллинг. Диагностический признак в DevTools —
+заголовок `Content-Encoding: gzip/zstd` на ответе с `text/event-stream`.
+
+Сервер уже шлёт `X-Accel-Buffering: no` (nginx учитывает его по умолчанию), но
+compression-мидлвари управляются конфигом прокси, а не заголовками:
+
+- **nginx** — `proxy_buffering off; proxy_cache off; gzip off;` для этих location,
+  например `location ~ ^/api/(ai-chat/(stream$|runs/.+/stream$)|shares/ai/) { ... }`
+- **Traefik** — вести эти пути через отдельный роутер **без** `compress`-мидлвари
+  (compress буферизует SSE-кадры до закрытия ответа), например
+  ``PathPrefix(`/api/ai-chat/stream`) || PathPrefix(`/api/ai-chat/runs/`)``. Для надёжности:
+  `traefik.http.middlewares.<name>.compress.excludedcontenttypes: text/event-stream`.
 
 ## Миграция с Docmost
 
@@ -166,6 +193,137 @@ dump/restore, существующий каталог данных переис�
 > неизменным и бэкапьте вместе с базой данных.
 
 
+## Локальный сервер эмбеддингов
+
+Семантическому (RAG) поиску AI-агента нужна **модель эмбеддингов**. Вместо оплаты облачного
+провайдера (например, OpenAI `text-embedding-3-*`) за эмбеддинг каждой страницы можно запустить
+небольшую open-weights модель у себя через Hugging Face
+[Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) (TEI) — он
+отдаёт OpenAI-совместимый эндпоинт `/v1/embeddings`. Хороший дефолт — `intfloat/multilingual-e5-small`:
+многоязычная, 384-мерная, комфортно работает на CPU (~1–2 ГБ RAM, 1–2 vCPU). Пропишите её в
+**Настройки воркспейса → AI → Эмбеддинги**.
+
+### Вариант A — локально (та же Docker-сеть, что и Gitmost)
+
+Запустите TEI контейнером в той же сети, где уже работает Gitmost. Порт наружу не публикуется,
+поэтому эндпоинт остаётся внутренним и не требует авторизации.
+
+```yaml
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9   # pin version; use a cuda-* tag for GPU
+    container_name: embeddings
+    restart: unless-stopped
+    networks:
+      - gitmost_net          # same network Gitmost is on
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--auto-truncate"    # clamp over-long inputs instead of returning 413
+    volumes:
+      - tei-models:/data     # weights are downloaded once and cached here
+
+networks:
+  gitmost_net:
+    external: true           # the network Gitmost already uses
+
+volumes:
+  tei-models:
+```
+
+Настройки Gitmost (**Настройки воркспейса → AI → Эмбеддинги**):
+
+| Поле              | Значение                          |
+|-------------------|-----------------------------------|
+| Model             | `intfloat/multilingual-e5-small`  |
+| Base URL          | `http://embeddings:80/v1/`        |
+| Embedding API key | — (оставить пустым)               |
+
+> `embeddings` — имя контейнера, Gitmost резолвит его по DNS внутри Docker-сети.
+> Наружу порт не публикуется, эндпоинт доступен только контейнерам этой сети, поэтому
+> авторизация не нужна.
+
+### Вариант B — на отдельном хосте (наружу через Traefik + Let's Encrypt)
+
+Предполагается, что на хосте уже есть Traefik с ACME-резолвером (в примере ниже — `letsEncrypt`,
+entrypoint `websecure`, общая сеть `docker_main_net`). Замените домен / сеть / резолвер на свои.
+
+**DNS:** заведите A-запись `embeddings.example.com` → IP хоста с Traefik (тот же challenge / порт 80,
+что и у остальных сайтов).
+
+```yaml
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9   # pin version; cuda-* tag for GPU
+    container_name: embeddings
+    restart: unless-stopped
+    networks:
+      - docker_main_net      # the network Traefik is attached to
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--auto-truncate"
+      - "--api-key"
+      - "sk-emb-REPLACE_WITH_YOUR_KEY"
+    volumes:
+      - tei-models:/data
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.embeddings.rule: "Host(`embeddings.example.com`)"
+      traefik.http.routers.embeddings.entrypoints: "websecure"
+      traefik.http.routers.embeddings.tls: "true"
+      traefik.http.routers.embeddings.tls.certresolver: "letsEncrypt"
+      traefik.http.routers.embeddings.service: "embeddings"
+      traefik.http.services.embeddings.loadbalancer.server.port: "80"
+      # TEI enforces the Bearer key itself; Traefik only rate-limits to protect the CPU
+      traefik.http.routers.embeddings.middlewares: "embeddings-rl"
+      traefik.http.middlewares.embeddings-rl.ratelimit.average: "20"
+      traefik.http.middlewares.embeddings-rl.ratelimit.burst: "40"
+      traefik.http.middlewares.embeddings-rl.ratelimit.period: "1s"
+
+networks:
+  docker_main_net:
+    external: true
+
+volumes:
+  tei-models:
+```
+
+Настройки Gitmost (**Настройки воркспейса → AI → Эмбеддинги**):
+
+| Поле              | Значение                              |
+|-------------------|---------------------------------------|
+| Model             | `intfloat/multilingual-e5-small`      |
+| Base URL          | `https://embeddings.example.com/v1/`  |
+| Embedding API key | ваш `sk-emb-…`                        |
+
+Проверка снаружи:
+
+```bash
+curl -s https://embeddings.example.com/v1/embeddings \
+  -H "Authorization: Bearer sk-emb-REPLACE_WITH_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"intfloat/multilingual-e5-small","input":"query: hello"}' \
+  | python3 -c 'import sys,json;print("dims:",len(json.load(sys.stdin)["data"][0]["embedding"]))'
+# -> dims: 384
+```
+
+### Заметки про сервер эмбеддингов
+
+- **Размерность вектора — 384.** Если раньше этот Gitmost эмбеддился другой моделью
+  (например, `text-embedding-3-large` = 3072-dim), старые строки в pgvector не совпадут по
+  размерности — очистите существующие эмбеддинги / переиндексируйте перед переключением. Gitmost
+  сравнивает только вектора одной размерности, поэтому строки другой размерности не участвуют в
+  поиске, а не ломают его.
+- **Первый старт тянет веса** (сотни МБ) с `huggingface.co` в том `tei-models`; дальше — из тома.
+- **Пин версии.** Пиньте образ, а при желании и модель: добавьте в `command` `--revision <commit-sha>`
+  (sha берётся со страницы модели на Hugging Face).
+- **Без egress (air-gapped):** засейте том `tei-models` заранее и добавьте
+  `environment: [HF_HUB_OFFLINE=1]`.
+- **GPU:** возьмите cuda-тег того же релиза (например,
+  `ghcr.io/huggingface/text-embeddings-inference:cuda-1.9`) и запустите контейнер с `gpus: all`.
+
+
 ## Возможности
 
 - Совместная работа в реальном времени
@@ -173,14 +331,18 @@ dump/restore, существующий каталог данных переис�
 - Пространства (Spaces)
 - Управление правами доступа
 - Группы
-- Комментарии (с резолвом / переоткрытием)
+- Комментарии (с резолвом / переоткрытием и всплывающими подсказками с текстом комментария при наведении)
 - История страниц
 - Поиск
 - Вложения файлов
 - Встраивания (Airtable, Loom, Miro и другие)
 - Переводы (10+ языков)
 - Встроенный MCP-сервер (`/mcp`)
-- Чат с AI-агентом по вики (чтение + запись, RAG-поиск, внешние MCP / доступ в интернет)
+- Чат с AI-агентом по вики (чтение + запись, RAG-поиск, внешние MCP / доступ в интернет); окно чата закрепляется в боковом меню, а агент узнаёт о ваших правках страницы между ходами
+- Кнопки код-блока оверлеем, селектор языка появляется при наведении
+- Кнопка «Ударение» (U+0301) в bubble-меню
+- Позиция чтения (прокрутка) восстанавливается после перезагрузки
+- Slash-меню терпимо к неправильной раскладке (ЙЦУКЕН↔QWERTY)
 
 ### Скриншоты
 

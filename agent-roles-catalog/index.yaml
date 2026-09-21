@@ -1,0 +1,38 @@
+schemaVersion: 1
+bundles:
+  - id: editorial
+    name:
+      ru: Редакторский набор
+      en: Editorial suite
+    description:
+      ru: "Полный цикл редактуры статьи: структура, стиль, корректура, факты и нарратив."
+      en: "The full article-editing cycle: structure, style, copyediting, facts, and narrative."
+    languages:
+      - ru
+      - en
+    roles:
+      - slug: structural-editor
+        version: 4
+      - slug: line-editor
+        version: 4
+      - slug: fact-checker
+        version: 6
+      - slug: proofreader
+        version: 8
+      - slug: narrator
+        version: 2
+  - id: assistants
+    name:
+      ru: Ассистенты
+      en: Assistants
+    description:
+      ru: Ассистенты общего назначения
+      en: General-purpose assistants
+    languages:
+      - ru
+      - en
+    roles:
+      - slug: researcher
+        version: 11
+      - slug: call-summarizer
+        version: 3

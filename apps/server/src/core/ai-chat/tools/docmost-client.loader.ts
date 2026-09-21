@@ -1,195 +1,293 @@
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { DocmostClient, SharedToolSpec } from '@docmost/mcp';
+
+// Re-export SharedToolSpec so downstream server modules keep a single import
+// path (they import it from this loader). The shape is DERIVED from the package
+// entry, not re-declared here — see the import above (issue #446).
+export type { SharedToolSpec } from '@docmost/mcp';
 
 /**
- * Minimal structural type for the `DocmostClient` class we consume from the
- * ESM-only `@docmost/mcp` package. We only need the constructor + the read/write
- * methods used by the per-user tool adapter; the full client surface lives in
- * `packages/mcp/src/client.ts`. Signatures here mirror that file exactly.
+ * The exact set of `DocmostClient` methods the per-user in-app tool adapter
+ * consumes. This is the AUTHORITATIVE list of the client surface the server
+ * depends on; the adapter calls these methods POSITIONALLY, so this set is what
+ * the derived type below type-checks against the real class (issue #446).
  */
-export interface DocmostClientLike {
+type DocmostClientMethod =
   // --- read ---
-  search(
-    query: string,
-    spaceId?: string,
-    limit?: number,
-  ): Promise<{ items: unknown[]; success: boolean }>;
-  getPage(
-    pageId: string,
-  ): Promise<{ data: Record<string, unknown>; success: boolean }>;
-  getWorkspace(): Promise<{ data: Record<string, unknown>; success: boolean }>;
-  getSpaces(): Promise<unknown[]>;
-  listPages(
-    spaceId?: string,
-    limit?: number,
-    tree?: boolean,
-  ): Promise<unknown[]>;
-  listSidebarPages(spaceId: string, pageId?: string): Promise<unknown[]>;
-  getOutline(pageId: string): Promise<Record<string, unknown>>;
-  getPageJson(pageId: string): Promise<Record<string, unknown>>;
-  getNode(pageId: string, nodeId: string): Promise<Record<string, unknown>>;
-  getTable(pageId: string, tableRef: string): Promise<Record<string, unknown>>;
-  listComments(pageId: string): Promise<unknown[]>;
-  getComment(
-    commentId: string,
-  ): Promise<{ data: Record<string, unknown>; success: boolean }>;
-  checkNewComments(
-    spaceId: string,
-    since: string,
-    parentPageId?: string,
-  ): Promise<unknown>;
-  listShares(): Promise<unknown[]>;
-  listPageHistory(
-    pageId: string,
-    cursor?: string,
-  ): Promise<{ items: unknown[]; nextCursor: string | null }>;
-  getPageHistory(historyId: string): Promise<Record<string, unknown>>;
-  diffPageVersions(
-    pageId: string,
-    from?: string,
-    to?: string,
-  ): Promise<Record<string, unknown>>;
-  exportPageMarkdown(pageId: string): Promise<string>;
+  | 'search'
+  | 'getPage'
+  | 'getPageRaw'
+  | 'getWorkspace'
+  | 'getSpaces'
+  | 'listPages'
+  | 'getTree'
+  | 'getPageContext'
+  | 'listSidebarPages'
+  | 'getOutline'
+  | 'getPageJson'
+  | 'getNode'
+  | 'searchInPage'
+  | 'getTable'
+  | 'listComments'
+  | 'getComment'
+  | 'checkNewComments'
+  | 'listShares'
+  | 'listPageHistory'
+  | 'getPageHistory'
+  | 'diffPageVersions'
+  | 'exportPageMarkdown'
   // --- write (page) ---
-  createPage(
-    title: string,
-    content: string,
-    spaceId: string,
-    parentPageId?: string,
-  ): Promise<{ data: Record<string, unknown>; success: boolean }>;
-  // Markdown content update via the collab path (carries provenance via the
-  // collab-token provider). Optionally also updates the title.
-  updatePage(
-    pageId: string,
-    content: string,
-    title?: string,
-  ): Promise<Record<string, unknown>>;
-  // Title-only rename via REST.
-  renamePage(
-    pageId: string,
-    title: string,
-  ): Promise<Record<string, unknown>>;
-  // Move via REST. parentPageId null => move to space root.
-  movePage(
-    pageId: string,
-    parentPageId: string | null,
-    position?: string,
-  ): Promise<unknown>;
-  // SOFT delete only (POST /pages/delete with { pageId }). NEVER permanent.
-  deletePage(pageId: string): Promise<unknown>;
-  editPageText(
-    pageId: string,
-    edits: Array<{ find: string; replace: string; replaceAll?: boolean }>,
-  ): Promise<Record<string, unknown>>;
-  patchNode(
-    pageId: string,
-    nodeId: string,
-    node: unknown,
-  ): Promise<Record<string, unknown>>;
-  insertNode(
-    pageId: string,
-    node: unknown,
-    opts: {
-      position: 'before' | 'after' | 'append';
-      anchorNodeId?: string;
-      anchorText?: string;
-    },
-  ): Promise<Record<string, unknown>>;
-  deleteNode(
-    pageId: string,
-    nodeId: string,
-  ): Promise<Record<string, unknown>>;
-  updatePageJson(
-    pageId: string,
-    doc?: unknown,
-    title?: string,
-  ): Promise<Record<string, unknown>>;
-  tableInsertRow(
-    pageId: string,
-    tableRef: string,
-    cells: string[],
-    index?: number,
-  ): Promise<Record<string, unknown>>;
-  tableDeleteRow(
-    pageId: string,
-    tableRef: string,
-    index: number,
-  ): Promise<Record<string, unknown>>;
-  tableUpdateCell(
-    pageId: string,
-    tableRef: string,
-    row: number,
-    col: number,
-    text: string,
-  ): Promise<Record<string, unknown>>;
-  copyPageContent(
-    sourcePageId: string,
-    targetPageId: string,
-  ): Promise<Record<string, unknown>>;
-  importPageMarkdown(
-    pageId: string,
-    fullMarkdown: string,
-  ): Promise<Record<string, unknown>>;
-  sharePage(
-    pageId: string,
-    searchIndexing?: boolean,
-  ): Promise<Record<string, unknown>>;
-  unsharePage(pageId: string): Promise<Record<string, unknown>>;
-  restorePageVersion(historyId: string): Promise<Record<string, unknown>>;
-  // The opts type declares deleteComments? to match the real client signature,
-  // but the agent tool NEVER sets it (comment deletion stays unreachable).
-  transformPage(
-    pageId: string,
-    transformJs: string,
-    opts?: { dryRun?: boolean; deleteComments?: boolean },
-  ): Promise<Record<string, unknown>>;
+  | 'createPage'
+  | 'updatePage'
+  | 'renamePage'
+  | 'movePage'
+  | 'deletePage'
+  | 'editPageText'
+  | 'patchNode'
+  | 'insertNode'
+  | 'deleteNode'
+  | 'updatePageJson'
+  | 'tableInsertRow'
+  | 'tableDeleteRow'
+  | 'tableUpdateCell'
+  | 'copyPageContent'
+  | 'importPageMarkdown'
+  | 'sharePage'
+  | 'unsharePage'
+  | 'restorePageVersion'
+  | 'savePageVersion'
+  | 'transformPage'
+  | 'stashPage'
+  // --- write (image / footnote), in-app since #410 ---
+  | 'insertImage'
+  | 'replaceImage'
+  | 'insertFootnote'
+  // --- read (attachment bytes), in-app since #588 (viewImage vision tool) ---
+  | 'fetchAttachmentBytes'
+  // --- draw.io diagrams (#423 stage 1, #424 stage 2) ---
+  // DERIVED from the real DocmostClient (#446): drawioCreate/drawioUpdate carry
+  // the optional layout:"elk" 5th arg in the real signature, so the layout parity
+  // (#440) is inherited automatically — no hand-written mirror to keep in sync.
+  | 'drawioGet'
+  | 'drawioCreate'
+  | 'drawioUpdate'
+  // --- draw.io high-level semantic tools (#425 stage 3) ---
+  | 'drawioEditCells'
+  | 'drawioFromGraph'
+  | 'drawioFromMermaid'
   // --- write (comment) ---
-  createComment(
-    pageId: string,
-    content: string,
-    type?: 'page' | 'inline',
-    selection?: string,
-    parentCommentId?: string,
-  ): Promise<{ data: Record<string, unknown>; success: boolean }>;
-  resolveComment(
-    commentId: string,
-    resolved: boolean,
-  ): Promise<Record<string, unknown>>;
-}
+  | 'createComment'
+  | 'resolveComment';
+
+/**
+ * The client surface the per-user tool adapter consumes, DERIVED from the real
+ * `DocmostClient` type in `@docmost/mcp` (issue #446, restored #294 debt). This
+ * replaces the former hand-mirror of ~45 method signatures.
+ *
+ * `import type` (above) is fully ERASED at compile time, so nothing is actually
+ * imported from the ESM-only package at runtime — the server still loads the
+ * class through the dynamic `import()` trick in `loadDocmostMcp` below; this is
+ * purely a compile-time type. Deriving via `Pick` means a parameter reorder or a
+ * type change to any of these methods in `client.ts` now becomes a SERVER
+ * COMPILE ERROR at the positional call sites in ai-chat-tools.service.ts,
+ * instead of a silent runtime "wrong argument" failure inside an agent tool.
+ *
+ * This made the old name-only drift-guard test
+ * (packages/mcp/test/unit/client-host-contract.test.mjs) redundant — tsc now
+ * enforces both names AND signatures — so that test was removed.
+ */
+export type DocmostClientLike = Pick<DocmostClient, DocmostClientMethod>;
 
 export type DocmostClientConfig = {
   apiUrl: string;
   getToken: () => Promise<string>;
   // Provenance collab-token provider for content mutations (signed agent claim).
   getCollabToken?: () => Promise<string>;
+  // Optional blob-sandbox sink for the stash tool. `put` stores a blob in the
+  // host's in-RAM SandboxStore and returns the anonymous read URL + integrity.
+  // The optional `has`/`evict` probes let stashPage keep its mirror counts
+  // honest under the store's FIFO eviction (mirror of the package's sink type).
+  sandbox?: {
+    put: (
+      buf: Buffer,
+      mime: string,
+    ) => { uri: string; sha256: string; size: number };
+    has?: (uri: string) => boolean;
+    evict?: (uri: string) => void;
+  };
 };
 
 export interface DocmostClientCtor {
-  new (config: DocmostClientConfig): DocmostClientLike;
+  new (config: DocmostClientConfig): DocmostClient;
 }
 
 /**
- * Local hand-mirror of the `SharedToolSpec` shape exported from
- * `@docmost/mcp` (packages/mcp/src/tool-specs.ts). Same approach as
- * `DocmostClientLike`: we do not import the ESM package's types directly across
- * the CJS/ESM boundary. The registry itself has no runtime deps, but keeping the
- * type local avoids coupling the server build to the package's type surface.
- *
- * `buildShape` is intentionally zod-agnostic: it returns a plain ZodRawShape
- * built with whatever zod namespace the caller passes (the server passes its own
- * zod v4; the MCP package passes its zod v3). See the registry module comment.
+ * Local hand-mirror of the "new comments: N" signal helper (#417) exported from
+ * `@docmost/mcp` (packages/mcp/src/comment-signal.ts). Same cross-boundary
+ * approach as `SharedToolSpec`: we do not import the ESM package's types. The
+ * factory owns the transport-neutral watermark/debounce/injection-safe line
+ * builder; the in-app layer supplies its own `probe` (REST `listComments`) and
+ * result shaping.
  */
-export interface SharedToolSpec {
-  mcpName: string;
-  inAppKey: string;
-  description: string;
-  // Loose `z` on purpose: the registry is zod-agnostic so the server can pass
-  // its own zod (v4) and the MCP package its own (v3) into the same builder.
-  buildShape?: (z: any) => Record<string, unknown>;
+export interface CommentSignalProbeResultLike {
+  count: number;
+  title?: string | null;
 }
+
+export interface CommentSignalTrackerLike {
+  noteWorkingPage(pageId: string | undefined | null): void;
+  advanceWatermark(nowMs?: number): void;
+  isExcludedTool(toolName: string): boolean;
+  maybeSignal(toolName: string): Promise<string | null>;
+}
+
+export type CommentSignalTrackerFactory = (options: {
+  probe: (
+    pageId: string,
+    sinceMs: number,
+  ) => Promise<CommentSignalProbeResultLike>;
+  now?: () => number;
+  debounceMs?: number;
+}) => CommentSignalTrackerLike;
+
+/**
+ * Local mirror of `@docmost/mcp`'s `createListCommentsProbe` (#494): the SHARED
+ * count-source probe both hosts use, so the in-app probe body is no longer a
+ * hand-copy of the standalone MCP one. Given a client with the light comment feed
+ * + raw-page-title reads, it returns the tracker's `probe` (count comments newer
+ * than the watermark, label a hit with the page title). Loosely typed at this
+ * cross-package boundary, like the rest of this loader.
+ */
+export type CreateListCommentsProbeFn = (client: {
+  listComments(
+    pageId: string,
+    includeResolved: boolean,
+  ): Promise<{ items: Array<{ createdAt?: string | null }> }>;
+  getPageRaw(
+    pageId: string,
+  ): Promise<{ title?: string | null } | null | undefined>;
+}) => (
+  pageId: string,
+  sinceMs: number,
+) => Promise<CommentSignalProbeResultLike>;
+
+// Pure, no-network draw.io helpers (#424). These are plain functions on the
+// module (NOT DocmostClient methods) — the in-app AI-SDK service calls them
+// directly to wire drawioShapes / drawioGuide, mirroring the MCP server.
+export type SearchShapesFn = (
+  query: string,
+  opts?: { category?: string; limit?: number },
+) => Array<Record<string, unknown>>;
+export type GetGuideSectionFn = (section?: string) => {
+  section: string;
+  content: string;
+  sections: string[];
+};
 
 interface DocmostMcpModule {
   DocmostClient: DocmostClientCtor;
   SHARED_TOOL_SPECS: Record<string, SharedToolSpec>;
+  // Optional (#417): absent on a pre-#417 @docmost/mcp build and on the mocked
+  // loader in unit tests. The in-app layer treats an absent factory as "signal
+  // disabled" — a pure no-op that leaves tool results byte-identical.
+  createCommentSignalTracker?: CommentSignalTrackerFactory;
+  // Optional (#494): the shared count-source probe factory. Absent on a pre-#494
+  // build or a mocked loader; the in-app layer only builds a probe when the
+  // signal factory above is also present.
+  createListCommentsProbe?: CreateListCommentsProbeFn;
+  // Optional (#447): a deterministic hash of the tool-specs registry content,
+  // generated into build/ by the package's build. Absent on a pre-#447 build (or
+  // the mocked loader in unit tests) — the stale-check below is a NO-OP when it
+  // is missing, so an older build never wrongly fails startup.
+  REGISTRY_STAMP?: string;
+  // Pure, no-network draw.io helpers (#424) backing drawioShapes / drawioGuide.
+  // Those two specs are `inlineBothHosts` (they stay in SHARED_TOOL_SPECS for the
+  // shared contract but carry no execute — their catalog loader uses import.meta
+  // and can't be value-imported into the zod-agnostic tool-specs.ts), so the
+  // in-app service wires them INLINE off these helpers, mirroring the standalone
+  // MCP host. Exposed off the loaded module so the service and its test mocks can
+  // reach them.
+  searchShapes: SearchShapesFn;
+  getGuideSection: GetGuideSectionFn;
+}
+
+/**
+ * Recompute the REGISTRY_STAMP (#447) from the @docmost/mcp source tree, if it is
+ * present. Returns the stamp string, or `null` when the source is absent (a prod
+ * image ships only build/, no src/). MUST stay byte-for-byte identical to
+ * packages/mcp/scripts/gen-registry-stamp.mjs's `computeRegistryStamp` so the
+ * build-time and src-time hashes agree: same file set (every src/**\/*.ts except
+ * *.generated.ts), same POSIX-relative sort, same per-file normalization (CRLF ->
+ * LF, strip a single trailing newline) with the same path+content framing, same
+ * sha256. Hashing the WHOLE src tree (not just tool-specs.ts) is #486: an edit to
+ * client.ts / a client/* module / comment-signal / drawio-* without a rebuild
+ * must also be caught, otherwise build/ silently serves the old code.
+ *
+ * DEV vs PROD detection is by FILE EXISTENCE, not NODE_ENV: we resolve the
+ * package's own directory from `require.resolve('@docmost/mcp')` (which points at
+ * build/index.js) and look for ../src next to it. In a dev/test worktree that
+ * directory exists; in a prod image (build/ only, src/ stripped) it does not, so
+ * this returns null and the caller skips the check. Any error (ENOENT, a bad
+ * resolve) is swallowed to null — the stale-check must NEVER break startup.
+ *
+ * Exported for unit testing (docmost-client.loader.spec.ts): the export keyword
+ * is behaviourally a no-op — the module-internal caller `loadDocmostMcp` is
+ * unaffected. The test drives the null (no-src) path and asserts this
+ * enumerate+normalize+sha256 stays identical to the codegen's
+ * `computeRegistryStamp`.
+ */
+export function computeSrcRegistryStamp(packageEntry: string): string | null {
+  try {
+    // packageEntry is <pkg>/build/index.js; the source lives at <pkg>/src/.
+    const srcDir = join(dirname(dirname(packageEntry)), 'src');
+    if (!existsSync(srcDir)) return null; // prod: no src tree -> skip.
+    // Enumerate every src/**\/*.ts except the codegen's own *.generated.ts
+    // output (including it would be a fixed-point cycle). Sort by POSIX-relative
+    // path so ordering is platform-independent, then fold each file's relative
+    // path + normalized content into one hash — identical to the codegen.
+    const files = collectStampFiles(srcDir)
+      .map((abs) => ({
+        rel: relative(srcDir, abs).split(sep).join('/'),
+        abs,
+      }))
+      .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    const hash = createHash('sha256');
+    for (const { rel, abs } of files) {
+      const normalized = readFileSync(abs, 'utf8')
+        .replace(/\r\n/g, '\n')
+        .replace(/\n$/, '');
+      hash.update(rel, 'utf8');
+      hash.update('\0', 'utf8');
+      hash.update(normalized, 'utf8');
+      hash.update('\0', 'utf8');
+    }
+    return hash.digest('hex');
+  } catch {
+    // Never let a resolution/read hiccup break server startup — treat as "no
+    // src available" and skip the check (identical to the prod no-op path).
+    return null;
+  }
+}
+
+/**
+ * Recursively enumerate every `*.ts` under `dir`, EXCLUDING `*.generated.ts`.
+ * Mirror of the codegen's `collectStampFiles` (packages/mcp/scripts/
+ * gen-registry-stamp.mjs) — keep the two walk/filter rules identical.
+ */
+function collectStampFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      out.push(...collectStampFiles(full));
+    } else if (entry.endsWith('.ts') && !entry.endsWith('.generated.ts')) {
+      out.push(full);
+    }
+  }
+  return out;
 }
 
 // TS with module:commonjs downlevels a literal `import()` to `require()`, which
@@ -213,6 +311,10 @@ let modulePromise: Promise<DocmostMcpModule> | null = null;
 export async function loadDocmostMcp(): Promise<{
   DocmostClient: DocmostClientCtor;
   sharedToolSpecs: Record<string, SharedToolSpec>;
+  createCommentSignalTracker?: CommentSignalTrackerFactory;
+  createListCommentsProbe?: CreateListCommentsProbeFn;
+  searchShapes: SearchShapesFn;
+  getGuideSection: GetGuideSectionFn;
 }> {
   if (!modulePromise) {
     modulePromise = (async () => {
@@ -220,6 +322,23 @@ export async function loadDocmostMcp(): Promise<{
       const mod = (await esmImport(
         pathToFileURL(entry).href,
       )) as DocmostMcpModule;
+      // #447 stale-build guard (dev/test only). The server loads the COMPILED
+      // build/ of @docmost/mcp, but the parity/tier guard tests read src/. If a
+      // tool spec is edited in src without rebuilding the package, build/ and src/
+      // silently diverge and the running server serves the OLD tools. Here we
+      // recompute the stamp from src/tool-specs.ts and compare it to the stamp
+      // baked into build/. In PROD the src tree is absent (image ships build/
+      // only), so computeSrcRegistryStamp returns null and this is a pure no-op.
+      const srcStamp = computeSrcRegistryStamp(entry);
+      if (
+        srcStamp !== null &&
+        typeof mod.REGISTRY_STAMP === 'string' &&
+        srcStamp !== mod.REGISTRY_STAMP
+      ) {
+        throw new Error(
+          '@docmost/mcp build is stale (tool-specs changed since last build) — run: pnpm --filter @docmost/mcp build',
+        );
+      }
       return mod;
     })().catch((err) => {
       // Do not cache a rejected import — allow the next call to retry.
@@ -238,5 +357,14 @@ export async function loadDocmostMcp(): Promise<{
   return {
     DocmostClient: mod.DocmostClient,
     sharedToolSpecs: mod.SHARED_TOOL_SPECS,
+    // Optional: forwarded when present so the in-app layer can build the passive
+    // comment signal (#417); undefined on a stale build => signal disabled.
+    createCommentSignalTracker: mod.createCommentSignalTracker,
+    // Optional (#494): the shared count-source probe factory; undefined on a
+    // stale build => the in-app layer falls back to no signal.
+    createListCommentsProbe: mod.createListCommentsProbe,
+    // Pure no-network draw.io helpers (#424); not client methods.
+    searchShapes: mod.searchShapes,
+    getGuideSection: mod.getGuideSection,
   };
 }

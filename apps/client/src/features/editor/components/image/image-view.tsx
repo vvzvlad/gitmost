@@ -9,7 +9,9 @@ import { useTranslation } from "react-i18next";
 export default function ImageView(props: NodeViewProps) {
   const { t } = useTranslation();
   const { editor, node, selected } = props;
-  const { src, width, align, alt, aspectRatio, placeholder } = node.attrs;
+  const { src, width, align, alt, caption, aspectRatio, placeholder } =
+    node.attrs;
+  const captionText = (caption || "").trim();
   const alignClass = useMemo(() => {
     if (align === "left") return "alignLeft";
     if (align === "right") return "alignRight";
@@ -29,6 +31,7 @@ export default function ImageView(props: NodeViewProps) {
 
   return (
     <NodeViewWrapper data-drag-handle>
+      <figure style={{ margin: 0 }}>
       <div
         className={clsx(
           selected && "ProseMirror-selectednode",
@@ -66,6 +69,15 @@ export default function ImageView(props: NodeViewProps) {
           </Group>
         )}
       </div>
+      {captionText && (
+        <Text
+          component="figcaption"
+          className="image-caption"
+        >
+          {captionText}
+        </Text>
+      )}
+      </figure>
     </NodeViewWrapper>
   );
 }

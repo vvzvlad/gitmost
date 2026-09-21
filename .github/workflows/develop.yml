@@ -18,13 +18,82 @@ env:
   IMAGE: ghcr.io/vvzvlad/gitmost
 
 jobs:
-  # Run the reusable test suite first so a failing test blocks the image build.
+  # Run the reusable test suite. Together with the e2e jobs below it gates the
+  # publish job (the image push), not the build itself — build runs in parallel.
   test:
     uses: ./.github/workflows/test.yml
 
+  # Runs in parallel with the test/e2e jobs and only warms the buildx cache
+  # (GHA cache, scope develop-amd64). No push happens here — the publish job
+  # below is the only one that pushes the image.
   build:
-    needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve version
+        id: version
+        run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+
+      - name: Build develop image (warm cache, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/develop/agent-roles-catalog
+          push: false
+          cache-from: type=gha,scope=develop-amd64
+          cache-to: type=gha,scope=develop-amd64,mode=max,ignore-error=true
+
+  # The gate: rebuilds from the cache the build job just wrote (near-instant on
+  # a cache hit; worst case — cache eviction — a full rebuild, which matches the
+  # old sequential timing) and pushes :develop only when unit tests AND both
+  # e2e suites AND the build are green.
+  publish:
+    needs: [test, e2e-server, e2e-mcp, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Image boot-smoke (issue #476): every other job tests code from the working
+    # tree, but the :develop IMAGE that watchtower pulls was never actually
+    # started anywhere (incident classes #353/#452/#361-boot: startup-migrator
+    # crash-loop, runtime module missing from the image, wrong static-asset
+    # headers). The services below back a smoke boot of the exact image right
+    # before it is pushed; a smoke failure blocks the push.
+    services:
+      postgres:
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
+        env:
+          POSTGRES_DB: docmost
+          POSTGRES_USER: docmost
+          POSTGRES_PASSWORD: docmost
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docmost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +114,37 @@ jobs:
         id: version
         run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
+      # Load the image into the local docker daemon so it can be booted (the
+      # push step below exports straight to the registry and leaves nothing
+      # runnable locally). CONVENTION: build-args here must stay TEXTUALLY
+      # IDENTICAL to the push step's build-args — same cache scope + same args
+      # means the layers are reused and the image we smoke IS the image we push.
+      - name: Build image for smoke (load, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/develop/agent-roles-catalog
+          load: true
+          push: false
+          tags: gitmost:smoke
+          cache-from: type=gha,scope=develop-amd64
+
+      # Boot-smoke the exact image against the job services (see the comment on
+      # `services:` above): health (startup migrator), auth/setup, client dist
+      # served, immutable + brotli asset headers. Fails the job (and therefore
+      # the push) on any miss.
+      - name: Smoke the built image
+        run: bash scripts/ci/image-smoke.sh gitmost:smoke
+
+      # The smoke script leaves the container running on failure precisely so
+      # the boot error (migration mismatch, stack trace) is diagnosable here.
+      - name: Dump smoke container log on failure
+        if: failure()
+        run: docker logs gitmost-smoke 2>&1 | tail -200 || true
+
       - name: Build and push develop image
         uses: docker/build-push-action@v6
         with:
@@ -52,18 +152,18 @@ jobs:
           platforms: linux/amd64
           build-args: |
             APP_VERSION=${{ steps.version.outputs.value }}
+            AI_AGENT_ROLES_CATALOG_URL=https://raw.githubusercontent.com/vvzvlad/gitmost/develop/agent-roles-catalog
           push: true
           tags: ${{ env.IMAGE }}:develop
           cache-from: type=gha,scope=develop-amd64
-          cache-to: type=gha,scope=develop-amd64,mode=max,ignore-error=true
 
-  # e2e jobs run on every develop push but DO NOT gate the build/publish above:
-  # `build` stays `needs: test` only, so the :develop image still ships even if
-  # e2e fails. A failing e2e job turns the run red and triggers GitHub's email
-  # to the pusher — that red run + email is the intended notification, not a
-  # deploy block.
+  # e2e jobs gate the publish (image push), not the build: the :develop image
+  # is pushed only when unit tests AND both e2e suites pass (publish.needs
+  # lists them all).
   e2e-server:
     runs-on: ubuntu-latest
+    # Hard cap: the full-AppModule e2e leaks open handles and hung jest to the 6h max.
+    timeout-minutes: 15
     env:
       DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
       REDIS_URL: redis://localhost:6379
@@ -71,7 +171,9 @@ jobs:
       APP_URL: http://localhost:3000
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_DB: docmost
           POSTGRES_USER: docmost
@@ -84,7 +186,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-
@@ -111,17 +214,35 @@ jobs:
       - name: Build editor-ext
         run: pnpm --filter @docmost/editor-ext build
 
+      # @docmost/prosemirror-markdown is an ESM workspace package the server
+      # imports at runtime; its build/ is gitignored and test:e2e has no pretest
+      # hook, so build it before the e2e run (mirrors the test.yml job).
+      - name: Build prosemirror-markdown
+        run: pnpm --filter @docmost/prosemirror-markdown build
+
+      # docmost-client.loader.ts type-imports from @docmost/mcp (issue #446); its
+      # build/ is gitignored and `test:e2e` type-checks, so build it here or tsc
+      # fails with TS2307 (mirrors the e2e-mcp / mcp-server-parity jobs).
+      - name: Build mcp
+        run: pnpm --filter @docmost/mcp build
+
+      # apps/server imports @docmost/token-estimate at runtime (history-budget.ts,
+      # #490); its dist/ is gitignored and `test:e2e` type-checks + runs the code,
+      # so build it here or tsc fails with TS2307 Cannot find module
+      # '@docmost/token-estimate' (mirrors the editor-ext / mcp build steps above).
+      - name: Build token-estimate
+        run: pnpm --filter @docmost/token-estimate build
+
       - name: Run migrations
         run: pnpm --filter ./apps/server migration:latest
 
       - name: Run server e2e
         run: pnpm --filter ./apps/server test:e2e
 
-  # Same rationale as e2e-server: this job is intentionally NOT in
-  # `build.needs`. Deploy of the :develop image must not be blocked by e2e;
-  # a red run plus GitHub's email to the pusher is the notification mechanism.
+  # Gates the publish too — see the comment above e2e-server.
   e2e-mcp:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
       REDIS_URL: redis://localhost:6379
@@ -130,7 +251,9 @@ jobs:
       NODE_ENV: production
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_DB: docmost
           POSTGRES_USER: docmost
@@ -143,7 +266,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-

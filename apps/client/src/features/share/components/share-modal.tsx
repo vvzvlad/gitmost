@@ -20,14 +20,16 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { extractPageSlugId, getPageIcon } from "@/lib";
 import { useTranslation } from "react-i18next";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
 import CopyTextButton from "@/components/common/copy.tsx";
 import { getAppUrl } from "@/lib/config.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import classes from "@/features/share/components/share.module.css";
+import ShareAliasSection from "@/features/share/components/share-alias-section.tsx";
 import { useAtom } from "jotai";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { useSpaceQuery } from "@/features/space/queries/space-query.ts";
+import { usePageHistoryListQuery } from "@/features/page-history/queries/page-history-query.ts";
 
 interface ShareModalProps {
   readOnly: boolean;
@@ -36,7 +38,7 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
   const { t } = useTranslation();
   const { pageSlug } = useParams();
   const pageSlugId = extractPageSlugId(pageSlug);
-  const { data: page } = usePageQuery({ pageId: pageSlugId });
+  const { data: page } = usePageMetaQuery({ pageId: pageSlugId });
   const pageId = page?.id;
   const { data: share } = useShareForPageQuery(pageId);
   const { spaceSlug } = useParams();
@@ -52,6 +54,33 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
   const pageIsShared = share && share.level === 0;
   // if level is greater than zero, then it is a descendant page from a shared page
   const isDescendantShared = share && share.level > 0;
+
+  // #370 Stage B — "publish only the saved version". Mirrors the server XOR:
+  // approved and includeSubPages are mutually exclusive.
+  const isApproved = share?.publishedMode === "approved";
+  const includeSubPages = share?.includeSubPages ?? false;
+
+  // Resolve the latest MANUAL version (the one an approved share publishes) so
+  // the modal can caption it and warn when the live draft has drifted ahead.
+  // Only fetched for a directly-shared page whose modal is actually open.
+  const { data: historyData } = usePageHistoryListQuery(
+    pageIsShared ? pageId : "",
+  );
+  const latestManual = useMemo(() => {
+    const items = historyData?.pages?.flatMap((p) => p.items) ?? [];
+    // The list is newest-first; the first manual row is the published version.
+    return items.find((h) => h.kind === "manual") ?? null;
+  }, [historyData]);
+
+  // The live draft has edits newer than the published saved version when the
+  // page was updated after that manual snapshot was taken.
+  const hasUnpublishedEdits = useMemo(() => {
+    if (!isApproved || !latestManual || !page?.updatedAt) return false;
+    return (
+      new Date(page.updatedAt).getTime() >
+      new Date(latestManual.createdAt).getTime()
+    );
+  }, [isApproved, latestManual, page?.updatedAt]);
 
   const publicLink = `${getAppUrl()}/share/${share?.key}/p/${pageSlug}`;
 
@@ -72,7 +101,10 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
       if (value) {
         await createShareMutation.mutateAsync({
           pageId: pageId,
-          includeSubPages: true,
+          // Opt-in: enabling a share must NOT silently expose the whole
+          // sub-tree (#216). Sub-pages are shared only when the user turns on
+          // the dedicated "Include sub-pages" toggle.
+          includeSubPages: false,
           searchIndexing: false,
         });
       } else if (share && share.id) {
@@ -105,6 +137,23 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
       await updateShareMutation.mutateAsync({
         shareId: share.id,
         searchIndexing: value,
+      });
+    } catch {
+      // query invalidation will revert the UI
+    }
+  };
+
+  // #370 Stage B — toggle between publishing the live draft ('live') and the
+  // last saved version ('approved'). The server rejects approved + sub-pages, so
+  // the UI keeps the two toggles mutually exclusive (see the disabled props).
+  const handlePublishedModeChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const value = event.currentTarget.checked;
+    try {
+      await updateShareMutation.mutateAsync({
+        shareId: share.id,
+        publishedMode: value ? "approved" : "live",
       });
     } catch {
       // query invalidation will revert the UI
@@ -234,11 +283,42 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
 
                   <Switch
                     onChange={handleSubPagesChange}
-                    checked={share.includeSubPages}
+                    checked={includeSubPages}
                     size="xs"
-                    disabled={readOnly}
+                    // XOR with approved mode: a version-frozen share cannot also
+                    // publish a whole sub-tree.
+                    disabled={readOnly || isApproved}
                   />
                 </Group>
+                <Group justify="space-between" wrap="nowrap" gap="xl" mt="sm">
+                  <div>
+                    <Text size="sm">
+                      {t("Publish only the saved version")}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      {isApproved
+                        ? t(
+                            "Visitors see the last saved version, not live edits",
+                          )
+                        : t("Visitors see live edits as you make them")}
+                    </Text>
+                  </div>
+                  <Switch
+                    onChange={handlePublishedModeChange}
+                    checked={isApproved}
+                    size="xs"
+                    // XOR with sub-pages: hidden intent is enforced by disabling
+                    // this toggle whenever sub-pages are shared.
+                    disabled={readOnly || includeSubPages}
+                  />
+                </Group>
+                {isApproved && hasUnpublishedEdits && (
+                  <Text size="xs" c="orange" mt={4}>
+                    {t(
+                      "You have unsaved changes newer than the published version",
+                    )}
+                  </Text>
+                )}
                 <Group justify="space-between" wrap="nowrap" gap="xl" mt="sm">
                   <div>
                     <Text size="sm">{t("Search engine indexing")}</Text>
@@ -253,6 +333,9 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
                     disabled={readOnly}
                   />
                 </Group>
+                {pageId && (
+                  <ShareAliasSection pageId={pageId} readOnly={readOnly} />
+                )}
               </>
             )}
           </>

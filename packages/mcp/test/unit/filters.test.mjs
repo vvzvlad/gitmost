@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { filterComment, filterPage } from "../../build/lib/filters.js";
+import {
+  filterComment,
+  filterPage,
+  filterSearchResult,
+} from "../../build/lib/filters.js";
 
 test("filterComment includes resolvedAt/resolvedById as null when absent", () => {
   const result = filterComment({
@@ -170,4 +174,92 @@ test("filterPage includes both content and subpages together", () => {
 
   assert.equal(result.content, "body");
   assert.deepEqual(result.subpages, [{ id: "s1", title: "Sub" }]);
+});
+
+// --- filterSearchResult (#443 agent-lookup contract) -------------------------
+
+test("filterSearchResult maps the lookup shape to {pageId,title,path,snippet,score}", () => {
+  const result = filterSearchResult({
+    id: "0199aa-uuid",
+    slugId: "slug-secret",
+    title: "backup-srv.local",
+    parentPageId: "0199pp",
+    path: ["Infrastructure", "Datacenter A", "Servers"],
+    snippet: "…IP: 10.0.12.5. Debian 12…",
+    score: 0.92,
+  });
+
+  assert.deepEqual(result, {
+    pageId: "0199aa-uuid",
+    title: "backup-srv.local",
+    path: ["Infrastructure", "Datacenter A", "Servers"],
+    snippet: "…IP: 10.0.12.5. Debian 12…",
+    score: 0.92,
+  });
+});
+
+test("filterSearchResult NEVER exposes slugId (pageId is the only identifier)", () => {
+  const result = filterSearchResult({
+    id: "uuid-1",
+    slugId: "slug-1",
+    title: "t",
+    path: [],
+    snippet: "s",
+    score: 0.1,
+  });
+  assert.equal("slugId" in result, false);
+  assert.equal("id" in result, false);
+  assert.equal(result.pageId, "uuid-1");
+});
+
+test("filterSearchResult root page yields path: []", () => {
+  const result = filterSearchResult({
+    id: "uuid-root",
+    title: "Root",
+    path: [],
+    snippet: "s",
+    score: 0.5,
+  });
+  assert.deepEqual(result.path, []);
+});
+
+test("filterSearchResult degrades a legacy FTS hit (no lookup fields)", () => {
+  // Stock upstream stripped the opt-in DTO fields → legacy shape with
+  // highlight + rank and no path/snippet/score.
+  const result = filterSearchResult({
+    id: "uuid-legacy",
+    slugId: "slug-legacy",
+    title: "Legacy",
+    parentPageId: null,
+    rank: 0.37,
+    highlight: "…matched <b>text</b>…",
+    space: { id: "sp1", name: "Space" },
+  });
+
+  assert.equal(result.pageId, "uuid-legacy");
+  assert.equal(result.title, "Legacy");
+  // snippet falls back to highlight, score to rank, path to [].
+  assert.equal(result.snippet, "…matched <b>text</b>…");
+  assert.equal(result.score, 0.37);
+  assert.deepEqual(result.path, []);
+  assert.equal("slugId" in result, false);
+});
+
+test("filterSearchResult is null-safe on missing snippet/score/path", () => {
+  const result = filterSearchResult({ id: "u", title: "t" });
+  assert.equal(result.pageId, "u");
+  assert.equal(result.snippet, "");
+  assert.equal(result.score, 0);
+  assert.deepEqual(result.path, []);
+});
+
+test("filterSearchResult ignores a non-array path", () => {
+  const result = filterSearchResult({
+    id: "u",
+    title: "t",
+    path: "not-an-array",
+    snippet: "s",
+    score: 1,
+  });
+  assert.deepEqual(result.path, []);
 });

@@ -1,8 +1,9 @@
 import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
 import { ActionIcon, Anchor, Text } from "@mantine/core";
 import { IconFileDescription } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
 import { useSharePageQuery } from "@/features/share/queries/share-query.ts";
 import {
   buildPageUrl,
@@ -11,9 +12,19 @@ import {
 import { extractPageSlugId } from "@/lib";
 import classes from "./mention.module.css";
 
-export default function MentionView(props: NodeViewProps) {
-  const { node } = props;
-  const { label, entityType, entityId, slugId, anchorId } = node.attrs;
+interface MentionAttrs {
+  label?: string;
+  entityType?: string;
+  entityId?: string;
+  slugId?: string;
+  anchorId?: string;
+}
+
+// Presentational mention renderer (no NodeViewWrapper). Shared by the editor
+// NodeView (MentionView) and the static comment renderer (CommentContentView)
+// so mention click/nav/icon behavior stays identical outside of an editor.
+export function MentionContent({ attrs }: { attrs: MentionAttrs }) {
+  const { label, entityType, slugId, anchorId } = attrs;
   const isPageMention = entityType === "page";
   const { spaceSlug, pageSlug } = useParams();
   const { shareId } = useParams();
@@ -26,7 +37,7 @@ export default function MentionView(props: NodeViewProps) {
     data: page,
     isLoading,
     isError,
-  } = usePageQuery({ pageId: isPageMention && !isShareRoute ? slugId : null });
+  } = usePageMetaQuery({ pageId: isPageMention && !isShareRoute ? slugId : null });
 
   const { data: sharedPage } = useSharePageQuery({
     pageId: isPageMention && isShareRoute ? slugId : undefined,
@@ -56,7 +67,7 @@ export default function MentionView(props: NodeViewProps) {
   });
 
   return (
-    <NodeViewWrapper style={{ display: "inline" }} data-drag-handle>
+    <>
       {entityType === "user" && (
         <Text className={classes.userMention} component="span">
           @{label}
@@ -120,25 +131,25 @@ export default function MentionView(props: NodeViewProps) {
           underline="never"
           className={classes.pageMentionLink}
         >
-          {page?.icon ? (
-            <span style={{ marginRight: "4px" }}>{page.icon}</span>
-          ) : (
-            <ActionIcon
-              variant="transparent"
-              color="gray"
-              component="span"
-              size={18}
-              style={{ verticalAlign: "text-bottom" }}
-            >
-              <IconFileDescription size={18} />
-            </ActionIcon>
-          )}
+          <span
+            style={{ marginRight: "4px", verticalAlign: "text-bottom" }}
+          >
+            <PageIcon value={page?.icon} size={18} />
+          </span>
 
           <span className={classes.pageMentionText}>
             {page?.title || label}
           </span>
         </Anchor>
       )}
+    </>
+  );
+}
+
+export default function MentionView(props: NodeViewProps) {
+  return (
+    <NodeViewWrapper style={{ display: "inline" }} data-drag-handle>
+      <MentionContent attrs={props.node.attrs} />
     </NodeViewWrapper>
   );
 }

@@ -43,8 +43,15 @@ export function CalloutMenu({ editor }: EditorMenuProps) {
         return null;
       }
 
+      // #343 PART 1: skip the per-type isActive() probes unless a callout is
+      // active. The menu only shows for an active callout (shouldShow), so the
+      // null state while inactive is never rendered — behavior unchanged.
+      if (!ctx.editor.isActive("callout")) {
+        return null;
+      }
+
       return {
-        isCallout: ctx.editor.isActive("callout"),
+        isCallout: true,
         isInfo: ctx.editor.isActive("callout", { type: "info" }),
         isNote: ctx.editor.isActive("callout", { type: "note" }),
         isSuccess: ctx.editor.isActive("callout", { type: "success" }),

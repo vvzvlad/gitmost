@@ -112,10 +112,19 @@ export function LowlightPlugin({
   name,
   lowlight,
   defaultLanguage,
+  onHighlight,
 }: {
   name: string;
   lowlight: any;
   defaultLanguage: string | null | undefined;
+  // #683 `code_highlight` — optional timing hook, invoked with the wall-clock ms
+  // of a REAL decoration recompute (init + the guarded apply recompute below),
+  // NOT on every transaction (#343): a plain keystroke that maps the existing
+  // decoration set never calls getDecorations, so it never fires this. The host
+  // (apps/client) reports it as `operation_ms{op=code_highlight}`; when it passes
+  // no callback (telemetry off) there is zero timing cost. editor-ext cannot
+  // import the client telemetry module, so the report is injected as a callback.
+  onHighlight?: (durationMs: number) => void;
 }) {
   if (
     !['highlight', 'highlightAuto', 'listLanguages'].every((api) =>
@@ -127,17 +136,28 @@ export function LowlightPlugin({
     );
   }
 
+  // Run getDecorations, optionally timing the recompute for the host's telemetry.
+  // Timing (two performance.now calls) is skipped entirely when no callback is
+  // provided, so a telemetry-off build pays nothing here.
+  const runDecorations = (doc: ProsemirrorNode): DecorationSet => {
+    if (!onHighlight) {
+      return getDecorations({ doc, name, lowlight, defaultLanguage });
+    }
+    const start = performance.now();
+    const result = getDecorations({ doc, name, lowlight, defaultLanguage });
+    try {
+      onHighlight(performance.now() - start);
+    } catch {
+      // telemetry is best-effort; never let it break decoration rendering.
+    }
+    return result;
+  };
+
   const lowlightPlugin: Plugin<any> = new Plugin({
     key: new PluginKey('lowlight'),
 
     state: {
-      init: (_, { doc }) =>
-        getDecorations({
-          doc,
-          name,
-          lowlight,
-          defaultLanguage,
-        }),
+      init: (_, { doc }) => runDecorations(doc),
       apply: (transaction, decorationSet, oldState, newState) => {
         const oldNodeName = oldState.selection.$head.parent.type.name;
         const newNodeName = newState.selection.$head.parent.type.name;
@@ -179,14 +199,13 @@ export function LowlightPlugin({
               );
             }))
         ) {
-          return getDecorations({
-            doc: transaction.doc,
-            name,
-            lowlight,
-            defaultLanguage,
-          });
+          // Real recompute path (selection touches a code block, a code block was
+          // added/removed, or a full-doc-spanning step). Timed for #683.
+          return runDecorations(transaction.doc);
         }
 
+        // Cheap map of the existing decorations — NOT a recompute; a keystroke
+        // outside a code block lands here and is never timed (AC5).
         return decorationSet.map(transaction.mapping, transaction.doc);
       },
     },

@@ -1,6 +1,8 @@
 import { UnstyledButton, Text } from "@mantine/core";
 import { IAiRole } from "@/features/ai-chat/types/ai-chat.types.ts";
 import { roleCardColor } from "@/features/ai-chat/utils/role-card-color.ts";
+import { LucideGlyph } from "@/components/ui/lucide/lucide-glyph.tsx";
+import { parseIconRef } from "@/lib/icon-ref.ts";
 import classes from "@/features/ai-chat/components/role-cards.module.css";
 
 interface RoleCardsProps {
@@ -40,7 +42,11 @@ function RoleCard({
       title={description ?? name}
       onClick={onClick}
     >
-      {emoji && <span className={classes.emoji}>{emoji}</span>}
+      {parseIconRef(emoji)?.name && (
+        <span className={classes.emoji}>
+          <LucideGlyph name={parseIconRef(emoji)?.name} size={20} />
+        </span>
+      )}
       <Text size="sm" fw={600} lineClamp={2}>
         {name}
       </Text>

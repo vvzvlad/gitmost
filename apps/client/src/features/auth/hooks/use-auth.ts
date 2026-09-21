@@ -23,6 +23,8 @@ import { acceptInvitation } from "@/features/workspace/services/workspace-servic
 import APP_ROUTE, { getPostLoginRedirect } from "@/lib/app-route.ts";
 import { RESET } from "jotai/utils";
 import { useTranslation } from "react-i18next";
+import { clearPersistedTreeCaches } from "@/features/page/tree/atoms/tree-data-atom";
+import { purgePageYdocDatabases } from "@/features/editor/page-ydoc-eviction";
 
 export default function useAuth() {
   const { t } = useTranslation();
@@ -35,6 +37,27 @@ export default function useAuth() {
 
     try {
       await login(data);
+
+      // Cross-user hygiene (#563). Logging OUT purges the persisted caches, but a
+      // session can also end without a logout (expired cookie, closed tab), which
+      // leaves the previous user's tree + page-meta caches — and their `currentUser`
+      // — in localStorage. Sign-in is an SPA navigation, and `currentUser` is only
+      // replaced by `/me` a tick later, so without this the first commit after
+      // sign-in would render the NEW user under the OLD user's scope key and paint
+      // the old user's cached page titles/icons.
+      // RESET makes the scope `anon` (fail-closed: both caches refuse it) and the
+      // sweep drops the previous user's blobs from disk. `freezeWrites: false`:
+      // unlike logout, we stay in this session, so persistence must keep working.
+      setCurrentUser(RESET);
+      clearPersistedTreeCaches({ freezeWrites: false });
+      // #626 / #640 — also drop the previous user's local page-body ydoc
+      // databases, so a different user signing in on a shared browser never
+      // inherits them (namespacing already prevents cross-scope reads; this is
+      // the belt-and-suspenders physical delete). AWAITED (#640, part 4): the
+      // navigate() below is an SPA transition, and without the await the deletion
+      // would race the next user's first page open.
+      await purgePageYdocDatabases();
+
       setIsLoading(false);
 
       navigate(getPostLoginRedirect());
@@ -122,6 +145,18 @@ export default function useAuth() {
 
   const handleLogout = async () => {
     setCurrentUser(RESET);
+    // Purge the persisted sidebar tree caches (they contain page titles) so the
+    // cached page titles aren't left readable in localStorage on a shared
+    // machine. (Only the tree caches are swept; other localStorage entries
+    // remain.)
+    clearPersistedTreeCaches();
+    // #626 / #640 — purge the local page-body ydoc databases too: on a shared
+    // machine they would otherwise stay readable on disk after logout. AWAITED
+    // (#640, part 4) BEFORE the window.location.replace below, otherwise the
+    // synchronous redirect tears this tab down before `deleteDatabase` finishes.
+    // The purge broadcasts a "close your ydocs" message so other tabs release
+    // their IDB handles and the delete is not silently blocked.
+    await purgePageYdocDatabases();
     await logout();
     window.location.replace(`${APP_ROUTE.AUTH.LOGIN}?logout=1`);
   };

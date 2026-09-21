@@ -1,0 +1,62 @@
+diff --git a/dist/hocuspocus-server.cjs b/dist/hocuspocus-server.cjs
+index b24ff6d091c32f733089eeaa47b03f7b37cf5964..f003af304fc751b7edc1aee17f3651282d70666a 100644
+--- a/dist/hocuspocus-server.cjs
++++ b/dist/hocuspocus-server.cjs
+@@ -2426,6 +2426,26 @@ class Hocuspocus {
+      * Create a new document by the given request
+      */
+     async createDocument(documentName, request, socketId, connection, context) {
++        // PATCH(gitmost #401): close the connect-vs-unload race. When the last
++        // client disconnects, storeDocumentHooks' finally schedules an unload;
++        // unloadDocument runs its beforeUnloadDocument hooks asynchronously and
++        // records an in-flight promise in `unloadingDocuments`. A NEW connection
++        // arriving in that window would otherwise fall straight through to the
++        // `documents`/`loadingDocuments` checks and could either reuse a doc that
++        // is about to be destroyed, or start loading a fresh doc concurrently
++        // with the destroy. Awaiting the in-flight unload first makes the decision
++        // deterministic: once it settles, either the doc was fully unloaded
++        // (removed from `documents`, so we do a clean fresh load below) or the
++        // unload aborted because work/connections reappeared (the healthy doc is
++        // still in `documents`, so we reuse it). Either way the new connection can
++        // never hand-shake onto an orphaned, about-to-be-destroyed Document.
++        const existingUnloadingDoc = this.unloadingDocuments.get(documentName);
++        if (existingUnloadingDoc) {
++            // Wait for the in-flight unload to settle so we never hand-shake onto a dying
++            // Document. Swallow a rejected unload — fall through to a fresh load, matching
++            // pre-patch behavior (the doc is already removed from `documents` by then).
++            try { await existingUnloadingDoc; } catch { /* unload rejected — fresh load */ }
++        }
+         const existingLoadingDoc = this.loadingDocuments.get(documentName);
+         if (existingLoadingDoc) {
+             return existingLoadingDoc;
+diff --git a/dist/hocuspocus-server.esm.js b/dist/hocuspocus-server.esm.js
+index 1f4dd80244e899128e2c4e5dad8eab7cfc1cbad6..8c2411747bba27fb9486e1df81678a14e41e884e 100644
+--- a/dist/hocuspocus-server.esm.js
++++ b/dist/hocuspocus-server.esm.js
+@@ -2406,6 +2406,26 @@ class Hocuspocus {
+      * Create a new document by the given request
+      */
+     async createDocument(documentName, request, socketId, connection, context) {
++        // PATCH(gitmost #401): close the connect-vs-unload race. When the last
++        // client disconnects, storeDocumentHooks' finally schedules an unload;
++        // unloadDocument runs its beforeUnloadDocument hooks asynchronously and
++        // records an in-flight promise in `unloadingDocuments`. A NEW connection
++        // arriving in that window would otherwise fall straight through to the
++        // `documents`/`loadingDocuments` checks and could either reuse a doc that
++        // is about to be destroyed, or start loading a fresh doc concurrently
++        // with the destroy. Awaiting the in-flight unload first makes the decision
++        // deterministic: once it settles, either the doc was fully unloaded
++        // (removed from `documents`, so we do a clean fresh load below) or the
++        // unload aborted because work/connections reappeared (the healthy doc is
++        // still in `documents`, so we reuse it). Either way the new connection can
++        // never hand-shake onto an orphaned, about-to-be-destroyed Document.
++        const existingUnloadingDoc = this.unloadingDocuments.get(documentName);
++        if (existingUnloadingDoc) {
++            // Wait for the in-flight unload to settle so we never hand-shake onto a dying
++            // Document. Swallow a rejected unload — fall through to a fresh load, matching
++            // pre-patch behavior (the doc is already removed from `documents` by then).
++            try { await existingUnloadingDoc; } catch { /* unload rejected — fresh load */ }
++        }
+         const existingLoadingDoc = this.loadingDocuments.get(documentName);
+         if (existingLoadingDoc) {
+             return existingLoadingDoc;

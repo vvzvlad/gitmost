@@ -9,6 +9,7 @@ import { useTableHandleDrag } from "./hooks/use-table-handle-drag";
 import { useColumnRowMenuLifecycle } from "./hooks/use-column-row-menu-lifecycle";
 import { RowHandleMenu } from "./menus/row-handle-menu";
 import classes from "./handle.module.css";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 
 interface RowHandleProps {
   editor: Editor;
@@ -49,7 +50,9 @@ export const RowHandle = React.memo(function RowHandle({
   const { refs, floatingStyles, middlewareData } = useFloating({
     placement: "left",
     middleware: [offset(-4), hide()],
-    whileElementsMounted: autoUpdate,
+    // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+    whileElementsMounted: (reference, floating, update) =>
+      autoUpdate(reference, floating, update, EDITOR_AUTO_UPDATE_OPTIONS),
   });
   const isReferenceHidden = !!middlewareData.hide?.referenceHidden;
 

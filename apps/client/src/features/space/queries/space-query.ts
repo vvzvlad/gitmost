@@ -38,6 +38,11 @@ export function useGetSpacesQuery(
     queryKey: ["spaces", params],
     queryFn: () => getSpaces(params),
     placeholderData: keepPreviousData,
+    // KEEP refetchOnMount:true (against the global default false): the ["spaces"]
+    // key is invalidated only by same-tab mutations (no socket path), so a
+    // cross-actor change — an admin adding/removing THIS user from a space — has
+    // no local mutation or socket event and would leave the space list stale until
+    // a hard reload. The mount refetch is its only cross-actor freshness path.
     refetchOnMount: true,
   });
 }

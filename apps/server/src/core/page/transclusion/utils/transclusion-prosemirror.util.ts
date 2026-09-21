@@ -94,6 +94,41 @@ function collectNodes<T>(
 }
 
 /**
+ * #348 — cheap early-exit probe: does this doc contain ANY node the transclusion
+ * syncs care about (`transclusionSource` / `transclusionReference` / `pageEmbed`)?
+ * Lets the collab store skip the three sync SELECTs when neither the previous nor
+ * the new content has any such node — there is nothing to insert, and (since the
+ * DB mirrors the previously-persisted content) nothing to delete. Walks once and
+ * short-circuits on the first match; uses the same depth ceiling as the
+ * collectors. Deliberately does NOT skip `transclusionSource` subtrees: it only
+ * answers "any node present?", so descending everywhere is strictly conservative
+ * (it can never wrongly report "none").
+ */
+export function hasTransclusionFamilyNodes(doc: unknown): boolean {
+  const visit = (node: any, depth: number): boolean => {
+    if (!node || typeof node !== 'object') return false;
+    if (depth > MAX_PM_WALK_DEPTH) return false;
+
+    if (
+      node.type === TRANSCLUSION_TYPE ||
+      node.type === REFERENCE_TYPE ||
+      node.type === PAGE_EMBED_TYPE
+    ) {
+      return true;
+    }
+
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) {
+        if (visit(child, depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+
+  return visit(doc, 0);
+}
+
+/**
  * Walks a ProseMirror JSON document and returns one snapshot per top-level
  * `transclusion` node. Does not recurse into transclusions (schema disallows
  * nesting). Skips transclusion nodes without an id (transient state). When

@@ -1,0 +1,136 @@
+/* #566 — time-of-day timeline. Custom CSS segments on a fixed 24-hour track
+   (position = offset-in-day / 24h, width = duration / 24h), no chart library.
+   Night hours (0–6, 21–24) are shaded so the eye reads morning-vs-evening; a
+   sticky hour axis labels 00/06/12/18/24. Theme-aware via Mantine tokens. */
+
+.row {
+  display: grid;
+  grid-template-columns: 96px 1fr 64px;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.dayLabel {
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  white-space: nowrap;
+}
+
+.track {
+  --wt-night: rgba(90, 100, 130, 0.16);
+  --wt-day: rgba(90, 100, 130, 0.03);
+  position: relative;
+  height: 20px;
+  border-radius: 5px;
+  overflow: hidden;
+  /* base fill + night shading: 0–6h and 21–24h (87.5%) darker than daytime */
+  background:
+    linear-gradient(
+      90deg,
+      var(--wt-night) 0 25%,
+      var(--wt-day) 25% 87.5%,
+      var(--wt-night) 87.5% 100%
+    ),
+    light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+}
+
+/* Short (< EMPTY_RUN_COLLAPSE) edit-free days: dimmed, empty track. */
+.trackEmpty {
+  opacity: 0.5;
+}
+
+/* Quarter-day grid divisions (06/12/18) inside the track. */
+.hourTick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: light-dark(
+    var(--mantine-color-gray-3),
+    var(--mantine-color-dark-4)
+  );
+}
+
+.window {
+  position: absolute;
+  top: 3px;
+  height: 14px;
+  border-radius: 3px;
+  min-width: 3px;
+  cursor: default;
+}
+
+.windowWork {
+  background-color: var(--mantine-color-blue-5);
+}
+
+.windowAgent {
+  background-color: var(--mantine-color-grape-5);
+}
+
+/* The "now" boundary on today's row. */
+.nowLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: var(--mantine-color-red-6);
+}
+
+.daySum {
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.daySum[data-empty] {
+  color: var(--mantine-color-dimmed);
+  font-weight: 400;
+}
+
+/* Sticky hour axis header aligned to the track column. */
+.axisRow {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background-color: var(--mantine-color-body);
+  padding-bottom: 2px;
+}
+
+.axis {
+  position: relative;
+  height: 14px;
+}
+
+.axisTick {
+  position: absolute;
+  top: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--mantine-color-dimmed);
+}
+
+.axisTick[data-align="center"] {
+  transform: translateX(-50%);
+}
+
+.axisTick[data-align="end"] {
+  transform: translateX(-100%);
+}
+
+.gapRow {
+  padding: 6px 0 6px 108px;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  font-style: italic;
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  vertical-align: middle;
+}

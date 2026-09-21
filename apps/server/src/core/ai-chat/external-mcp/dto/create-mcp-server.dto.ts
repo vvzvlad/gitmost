@@ -37,10 +37,13 @@ export class CreateMcpServerDto {
   @IsObject()
   headers?: Record<string, string>;
 
+  // Omit/null => no restriction; `[]` is persisted verbatim and means deny-all
+  // (zero tools) since #476. @IsOptional() skips validation for null as well,
+  // so an explicit null is accepted.
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  toolAllowlist?: string[];
+  toolAllowlist?: string[] | null;
 
   // Admin-authored guidance ("how/when to use this server's tools") injected
   // into the agent system prompt next to the tool descriptions (#180). Trusted,

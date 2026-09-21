@@ -26,6 +26,7 @@ vi.mock("@/features/page/queries/page-query.ts", () => ({
     isFetching: false,
   }),
   usePageQuery: () => ({ data: undefined }),
+  usePageMetaQuery: () => ({ data: undefined }),
   fetchAllAncestorChildren: vi.fn(),
 }));
 
@@ -53,11 +54,15 @@ vi.mock("@/lib/config.ts", () => ({
   isCompactPageTreeEnabled: () => false,
 }));
 
-// Stub the visual children so we don't drag in the full DnD / Mantine stack.
-vi.mock("./doc-tree", () => ({
+// Stub the visual children so the full DnD / Mantine stack is never RENDERED
+// (it is still imported: `importOriginal()` really evaluates ./doc-tree and its
+// transitive imports — that is the price of reading the real layout constants
+// below, and it is cheap because nothing mounts).
+// The real module is spread in so the exported layout constants (row heights,
+// icon sizes) are never hand-mirrored here and cannot drift.
+vi.mock("./doc-tree", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./doc-tree")>()),
   DocTree: () => null,
-  ROW_HEIGHT_COMPACT: 28,
-  ROW_HEIGHT_STANDARD: 32,
 }));
 vi.mock("./space-tree-row", () => ({
   SpaceTreeRow: () => null,
@@ -71,7 +76,8 @@ vi.mock("@mantine/core", () => ({
 // getOnInit), which crashes under jsdom's localStorage shim here. Swap in a
 // plain in-memory atom with the same read value (OpenMap) and the same setter
 // shape (value OR functional updater) so the component's open-state logic runs
-// unchanged while staying inside the test store.
+// unchanged while staying inside the test store. `scopeKeyAtom` is also
+// re-exported (the real module exports it for the persisted tree-data atom).
 vi.mock("@/features/page/tree/atoms/open-tree-nodes-atom.ts", async () => {
   const { atom } = await import("jotai");
   type OpenMap = Record<string, boolean>;
@@ -86,11 +92,17 @@ vi.mock("@/features/page/tree/atoms/open-tree-nodes-atom.ts", async () => {
       set(base, next);
     },
   );
-  return { openTreeNodesAtom };
+  // Fixed scope key: the tree-data atom family resolves through this, so all
+  // tests read/write the same (empty at start of each test) storage key.
+  const scopeKeyAtom = atom(() => "test-workspace:test-user");
+  return { openTreeNodesAtom, scopeKeyAtom };
 });
 
 import SpaceTree, { SpaceTreeApi } from "./space-tree";
-import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
+import {
+  treeDataAtom,
+  flushPendingTreeDataWrites,
+} from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { openTreeNodesAtom } from "@/features/page/tree/atoms/open-tree-nodes-atom.ts";
 import { createStore, Provider } from "jotai";
 import type { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -134,6 +146,10 @@ function renderTree(store: ReturnType<typeof createStore>) {
 beforeEach(() => {
   getSpaceTreeMock.mockReset();
   notificationsShowMock.mockReset();
+  // The tree-data atom persists via a ~500 ms trailing debounce; flush it NOW
+  // (cancelling the timer) so a previous test's pending write can't land in
+  // storage mid-test after the clear below.
+  flushPendingTreeDataWrites();
   // jsdom's localStorage shim here lacks `clear`; guard it. Each test uses a
   // fresh jotai store anyway, so cross-test open-state never leaks.
   try {

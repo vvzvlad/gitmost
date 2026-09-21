@@ -1,0 +1,23 @@
+/* Hover highlight via a CSS rule (NOT imperative style.background writes): under
+ * virtualization a reused node may never receive `mouseleave`, so an imperative
+ * highlight can stick on a recycled cell. `:hover` always tracks the pointer. */
+.cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  width: 100%;
+  border-radius: 6px;
+  color: inherit;
+}
+
+.cell:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  align-items: center;
+}

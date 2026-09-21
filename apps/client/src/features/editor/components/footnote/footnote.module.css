@@ -81,27 +81,51 @@
 .definition {
   display: flex;
   align-items: flex-start;
-  /* Tight number→text spacing (~one space) so it reads like "1. text"
-     instead of leaving a wide gap after the period. */
-  gap: 0.4em;
+  /* Tight spacing between the content and the trailing ↩ back-link. */
+  gap: 0.3em;
   padding: 2px 0;
+  /* Footnotes read smaller than body text (16px). Matches .listHeading. */
+  font-size: var(--mantine-font-size-sm);
 }
 
-.definitionMarker {
-  order: -1; /* keep the "N." marker on the LEFT though it follows content in DOM (#146) */
-  flex: 0 0 auto;
-  min-width: 1.5em;
-  /* Right-align within the narrow column so the period sits next to the text
-     and multi-digit numbers (10, 11, …) stay aligned on their right edge. */
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--mantine-color-dimmed);
-  user-select: none;
-}
+/* The "N." number is decorative (from the --footnote-number CSS var on the
+   wrapper, never in the document model) and is rendered inline at the start of
+   the first content line via ::before. This keeps text and wrapped lines flush
+   to the left margin — no hanging indent — while the editable contentDOM stays
+   the FIRST DOM child (#146).
 
+   The rules below target `p:first-child`, NOT `> :first-child`: tiptap-react
+   wraps the NodeViewContent children in an extra block-level div
+   (`[data-node-view-content-react]`, style="white-space: inherit"), so
+   `.definitionContent`'s first child is that wrapper, not the paragraph. An
+   inline ::before on the block wrapper (whose child is a block <p>) drops onto
+   its own line above the text — the "+1 line" regression. `p:first-child`
+   reaches the real first paragraph so the number stays inline, and it works
+   whether or not the wrapper is present (definition content is `paragraph+`,
+   so there are no nested paragraphs to mis-match). */
 .definitionContent {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.definitionContent p:first-child::before {
+  content: var(--footnote-number, "?") ". ";
+  color: var(--mantine-color-dimmed);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* The inner editable paragraph inherits `.ProseMirror p { margin: 0.5em 0 }`.
+   Drop the outer margins so the definition sits tight to the heading above and
+   the ::before number aligns with the top of the row — same approach used for
+   callouts in core.css. Target the paragraphs directly (through the
+   tiptap-react content wrapper), same reasoning as the ::before rule above. */
+.definitionContent p:first-child {
+  margin-top: 0;
+}
+
+.definitionContent p:last-child {
+  margin-bottom: 0;
 }
 
 .backLink {

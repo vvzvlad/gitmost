@@ -24,6 +24,9 @@ export default function SharedPage() {
 
   const { data, isLoading, isError, error } = useSharePageQuery({
     pageId: extractPageSlugId(pageSlug),
+    // Forward the URL's shareId so the server binds content to this share
+    // (#218): a forged shareId 404s instead of rendering the page off its slug.
+    shareId,
   });
 
   const sharedTreeData = useAtomValue(sharedTreeDataAtom);

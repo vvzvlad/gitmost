@@ -23,6 +23,89 @@ describe("describeChatError", () => {
     });
   });
 
+  it("classifies an A_RUN_BEGIN_FAILED 503 as a temporary run-start failure, NOT provider-not-configured (#486)", () => {
+    // The FULL real body the server writes for a beginRun failure: a
+    // ServiceUnavailableException(object) whose response is serialized verbatim
+    // onto the raw socket, self-describing statusCode 503 + the run-start code.
+    const body =
+      '{"message":"Could not start the agent run. This is usually temporary — please try again.","code":"A_RUN_BEGIN_FAILED","statusCode":503}';
+    expect(describeChatError(body, t)).toEqual({
+      title: "Could not start the run",
+      detail:
+        "The agent run could not be started. This is usually temporary — please try again.",
+    });
+    // ORDER GUARD: even though the body ALSO carries statusCode 503 (which the
+    // generic branch matches), the A_RUN_BEGIN_FAILED branch runs first, so it is
+    // never mislabeled "AI provider not configured".
+    expect(describeChatError(body, t).title).not.toBe(
+      "AI provider not configured",
+    );
+  });
+
+  // #488 commit 5: the #487 concurrency-gate / supersede 409s. FULL real bodies:
+  // a ConflictException(object) whose response is serialized verbatim, carrying a
+  // `code` and statusCode 409. Each must classify to a human text, not raw JSON.
+  it("classifies A_RUN_ALREADY_ACTIVE (409) as already-answering, not raw JSON", () => {
+    const body =
+      '{"message":"A run is already active for this chat","code":"A_RUN_ALREADY_ACTIVE","statusCode":409}';
+    expect(describeChatError(body, t).title).toBe(
+      "The agent is already answering",
+    );
+    // Never leaks the raw code as the detail.
+    expect(describeChatError(body, t).detail).not.toContain("A_RUN_ALREADY_ACTIVE");
+  });
+
+  it("classifies SUPERSEDE_TARGET_MISMATCH (409) as run-changed", () => {
+    // Real server body shape: the current run id is `activeRunId` (NOT `runId`) —
+    // see ai-chat.controller.ts. describeChatError classifies off `code` only.
+    const body =
+      '{"message":"active run does not match the supersede target","code":"SUPERSEDE_TARGET_MISMATCH","activeRunId":"run-x","statusCode":409}';
+    expect(describeChatError(body, t).title).toBe(
+      "Couldn't interrupt — the run changed",
+    );
+  });
+
+  it("classifies SUPERSEDE_TIMEOUT (409) as couldn't-interrupt-in-time", () => {
+    const body =
+      '{"message":"the run did not settle within the supersede window","code":"SUPERSEDE_TIMEOUT","statusCode":409}';
+    expect(describeChatError(body, t).title).toBe("Couldn't interrupt in time");
+  });
+
+  it("classifies SUPERSEDE_INVALID (409) as couldn't-interrupt-that-run", () => {
+    const body =
+      '{"message":"supervise requires chatId","code":"SUPERSEDE_INVALID","statusCode":409}';
+    expect(describeChatError(body, t).title).toBe(
+      "Couldn't interrupt that run",
+    );
+  });
+
+  it("ORDER GUARD: A_RUN_ALREADY_ACTIVE wins over any generic status branch", () => {
+    // Even though the body could superficially look 4xx-ish, the code branch runs
+    // first, so it is never mislabeled by a generic status heading.
+    const body =
+      '{"message":"conflict","code":"A_RUN_ALREADY_ACTIVE","statusCode":409}';
+    const view = describeChatError(body, t);
+    expect(view.title).not.toBe("Something went wrong");
+    expect(view.title).not.toBe("AI provider not configured");
+  });
+
+  it("classifies a token-degeneration abort under the SAME 'Response stopped.' marker the live view shows (#495)", () => {
+    // The exact reason the server persists in metadata.error on a degeneration
+    // abort (ai-chat.service OUTPUT_DEGENERATION_ERROR). Live, this event shows
+    // the neutral "Response stopped." notice; the persisted banner MUST match it
+    // so live and refetch never disagree.
+    const view = describeChatError(
+      "Output degeneration detected (repeated token loop)",
+      t,
+    );
+    expect(view.title).toBe("Response stopped.");
+    expect(view.detail).toBe(
+      "The answer was stopped automatically because the model fell into a repeated output loop.",
+    );
+    // Regression guard: it must NOT fall through to the generic heading.
+    expect(view.title).not.toBe("Something went wrong");
+  });
+
   it("classifies a dropped connection (ECONNRESET) as a lost-connection error", () => {
     expect(
       describeChatError("Cannot connect to API: read ECONNRESET", t).title,

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { estimateTokens } from "@/features/ai-chat/utils/count-stream-tokens.ts";
 import { collapseBlankLines } from "@/features/ai-chat/utils/collapse-blank-lines.ts";
 import { renderChatMarkdown } from "@/features/ai-chat/utils/markdown.ts";
+import { StreamingPlainText } from "@/features/ai-chat/components/streaming-plain-text.tsx";
 import classes from "@/features/ai-chat/components/ai-chat.module.css";
 
 interface ReasoningBlockProps {
@@ -15,6 +16,10 @@ interface ReasoningBlockProps {
    *  step/turn has finished. When absent (or 0) the count is estimated from the
    *  text length so it ticks live as the reasoning streams in. */
   tokens?: number;
+  /** True while the reasoning part is still streaming (part `state ===
+   *  "streaming"`). False means finalized: persisted history or `state ===
+   *  "done"`. Gates the markdown parse — see the invariant on the memo below. */
+  streaming?: boolean;
 }
 
 /**
@@ -27,22 +32,30 @@ interface ReasoningBlockProps {
  * Providers that don't stream reasoning TEXT still render this block from the
  * authoritative count alone (header only, empty body) so the cost is visible.
  */
-function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
+function ReasoningBlock({ text, tokens, streaming = false }: ReasoningBlockProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   // Authoritative count wins; otherwise estimate live from the streamed text.
   const count = tokens && tokens > 0 ? tokens : estimateTokens(text);
   const trimmed = text.trim();
-  // Memoize the markdown render so toggling `open` (or a parent re-render caused
-  // by an unrelated streamed delta) does not re-parse the reasoning text; it
-  // recomputes only when the reasoning text itself changes (while it streams in).
-  // collapseBlankLines collapses the blank-line gaps the model emits between every
-  // list item / paragraph so the reasoning renders compactly (tight lists, joined
-  // paragraphs) — ONLY here, not in the normal answer.
+  // Markdown parse invariant (per throttled ~20Hz stream delta the text GROWS):
+  //  1. Collapsed -> never parse (#302): the html is only shown inside
+  //     <Collapse in={open}>, so parsing for a hidden body would be an O(n²)
+  //     marked + DOMPurify storm.
+  //  2. Expanded + STREAMING -> no parse and no innerHTML swaps either: the body
+  //     renders as chunked plain text (StreamingPlainText) with a memoized
+  //     stable prefix, so each delta updates only the tail chunk's text node.
+  //     This closes the O(n²) hole #302 left open ("expanded while streaming")
+  //     that froze the whole tab in Safari when watching the thinking stream.
+  //  3. Finalized + expanded -> exactly one parse: `trimmed` and `streaming`
+  //     are stable after the part is done, so this memo runs once per expand.
   const html = useMemo(
-    () => (trimmed ? renderChatMarkdown(collapseBlankLines(trimmed), {}) : ""),
-    [trimmed],
+    () =>
+      open && trimmed && !streaming
+        ? renderChatMarkdown(collapseBlankLines(trimmed), {})
+        : "",
+    [open, trimmed, streaming],
   );
 
   return (
@@ -79,12 +92,12 @@ function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
               dangerouslySetInnerHTML={{ __html: html }}
             />
           ) : (
-            <Text
-              className={classes.reasoningText}
-              style={{ whiteSpace: "pre-wrap" }}
-            >
-              {trimmed}
-            </Text>
+            // Still streaming (or markdown yielded nothing): chunked plain text.
+            // The wrapper carries the reasoningText styling; each chunk sets its
+            // own pre-wrap inline (NOT on this div — see ai-chat.module.css).
+            <div className={classes.reasoningText}>
+              <StreamingPlainText text={trimmed} />
+            </div>
           )}
         </Collapse>
       )}
@@ -92,7 +105,7 @@ function ReasoningBlock({ text, tokens }: ReasoningBlockProps) {
   );
 }
 
-// Memoized: re-renders only when `text`/`tokens` change (primitive props, default
-// shallow compare), so a parent re-render during streaming of OTHER content does
-// not re-run the markdown parse for an already-finalized reasoning block.
+// Memoized: re-renders only when `text`/`tokens`/`streaming` change (primitive
+// props, default shallow compare), so a parent re-render during streaming of OTHER
+// content does not re-run the markdown parse for an already-finalized reasoning block.
 export default memo(ReasoningBlock);

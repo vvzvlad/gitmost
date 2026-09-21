@@ -22,6 +22,7 @@ import {
   IAiRoleCreate,
   IAiRoleUpdate,
 } from "@/features/ai-chat/types/ai-chat.types.ts";
+import { RoleGlyphPicker } from "@/components/ui/lucide/role-glyph-picker.tsx";
 
 // Source of truth: the server `AI_DRIVERS` list in
 // apps/server/src/integrations/ai/ai.types.ts. The client cannot import that
@@ -161,11 +162,12 @@ export default function AiAgentRoleForm({
         {...form.getInputProps("name")}
       />
 
-      <TextInput
-        label={t("Emoji")}
+      <RoleGlyphPicker
+        label={t("Icon")}
         description={t("Optional. Shown as the chat badge.")}
-        maxLength={8}
-        {...form.getInputProps("emoji")}
+        value={form.values.emoji}
+        onChange={(json) => form.setFieldValue("emoji", json)}
+        onRemove={() => form.setFieldValue("emoji", "")}
       />
 
       <TextInput

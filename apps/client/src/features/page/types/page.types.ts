@@ -13,6 +13,10 @@ export interface IPage {
   workspaceId: string;
   isLocked: boolean;
   isTemplate?: boolean;
+  // Death-timer deadline. null/absent => permanent; ISO string => temporary note.
+  temporaryExpiresAt?: string | null;
+  // Create-only input flag: ask the server to arm the timer on a new page.
+  temporary?: boolean;
   lastUpdatedById: string;
   createdAt: Date;
   updatedAt: Date;

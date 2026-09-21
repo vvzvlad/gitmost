@@ -207,6 +207,11 @@ export default function HistoryModalMobile({ pageId, pageTitle }: Props) {
                 </ActionIcon>
               </Group>
             )}
+            {highlightChanges && diffCounts && diffCounts.failed && (
+              <Text size="sm" c="dimmed" style={{ whiteSpace: "nowrap" }}>
+                {t("Change highlighting is unavailable for this version")}
+              </Text>
+            )}
           </Group>
         </Paper>
       )}

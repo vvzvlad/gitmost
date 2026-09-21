@@ -4,7 +4,6 @@ import {
   UnstyledButton,
   Badge,
   Table,
-  ThemeIcon,
   Button,
 } from "@mantine/core";
 import { Link } from "react-router-dom";
@@ -12,7 +11,8 @@ import PageListSkeleton from "@/components/ui/page-list-skeleton.tsx";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { formattedDate } from "@/lib/time.ts";
 import { useRecentChangesQuery } from "@/features/page/queries/page-query.ts";
-import { IconFileDescription, IconFiles } from "@tabler/icons-react";
+import { IconFiles } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { EmptyState } from "@/components/ui/empty-state.tsx";
 import { getSpaceUrl } from "@/lib/config.ts";
 import { useTranslation } from "react-i18next";
@@ -50,11 +50,8 @@ export default function RecentChanges({ spaceId }: Props) {
                     to={buildPageUrl(page?.space.slug, page.slugId, page.title)}
                   >
                     <Group wrap="nowrap">
-                      {page.icon || (
-                        <ThemeIcon variant="transparent" color="gray" size={18}>
-                          <IconFileDescription size={18} />
-                        </ThemeIcon>
-                      )}
+                      <PageIcon value={page.icon} size={18} />
+
 
                       <Text fw={500} size="md" lineClamp={1}>
                         {page.title || t("Untitled")}

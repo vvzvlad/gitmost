@@ -6,8 +6,9 @@ import { deriveFootnoteId } from "./footnote-util";
  *
  * `deriveFootnoteId` lives ONLY in editor-ext now — it is used by
  * `resolveCollisions` (re-id of a duplicate definition) and `footnotePastePlugin`
- * (re-id of a pasted colliding definition). The MCP/marked import paths no longer
- * derive ids (duplicate definitions there are first-wins-dropped, #166), so there
+ * (re-id of a pasted colliding definition). The MCP / @docmost/prosemirror-markdown
+ * import paths no longer derive ids (duplicate definitions there are
+ * first-wins-dropped, #166), so there
  * is no cross-package copy and no parity test to keep in sync. This table pins the
  * deterministic scheme so a future change to it is a conscious one.
  */

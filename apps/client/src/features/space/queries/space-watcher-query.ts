@@ -16,7 +16,6 @@ export function useWatchedSpaceIds(): Set<string> {
   const { data } = useQuery({
     queryKey: [WATCHED_SPACE_IDS_KEY],
     queryFn: () => getWatchedSpaceIds(),
-    refetchOnMount: true,
   });
 
   const items = data?.items;

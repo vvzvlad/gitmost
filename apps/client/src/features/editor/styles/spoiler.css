@@ -1,0 +1,21 @@
+.spoiler {
+  background: rgba(0, 0, 0, 0.85);
+  border-radius: 0.25em;
+  cursor: pointer;
+  filter: blur(0.3em);
+  transition: filter 0.15s ease;
+  user-select: none;
+}
+
+.spoiler.is-revealed {
+  filter: none;
+  background: rgba(125, 125, 125, 0.18);
+  user-select: auto;
+}
+
+@media print {
+  .spoiler {
+    filter: none;
+    background: rgba(125, 125, 125, 0.18);
+  }
+}

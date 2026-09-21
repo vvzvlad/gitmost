@@ -74,6 +74,48 @@ describe("treeModel.isDescendant", () => {
   });
 });
 
+// #525: the single "is this branch unloaded?" predicate shared by the lazy-load
+// gate and the insert paths. Unloaded == server says hasChildren but none are
+// present locally (canonical form `children: []`, also `undefined`). A parent
+// without hasChildren is genuinely empty, not unloaded.
+describe("treeModel.isUnloadedBranch", () => {
+  type PH = TreeNode<{ name: string; hasChildren?: boolean }>;
+  it("true for hasChildren + empty array (canonical unloaded form)", () => {
+    const n: PH = { id: "p", name: "P", hasChildren: true, children: [] };
+    expect(treeModel.isUnloadedBranch(n)).toBe(true);
+  });
+  it("true for hasChildren + undefined children", () => {
+    const n: PH = { id: "p", name: "P", hasChildren: true };
+    expect(treeModel.isUnloadedBranch(n)).toBe(true);
+  });
+  it("false for hasChildren + already-loaded children", () => {
+    const n: PH = {
+      id: "p",
+      name: "P",
+      hasChildren: true,
+      children: [{ id: "c", name: "C" }],
+    };
+    expect(treeModel.isUnloadedBranch(n)).toBe(false);
+  });
+  it("false for a genuinely-empty parent (no hasChildren)", () => {
+    expect(
+      treeModel.isUnloadedBranch({
+        id: "p",
+        name: "P",
+        hasChildren: false,
+        children: [],
+      } as PH),
+    ).toBe(false);
+    expect(
+      treeModel.isUnloadedBranch({ id: "p", name: "P" } as PH),
+    ).toBe(false);
+  });
+  it("false for null/undefined", () => {
+    expect(treeModel.isUnloadedBranch(null)).toBe(false);
+    expect(treeModel.isUnloadedBranch(undefined)).toBe(false);
+  });
+});
+
 describe("treeModel.visible", () => {
   it("returns only root nodes when no openIds", () => {
     const v = treeModel.visible(fixture, new Set());
@@ -197,43 +239,64 @@ describe("treeModel.insertByPosition", () => {
     ]);
   });
 
-  // #159 #1: inserting/moving a node under a parent whose children are NOT
-  // loaded (`children === undefined`, e.g. a collapsed page) must NOT materialize
-  // a partial `[node]` list — that would defeat the lazy-load gate and hide the
-  // parent's other real children. The node is left to be lazy-loaded; only
-  // `hasChildren` is flagged so the chevron appears.
-  it("does NOT materialize a child under an UNLOADED parent (children undefined)", () => {
-    type PH = TreeNode<{
-      name: string;
-      position?: string;
-      hasChildren?: boolean;
-    }>;
+  type PH = TreeNode<{
+    name: string;
+    position?: string;
+    hasChildren?: boolean;
+  }>;
+
+  // #159 #1 / #525: inserting/moving a node under an UNLOADED parent must NOT
+  // materialize a partial `[node]` list — that would defeat the lazy-load gate and
+  // hide the parent's other real children. The canonical unloaded form here is
+  // `children: []` + `hasChildren: true` (from `pageToTreeNode` /
+  // `pruneCollapsedChildren`), which the pre-#525 `=== undefined` guard MISSED.
+  // The node is left to be lazy-loaded; the chevron stays enabled.
+  it("does NOT materialize a child under an UNLOADED parent (children: [], hasChildren: true)", () => {
     const tree: PH[] = [
-      { id: "p", name: "P", position: "a0", hasChildren: false }, // children: undefined
+      { id: "p", name: "P", position: "a0", hasChildren: true, children: [] },
     ];
     const node: PH = { id: "x", name: "X", position: "a1" };
     const t = treeModel.insertByPosition(tree, "p", node);
     const parent = treeModel.find(t, "p");
     // The node was NOT inserted (children stay unloaded -> lazy-load fetches the
-    // full set, including this node, on expand).
-    expect(parent?.children).toBeUndefined();
+    // full set, including this node, on expand). MUTATION: the pre-#525 predicate
+    // `children === undefined` does not fire for `[]`, so it would insert `[x]`
+    // here and reredden this expectation.
+    expect(parent?.children).toEqual([]);
     expect(treeModel.find(t, "x")).toBeNull();
-    // ...but the chevron is enabled so the user can expand to load it.
+    // ...and the chevron stays enabled so the user can expand to load it.
     expect((parent as PH).hasChildren).toBe(true);
   });
 
-  it("DOES insert under a LOADED-but-empty parent (children: [])", () => {
-    type PH = TreeNode<{
-      name: string;
-      position?: string;
-      hasChildren?: boolean;
-    }>;
+  it("does NOT materialize a child under an UNLOADED parent (children undefined, hasChildren: true)", () => {
+    const tree: PH[] = [
+      { id: "p", name: "P", position: "a0", hasChildren: true }, // children: undefined
+    ];
+    const node: PH = { id: "x", name: "X", position: "a1" };
+    const t = treeModel.insertByPosition(tree, "p", node);
+    const parent = treeModel.find(t, "p");
+    expect(parent?.children).toBeUndefined();
+    expect(treeModel.find(t, "x")).toBeNull();
+    expect((parent as PH).hasChildren).toBe(true);
+  });
+
+  it("DOES insert under a genuinely-empty parent (children: [], hasChildren: false)", () => {
     const tree: PH[] = [
       { id: "p", name: "P", position: "a0", hasChildren: false, children: [] },
     ];
     const node: PH = { id: "x", name: "X", position: "a1" };
     const t = treeModel.insertByPosition(tree, "p", node);
-    // A loaded (empty) child list is complete, so the node IS inserted.
+    // No server children (`hasChildren: false`), so materializing the first child
+    // is correct — nothing is hidden.
+    expect(treeModel.find(t, "p")?.children?.map((n) => n.id)).toEqual(["x"]);
+  });
+
+  it("DOES insert under a genuinely-empty parent (children undefined, hasChildren: false)", () => {
+    const tree: PH[] = [
+      { id: "p", name: "P", position: "a0", hasChildren: false }, // children: undefined
+    ];
+    const node: PH = { id: "x", name: "X", position: "a1" };
+    const t = treeModel.insertByPosition(tree, "p", node);
     expect(treeModel.find(t, "p")?.children?.map((n) => n.id)).toEqual(["x"]);
   });
 
@@ -390,6 +453,101 @@ describe("handleCreate optimistic-insert idempotency (find-then-skip)", () => {
     expect(
       treeModel.find(t, "a")?.children?.filter((n) => n.id === "a3"),
     ).toHaveLength(1);
+  });
+});
+
+// handleCreate race-guard temporaryExpiresAt patch: when the server's
+// addTreeNode broadcast wins the race and inserts the node BEFORE the optimistic
+// updater runs, the updater must not re-insert. Two sub-branches:
+//  (a) the node the broadcast inserted carries NO deadline (an older broadcast
+//      omitted it) while the authoritative create response DOES → patch the
+//      deadline on so the clock marker shows now, without a reload.
+//  (b) the existing node ALREADY has a deadline → do NOT overwrite it; return
+//      `prev` by reference (a no-op write).
+describe("handleCreate race-guard temporaryExpiresAt patch", () => {
+  type TN = TreeNode<{ name: string; temporaryExpiresAt?: string | null }>;
+
+  // Mirrors the setData updater in use-tree-mutation handleCreate.
+  const applyOptimisticInsert = (
+    tree: TN[],
+    parentId: string | null,
+    node: TN,
+    index: number,
+  ): TN[] => {
+    const existing = treeModel.find(tree, node.id) as TN | null;
+    if (existing) {
+      if (node.temporaryExpiresAt && !existing.temporaryExpiresAt) {
+        return treeModel.update(tree, node.id, {
+          temporaryExpiresAt: node.temporaryExpiresAt,
+        });
+      }
+      return tree;
+    }
+    return treeModel.insert(tree, parentId, node, index);
+  };
+
+  const fixtureTN: TN[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+
+  const deadline = "2026-07-01T00:00:00.000Z";
+
+  it("(a) patches temporaryExpiresAt when the existing node has none + the response carries a deadline", () => {
+    // Server broadcast won the race and inserted the node WITHOUT a deadline.
+    const afterServer = treeModel.insert(fixtureTN, null, {
+      id: "new",
+      name: "",
+    });
+    expect((treeModel.find(afterServer, "new") as TN).temporaryExpiresAt).toBe(
+      undefined,
+    );
+
+    // The authoritative create response carries the deadline.
+    const created: TN = { id: "new", name: "", temporaryExpiresAt: deadline };
+    const patched = applyOptimisticInsert(
+      afterServer,
+      null,
+      created,
+      afterServer.length,
+    );
+
+    // A new reference (the patch wrote) and the node now has the deadline...
+    expect(patched).not.toBe(afterServer);
+    expect((treeModel.find(patched, "new") as TN).temporaryExpiresAt).toBe(
+      deadline,
+    );
+    // ...and still exactly one node (no duplicate re-insert).
+    expect(patched.filter((n) => n.id === "new")).toHaveLength(1);
+  });
+
+  it("(b) does NOT overwrite an existing deadline; returns prev by reference", () => {
+    const existingDeadline = deadline;
+    // The node already exists WITH a deadline (the broadcast carried it).
+    const afterServer = treeModel.insert(fixtureTN, null, {
+      id: "new",
+      name: "",
+      temporaryExpiresAt: existingDeadline,
+    });
+
+    // The create response carries a DIFFERENT deadline; the guard must ignore it.
+    const created: TN = {
+      id: "new",
+      name: "",
+      temporaryExpiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    const after = applyOptimisticInsert(
+      afterServer,
+      null,
+      created,
+      afterServer.length,
+    );
+
+    // prev returned by reference (no write) and the original deadline is kept.
+    expect(after).toBe(afterServer);
+    expect((treeModel.find(after, "new") as TN).temporaryExpiresAt).toBe(
+      existingDeadline,
+    );
   });
 });
 

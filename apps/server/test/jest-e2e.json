@@ -1,14 +1,22 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": ["js", "json", "ts", "tsx"],
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "prosemirror-markdown/build/.+\\.js$": [
+      "babel-jest",
+      { "presets": [["@babel/preset-env", { "targets": { "node": "current" } }]] }
+    ],
+    "^.+\\.(t|j)sx?$": ["ts-jest", { "tsconfig": { "allowJs": true } }]
   },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(\\.pnpm/)?(nanoid|uuid|image-dimensions|marked|happy-dom|lib0|@sindresorhus[+/][a-z0-9-]+|escape-string-regexp|p-limit|yocto-queue|@docmost/prosemirror-markdown)(@|/))"
+  ],
   "moduleNameMapper": {
     "^@docmost/db/(.*)$": "<rootDir>/../src/database/$1",
     "^@docmost/transactional/(.*)$": "<rootDir>/../src/integrations/transactional/$1",
-    "^@docmost/ee/(.*)$": "<rootDir>/../src/ee/$1"
+    "^@docmost/ee/(.*)$": "<rootDir>/../src/ee/$1",
+    "^src/(.*)$": "<rootDir>/../src/$1"
   }
 }

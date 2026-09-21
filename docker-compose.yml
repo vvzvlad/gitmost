@@ -4,14 +4,34 @@ services:
     depends_on:
       - db
       - redis
+      - embeddings
     environment:
       APP_URL: 'http://localhost:3000'
       APP_SECRET: 'REPLACE_WITH_LONG_SECRET'
       DATABASE_URL: 'postgresql://docmost:STRONG_DB_PASSWORD@db:5432/docmost'
       REDIS_URL: 'redis://redis:6379'
+      # #530 semantic search: the GLOBAL embedding provider (the `embeddings` TEI
+      # sidecar below). A workspace that configures its own embedding provider
+      # overrides this. TEI is OpenAI-compatible, so the endpoint is /v1.
+      EMBEDDING_ENDPOINT: 'http://embeddings:80/v1'
+      EMBEDDING_MODEL: 'intfloat/multilingual-e5-small'
+      EMBEDDING_API_KEY: 'unused'
+      EMBEDDING_DIMENSIONS: '384'
+      # MUST match the --revision the sidecar pins (see EMBEDDING_REVISION in
+      # .env). A revision bump changes the embedding fingerprint (PR-2 swaps
+      # generations); keep the two in lockstep.
+      EMBEDDING_REVISION: '${EMBEDDING_REVISION}'
+      # e5 models require these input prefixes; empty them for a non-e5 model.
+      EMBEDDING_QUERY_PREFIX: 'query: '
+      EMBEDDING_DOC_PREFIX: 'passage: '
     ports:
       - "3000:3000"
     restart: unless-stopped
+    # The app already serves precompressed (brotli/gzip) static assets with
+    # long-lived cache headers and gzips dynamic API responses. For the best
+    # cold-load latency you can OPTIONALLY put a reverse proxy (caddy / nginx /
+    # traefik) in front with HTTP/2 (or HTTP/3) and brotli enabled — none is
+    # required for compression to work.
     volumes:
       - docmost:/app/data/storage
 
@@ -34,7 +54,33 @@ services:
     volumes:
       - redis_data:/data
 
+  # #530 Text Embeddings Inference (TEI) sidecar — the GLOBAL embedding provider
+  # for semantic search. OpenAI-compatible, reached only on the internal network
+  # (no published port). The model + revision are PINNED so the embedding
+  # fingerprint is stable; set EMBEDDING_REVISION to a real commit sha in .env.
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--revision"
+      - "${EMBEDDING_REVISION}"
+    restart: unless-stopped
+    # Cache downloaded model weights so a restart does not re-download them.
+    volumes:
+      - tei-models:/data
+    # GET /health is TEI's readiness probe. (Drop this block if your TEI image
+    # variant ships without curl.)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Model download on first boot can be slow; don't flap as unhealthy meanwhile.
+      start_period: 120s
+
 volumes:
   docmost:
   db_data:
   redis_data:
+  tei-models:

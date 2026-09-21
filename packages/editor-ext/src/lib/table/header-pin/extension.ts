@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 
 import { attach, detach, getController } from './controller';
+import { pinOffsetWatcher } from './offset';
 
 const tableHeaderPinKey = new PluginKey('tableHeaderPin');
 
@@ -54,6 +55,14 @@ export const TableHeaderPin = Extension.create({
           return {
             update(view, prevState) {
               if (!editorRoot) return;
+              // The pin anchors mount/unmount with the editor's mode (the fixed
+              // toolbar only exists while editing), and the watcher deliberately
+              // observes only the anchors themselves — so give it a chance to
+              // re-resolve them on every view update. sync() only SCHEDULES a
+              // frame (and is a no-op unless some table is pinned), so this adds
+              // no geometry read inside PM's updateStateInner, where the DOM has
+              // just been written and layout is dirty.
+              pinOffsetWatcher.sync();
               if (view.state.doc === prevState.doc) return;
               editorRoot
                 .querySelectorAll<HTMLElement>('.tableWrapper')

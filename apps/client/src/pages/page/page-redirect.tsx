@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from "react-router-dom";
 import { useEffect } from "react";
-import { usePageQuery } from "@/features/page/queries/page-query";
+import { usePageMetaQuery } from "@/features/page/queries/page-query";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { extractPageSlugId } from "@/lib";
 import { Error404 } from "@/components/ui/error-404.tsx";
@@ -11,7 +11,7 @@ export default function PageRedirect() {
     data: page,
     isLoading: pageIsLoading,
     isError,
-  } = usePageQuery({ pageId: extractPageSlugId(pageSlug) });
+  } = usePageMetaQuery({ pageId: extractPageSlugId(pageSlug) });
   const navigate = useNavigate();
 
   useEffect(() => {

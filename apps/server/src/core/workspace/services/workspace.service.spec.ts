@@ -26,6 +26,7 @@ describe('WorkspaceService', () => {
       {} as any, // aiQueue
       {} as any, // auditService
       {} as any, // userSessionRepo
+      {} as any, // mcpClients (#686)
     );
   });
 

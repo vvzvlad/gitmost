@@ -6,6 +6,23 @@ import getSuggestionItems from '@/features/editor/components/slash-menu/menu-ite
 
 export const slashMenuPluginKey = new PluginKey('slash-command');
 
+// getSuggestionItems fuzzy-matches EVERY command against the query (plus its
+// wrong-keyboard-layout remaps) and, while the slash menu is open, is invoked
+// TWICE per keystroke: once by the synchronous `allow` gate below and once by
+// the popup's `items` builder. A synchronous gating predicate can't be
+// debounced without breaking the suggestion decoration/activation, so instead we
+// memoize the LAST query's result: the two same-query calls in one keystroke
+// build the list only once, and the cache invalidates the moment the query
+// changes — so there is no stale-state risk (#343, PART 7).
+let lastQuery: string | null = null;
+let lastResult: ReturnType<typeof getSuggestionItems> | null = null;
+function suggestionItemsForQuery(query: string) {
+  if (query === lastQuery && lastResult) return lastResult;
+  lastQuery = query;
+  lastResult = getSuggestionItems({ query });
+  return lastResult;
+}
+
 // @ts-ignore
 const Command = Extension.create({
   name: 'slash-command',
@@ -38,7 +55,7 @@ const Command = Extension.create({
           // non-matching queries while keeping multi-word matches (e.g.
           // "/Heading 1") working.
           const query = state.doc.textBetween(range.from + 1, range.to);
-          const groups = getSuggestionItems({ query });
+          const groups = suggestionItemsForQuery(query);
           const hasMatches = Object.values(groups).some(
             (items) => items.length > 0,
           );
@@ -61,7 +78,9 @@ const Command = Extension.create({
 
 const SlashCommand = Command.configure({
   suggestion: {
-    items: getSuggestionItems,
+    // Share the per-query memo with `allow` so the pair of same-query calls in a
+    // single keystroke rebuilds the list once (#343, PART 7).
+    items: ({ query }: { query: string }) => suggestionItemsForQuery(query),
     render: renderItems,
   },
 });

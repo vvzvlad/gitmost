@@ -33,32 +33,77 @@
     }
   }
 
+  .image-caption {
+    text-align: center;
+    font-size: 0.875em;
+    color: var(--mantine-color-dimmed);
+    margin-top: 0.4em;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
   .uploading-text {
     font-size: var(--mantine-font-size-md);
     line-height: var(--mantine-line-height-md);
   }
 
+  /* The placeholder shimmer used to animate `background-position` on a
+     `background-size: 400% 400%` gradient. That is not a compositable
+     property: every frame re-rasterizes the whole gradient over the element's
+     box on the main thread, for as long as the media is loading (and, before
+     the error path existed, forever on a broken attachment).
+
+     `opacity` is compositable, so the animation now runs off the main thread.
+     The class sits on the replaced element itself (`<img>` / `<video>`), which
+     cannot carry a `::before`, so a translated pseudo-element is not an option
+     here — we keep the same gradient, frozen at its light-band position, and
+     breathe it instead. Same duration and easing. */
   .media-pulse {
     animation: media-pulse 1.2s ease-in-out infinite;
+    will-change: opacity;
 
     @mixin light {
       background: linear-gradient(-90deg, var(--mantine-color-gray-3) 0%, var(--mantine-color-gray-1) 50%, var(--mantine-color-gray-3) 100%);
       background-size: 400% 400%;
+      background-position: -60% 0%;
     }
 
     @mixin dark {
       background: linear-gradient(-90deg, var(--mantine-color-dark-6) 0%, var(--mantine-color-dark-5) 50%, var(--mantine-color-dark-6) 100%);
       background-size: 400% 400%;
+      background-position: -60% 0%;
     }
 
     @keyframes media-pulse {
       0% {
-        background-position: 0% 0%;
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.55;
       }
       100% {
-        background-position: -135% 0%;
+        opacity: 1;
       }
     }
   }
 }
 
+/* Inline image rows (#284): center the anonymous line boxes formed by
+   consecutive [data-image-align="inline"] node-view containers. A row has no
+   DOM wrapper of its own, so its horizontal placement is controlled by the
+   text-align of the nearest block ancestor (the editor root or a nested
+   block container: blockquote, callout, list item, table cell, details).
+   Centering is enabled only in containers that actually hold an inline
+   image (:has), and every other child of such a container gets its default
+   alignment back so ordinary text is unaffected. Explicit per-block
+   alignment from the toolbar is an inline style and still wins. Browsers
+   without :has() degrade to left-pinned rows. */
+.ProseMirror:has(> [data-image-align="inline"]),
+.ProseMirror :has(> [data-image-align="inline"]) {
+  text-align: center;
+}
+
+.ProseMirror:has(> [data-image-align="inline"]) > :not([data-image-align="inline"]),
+.ProseMirror :has(> [data-image-align="inline"]) > :not([data-image-align="inline"]) {
+  text-align: start;
+}

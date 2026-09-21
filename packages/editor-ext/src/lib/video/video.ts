@@ -2,7 +2,7 @@ import { ReactNodeViewRenderer } from "@tiptap/react";
 import { Range, Node, mergeAttributes } from "@tiptap/core";
 import { ResizableNodeView } from "../resizable-nodeview";
 import type { ResizableNodeViewDirection } from "../resizable-nodeview";
-import { normalizeFileUrl } from "../media-utils";
+import { attachMediaPlaceholder, normalizeFileUrl } from "../media-utils";
 
 export type VideoResizeOptions = {
   enabled: boolean;
@@ -346,14 +346,13 @@ export const TiptapVideo = Node.create<VideoOptions>({
         });
       }
 
-      // Show skeleton background while video loads from server
-      dom.style.pointerEvents = "none";
-      el.classList.add("media-pulse");
-
-      el.onloadedmetadata = () => {
-        dom.style.pointerEvents = "";
-        el.classList.remove("media-pulse");
-      };
+      // Show the skeleton placeholder while the video loads from the server.
+      // Settles on success AND on error — see attachMediaPlaceholder.
+      attachMediaPlaceholder(el, dom, {
+        nodeType: "video",
+        src: el.src,
+        readyEvent: "loadedmetadata",
+      });
 
       return nodeView;
     };

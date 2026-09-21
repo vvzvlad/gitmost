@@ -1,38 +1,84 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
+import { Center, Loader } from "@mantine/core";
+import { Error404 } from "@/components/ui/error-404.tsx";
+import Layout from "@/components/layouts/global/layout.tsx";
+import { useTrackOrigin } from "@/hooks/use-track-origin";
+
+// ShareLayout is route-split: its ShareShell chrome pulls in the table of
+// contents (and thus TipTap), so keeping it out of the eager graph removes the
+// editor engine from startup for authenticated users too.
+const ShareLayout = lazy(
+  () => import("@/features/share/components/share-layout.tsx"),
+);
+
+// Auth / entry pages stay eager: they are the first paint for an unauthenticated
+// visitor (e.g. /login) and are already small, so code-splitting them would only
+// add a cold-chunk round trip to the most common cold-start path.
 import SetupWorkspace from "@/pages/auth/setup-workspace.tsx";
 import LoginPage from "@/pages/auth/login";
-import Home from "@/pages/dashboard/home";
-import Page from "@/pages/page/page";
-import AccountSettings from "@/pages/settings/account/account-settings";
-import WorkspaceMembers from "@/pages/settings/workspace/workspace-members";
-import WorkspaceSettings from "@/pages/settings/workspace/workspace-settings";
-import AiSettings from "@/pages/settings/workspace/ai-settings";
-import Groups from "@/pages/settings/group/groups";
-import GroupInfo from "./pages/settings/group/group-info";
-import Spaces from "@/pages/settings/space/spaces.tsx";
-import { Error404 } from "@/components/ui/error-404.tsx";
-import AccountPreferences from "@/pages/settings/account/account-preferences.tsx";
-import SpaceHome from "@/pages/space/space-home.tsx";
-import PageRedirect from "@/pages/page/page-redirect.tsx";
-import Layout from "@/components/layouts/global/layout.tsx";
 import InviteSignup from "@/pages/auth/invite-signup.tsx";
 import ForgotPassword from "@/pages/auth/forgot-password.tsx";
 import PasswordReset from "./pages/auth/password-reset";
-import SharedPage from "@/pages/share/shared-page.tsx";
-import Shares from "@/pages/settings/shares/shares.tsx";
-import ShareLayout from "@/features/share/components/share-layout.tsx";
+import PageRedirect from "@/pages/page/page-redirect.tsx";
 import ShareRedirect from "@/pages/share/share-redirect.tsx";
-import { useTrackOrigin } from "@/hooks/use-track-origin";
-import SpacesPage from "@/pages/spaces/spaces.tsx";
-import SpaceTrash from "@/pages/space/space-trash.tsx";
-import FavoritesPage from "@/pages/favorites/favorites-page";
-import LabelPage from "@/pages/label/label-page";
+
+// Heavy / leaf pages are route-split with React.lazy so their code (most
+// importantly the whole TipTap editor + KaTeX + lowlight grammars + drawio that
+// the page editor and the readonly share editor pull in) is fetched only when
+// the matching route is actually visited. The <Suspense> boundaries live inside
+// each Layout (around its <Outlet/>), so the app shell stays mounted while a
+// route chunk loads.
+const Home = lazy(() => import("@/pages/dashboard/home"));
+const Page = lazy(() => import("@/pages/page/page"));
+const SpaceHome = lazy(() => import("@/pages/space/space-home.tsx"));
+const SpaceTrash = lazy(() => import("@/pages/space/space-trash.tsx"));
+const SpacesPage = lazy(() => import("@/pages/spaces/spaces.tsx"));
+const FavoritesPage = lazy(() => import("@/pages/favorites/favorites-page"));
+const LabelPage = lazy(() => import("@/pages/label/label-page"));
+const SharedPage = lazy(() => import("@/pages/share/shared-page.tsx"));
+
+const AccountSettings = lazy(
+  () => import("@/pages/settings/account/account-settings"),
+);
+const AccountPreferences = lazy(
+  () => import("@/pages/settings/account/account-preferences.tsx"),
+);
+// #506 — lazy leaf (own chunk): the API-keys management page is route-split so
+// its code (Mantine table/modals + the create/revoke flow) stays out of the
+// entry bundle (post-#342 bundle discipline).
+const AccountApiKeys = lazy(
+  () => import("@/pages/settings/account/account-api-keys.tsx"),
+);
+// #686 — lazy leaf (own chunk): the personal MCP-servers page carries the shared
+// Mantine form/modal + create/test flow, so it is route-split out of the entry
+// bundle like the API-keys page.
+const AccountMcpServers = lazy(
+  () => import("@/pages/settings/account/account-mcp-servers.tsx"),
+);
+const WorkspaceSettings = lazy(
+  () => import("@/pages/settings/workspace/workspace-settings"),
+);
+const AiSettings = lazy(() => import("@/pages/settings/workspace/ai-settings"));
+const WorkspaceMembers = lazy(
+  () => import("@/pages/settings/workspace/workspace-members"),
+);
+const Groups = lazy(() => import("@/pages/settings/group/groups"));
+const GroupInfo = lazy(() => import("./pages/settings/group/group-info"));
+const Spaces = lazy(() => import("@/pages/settings/space/spaces.tsx"));
+const Shares = lazy(() => import("@/pages/settings/shares/shares.tsx"));
 
 export default function App() {
   useTrackOrigin();
 
   return (
-    <>
+    <Suspense
+      fallback={
+        <Center h="100vh">
+          <Loader size="sm" />
+        </Center>
+      }
+    >
       <Routes>
         <Route index element={<Navigate to="/home" />} />
         <Route path={"/login"} element={<LoginPage />} />
@@ -71,6 +117,11 @@ export default function App() {
               path={"account/preferences"}
               element={<AccountPreferences />}
             />
+            <Route path={"account/api-keys"} element={<AccountApiKeys />} />
+            <Route
+              path={"account/mcp-servers"}
+              element={<AccountMcpServers />}
+            />
             <Route path={"workspace"} element={<WorkspaceSettings />} />
             <Route path={"ai"} element={<AiSettings />} />
             <Route path={"members"} element={<WorkspaceMembers />} />
@@ -83,6 +134,6 @@ export default function App() {
 
         <Route path="*" element={<Error404 />} />
       </Routes>
-    </>
+    </Suspense>
   );
 }

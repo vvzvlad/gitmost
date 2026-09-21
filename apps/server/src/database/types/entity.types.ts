@@ -3,6 +3,10 @@ import {
   AiAgentRoles,
   AiChats,
   AiChatMessages,
+  AiChatRuns,
+  AiChatRunSteps,
+  AiChatPageSnapshots,
+  AiChatPageBindings,
   Attachments,
   Comments,
   Groups,
@@ -30,6 +34,7 @@ import {
   AuthProviders,
   AuthAccounts,
   Shares,
+  ShareAliases,
   Favorites,
   FileTasks,
   UserMfa as _UserMFA,
@@ -54,10 +59,32 @@ export type UpdatableAiChat = Updateable<Omit<AiChats, 'id'>>;
 // full-text search. It is omitted from the public type so it never leaks
 // into HTTP responses or the chat history fed to the language model.
 export type AiChatMessage = Omit<Selectable<AiChatMessages>, 'tsv'>;
-export type InsertableAiChatMessage = Omit<
-  Insertable<AiChatMessages>,
-  'tsv'
+export type InsertableAiChatMessage = Omit<Insertable<AiChatMessages>, 'tsv'>;
+
+// AI Chat Run (#184 phase 1): the agent run as a first-class lifecycle object,
+// detached from the HTTP request / browser window.
+export type AiChatRun = Selectable<AiChatRuns>;
+export type InsertableAiChatRun = Insertable<AiChatRuns>;
+
+// AI Chat Run Step (#492): append-only per-step parts persistence. Each finished
+// agent step's UI parts are stored as their own row; the full turn's parts are
+// assembled from these (in stepIndex order) for a mid-run resume seed.
+export type AiChatRunStep = Selectable<AiChatRunSteps>;
+export type InsertableAiChatRunStep = Insertable<AiChatRunSteps>;
+
+// AI Chat Page Snapshot (#274): per-(chat,page) Markdown snapshot taken at the
+// end of the agent's previous turn, diffed against the current page next turn to
+// detect human edits made between turns.
+export type AiChatPageSnapshot = Selectable<AiChatPageSnapshots>;
+export type InsertableAiChatPageSnapshot = Insertable<AiChatPageSnapshots>;
+export type UpdatableAiChatPageSnapshot = Updateable<
+  Omit<AiChatPageSnapshots, 'id'>
 >;
+
+// AI Chat Page Binding (#665): the mutable per-(user,page) pointer to the chat
+// that opens on that page. Distinct from the immutable ai_chats.page_id provenance.
+export type AiChatPageBinding = Selectable<AiChatPageBindings>;
+export type InsertableAiChatPageBinding = Insertable<AiChatPageBindings>;
 
 // AI Provider Credentials
 // SECURITY (D9/§8.1): holds encrypted per-workspace provider API keys.
@@ -80,6 +107,24 @@ export type UpdatableAiMcpServer = Updateable<Omit<AiMcpServersTable, 'id'>>;
 // A role replaces the persona layer of the system prompt (instructions) and may
 // optionally override the chat model (`modelConfig`). Soft-deletable.
 export type AiAgentRole = Selectable<AiAgentRoles>;
+
+/**
+ * The validated shape of the `source` jsonb column on ai_agent_roles: the
+ * catalog origin of an imported role. `version` lets the admin UI offer an
+ * UPDATE when the catalog ships a newer revision of the same slug; null `source`
+ * (not this type) means a manually-created role with no catalog provenance.
+ *
+ * THE single contract for that column, shared by the repo read-path
+ * (`parseSource`, the only form validator) and the service, so the persisted
+ * shape can never be validated weakly in one layer and strongly in another.
+ * Defined here (a leaf db-types module both already import `AiAgentRole` from) to
+ * avoid an import cycle between the repo and the service.
+ */
+export interface RoleSource {
+  slug: string;
+  language: string;
+  version: number;
+}
 export type InsertableAiAgentRole = Insertable<AiAgentRoles>;
 export type UpdatableAiAgentRole = Updateable<Omit<AiAgentRoles, 'id'>>;
 
@@ -172,6 +217,11 @@ export type Share = Selectable<Shares>;
 export type InsertableShare = Insertable<Shares>;
 export type UpdatableShare = Updateable<Omit<Shares, 'id'>>;
 
+// Share alias (vanity /l/:alias pointer)
+export type ShareAlias = Selectable<ShareAliases>;
+export type InsertableShareAlias = Insertable<ShareAliases>;
+export type UpdatableShareAlias = Updateable<Omit<ShareAliases, 'id'>>;
+
 // Favorite
 export type Favorite = Selectable<Favorites>;
 export type InsertableFavorite = Insertable<Favorites>;
@@ -180,11 +230,14 @@ export type UpdatableFavorite = Updateable<Omit<Favorites, 'id'>>;
 // Page Transclusion
 export type PageTransclusion = Selectable<PageTransclusions>;
 export type InsertablePageTransclusion = Insertable<PageTransclusions>;
-export type UpdatablePageTransclusion = Updateable<Omit<PageTransclusions, 'id'>>;
+export type UpdatablePageTransclusion = Updateable<
+  Omit<PageTransclusions, 'id'>
+>;
 
 // Page Transclusion Reference
 export type PageTransclusionReference = Selectable<PageTransclusionReferences>;
-export type InsertablePageTransclusionReference = Insertable<PageTransclusionReferences>;
+export type InsertablePageTransclusionReference =
+  Insertable<PageTransclusionReferences>;
 export type UpdatablePageTransclusionReference = Updateable<
   Omit<PageTransclusionReferences, 'id'>
 >;
@@ -254,7 +307,9 @@ export type UpdatablePagePermission = Updateable<Omit<_PagePermissions, 'id'>>;
 // Page Verification
 export type PageVerification = Selectable<_PageVerifications>;
 export type InsertablePageVerification = Insertable<_PageVerifications>;
-export type UpdatablePageVerification = Updateable<Omit<_PageVerifications, 'id'>>;
+export type UpdatablePageVerification = Updateable<
+  Omit<_PageVerifications, 'id'>
+>;
 
 // Page Verifier
 export type PageVerifier = Selectable<_PageVerifiers>;

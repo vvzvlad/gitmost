@@ -29,7 +29,7 @@ test("re-applying a consumed edit is a no-op: reports not-found AND output is de
   assert.equal(first.failed.length, 0, "first apply has no failures");
   assert.deepEqual(
     first.results,
-    [{ find: "quick", replacements: 1 }],
+    [{ find: "quick", replacements: 1, matchedVia: "exact" }],
     "first apply replaced exactly once",
   );
   assert.equal(
@@ -57,7 +57,7 @@ test("re-applying a consumed edit is a no-op: reports not-found AND output is de
 test("idempotency holds for replaceAll too: second run is not-found and output is stable", () => {
   const d0 = doc(para(t("ab ab ab")));
   const first = applyTextEdits(d0, [{ find: "ab", replace: "X", replaceAll: true }]);
-  assert.deepEqual(first.results, [{ find: "ab", replacements: 3 }]);
+  assert.deepEqual(first.results, [{ find: "ab", replacements: 3, matchedVia: "exact" }]);
   assert.equal(findAll(first.doc, "text")[0].text, "X X X");
 
   const second = applyTextEdits(first.doc, [{ find: "ab", replace: "X", replaceAll: true }]);
@@ -94,7 +94,7 @@ test("replaceAll splices every block: callout paragraph (2 hits) + table cell (1
 
   assert.equal(r.failed.length, 0, "no failures");
   // Count across blocks: 2 in the callout paragraph + 1 in the table cell.
-  assert.deepEqual(r.results, [{ find: "alpha", replacements: 3 }]);
+  assert.deepEqual(r.results, [{ find: "alpha", replacements: 3, matchedVia: "exact" }]);
 
   // Callout paragraph: both occurrences replaced.
   const calloutPara = r.doc.content[0].content[0];
@@ -134,7 +134,7 @@ test("replaceAll across two blocks preserves surrounding text and ids in each bl
   const d0 = doc(callout, table);
 
   const r = applyTextEdits(d0, [{ find: "alpha", replace: "beta", replaceAll: true }]);
-  assert.deepEqual(r.results, [{ find: "alpha", replacements: 2 }]);
+  assert.deepEqual(r.results, [{ find: "alpha", replacements: 2, matchedVia: "exact" }]);
 
   const calloutPara = r.doc.content[0].content[0];
   assert.equal(calloutPara.attrs.id, "p-callout", "block id preserved");

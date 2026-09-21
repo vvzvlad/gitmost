@@ -33,6 +33,17 @@ export type JwtPayload = {
   aiChatId?: string | null;
 };
 
+// The AUTH-PRINCIPAL kind behind a collab token — distinct from `actor`
+// (provenance). Stamped into EVERY newly-minted collab token (#501): 'session'
+// for a normal user/session (incl. the internal AI agent, which is session-
+// backed), 'api_key' when the token was minted by an api-key principal (an
+// external MCP agent). The discriminator keys on the token's ORIGIN, so the
+// collab seam can re-check a revoked api key on connect and reject a claimless
+// token after the rollout grace window. NOT keyed on `actor:'agent'` — the
+// internal agent is 'agent' but session-backed, so it must stay on the no-check
+// path.
+export type CollabPrincipal = 'session' | 'api_key';
+
 export type JwtCollabPayload = {
   sub: string;
   workspaceId: string;
@@ -44,6 +55,13 @@ export type JwtCollabPayload = {
   // Nullable: an external MCP agent has no internal ai_chats row, so it carries
   // an 'agent' actor with a null aiChatId.
   aiChatId?: string | null;
+  // Auth-principal discriminator (#501). Present on every post-rollout token;
+  // its absence on a still-valid token past the grace window is treated as an
+  // error, not trust (fail-closed).
+  principal?: CollabPrincipal;
+  // Only when principal === 'api_key': the minting key's id, so the collab seam
+  // can row-check (and reject) a revoked key on connect.
+  apiKeyId?: string;
 };
 
 export type JwtExchangePayload = {

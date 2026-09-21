@@ -52,7 +52,7 @@ export class CreateAgentRoleDto {
   description?: string;
 
   @IsString()
-  @MaxLength(20000)
+  @MaxLength(100000)
   instructions: string;
 
   // null/omitted => use the workspace default model.
@@ -102,7 +102,7 @@ export class UpdateAgentRoleDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(20000)
+  @MaxLength(100000)
   instructions?: string;
 
   @IsOptional()

@@ -66,6 +66,14 @@ function makeServer() {
       sendJson(res, 200, { data: { token: "collab-jwt" } });
       return;
     }
+    if (req.url === "/api/pages/info") {
+      // Resolve the pageId -> canonical UUID (#260) so the test exercises the
+      // real body-write failure (no WS upgrade) rather than a resolve failure.
+      sendJson(res, 200, {
+        data: { id: "11111111-1111-4111-8111-111111111111", slugId: "page-1" },
+      });
+      return;
+    }
     if (req.url === "/api/pages/update") {
       state.titlePosted = true;
       sendJson(res, 200, { data: {} });

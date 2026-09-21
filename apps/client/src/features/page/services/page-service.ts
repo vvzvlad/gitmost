@@ -10,6 +10,7 @@ import {
 } from '@/features/page/types/page.types';
 import { QueryParams } from "@/lib/types";
 import { IPagination } from "@/lib/types.ts";
+import { offlineCriticalRequestConfig } from "@/lib/config";
 import { saveAs } from "file-saver";
 import { InfiniteData } from "@tanstack/react-query";
 import { IFileTask } from '@/features/file-task/types/file-task.types.ts';
@@ -23,7 +24,14 @@ export async function createPage(data: Partial<IPage>): Promise<IPage> {
 export async function getPageById(
   pageInput: Partial<IPageInput>,
 ): Promise<IPage> {
-  const req = await api.post<IPage>("/pages/info", pageInput);
+  // #641, part 5 — offline-critical: a per-request timeout so a hung
+  // /pages/info settles into a transport error the local-render path handles,
+  // instead of leaving the body pending forever.
+  const req = await api.post<IPage>(
+    "/pages/info",
+    pageInput,
+    offlineCriticalRequestConfig(),
+  );
   return req.data;
 }
 

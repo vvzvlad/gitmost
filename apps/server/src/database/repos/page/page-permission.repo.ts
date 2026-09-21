@@ -657,12 +657,24 @@ export class PagePermissionRepo {
     pageIds: string[];
     userId: string;
     spaceId?: string;
+    workspaceId?: string | null;
   }): Promise<string[]> {
-    const { pageIds, userId, spaceId } = opts;
+    const { pageIds, userId, spaceId, workspaceId } = opts;
     if (pageIds.length === 0) return [];
 
     if (spaceId) {
       const hasRestrictions = await this.hasRestrictedPagesInSpace(spaceId);
+      if (!hasRestrictions) {
+        return pageIds;
+      }
+    } else if (workspaceId) {
+      // #348 — whole-workspace callers (no spaceId: favorites, notifications,
+      // recent, created-by, global search) skip the recursive-ancestor CTE + anti
+      // -join entirely when the workspace has ZERO restricted pages. When any
+      // restriction DOES exist, fall through to the identical CTE below, so
+      // behavior is unchanged whenever restrictions are present.
+      const hasRestrictions =
+        await this.hasRestrictedPagesInWorkspace(workspaceId);
       if (!hasRestrictions) {
         return pageIds;
       }
@@ -895,6 +907,39 @@ export class PagePermissionRepo {
               .selectFrom('pageAccess')
               .select(sql`1`.as('one'))
               .where('pageAccess.spaceId', '=', spaceId),
+          )
+          .as('exists'),
+      )
+      .executeTakeFirst();
+
+    return Boolean(result?.exists);
+  }
+
+  /**
+   * Workspace-level analogue of hasRestrictedPagesInSpace: does ANY page in the
+   * whole workspace carry a restriction? Lets whole-workspace access filters
+   * short-circuit the recursive-ancestor CTE when nothing is restricted at all.
+   *
+   * UNCACHED (like the sibling hasRestrictedPagesInSpace) — a single cheap
+   * `EXISTS(pageAccess WHERE workspaceId=?)` per call. This is an ACCESS-CONTROL
+   * gate on whole-workspace list endpoints, so it must never go stale: caching it
+   * (even 5s) reintroduced a leak the space-path never had — a concurrent
+   * whole-workspace read in the insert->commit window of the FIRST restricted page
+   * could re-populate `false` under withCache (read-then-set, no del-during-read
+   * guard) and override the insert bust, leaking that page to unauthorized users
+   * for up to the TTL (#348 review F1). An uncached EXISTS removes both the
+   * cache/DB asymmetry with hasRestrictedPagesInSpace and that race; the space
+   * path already accepts this exact per-call cost.
+   */
+  async hasRestrictedPagesInWorkspace(workspaceId: string): Promise<boolean> {
+    const result = await this.db
+      .selectNoFrom((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom('pageAccess')
+              .select(sql`1`.as('one'))
+              .where('pageAccess.workspaceId', '=', workspaceId),
           )
           .as('exists'),
       )

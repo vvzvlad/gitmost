@@ -1,0 +1,15 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "details",
+      "attrs": { "open": false },
+      "content": [
+        { "type": "detailsSummary", "content": [{ "type": "text", "text": "Click to expand" }] },
+        { "type": "detailsContent", "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "Hidden body paragraph." }] }
+        ]}
+      ]
+    }
+  ]
+}

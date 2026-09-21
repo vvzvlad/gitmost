@@ -27,7 +27,31 @@ import { IconEdit } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useHandleLibrary } from "@excalidraw/excalidraw";
 import { localStorageLibraryAdapter } from "@/features/editor/components/excalidraw/excalidraw-utils.ts";
+import {
+  embedRasterIfWithinBudget,
+  isValidExcalidrawSvg,
+} from "@/features/editor/components/excalidraw/excalidraw-raster.ts";
+import { isExcalidrawRasterEnabled } from "@/lib/config.ts";
 import { modals } from "@mantine/modals";
+import {
+  markOperationStart,
+  measureOperation,
+} from "@/lib/telemetry/vitals";
+
+/**
+ * Read a Blob's bytes as a `data:<mime>;base64,<b64>` data-URI (#632, Part A).
+ * FileReader.readAsDataURL yields the `data:image/png;base64,…` form the shared
+ * raster contract expects directly, so no manual base64 step is needed.
+ */
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("failed to read PNG blob"));
+    reader.readAsDataURL(blob);
+  });
+}
 
 const ExcalidrawComponent = lazy(() =>
   import("@excalidraw/excalidraw").then((module) => ({
@@ -60,6 +84,12 @@ export default function ExcalidrawView(props: NodeViewProps) {
     if (!editor.isEditable) {
       return;
     }
+    // #683 `diagram_excalidraw` — mark at the double-click that opens the editor;
+    // measured when the lazily-loaded Excalidraw component mounts and hands back
+    // its imperative API (render readiness). The node-view itself is a light
+    // placeholder card until this open, so this captures the heavy chunk load +
+    // editor mount the user actually waits for.
+    markOperationStart("diagram_excalidraw");
     isDirtyRef.current = false;
     isInitialLoadRef.current = true;
     open();
@@ -92,6 +122,48 @@ export default function ExcalidrawView(props: NodeViewProps) {
         /https:\/\/unpkg\.com\/@excalidraw\/excalidraw@undefined/g,
         "https://unpkg.com/@excalidraw/excalidraw@latest",
       );
+
+      // #632, Part A: optionally embed a PNG raster of the SAME scene into the
+      // saved .excalidraw.svg (as a root data-raster attribute), so the MCP
+      // consumers can hand a real bitmap to habr-mcp instead of dropping the
+      // unknown `excalidraw` node. Gated behind EXCALIDRAW_RASTER_ENABLED
+      // (default off => today's svg-only save, byte-identical). Any failure here
+      // (png export or over-budget) degrades to an svg-only save — the excalidraw
+      // SVG is itself valid, so this is never a user-facing hard error.
+      if (isExcalidrawRasterEnabled()) {
+        try {
+          const { exportToBlob } = await import("@excalidraw/excalidraw");
+          const pngBlob = await exportToBlob({
+            elements: excalidrawAPI.getSceneElements(),
+            appState: {
+              exportWithDarkMode: false,
+              exportBackground: true,
+            },
+            files: excalidrawAPI.getFiles(),
+            mimeType: "image/png",
+          });
+          const rasterDataUri = await blobToDataUri(pngBlob);
+          const { svg: withRaster } = embedRasterIfWithinBudget(
+            svgString,
+            rasterDataUri,
+          );
+          svgString = withRaster;
+        } catch (err) {
+          // Over-budget is handled inside embedRasterIfWithinBudget (returns the
+          // svg unchanged); this catch is for a genuine png-export/read failure.
+          console.warn(
+            "Excalidraw PNG raster export failed; saving without a raster preview.",
+            err,
+          );
+        }
+      }
+
+      // Guardrail: never upload anything but a real SVG under the .svg name.
+      if (!isValidExcalidrawSvg(svgString)) {
+        throw new Error(
+          "excalidraw save guardrail: refusing to upload a non-SVG file",
+        );
+      }
 
       const fileName = "diagram.excalidraw.svg";
       const excalidrawSvgFile = await svgStringToFile(svgString, fileName);
@@ -204,7 +276,12 @@ export default function ExcalidrawView(props: NodeViewProps) {
         <div style={{ height: "90vh" }}>
           <Suspense fallback={null}>
             <ExcalidrawComponent
-              excalidrawAPI={(api) => setExcalidrawAPI(api)}
+              excalidrawAPI={(api) => {
+                setExcalidrawAPI(api);
+                // #683 — the editor is mounted and ready; report the open→ready
+                // latency (success path; measureOperation consumes the mark).
+                measureOperation("diagram_excalidraw");
+              }}
               onChange={(elements, _appState, files) => {
                 const fingerprint = `${elements.length}:${elements.reduce((s, e) => s + (e.version || 0), 0)}:${Object.keys(files).length}`;
                 if (isInitialLoadRef.current) {

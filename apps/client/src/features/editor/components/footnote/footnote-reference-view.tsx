@@ -16,6 +16,7 @@ import {
 import { ActionIcon } from "@mantine/core";
 import { IconArrowDown } from "@tabler/icons-react";
 import classes from "./footnote.module.css";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 
 /**
  * Read the plain text of the footnote definition with `id` directly from the
@@ -70,7 +71,13 @@ export default function FootnoteReferenceView(props: NodeViewProps) {
     const popup = popoverRef.current;
     if (!anchor || !popup) return;
 
-    const cleanup = autoUpdate(anchor, popup, position);
+    // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+    const cleanup = autoUpdate(
+      anchor,
+      popup,
+      position,
+      EDITOR_AUTO_UPDATE_OPTIONS,
+    );
 
     const onPointerDown = (e: PointerEvent) => {
       if (

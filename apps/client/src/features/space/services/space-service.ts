@@ -8,6 +8,7 @@ import {
   ISpaceMember,
 } from "@/features/space/types/space.types";
 import { IPagination, QueryParams } from "@/lib/types.ts";
+import { offlineCriticalRequestConfig } from "@/lib/config";
 import { saveAs } from "file-saver";
 
 export async function getSpaces(
@@ -18,7 +19,13 @@ export async function getSpaces(
 }
 
 export async function getSpaceById(spaceId: string): Promise<ISpace> {
-  const req = await api.post<ISpace>("/spaces/info", { spaceId });
+  // #641, part 5 — offline-critical: a per-request timeout so a hung
+  // /spaces/info settles instead of hanging the page chrome indefinitely.
+  const req = await api.post<ISpace>(
+    "/spaces/info",
+    { spaceId },
+    offlineCriticalRequestConfig(),
+  );
   return req.data;
 }
 

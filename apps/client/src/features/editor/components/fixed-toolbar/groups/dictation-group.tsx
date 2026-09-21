@@ -1,7 +1,8 @@
 import { FC, useRef } from "react";
-import type { Editor } from "@tiptap/react";
+import { Editor } from "@tiptap/react";
 import { useAtomValue } from "jotai";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
+import { dictationAvailabilityAtom } from "@/features/editor/atoms/editor-atoms.ts";
 import { MicButton } from "@/features/dictation/components/mic-button";
 
 interface Props {
@@ -16,6 +17,8 @@ export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
   const workspace = useAtomValue(workspaceAtom);
   const streamingDictation =
     workspace?.settings?.ai?.dictationStreaming === true;
+  // Cause-specific reason the mic is unavailable (published by the page editor).
+  const dictationAvailability = useAtomValue(dictationAvailabilityAtom);
   // Caret snapshot taken when dictation starts (where the first segment lands).
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
   // Running insertion point: after each inserted segment we remember the caret
@@ -80,7 +83,8 @@ export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
       streaming={streamingDictation}
       onStart={handleStart}
       onText={handleText}
-      disabled={!editor.isEditable}
+      disabled={!dictationAvailability.isEditable}
+      unavailableReason={dictationAvailability.reason ?? undefined}
       color={color}
       iconSize={iconSize}
     />

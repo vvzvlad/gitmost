@@ -1,140 +1,52 @@
-// Pure, self-contained helpers for the embedded /mcp per-user auth flow. They
+// Pure, self-contained helpers for the embedded /mcp per-request auth flow. They
 // are deliberately framework-free (no Nest, no DI, no concrete service imports)
 // so they can be unit-tested in isolation WITHOUT loading the heavy auth/space
-// dependency graph, and reused by McpService. Nothing here logs the password or
-// the Authorization header.
+// dependency graph, and reused by McpService. Nothing here logs the token or the
+// Authorization header.
+//
+// /mcp accepts EXACTLY ONE credential: a Bearer api_key JWT (an agent's key).
+// There is NO HTTP Basic email:password, NO human ACCESS session token, and NO
+// env credential fallback — an agent authenticates only with an api_key.
 import { UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
-import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
 
-/**
- * Decode an `Authorization: Basic base64(email:password)` header into its
- * email/password parts. The split is on the FIRST ':' because a password may
- * itself contain ':' characters (everything after the first ':' is the
- * password). Returns null when the header is absent or not a Basic header, or
- * when no ':' separator is present (malformed credentials).
- */
-export function parseBasicAuth(
-  authHeader: string | undefined,
-): { email: string; password: string } | null {
-  if (!authHeader || !authHeader.startsWith('Basic ')) return null;
-  const b64 = authHeader.slice('Basic '.length).trim();
-  let decoded: string;
-  try {
-    decoded = Buffer.from(b64, 'base64').toString('utf8');
-  } catch {
-    return null;
-  }
-  const sep = decoded.indexOf(':');
-  if (sep === -1) return null; // no separator -> not valid email:password
-  const email = decoded.slice(0, sep);
-  if (!email) return null; // empty email -> not valid credentials
-  return {
-    email,
-    password: decoded.slice(sep + 1),
+// The per-session DocmostMcpConfig shape understood by @docmost/mcp: the per-user
+// getToken variant (the token minted/verified for THIS request). The optional
+// `sandbox` sink (blob store for the stash tool) and the `onMetric` sink are
+// injected by McpService after the auth decision.
+export type DocmostMcpConfig = {
+  apiUrl: string;
+  getToken: () => Promise<string>;
+} & {
+  sandbox?: {
+    put: (
+      buf: Buffer,
+      mime: string,
+    ) => { uri: string; sha256: string; size: number };
+    // Optional live/evict probes the package uses to keep stashPage's mirror
+    // counts honest under the store's FIFO eviction (mirror of the package's
+    // sink type); older bindings omit them.
+    has?: (uri: string) => boolean;
+    evict?: (uri: string) => void;
+    // The store's REAL per-blob caps (#613), read from SANDBOX_MAX_BYTES /
+    // SANDBOX_MAX_IMAGE_BYTES by SandboxStore.asSink(). downloadFile pre-checks
+    // and error-messages against THESE, so raising the env raises what the tool
+    // delivers. Optional: a binding that omits them leaves the package on the
+    // upstream defaults (8 MiB / 20 MiB).
+    maxBytes?: number;
+    maxImageBytes?: number;
   };
-}
-
-/**
- * Lightweight in-memory, per-key fixed-window rate limiter for FAILED /mcp
- * Basic logins. Calling AuthService.login directly bypasses the controller's
- * ThrottlerGuard, so this blunts brute-force attempts against /mcp. State lives
- * in-process (per server instance); it is intentionally simple and not shared
- * across a cluster — it is a speed bump, not a hard security boundary.
- *
- * A key is typically `<ip>` and/or `<ip>:<email>`. When the number of failures
- * within `windowMs` reaches `threshold`, `isBlocked` returns true until the
- * window rolls over. A SUCCESSFUL login should clear the key via `reset`.
- */
-export class FailedLoginLimiter {
-  private readonly windowMs: number;
-  private readonly threshold: number;
-  // key -> { count, windowStart }
-  private readonly buckets = new Map<
-    string,
-    { count: number; windowStart: number }
-  >();
-
-  constructor(threshold = 5, windowMs = 60_000) {
-    this.threshold = threshold;
-    this.windowMs = windowMs;
-  }
-
-  private bucket(key: string, now: number) {
-    const existing = this.buckets.get(key);
-    if (!existing || now - existing.windowStart >= this.windowMs) {
-      const fresh = { count: 0, windowStart: now };
-      this.buckets.set(key, fresh);
-      return fresh;
-    }
-    return existing;
-  }
-
-  /** True when the key has already reached the failure threshold this window. */
-  isBlocked(key: string, now: number = Date.now()): boolean {
-    const b = this.bucket(key, now);
-    return b.count >= this.threshold;
-  }
-
-  /** Record one failed attempt for the key (within the current window). */
-  recordFailure(key: string, now: number = Date.now()): void {
-    const b = this.bucket(key, now);
-    b.count += 1;
-  }
-
-  /**
-   * Atomic check-and-reserve: if the key is already at/over the threshold this
-   * window, return false (blocked). Otherwise count this in-flight attempt
-   * (count += 1) and return true. Being synchronous, concurrent callers cannot
-   * interleave between the check and the increment, so the (threshold+1)-th
-   * concurrent attempt is rejected even before its bcrypt runs.
-   *
-   * This is the brute-force fix for the /mcp Basic path: the increment happens
-   * BEFORE the async credential check, not after it, so N concurrent requests for
-   * one email cannot all observe count=0 and all run bcrypt. A failed login then
-   * leaves the reservation in place (it IS the recorded failure); a SUCCESSFUL
-   * login clears it via reset(); a non-credential business error releases it via
-   * release() so it does not count as a guessed-password signal.
-   */
-  tryReserve(key: string, now: number = Date.now()): boolean {
-    const b = this.bucket(key, now);
-    if (b.count >= this.threshold) return false;
-    b.count += 1;
-    return true;
-  }
-
-  /**
-   * Undo a previous tryReserve for the key within the same window (count -= 1,
-   * floored at 0). Used to release an optimistic in-flight reservation when the
-   * attempt turned out NOT to be a password-guess signal (e.g. an "email not
-   * verified" business error), so it does not burn a victim's limiter budget.
-   * A no-op if the bucket rolled over to a fresh window in the meantime.
-   */
-  release(key: string, now: number = Date.now()): void {
-    const b = this.bucket(key, now);
-    if (b.count > 0) b.count -= 1;
-  }
-
-  /** Clear the key after a successful login so it does not accumulate. */
-  reset(key: string): void {
-    this.buckets.delete(key);
-  }
-
-  /** Drop expired buckets to bound memory. Safe to call periodically. */
-  sweep(now: number = Date.now()): void {
-    for (const [key, b] of this.buckets) {
-      if (now - b.windowStart >= this.windowMs) this.buckets.delete(key);
-    }
-  }
-}
-
-// The per-session DocmostMcpConfig shape understood by @docmost/mcp: either the
-// service-account credentials variant OR the per-user getToken variant.
-export type DocmostMcpConfig =
-  | { apiUrl: string; email: string; password: string }
-  | { apiUrl: string; getToken: () => Promise<string> };
+  // Dependency-neutral metrics sink injected by McpService (mirror of the
+  // package's onMetric). The package emits generic (name, value, labels)
+  // samples; McpService maps them onto the prom-client registry. Undefined
+  // when metrics are disabled → the package no-ops.
+  onMetric?: (
+    name: string,
+    value: number,
+    labels?: Record<string, string>,
+  ) => void;
+};
 
 export interface ResolvedMcpAuth {
   config: DocmostMcpConfig;
@@ -144,83 +56,16 @@ export interface ResolvedMcpAuth {
 }
 
 // Narrow collaborator interfaces so this module never imports the concrete
-// AuthService/TokenService/WorkspaceRepo classes (which drag in the heavy
-// auth/space graph). McpService passes its injected instances; tests pass
-// stubs. Decouples the testable decision logic from Nest DI wiring.
+// TokenService/WorkspaceRepo classes (which drag in the heavy auth/space graph).
+// McpService passes its injected instances; tests pass stubs. Decouples the
+// testable decision logic from Nest DI wiring.
 export interface McpAuthDeps {
   apiUrl: string;
-  email?: string;
-  password?: string;
   findWorkspace: () => Promise<{ id: string } | undefined>;
-  // Pre-token gate for the Basic path ONLY, replicating what AuthController.login
-  // does BEFORE issuing a token: validateSsoEnforcement(workspace) and the lazy
-  // EE MFA requirement check. It is invoked with the resolved (default)
-  // workspace right after it is loaded and BEFORE any login()/verifyCredentials()
-  // call, so an SSO-enforced workspace or an MFA-required user never gets a token
-  // via /mcp Basic. It MUST throw (UnauthorizedException) to reject; on a fork
-  // without the EE MFA module bundled it behaves exactly like the controller
-  // (no MFA module -> no MFA gate). The Bearer path skips this gate because those
-  // ACCESS JWTs were already minted post-gate by the normal controller login.
-  // Optional so existing callers/tests that don't exercise the gate are unchanged.
-  enforceBasicGate?: (
-    workspace: { id: string },
-    creds: { email: string; password: string },
-  ) => Promise<void> | void;
-  // Full login: mints a user session + JWT, writes the USER_LOGIN audit event
-  // and updates lastLoginAt. Called at MOST once per MCP session (at the
-  // session-init request) so we do not spam the audit log / user_sessions table
-  // on every tool call.
-  login: (
-    creds: { email: string; password: string },
-    workspaceId: string,
-  ) => Promise<string>;
-  // Non-side-effecting credential check: same lookup/password/email-verified/
-  // disabled checks as login() but mints NO session, writes NO audit row,
-  // updates NO lastLoginAt. Used for per-request anti-fixation re-validation on
-  // SUBSEQUENT requests so a correct repeat does not spawn a new DB session,
-  // while a wrong password still throws (preserving anti-fixation).
-  verifyCredentials: (
-    creds: { email: string; password: string },
-    workspaceId: string,
-  ) => Promise<void>;
-  // Bearer access-JWT verification. Verifies signature/exp/type AND (in the
-  // McpService wiring) session-active + user-not-disabled, mirroring JwtStrategy
-  // so a revoked/logged-out/disabled user with an unexpired token is rejected.
+  // Bearer api_key verification. Verifies signature/exp/type AND (in the
+  // McpService wiring) the api_key row-check + workspace binding, mirroring
+  // jwt.strategy so a revoked/expired/foreign-workspace key is rejected.
   verifyAccessJwt: (token: string) => Promise<{ sub?: string; email?: string }>;
-  limiter: FailedLoginLimiter;
-  clientIp: string;
-  // True when this is the session-INIT request (no mcp-session-id header).
-  // INIT mints a user session via login(); SUBSEQUENT requests only re-validate
-  // credentials via verifyCredentials() (no side effects). See resolveMcp...
-  isSessionInit: boolean;
-}
-
-/**
- * True when an error from login()/verifyCredentials() represents an actual
- * CREDENTIALS failure (unknown email, disabled user, or wrong password) — i.e.
- * a guessed-password signal that should count toward the brute-force limiter.
- *
- * It must NOT match business errors like "email not verified" (a
- * BadRequestException), which are a legitimate 401/400 surface but not a
- * password-guess signal — counting those would let an attacker burn a victim's
- * limiter budget (DoS) and would dilute the brute-force signal. AuthService
- * throws an UnauthorizedException with exactly this message for every
- * credentials-mismatch case (no user / disabled / wrong password), so we match
- * on that.
- *
- * The message is NOT hardcoded here: it matches against the shared
- * CREDENTIALS_MISMATCH_MESSAGE constant that AuthService.verifyUserCredentials
- * also throws, so a reworded auth error cannot silently stop counting toward the
- * limiter (single source of truth — see auth.constants.ts).
- */
-export function isCredentialsFailure(err: unknown): boolean {
-  return (
-    err instanceof UnauthorizedException &&
-    typeof err.message === 'string' &&
-    err.message
-      .toLowerCase()
-      .includes(CREDENTIALS_MISMATCH_MESSAGE.toLowerCase())
-  );
 }
 
 /**
@@ -248,173 +93,96 @@ export function sharedTokenMatches(
   return timingSafeEqual(a, b);
 }
 
-// Minimal structural shape of the bits of a Fastify request that `clientIp`
-// needs. Kept structural so this module never imports the Fastify types.
-export interface ClientIpRequest {
-  ip?: string;
-  socket?: { remoteAddress?: string };
-  headers: Record<string, string | string[] | undefined>;
-}
-
-/**
- * Best-effort client IP for the failed-login limiter key. Precedence:
- *   1. req.ip          — Fastify's resolved IP (honours a configured trustProxy
- *                        chain); the trustworthy value when a proxy is set up.
- *   2. socket.remoteAddress — the raw TCP peer, used only when req.ip is absent.
- *   3. first X-Forwarded-For hop — LAST resort only, because XFF is
- *                        client-forgeable when no trusted proxy is configured.
- *   4. 'unknown'       — nothing usable.
- *
- * A forged IP can only dodge the per-IP limiter keys; the GLOBAL per-email key
- * in resolveMcpSessionConfig is the real account-brute backstop and does not
- * depend on this value. Pure/framework-free so it is unit-testable; McpService
- * delegates to it.
- */
-export function clientIp(req: ClientIpRequest): string {
-  if (req.ip) return req.ip;
-  if (req.socket?.remoteAddress) return req.socket.remoteAddress;
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length > 0) {
-    return xff.split(',')[0].trim();
-  }
-  return 'unknown';
-}
-
-// Minimal structural shape of the TokenService.verifyJwt method we depend on,
-// so this module never imports the concrete TokenService (heavy graph).
-export interface AccessJwtVerifier {
-  verifyJwt: (
-    token: string,
-    type: JwtType,
-  ) => Promise<{
-    sub?: string;
-    email?: string;
-    workspaceId?: string;
-    sessionId?: string;
-  }>;
-}
-
-/**
- * Bind a TokenService-like verifier into a one-arg `verifyJwt(token)` that
- * ALWAYS enforces `JwtType.ACCESS`. This is the single place where the /mcp
- * Bearer path pins the token type: a Bearer access token must be verified AS an
- * access token (not refresh/exchange/collab/etc.), so the type literal is fixed
- * here rather than at the call site. McpService.verifyMcpBearer delegates to
- * this, keeping the `JwtType.ACCESS` choice testable without the heavy graph.
- */
-export function bindAccessJwtVerifier(
-  tokenService: AccessJwtVerifier,
-): (token: string) => Promise<{
+// The decoded payload for the /mcp Bearer allowlist. Carries the `type`
+// discriminator and the API-key `apiKeyId`, on top of the base token fields.
+export interface McpBearerPayload {
+  type?: JwtType;
   sub?: string;
   email?: string;
   workspaceId?: string;
   sessionId?: string;
-}> {
-  return (token: string) => tokenService.verifyJwt(token, JwtType.ACCESS);
+  apiKeyId?: string;
 }
 
-// Minimal shapes for the Bearer revocation/disabled check. Kept structural so
-// this module never imports the concrete repos/JwtPayload (heavy graph).
-export interface BearerVerifyDeps {
-  // Verify signature/exp and that type === ACCESS; returns the decoded payload.
-  verifyJwt: (
+// Minimal structural shape of the TokenService.verifyJwtOneOf method.
+export interface OneOfJwtVerifier {
+  verifyJwtOneOf: (
     token: string,
-  ) => Promise<{
-    sub?: string;
-    email?: string;
-    workspaceId?: string;
-    sessionId?: string;
-  }>;
-  // The workspace id of THIS MCP instance, when the caller can resolve it (the
-  // community build is single-workspace, so McpService passes its default
-  // workspace's id). When provided, the token's `workspaceId` claim MUST equal
-  // it, mirroring JwtStrategy's `req.raw.workspaceId !== payload.workspaceId`
-  // guard so a valid ACCESS token from a DIFFERENT workspace cannot be replayed
-  // against this instance in a multi-workspace deployment. Optional so callers /
-  // tests that genuinely cannot resolve an instance workspace are unchanged.
-  expectedWorkspaceId?: string;
-  // Load the user (or undefined) for the disabled check.
-  findUser: (
-    sub: string,
-    workspaceId: string,
-  ) => Promise<{ deactivatedAt?: Date | null; deletedAt?: Date | null } | undefined>;
-  // Load an ACTIVE (not revoked, not expired) session by id, or undefined.
-  findActiveSession: (
-    sessionId: string,
-  ) => Promise<{ userId: string; workspaceId: string } | undefined>;
+    allowed: JwtType[],
+  ) => Promise<McpBearerPayload>;
 }
 
 /**
- * Verify a /mcp Bearer access JWT to the SAME strength as JwtStrategy: not just
- * signature/exp/type (verifyJwt), but also that the user is not disabled and —
- * when the token carries a sessionId — that the session is still active and
- * belongs to that user+workspace. This rejects a logged-out/revoked or disabled
- * user who still holds an unexpired access token. Throws UnauthorizedException
- * on any failure; never leaks why (uniform "Invalid or expired token").
+ * Bind a TokenService-like verifier into a one-arg `verifyJwtOneOf(token)` that
+ * pins the /mcp Bearer ALLOWLIST to exactly {API_KEY}. This is the single place
+ * the /mcp Bearer path pins the token type: the /mcp Bearer slot legitimately
+ * accepts ONLY an API_KEY token (an agent's key), and NOTHING else — an ACCESS
+ * (human session) token, collab/exchange/attachment/etc. are all rejected with
+ * the generic type error. The allowlist is fixed here rather than at the call
+ * site, and the signature is verified exactly once (see verifyMcpBearer).
  */
-export async function verifyBearerAccess(
+export function bindMcpBearerVerifier(
+  tokenService: OneOfJwtVerifier,
+): (token: string) => Promise<McpBearerPayload> {
+  return (token: string) =>
+    tokenService.verifyJwtOneOf(token, [JwtType.API_KEY]);
+}
+
+// Deps for the /mcp Bearer router. `verifyJwtOneOf` is the one-arg verifier bound
+// above (allowlist {API_KEY}); `validateApiKey` is the SHARED api-key row-check.
+export interface McpBearerDeps {
+  verifyJwtOneOf: (token: string) => Promise<McpBearerPayload>;
+  // The workspace id of THIS MCP instance, when the caller can resolve it (the
+  // community build is single-workspace, so McpService passes its default
+  // workspace's id). When provided, the token's `workspaceId` claim MUST equal
+  // it, mirroring jwt.strategy so a valid API_KEY token from a DIFFERENT
+  // workspace cannot be replayed against this instance. Optional so callers /
+  // tests that genuinely cannot resolve an instance workspace are unchanged.
+  expectedWorkspaceId?: string;
+  // Row-check for an API_KEY principal — the SAME validator REST uses. Throws
+  // UnauthorizedException on a definite deny; PROPAGATES an infra error (→ 5xx),
+  // never masking it as a 401.
+  validateApiKey: (payload: McpBearerPayload) => Promise<unknown>;
+}
+
+/**
+ * Verify a /mcp Bearer api_key token and run the shared row-check. The signature
+ * is verified EXACTLY ONCE (verifyJwtOneOf, allowlist pinned to {API_KEY}).
+ *
+ *   - bind to THIS instance's workspace FIRST (a token for another workspace is
+ *     rejected before touching the DB), THEN run the shared `validateApiKey`
+ *     row-check. No session/login involvement (an API key is not a login).
+ *
+ * Throws UnauthorizedException on any auth failure (uniform generic message — no
+ * enumeration of why); propagates an infra error from `validateApiKey` as itself.
+ */
+export async function verifyMcpBearer(
   token: string,
-  deps: BearerVerifyDeps,
+  deps: McpBearerDeps,
 ): Promise<{ sub?: string; email?: string }> {
   const generic = 'Invalid or expired token';
-  const payload = await deps.verifyJwt(token);
+  const payload = await deps.verifyJwtOneOf(token);
 
+  // Defence in depth: the allowlist already pins the type to API_KEY, so a
+  // non-API_KEY payload cannot reach here — reject it uniformly if it ever does.
+  if (payload.type !== JwtType.API_KEY) {
+    throw new UnauthorizedException(generic);
+  }
   if (!payload.sub || !payload.workspaceId) {
     throw new UnauthorizedException(generic);
   }
-
-  // Bind the token to THIS instance's workspace (mirrors JwtStrategy). When the
-  // caller resolved an instance workspace id, a token whose `workspaceId` claim
-  // points at another workspace is rejected, so a valid ACCESS token minted in
-  // workspace B cannot be replayed against an MCP instance serving workspace A.
-  // In the single-workspace community build expectedWorkspaceId equals the only
-  // workspace, so this is a no-op there; it only bites a multi-workspace deploy.
+  // Instance-binding: reject an API_KEY token minted for a different workspace
+  // before touching the DB.
   if (
     deps.expectedWorkspaceId &&
     payload.workspaceId !== deps.expectedWorkspaceId
   ) {
     throw new UnauthorizedException(generic);
   }
-
-  const user = await deps.findUser(payload.sub, payload.workspaceId);
-  if (!user || user.deactivatedAt || user.deletedAt) {
-    throw new UnauthorizedException(generic);
-  }
-
-  if (payload.sessionId) {
-    const session = await deps.findActiveSession(payload.sessionId);
-    if (
-      !session ||
-      session.userId !== payload.sub ||
-      session.workspaceId !== payload.workspaceId
-    ) {
-      throw new UnauthorizedException(generic);
-    }
-  }
-
-  return { sub: payload.sub, email: payload.email };
-}
-
-/**
- * Detect a genuine JSON-RPC `initialize` request from an already-parsed body.
- * Delegates to the @modelcontextprotocol/sdk `isInitializeRequest` predicate —
- * the SAME predicate packages/mcp/src/http.ts uses to decide whether to mint a
- * session — so the session-minting side (this server) and the session-creating
- * side (http.ts) agree EXACTLY on what counts as an initialize request. The SDK
- * predicate validates the full InitializeRequest shape (jsonrpc, id, method ===
- * 'initialize', params incl. protocolVersion); a bare `{ method: 'initialize' }`
- * with no params, a batch (array) body, etc. are NOT initialize requests.
- *
- * This is the second half of the session-INIT decision: `isSessionInit` is
- * (no `mcp-session-id` header) AND `isInitializeRequestBody(body)`. Matching the
- * SDK predicate exactly ensures the side-effecting login() (user_sessions insert
- * + USER_LOGIN audit + lastLoginAt) only runs for a request http.ts will also
- * accept as an initialize — never for an arbitrary header-less request that
- * http.ts would subsequently 400 (which would otherwise spam the audit log /
- * grow user_sessions without ever creating an MCP session).
- */
-export function isInitializeRequestBody(body: unknown): boolean {
-  return isInitializeRequest(body);
+  // Shared row-check. A definite deny throws Unauthorized; an infra error
+  // propagates (→ 5xx), which the caller must NOT convert to a 401.
+  await deps.validateApiKey(payload);
+  return { sub: payload.sub };
 }
 
 /**
@@ -423,12 +191,117 @@ export function isInitializeRequestBody(body: unknown): boolean {
  * proceed to hijack the response and delegate to the MCP transport (`hijack`).
  * Keeping this a pure decision (no FastifyReply, no res.hijack) makes the
  * status/body mapping unit-testable, and guarantees no error path can leak the
- * password or Authorization header — the body is only ever a fixed string or the
+ * token or Authorization header — the body is only ever a fixed string or the
  * UnauthorizedException's own message.
  */
 export type McpHandleDecision =
-  | { kind: 'respond'; status: number; body: { error: string } }
+  | {
+      kind: 'respond';
+      status: number;
+      body: { error: string };
+      headers?: Record<string, string>;
+    }
   | { kind: 'hijack' };
+
+/**
+ * The `error_description` of the /mcp challenge when the ONLY thing the request
+ * needs is the Bearer api_key. Byte-identical to the 401 body message thrown by
+ * resolveMcpSessionConfig, so the header and the body say the same thing.
+ */
+export const MCP_CHALLENGE_BEARER_DESCRIPTION =
+  'MCP requires a Bearer api_key token (Authorization: Bearer <api_key>).';
+
+/**
+ * The `error_description` when the deployment also sets MCP_TOKEN and the shared
+ * guard is what failed. It MUST name `X-MCP-Token`: a challenge that mentions only
+ * the Bearer api_key sends the client into an endless loop — it dutifully adds
+ * `Authorization: Bearer <api_key>`, still misses the shared header, and gets a 401
+ * forever. That "the challenge names a credential the server does not actually want"
+ * bug class is exactly what #636 exists to kill, so the shared-token branch names
+ * BOTH credentials it needs.
+ *
+ * It carries NO comma. A comma is legal inside a quoted-string (RFC 7235 §2.1), but
+ * `WWW-Authenticate` is a comma-separated list of challenges/params and plenty of
+ * real-world clients and proxies split the header on `,` without honouring the
+ * quotes — a comma in here would tear the challenge in half and hand them a garbage
+ * second "challenge". The wording therefore parenthesises each header on its own.
+ */
+export const MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION =
+  'MCP requires the shared secret in the X-MCP-Token header (X-MCP-Token: <MCP_TOKEN>) plus a Bearer api_key token (Authorization: Bearer <api_key>).';
+
+/**
+ * Build the RFC 6750 §3 challenge sent with a /mcp 401. Without it a client only
+ * sees a bare 401 and has to guess the scheme; Claude Code guesses OAuth, walks
+ * /.well-known/oauth-protected-resource and dies there (#636).
+ *
+ * It deliberately carries NO `resource_metadata=...` parameter. Under the MCP
+ * spec (2025-06-18) that parameter is a promise — "I have an OAuth authorization
+ * server, here is its metadata" — and we have no OAuth AS at all. Advertising one
+ * is exactly the false promise this bug is about. The only scheme /mcp accepts is
+ * a Bearer api_key (plus the optional X-MCP-Token shared guard), so the challenge
+ * says only that. Never add `resource_metadata` back.
+ *
+ * `credentialPresented` implements RFC 6750 §3.1: "If the request lacks any
+ * authentication information (e.g., the client was unaware that authentication is
+ * necessary...), the resource server SHOULD NOT include an error code." An
+ * `error="invalid_token"` on a request that carried NO credential at all reads as
+ * "the token you sent is bad" and misleads the client into re-checking a token it
+ * never sent — so the code is emitted ONLY when a credential was actually presented
+ * and rejected.
+ *
+ * It is the presence of the credential THIS challenge is about — see
+ * mapAuthResultToResponse: the shared-token challenge asks about `X-MCP-Token`, so a
+ * request that sent only `Authorization` presented nothing to IT, and vice versa.
+ */
+export function buildMcpChallenge(
+  description: string,
+  credentialPresented: boolean,
+): string {
+  const errorCode = credentialPresented ? 'error="invalid_token", ' : '';
+  return `Bearer realm="mcp", ${errorCode}error_description="${description}"`;
+}
+
+/**
+ * Does this raw header value carry authentication information (RFC 6750 §3.1)?
+ *
+ * Node hands a header value in three shapes, and only one of them is a credential:
+ *   - a non-empty string                       -> presented;
+ *   - `undefined` (header absent)              -> not presented;
+ *   - `''` / whitespace (`X-MCP-Token:` with no value, which is a legal request)
+ *     -> NOT presented: the header exists but "lacks any authentication
+ *     information", which is the §3.1 wording, so it must not draw an
+ *     `error="invalid_token"` ("the token you sent is bad" — there was no token);
+ *   - `string[]`: Node joins duplicate headers into a comma-separated string for
+ *     most fields, but not for all, so a duplicated `X-MCP-Token` can surface as an
+ *     array. Reading an array as "absent" (`typeof v === 'string'` alone) would say
+ *     "no credential presented" about a request that presented two — hence the
+ *     explicit array arm.
+ */
+export function isCredentialHeaderPresent(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) {
+    return value.some((v) => typeof v === 'string' && v.trim() !== '');
+  }
+  return false;
+}
+
+/**
+ * The challenge for a REJECTED Bearer api_key (a credential was presented). This is
+ * the value the READMEs and the CHANGELOG quote verbatim — keep them in sync.
+ */
+export const MCP_WWW_AUTHENTICATE = buildMcpChallenge(
+  MCP_CHALLENGE_BEARER_DESCRIPTION,
+  true,
+);
+
+/**
+ * The challenge for a REJECTED shared X-MCP-Token (a credential was presented) on a
+ * deployment that sets MCP_TOKEN. Also quoted verbatim in the docs.
+ */
+export const MCP_WWW_AUTHENTICATE_SHARED_TOKEN = buildMcpChallenge(
+  MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION,
+  true,
+);
 
 /**
  * Pure mapping of McpService.handle's auth/enablement gauntlet to a response
@@ -437,17 +310,55 @@ export type McpHandleDecision =
  *   2. workspace MCP disabled      -> 403 {error:'MCP is disabled ...'}.
  *   3. resolveSessionConfig threw:
  *        - an UnauthorizedException -> 401 with err.message (a SPECIFIC reason;
- *          never the password/header — the message is the only thing surfaced).
+ *          never the token/header — the message is the only thing surfaced).
  *        - any other error          -> 500 generic 'Internal server error'.
  *   4. otherwise (auth resolved)   -> hijack and delegate to the transport.
+ *
+ * Every 401 branch (and ONLY the 401 branches — the 403/500 responses are not
+ * authentication challenges) carries the RFC 6750 §3 `WWW-Authenticate` header,
+ * built by buildMcpChallenge. Each branch names the credential IT actually wants:
+ * the shared-token branch names `X-MCP-Token` (naming only the Bearer api_key there
+ * would loop the client forever), the api_key branch names the Bearer api_key. The
+ * bodies are unchanged.
+ *
+ * The `error="invalid_token"` code is PER BRANCH, because the two 401s are about two
+ * DIFFERENT credentials (RFC 6750 §3.1: no error code when the request "lacks any
+ * authentication information" — meaning the information THIS challenge asks for):
+ *   - `sharedTokenPresented` = the request carried a non-empty `X-MCP-Token`. It
+ *     gates the shared-token challenge. A single "some credential was sent" flag
+ *     would mis-fire here: the deployment sets MCP_TOKEN, the client sends only
+ *     `Authorization: Bearer <api_key>` (exactly what the api_key challenge told it
+ *     to), and it would get `error="invalid_token"` about an X-MCP-Token it never
+ *     sent — the same "the error names a credential that was never presented" bug
+ *     this whole change exists to kill.
+ *   - `bearerPresented` = the request carried a non-empty `Authorization`. It gates
+ *     the api_key challenge, and the mirror case (no MCP_TOKEN set, client sends
+ *     only `X-MCP-Token`) is why it may not be the shared-token flag either.
+ * Both are REQUIRED fields so no call site can silently inherit the wrong reading;
+ * feed them from isCredentialHeaderPresent, which also treats a present-but-empty
+ * header as the absence of a credential.
  */
 export function mapAuthResultToResponse(input: {
   sharedTokenOk: boolean;
   enabled: boolean;
   error?: unknown;
+  sharedTokenPresented: boolean;
+  bearerPresented: boolean;
 }): McpHandleDecision {
   if (!input.sharedTokenOk) {
-    return { kind: 'respond', status: 401, body: { error: 'Unauthorized' } };
+    return {
+      kind: 'respond',
+      status: 401,
+      body: { error: 'Unauthorized' },
+      headers: {
+        'WWW-Authenticate': buildMcpChallenge(
+          MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION,
+          // This challenge is about X-MCP-Token, so ONLY an X-MCP-Token that was
+          // actually sent (and rejected) earns the `invalid_token` code.
+          input.sharedTokenPresented,
+        ),
+      },
+    };
   }
 
   if (!input.enabled) {
@@ -464,6 +375,14 @@ export function mapAuthResultToResponse(input: {
         kind: 'respond',
         status: 401,
         body: { error: input.error.message },
+        headers: {
+          'WWW-Authenticate': buildMcpChallenge(
+            MCP_CHALLENGE_BEARER_DESCRIPTION,
+            // This challenge is about the Bearer api_key, so an X-MCP-Token that
+            // happened to be sent must not make it claim a bad api_key.
+            input.bearerPresented,
+          ),
+        },
       };
     }
     return {
@@ -476,52 +395,6 @@ export function mapAuthResultToResponse(input: {
   return { kind: 'hijack' };
 }
 
-// Result of the EE MFA module's requirement check for the Basic gate. Both
-// flags absent/false means MFA does not block the password login.
-export interface BasicGateMfaResult {
-  userHasMfa?: boolean;
-  requiresMfaSetup?: boolean;
-}
-
-/**
- * Pure decision logic for the /mcp HTTP-Basic pre-token gate, replicating EXACTLY
- * what AuthController.login enforces before issuing a token, so the Basic path is
- * not an SSO/MFA bypass. Framework-free (no ModuleRef, no on-disk EE MFA module)
- * so the SSO/MFA decision is unit-testable in isolation:
- *
- *   - `ssoEnforced` true  -> throw Unauthorized ("enforced SSO"); a password
- *      login is not allowed on an SSO-enforced workspace.
- *   - otherwise, `mfa` is the EE MFA module's requirement result (or undefined
- *      when no EE MFA module is bundled — a community/fork build). If MFA is
- *      present and the user has MFA enabled OR needs MFA setup, throw Unauthorized
- *      telling the caller to use a Bearer access token (Basic cannot complete MFA).
- *   - no SSO + no MFA gate -> resolve (the Basic login is allowed to proceed).
- *
- * McpService.enforceBasicLoginGate wires the concrete `validateSsoEnforcement`
- * result and the lazily-loaded MFA module result into this, so the gate decision
- * itself carries no framework dependencies. Throws UnauthorizedException on
- * rejection (surfaced as a clean 401); never logs the password.
- */
-export function decideBasicGate(input: {
-  ssoEnforced: boolean;
-  mfa?: BasicGateMfaResult;
-}): void {
-  if (input.ssoEnforced) {
-    throw new UnauthorizedException(
-      'This workspace has enforced SSO login. Use SSO; MCP HTTP Basic is not allowed.',
-    );
-  }
-
-  const mfa = input.mfa;
-  if (mfa && (mfa.userHasMfa || mfa.requiresMfaSetup)) {
-    throw new UnauthorizedException(
-      'This account requires multi-factor authentication. MCP HTTP Basic ' +
-        'cannot complete MFA — log in normally and use a Bearer access token ' +
-        'instead.',
-    );
-  }
-}
-
 /** Extract a Bearer token from an Authorization header (case-insensitive). */
 export function extractBearer(
   authHeader: string | undefined,
@@ -531,16 +404,17 @@ export function extractBearer(
 }
 
 /**
- * Pure decision logic for the /mcp per-session identity. Precedence:
- *   1. HTTP Basic (email:password) -> validate via `login`, issue the user's
- *      JWT, run as that user (chosen path). Throttle FAILED logins per IP/email.
- *   2. Authorization: Bearer <jwt> -> verify as an ACCESS JWT, run with it.
- *   3. Env service account         -> back-compat fallback.
- *   4. none                        -> meaningful 401.
+ * Pure decision logic for the /mcp per-session identity. /mcp accepts EXACTLY
+ * ONE credential: a Bearer api_key JWT.
  *
- * Throws UnauthorizedException with a SPECIFIC reason on failure (never a
- * generic "MCP error"); never returns/logs the password or the Authorization
- * header. The `JwtType.ACCESS` enforcement lives in `verifyAccessJwt`.
+ *   1. Authorization: Bearer <api_key> -> verify (signature/exp/type + the
+ *      shared api-key row-check, wired in `verifyAccessJwt`), run under it.
+ *   2. anything else                   -> 401 (api_key only).
+ *
+ * Throws UnauthorizedException on failure; never returns/logs the token or the
+ * Authorization header. Every Bearer auth failure surfaces the SAME generic 401
+ * (anti-enumeration); an UNEXPECTED (infra) error is rethrown AS ITSELF so the
+ * surface maps it to 5xx, never masking a DB/Redis outage as a bad token.
  */
 export async function resolveMcpSessionConfig(
   authHeader: string | undefined,
@@ -548,174 +422,23 @@ export async function resolveMcpSessionConfig(
 ): Promise<ResolvedMcpAuth> {
   const { apiUrl } = deps;
 
-  // --- 1) chosen path: Basic login/password ---
-  const basic = parseBasicAuth(authHeader);
-  if (basic) {
-    const emailLc = basic.email.toLowerCase();
-    const ipKey = `ip:${deps.clientIp}`;
-    const ipEmailKey = `ip-email:${deps.clientIp}:${emailLc}`;
-    // GLOBAL per-email key (no IP). Without this an attacker who rotates IP /
-    // X-Forwarded-For evades the per-IP and per-IP+email keys entirely and can
-    // brute a single account unthrottled. Keying one extra bucket on the email
-    // alone closes that account-brute hole regardless of source address.
-    // XFF tradeoff: clientIp is derived from the first X-Forwarded-For hop when
-    // present (see McpService.clientIp), which a client can forge when no
-    // trusted proxy is configured; the per-email global key is the part that
-    // does NOT depend on a trustworthy IP and is the real brute-force backstop.
-    const emailKey = `email:${emailLc}`;
-    // Atomic check-AND-reserve, synchronously and BEFORE any await. The old code
-    // did a read-only isBlocked() pre-check here and only recordFailure()'d the
-    // failure AFTER the awaited bcrypt login — so N concurrent requests for one
-    // email all saw count=0, all ran bcrypt, all failed, and only then all
-    // recorded, blowing far past the threshold. tryReserve() folds the check and
-    // the increment into one synchronous, non-interleavable step: it counts this
-    // in-flight attempt NOW, so the (threshold+1)-th concurrent attempt is
-    // rejected before its bcrypt ever runs. The reservation IS the recorded
-    // failure (no separate recordFailure on the failure path below); a successful
-    // login clears it via reset(), and a non-credential business error releases
-    // it via release(). Reserve ALL keys so each per-key budget is charged.
-    const ipOk = deps.limiter.tryReserve(ipKey);
-    const ipEmailOk = deps.limiter.tryReserve(ipEmailKey);
-    const emailOk = deps.limiter.tryReserve(emailKey);
-    if (!ipOk || !ipEmailOk || !emailOk) {
-      // At least one key is at/over threshold: blocked. Release the keys we DID
-      // manage to reserve in this same call so a rejected (already-throttled)
-      // request does not over-charge the keys that were still under budget — the
-      // same observable outcome as the old isBlocked() pre-check, which never
-      // incremented on a blocked request.
-      if (ipOk) deps.limiter.release(ipKey);
-      if (ipEmailOk) deps.limiter.release(ipEmailKey);
-      if (emailOk) deps.limiter.release(emailKey);
-      throw new UnauthorizedException(
-        'Too many failed MCP login attempts. Try again later.',
-      );
-    }
-
-    // Everything from here through the credential evaluation runs UNDER one
-    // try/catch so a SINGLE rule governs the reservation we took above:
-    // "release the reserved keys unless the error is a genuine credential
-    // failure." That covers all three early-throw paths uniformly —
-    //   (a) findWorkspace() returning null (a CONFIG error),
-    //   (b) the SSO/MFA enforceBasicGate throwing (a BUSINESS error),
-    //   (c) login()/verifyCredentials() throwing a non-credential business error
-    //       (e.g. "email not verified") —
-    // none of which are password-guess signals, so none may burn a victim's
-    // limiter budget. Only a genuine credential failure (isCredentialsFailure)
-    // leaves the reservation in place, because the reservation IS its recorded
-    // failure. Without this, an attacker could exhaust a victim's per-email
-    // backstop with SSO/MFA-gated or misconfigured-workspace requests that never
-    // even run bcrypt. The reservation stays at the TOP (before any await) so the
-    // concurrency race the #83 fix closed is NOT re-introduced.
-    try {
-      const workspace = await deps.findWorkspace();
-      if (!workspace) {
-        throw new UnauthorizedException('No workspace is configured.');
-      }
-
-      // SSO/MFA pre-token gate (BLOCKER fix): replicate the AuthController.login
-      // gates BEFORE any token is issued on the Basic path. If the workspace
-      // enforces SSO, or the EE MFA module is bundled and this user/workspace
-      // requires MFA, this throws and we never mint a token. The Bearer path is
-      // intentionally NOT gated here (its JWT was already minted post-gate). This
-      // runs on BOTH init and subsequent Basic requests, but it must run before
-      // login()/verifyCredentials so an SSO/MFA user cannot authenticate at all.
-      // We do NOT count a gate rejection toward the brute-force limiter: it is
-      // not a password-guess signal (the catch below releases the reservation).
-      if (deps.enforceBasicGate) {
-        await deps.enforceBasicGate(workspace, {
-          email: basic.email,
-          password: basic.password,
-        });
-      }
-
-      // Fix 1 (init vs subsequent):
-      //   - SESSION INIT (no mcp-session-id): full login() mints the user JWT
-      //     (the one allowed session creation + audit event for this MCP
-      //     session). The DocmostClient caches that token, so later tool calls
-      //     never re-login.
-      //   - SUBSEQUENT request (has mcp-session-id): we only need to re-validate
-      //     the caller's credentials for anti-fixation. verifyCredentials() does
-      //     the SAME lookup/password/email-verified/disabled checks as login()
-      //     but mints NO session, writes NO audit row and updates NO lastLoginAt,
-      //     so a correct repeat does not spawn a DB session per request while a
-      //     wrong password still 401s. The getToken here is never used to mint a
-      //     new session: on a subsequent request the existing session already
-      //     holds its token; this config is only consulted at init.
-      if (deps.isSessionInit) {
-        const authToken = await deps.login(
-          { email: basic.email, password: basic.password },
-          workspace.id,
-        );
-        deps.limiter.reset(ipKey);
-        deps.limiter.reset(ipEmailKey);
-        deps.limiter.reset(emailKey);
-        return {
-          config: { apiUrl, getToken: async () => authToken },
-          identity: `basic:${emailLc}`,
-        };
-      }
-      await deps.verifyCredentials(
-        { email: basic.email, password: basic.password },
-        workspace.id,
-      );
-    } catch (err) {
-      // The in-flight reservation taken above already counted this attempt, so
-      // an actual CREDENTIALS failure (wrong email/password) needs NO separate
-      // recordFailure — the reservation IS the recorded failure (avoiding the
-      // old double-count). But ANY other throw between the reservation and here
-      // — a missing-workspace config error, an SSO/MFA gate rejection, or a
-      // business error like "email not verified" — is a 401/400 surface, NOT a
-      // guessed-password signal, so it must not burn a victim's limiter budget:
-      // release the optimistic reservation (only the keys we actually reserved,
-      // which on this non-blocked path is all three) in that case.
-      if (!isCredentialsFailure(err)) {
-        deps.limiter.release(ipKey);
-        deps.limiter.release(ipEmailKey);
-        deps.limiter.release(emailKey);
-      }
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Email or password does not match';
-      throw new UnauthorizedException(message);
-    }
-    // Subsequent request, credentials valid: clear the per-IP and per-IP+email
-    // budget, but DELIBERATELY do NOT reset the GLOBAL per-email key here. That
-    // email key is the only brute-force backstop that survives IP/XFF rotation;
-    // resetting it on every periodic tool call of a victim's live MCP session
-    // would repeatedly wipe a parallel attacker's failed-login budget for that
-    // email. The global email key is reset ONLY on a session-INIT login()
-    // success (above), which is a single deliberate authentication, not a
-    // high-frequency re-validation.
-    //
-    // Under the reserve model we DID optimistically increment emailKey up front
-    // (tryReserve), so a plain "leave it intact" would let every periodic tool
-    // call of the victim's own live session permanently grow their email bucket
-    // and throttle THEMSELVES. release() undoes exactly the one increment THIS
-    // call took (count -= 1), restoring the pre-request budget — it does NOT
-    // clear a parallel attacker's accumulated failures (that's reset()), so the
-    // brute-force backstop survives while the victim's success is budget-neutral.
-    deps.limiter.reset(ipKey);
-    deps.limiter.reset(ipEmailKey);
-    deps.limiter.release(emailKey);
-    return {
-      config: { apiUrl, getToken: async () => '' },
-      identity: `basic:${emailLc}`,
-    };
-  }
-
-  // --- 2) fallback A: Bearer access-JWT (user-supplied token) ---
   const bearer = extractBearer(authHeader);
   if (bearer) {
     let payload: { sub?: string; email?: string };
     try {
       payload = await deps.verifyAccessJwt(bearer);
     } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Invalid or expired token';
-      throw new UnauthorizedException(message);
+      // Anti-enumeration: EVERY auth failure surfaces the SAME generic 401 —
+      // expired/revoked/wrong-type/unknown are indistinguishable to the caller
+      // (its reaction is identical either way). But an UNEXPECTED (infra) error
+      // is NOT an auth verdict: rethrow it AS ITSELF so the surface maps it to
+      // 5xx (mapAuthResultToResponse), never masking a DB/Redis outage as a bad
+      // token. verifyMcpBearer throws UnauthorizedException on a definite deny
+      // and lets an infra error from validateApiKey propagate.
+      if (err instanceof UnauthorizedException) {
+        throw new UnauthorizedException('Invalid or expired token');
+      }
+      throw err;
     }
     return {
       config: { apiUrl, getToken: async () => bearer },
@@ -723,19 +446,10 @@ export async function resolveMcpSessionConfig(
     };
   }
 
-  // --- 3) fallback B: env service account (existing behaviour, optional) ---
-  if (deps.email && deps.password) {
-    return {
-      config: { apiUrl, email: deps.email, password: deps.password },
-      identity: 'service-account',
-    };
-  }
-
-  // --- 4) nothing usable ---
-  throw new UnauthorizedException(
-    'MCP requires HTTP Basic auth (email:password) or a Bearer access token, ' +
-      'or a configured MCP_DOCMOST_EMAIL/MCP_DOCMOST_PASSWORD service account.',
-  );
+  // No usable credential: /mcp requires a Bearer api_key and nothing else. The
+  // body message IS the challenge's error_description (one constant, so the 401's
+  // header and its JSON body can never drift apart).
+  throw new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION);
 }
 
 // Re-export JwtType so callers binding `verifyAccessJwt` know which type to

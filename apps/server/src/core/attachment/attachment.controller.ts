@@ -245,8 +245,33 @@ export class AttachmentController {
       attachment.workspaceId !== workspace.id ||
       !attachment.pageId ||
       !attachment.spaceId ||
-      jwtPayload.pageId !== attachment.pageId
+      jwtPayload.pageId !== attachment.pageId ||
+      // Soft-deleted attachment row: refuse even with a valid token. NOTE: no
+      // code path writes `attachments.deleted_at` today (attachment removal is a
+      // hard delete), so this arm is dead for now — it is defence-in-depth for
+      // the column the schema has carried since 2024, and costs nothing because
+      // the row already ships `deletedAt`. The PAGE arm below is the one with
+      // present-day exposure.
+      attachment.deletedAt
     ) {
+      throw new NotFoundException('File not found');
+    }
+
+    // Re-check the soft-delete state of the owning page on every public hit.
+    // A valid attachment token is not enough: with an `approved` share the
+    // published content is a FROZEN saved version that keeps referencing an
+    // attachment which may since have been removed from the live draft, and the
+    // page itself may have been moved to the trash. `deletedAt` therefore has to
+    // be re-read here instead of being implied by the token. Mirrors the
+    // `!page || page.deletedAt` guard in ShareService.resolveReadableSharePage.
+    //
+    // Cost: the attachment row already carries `deletedAt` (AttachmentRepo
+    // baseFields), so only the page state needs an extra primary-key lookup.
+    // That is negligible next to the storage read that follows, and the private
+    // /files/:fileId route already performs the very same page lookup. It could
+    // be folded into a join on `attachments` if it ever shows up in a profile.
+    const page = await this.pageRepo.findById(attachment.pageId);
+    if (!page || page.deletedAt) {
       throw new NotFoundException('File not found');
     }
 
@@ -473,6 +498,19 @@ export class AttachmentController {
   ) {
     const fileSize = Number(attachment.fileSize);
     const rangeHeader = req.headers.range;
+
+    // Opt this download route out of the global @fastify/compress hook.
+    // Attachment bytes are final and mostly binary, so on-the-fly compression
+    // only burns CPU — and on the 206/Range branch it is actively corrupting:
+    // compress decides purely by Content-Type, so for a compressible mime
+    // (application/octet-stream fallback, image/svg+xml, text/*) it would gzip
+    // the byte slice and drop Content-Length while Content-Range still
+    // describes the RAW offsets and the status stays 206. A resuming client
+    // (`curl -C -`, download managers) then appends the encoded bytes as if
+    // raw and ends up with a broken file. @fastify/compress skips whenever the
+    // request carries `x-no-compression` (see its onSend hook), so setting it
+    // here covers both the 200 (full file) and 206 (range) responses.
+    req.headers['x-no-compression'] = 'true';
 
     res.header('Accept-Ranges', 'bytes');
     res.header(

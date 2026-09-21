@@ -172,7 +172,28 @@ export const Comment = Mark.create<ICommentOptions, ICommentStorage>({
     const commentId = HTMLAttributes?.["data-comment-id"] || null;
     const resolved = HTMLAttributes?.["data-resolved"] || false;
 
-    if (typeof window === "undefined" || typeof document === "undefined") {
+    // The in-process MCP module injects a jsdom `global.document` into the Node
+    // server, so `typeof document === "undefined"` is not enough to detect SSR.
+    // On any Node runtime always return a plain, serializable spec array; the
+    // interactive live-DOM branch below is browser-only. This stops server-side
+    // HTML/Markdown export (happy-dom DOMSerializer) from appending a foreign
+    // jsdom node into a happy-dom tree.
+    // Safe in the browser: Vite substitutes only `process.env` (a member
+    // expression), NOT the bare `process` object, so `typeof process` is
+    // "undefined" in the client bundle → isNodeRuntime is false → the interactive
+    // live-DOM branch below still runs and comment marks stay clickable in the
+    // editor. This browser-safety is load-bearing and NOT covered by a test
+    // (client vitest runs under jsdom→node, where isNodeRuntime is true). Do NOT
+    // add a `process` polyfill (e.g. vite-plugin-node-polyfills) without
+    // revisiting this guard, or comment interactivity dies silently.
+    const isNodeRuntime =
+      typeof process !== "undefined" && !!process.versions?.node;
+
+    if (
+      typeof window === "undefined" ||
+      typeof document === "undefined" ||
+      isNodeRuntime
+    ) {
       return [
         "span",
         mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, {

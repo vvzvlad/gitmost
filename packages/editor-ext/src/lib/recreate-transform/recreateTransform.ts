@@ -1,6 +1,6 @@
 import { Transform } from "@tiptap/pm/transform";
 import { Node, Schema } from "@tiptap/pm/model";
-import { applyPatch, createPatch, Operation } from "rfc6902";
+import { applyPatch, Operation } from "rfc6902";
 import { diffWordsWithSpace, diffChars } from "diff";
 import { AnyObject } from "./types";
 import { getReplaceStep } from "./getReplaceStep";
@@ -8,6 +8,40 @@ import { simplifyTransform } from "./simplifyTransform";
 import { removeMarks } from "./removeMarks";
 import { getFromPath } from "./getFromPath";
 import { copy } from "./copy";
+import { fastCreatePatch } from "./fastCreatePatch";
+
+// ---------------------------------------------------------------------------
+// Word-diff bomb guard (issue #581). `addReplaceTextSteps` runs an O(words²)
+// diffWordsWithSpace/diffChars over the FULL node text; a single huge text node
+// (e.g. a pasted document into one paragraph) froze the UI on its own. These caps
+// bound that cost. Starting values chosen from the #581 benchmark; tune there.
+// ---------------------------------------------------------------------------
+
+/**
+ * Below this combined length the text diff runs unbounded (current behaviour) —
+ * character/word diffing a couple thousand chars is sub-millisecond. This value is
+ * multiplicatively linked to the MCP byte-cap guard (packages/mcp diff-size
+ * guard): raising it there without raising it here would let the MCP path admit
+ * texts this path still bails on, so the two must move together.
+ */
+const WORD_DIFF_MAX_CHARS = 2000;
+
+/**
+ * Myers edit-distance budget for the mid-range (WORD_DIFF_MAX_CHARS..HARD) band:
+ * cost is O(text · editLength), so capping the edit length keeps a "moderately
+ * large but not pathological" text diff bounded. If the budget is exceeded the
+ * diff aborts (returns undefined) and we fall back to a whole-text replace.
+ * 400 word-ops comfortably covers a real edit while cutting off the quadratic tail.
+ */
+const WORD_DIFF_MAX_EDIT_LENGTH = 400;
+
+/**
+ * Above this combined length we do NOT diff at all — a text node this large that
+ * changed is almost always a wholesale replace, and even a budgeted Myers pass has
+ * meaningful setup cost. Synthesize a whole-text replace directly. ~20k chars is
+ * far past any hand-edit and matches the benchmark's "one huge text node" case.
+ */
+const WORD_DIFF_HARD_MAX_CHARS = 20000;
 
 export interface Options {
   complexSteps?: boolean;
@@ -53,14 +87,14 @@ export class RecreateTransform {
       // any mapping changes anyway.
       this.currentJSON = removeMarks(this.fromDoc).toJSON();
       this.finalJSON = removeMarks(this.toDoc).toJSON();
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
+      this.ops = fastCreatePatch(this.currentJSON, this.finalJSON);
       this.recreateChangeContentSteps();
       this.recreateChangeMarkSteps();
     } else {
       // We don't differentiate between mark changes and other changes.
       this.currentJSON = this.fromDoc.toJSON();
       this.finalJSON = this.toDoc.toJSON();
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
+      this.ops = fastCreatePatch(this.currentJSON, this.finalJSON);
       this.recreateChangeContentSteps();
     }
 
@@ -160,7 +194,7 @@ export class RecreateTransform {
       }
       this.currentJSON = removeMarks(this.tr.doc).toJSON();
       // setting the node markup may have invalidated the following ops, so we calculate them again.
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
+      this.ops = fastCreatePatch(this.currentJSON, this.finalJSON);
       return true;
     }
     return false;
@@ -212,6 +246,45 @@ export class RecreateTransform {
     throw new Error("No valid step found.");
   }
 
+  /**
+   * Build the char/word diff for a text replacement, guarding the word-diff bomb
+   * (issue #581). The result feeds the EXISTING step-building loop unchanged; a
+   * "whole-text replace" is expressed in the same {removed}/{added} shape the loop
+   * already understands (removed run, then added run → one replaceWith).
+   */
+  computeTextDiffs(currentText: string, finalText: string) {
+    // Whole-text replace, in the shape the step loop consumes.
+    const wholeReplace = () => [
+      { removed: true, value: currentText },
+      { added: true, value: finalText },
+    ];
+
+    const total = (currentText?.length ?? 0) + (finalText?.length ?? 0);
+
+    if (total > WORD_DIFF_HARD_MAX_CHARS) {
+      // Too large to diff at all — synthesize a whole-text replace.
+      return wholeReplace();
+    }
+
+    if (total > WORD_DIFF_MAX_CHARS) {
+      // Mid-range: diff with an edit-distance budget; undefined ⇒ budget exceeded,
+      // fall back to a whole-text replace.
+      const budgeted = this.wordDiffs
+        ? diffWordsWithSpace(currentText, finalText, {
+            maxEditLength: WORD_DIFF_MAX_EDIT_LENGTH,
+          })
+        : diffChars(currentText, finalText, {
+            maxEditLength: WORD_DIFF_MAX_EDIT_LENGTH,
+          });
+      return budgeted ?? wholeReplace();
+    }
+
+    // Small text — current behaviour unchanged.
+    return this.wordDiffs
+      ? diffWordsWithSpace(currentText, finalText)
+      : diffChars(currentText, finalText);
+  }
+
   /** retrieve and possibly apply text replace-steps based from doc changes */
   addReplaceTextSteps(op, afterStepJSON) {
     // We find the position number of the first character in the string
@@ -227,9 +300,7 @@ export class RecreateTransform {
     // get text diffs
     const finalText = op.value;
     const currentText = getFromPath(this.currentJSON, op.path);
-    const textDiffs = this.wordDiffs
-      ? diffWordsWithSpace(currentText, finalText)
-      : diffChars(currentText, finalText);
+    const textDiffs = this.computeTextDiffs(currentText, finalText);
 
     let offset = op1Doc.content.findDiffStart(op2Doc.content);
     const marks = op1Doc.resolve(offset + 1).marks();

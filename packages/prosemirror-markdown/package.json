@@ -1,0 +1,52 @@
+{
+  "name": "@docmost/prosemirror-markdown",
+  "version": "0.1.0",
+  "description": "Pure ProseMirror <-> Markdown converter + schema mirror (headless, framework-free).",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "browser": "./build/browser.js",
+      "default": "./build/index.js"
+    },
+    "./browser": {
+      "types": "./build/browser.d.ts",
+      "default": "./build/browser.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@tiptap/core": "3.20.4",
+    "@tiptap/extension-code": "3.20.4",
+    "@tiptap/extension-highlight": "3.20.4",
+    "@tiptap/extension-image": "3.20.4",
+    "@tiptap/extension-subscript": "3.20.4",
+    "@tiptap/extension-superscript": "3.20.4",
+    "@tiptap/extension-task-item": "3.20.4",
+    "@tiptap/extension-task-list": "3.20.4",
+    "@tiptap/html": "3.20.4",
+    "@tiptap/pm": "3.20.4",
+    "@tiptap/starter-kit": "3.20.4",
+    "happy-dom": "20.8.9",
+    "jsdom": "25.0.0",
+    "marked": "17.0.5",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@docmost/editor-ext": "workspace:*",
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^20.0.0",
+    "fast-check": "^4.8.0",
+    "typescript": "^5.0.0",
+    "vitest": "4.1.6"
+  }
+}

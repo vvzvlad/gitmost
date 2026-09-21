@@ -1,5 +1,36 @@
-import { markdownToHtml } from "@docmost/editor-ext";
+import {
+  markdownToProseMirrorSync,
+  docmostExtensions,
+} from "@docmost/prosemirror-markdown/browser";
+import { getSchema } from "@tiptap/core";
+import { Node as PMNode, DOMSerializer } from "@tiptap/pm/model";
 import DOMPurify from "dompurify";
+
+// The Docmost editor schema, built once. Chat markdown is rendered through the
+// SAME schema the editor/import use (issue #347), so chat output matches how the
+// page would render the same markdown.
+const chatSchema = getSchema(docmostExtensions);
+
+/**
+ * Markdown -> HTML for chat display, via the canonical converter. We serialize
+ * the ProseMirror doc with `DOMSerializer` into a real element and read its
+ * `innerHTML` (rather than `@tiptap/html`'s `generateHTML`, whose browser path
+ * uses `XMLSerializer` and stamps a `xmlns` on every block) so the markup is
+ * clean HTML. `li > p` wrapping is inherent to the schema (listItem content is
+ * `paragraph+`); the chat CSS zeroes those paragraph margins so lists still
+ * render tight.
+ */
+function markdownToChatHtml(markdown: string): string {
+  const doc = markdownToProseMirrorSync(markdown);
+  const node = PMNode.fromJSON(chatSchema, doc);
+  const div = document.createElement("div");
+  DOMSerializer.fromSchema(chatSchema).serializeFragment(
+    node.content,
+    { document },
+    div,
+  );
+  return div.innerHTML;
+}
 
 export interface RenderChatMarkdownOptions {
   /**
@@ -63,22 +94,32 @@ function neutralizeInternalLinksHook(node: Element): void {
 
 /**
  * Render AI markdown to sanitized HTML for read-only display. We reuse the
- * app's `markdownToHtml` (the same `marked` pipeline used for paste/import) so
- * chat output matches the editor's markdown flavor, then sanitize with
- * DOMPurify — LLM output is untrusted, so it must never reach the DOM unsanitized.
+ * canonical converter (issue #347): markdown -> ProseMirror JSON (the SAME
+ * `markdownToProseMirrorSync` the editor paste/import path uses, so chat output
+ * matches the editor's markdown flavor) -> HTML via `markdownToChatHtml`
+ * (DOMSerializer), then sanitize with DOMPurify — LLM output is untrusted, so it
+ * must never reach the DOM unsanitized.
  *
- * `markdownToHtml` can return `string | Promise<string>` (it has async marked
- * extensions registered). In practice plain chat markdown resolves
- * synchronously, but we guard the Promise case by returning a safe empty string
- * for that branch (the caller renders the raw text fallback instead).
+ * Stays SYNCHRONOUS: both callers render inside React (a memo and a useMemo),
+ * so the whole pipeline must resolve without awaiting. The converter's sync
+ * entry makes that possible; on any conversion error we return "" so the caller
+ * falls back to raw text (the same fallback the old Promise-guard produced).
  */
 export function renderChatMarkdown(
   markdown: string,
   options: RenderChatMarkdownOptions = {},
 ): string {
   if (!markdown) return "";
-  const html = markdownToHtml(markdown);
-  if (typeof html !== "string") return "";
+  let html: string;
+  try {
+    // markdown -> canonical PM JSON -> HTML (native DOMParser in the browser;
+    // jsdom is never bundled — see @docmost/prosemirror-markdown/browser).
+    html = markdownToChatHtml(markdown);
+  } catch {
+    // Malformed/unsupported markdown must not crash the chat render; fall back
+    // to raw text (empty return -> caller shows the plain-text branch).
+    return "";
+  }
 
   if (!options.neutralizeInternalLinks) {
     // Internal chat: unchanged behavior, no hook registered.

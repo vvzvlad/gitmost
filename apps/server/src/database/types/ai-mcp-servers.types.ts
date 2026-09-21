@@ -11,6 +11,13 @@ import { Timestamp, Generated } from '@docmost/db/types/db';
 export interface AiMcpServers {
   id: Generated<string>;
   workspaceId: string;
+  // Owner of a PERSONAL external MCP server (#686). null = an admin/workspace-
+  // managed server (the only kind before #686); a uuid = a personal server
+  // owned by that user (visible only to that user's agent turn, managed only by
+  // that user). FK users(id) ON DELETE CASCADE — a personal row is destroyed
+  // with its owner (never nulled, which would promote it to an admin server).
+  // Mirrors migration 20260719T120000-ai-mcp-servers-personal.ts.
+  userId: string | null;
   // Display name, e.g. 'Tavily'. Also drives the tool-name namespace prefix.
   name: string;
   // '@ai-sdk/mcp' transport type: 'http' | 'sse'.

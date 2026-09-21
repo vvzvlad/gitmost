@@ -5,13 +5,14 @@
   "scripts": {
     "build": "tsc --build",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run && vitest run -c vitest.bench.config.ts",
     "test:watch": "vitest"
   },
   "main": "dist/index.js",
   "module": "./src/index.ts",
   "types": "dist/index.d.ts",
-  "dependencies": {
-    "marked": "17.0.5"
+  "devDependencies": {
+    "@vitest/coverage-v8": "4.1.6",
+    "vitest": "4.1.6"
   }
 }

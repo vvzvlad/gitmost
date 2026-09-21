@@ -1,0 +1,19 @@
+{
+  "name": "@docmost/token-estimate",
+  "version": "0.1.0",
+  "description": "Shared, provider-agnostic token estimator (chars/2.5) used by the AI-chat client counter and the server history-replay budgeter, so the two never diverge.",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "4.1.6"
+  }
+}

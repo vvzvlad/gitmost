@@ -17,9 +17,10 @@ import { MovePageDto } from './move-page.dto';
 //     a valid ordering key the server itself generated would be refused on move.
 //
 // The tests below assert the CORRECT contract: any key the generator can produce
-// must satisfy the DTO. The genuinely-failing case is marked `test.failing` so the
-// suite stays green while locking the bug; it flips red (alerting us) once the DTO
-// bounds are widened to cover the generator's real range.
+// must satisfy the DTO. FIXED (#495 item 9): the DTO now validates `position` by
+// CHARSET ([0-9A-Za-z], the generator's base-62 alphabet) instead of the wrong
+// @MaxLength(12) length bound, so dense between-inserts are accepted; the former
+// `test.failing` bug-lock is now a passing assertion.
 
 function constraintErrors(position: unknown) {
   const dto = plainToInstance(MovePageDto, {
@@ -47,24 +48,33 @@ describe('MovePageDto.position vs generateJitteredKeyBetween parity', () => {
     expect(hasError(errors, 'position')).toBe(false);
   });
 
-  // BUG LOCK: dense between-inserts produce keys longer than 12 chars, which
-  // MaxLength(12) rejects even though they are valid ordering keys. This SHOULD
-  // pass; it currently fails. Flips green when the DTO bound is fixed.
-  test.failing(
-    'accepts dense between-inserted keys (currently rejected by MaxLength(12))',
-    async () => {
-      let lo = generateJitteredKeyBetween(null, null);
-      let hi = generateJitteredKeyBetween(lo, null);
-      // Repeatedly insert just above `lo`, shrinking the gap so the key grows.
-      let longest = lo;
-      for (let i = 0; i < 40; i++) {
-        const mid = generateJitteredKeyBetween(lo, hi);
-        if (mid.length > longest.length) longest = mid;
-        hi = mid;
-      }
-      expect(longest.length).toBeGreaterThan(12); // sanity: we produced a long key
-      const errors = await constraintErrors(longest);
-      expect(hasError(errors, 'position')).toBe(false);
-    },
-  );
+  // FIXED: dense between-inserts produce keys longer than 12 chars, which the old
+  // MaxLength(12) rejected even though they are valid ordering keys. Now accepted.
+  it('accepts dense between-inserted keys longer than 12 chars', async () => {
+    let lo = generateJitteredKeyBetween(null, null);
+    let hi = generateJitteredKeyBetween(lo, null);
+    // Repeatedly insert just above `lo`, shrinking the gap so the key grows. The
+    // generator is JITTERED (random), so use enough iterations that the longest
+    // key reliably clears the old 12-char bound: measured min-over-50-trials is
+    // ~11 at 40 iterations (flaky) but ~36 at 200 (robust margin).
+    let longest = lo;
+    for (let i = 0; i < 200; i++) {
+      const mid = generateJitteredKeyBetween(lo, hi);
+      if (mid.length > longest.length) longest = mid;
+      hi = mid;
+    }
+    expect(longest.length).toBeGreaterThan(12); // sanity: we produced a long key
+    const errors = await constraintErrors(longest);
+    expect(hasError(errors, 'position')).toBe(false);
+  });
+
+  // The charset guard replaces the length bound: reject anything outside the
+  // generator's [0-9A-Za-z] alphabet (control chars, separators, injection) and
+  // the empty string, while still accepting every real key.
+  it('rejects a position with characters outside the fractional-index alphabet', async () => {
+    for (const bad of ['a0/b', 'a b', 'a\n0', 'a.b', '', "a';--"]) {
+      const errors = await constraintErrors(bad);
+      expect(hasError(errors, 'position')).toBe(true);
+    }
+  });
 });

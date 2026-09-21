@@ -5,6 +5,9 @@ import { IPage } from "@/features/page/types/page.types.ts";
 
 export interface IPageSearch {
   id: string;
+  // #529 A7 superset: `pageId` aliases `id`; `rank`/`highlight` are null for
+  // substring-only hits (the UI already falls back to the title/snippet).
+  pageId?: string;
   title: string;
   icon: string;
   parentPageId: string;
@@ -12,9 +15,36 @@ export interface IPageSearch {
   creatorId: string;
   createdAt: Date;
   updatedAt: Date;
-  rank: string;
-  highlight: string;
+  rank: string | number | null;
+  highlight: string | null;
   space: Partial<ISpace>;
+  // New #529 fields (present from the native Postgres search driver).
+  snippet?: string;
+  score?: number;
+  path?: string[];
+  matchedFields?: string[];
+  matchedTerms?: string[];
+}
+
+// #529 A5 pagination envelope returned by POST /search (native driver). The web
+// list helpers read `items`; these travel alongside for pagination + diagnostics.
+export interface IPageSearchResponse {
+  items: IPageSearch[];
+  total: number;
+  hasMore: boolean;
+  truncatedAtCap: boolean;
+  offset: number;
+  query?: {
+    raw: string;
+    parsed: {
+      positive: string[];
+      required: string[];
+      excluded: string[];
+      reason?: string;
+    };
+    mode: "or" | "and";
+    match: string;
+  };
 }
 
 export interface SearchSuggestionParams {
@@ -37,6 +67,10 @@ export interface IPageSearchParams {
   query: string;
   spaceId?: string;
   shareId?: string;
+  // #529 A9: match mode (auto default) + pagination.
+  match?: "auto" | "word" | "prefix" | "substring";
+  limit?: number;
+  offset?: number;
 }
 
 export interface IAttachmentSearch {

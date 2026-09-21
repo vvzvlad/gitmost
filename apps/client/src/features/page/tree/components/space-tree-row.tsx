@@ -1,19 +1,28 @@
 import { useRef } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useAtom } from "jotai";
+import {
+  markOperationStart,
+  measureOperation,
+} from "@/lib/telemetry/vitals";
+import { useAtom, useSetAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { ActionIcon, rem, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   IconChevronDown,
   IconChevronRight,
-  IconFileDescription,
+  IconClockHour4,
+  IconLink,
   IconPlus,
   IconPointFilled,
   IconTemplate,
+  IconTrash,
 } from "@tabler/icons-react";
 
-import EmojiPicker from "@/components/ui/emoji-picker.tsx";
+import { PageIconPicker } from "@/components/ui/page-icon.tsx";
 import { queryClient } from "@/main.tsx";
+import { useClipboard } from "@/hooks/use-clipboard";
+import { getAppUrl } from "@/lib/config.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { getPageById } from "@/features/page/services/page-service.ts";
 import {
@@ -35,6 +44,8 @@ import { updateTreeNodeIcon } from "@/features/page/tree/utils/utils.ts";
 
 type SpaceTreeRowProps = RenderRowProps<SpaceTreeNode> & {
   readOnly: boolean;
+  /** Page-icon tile size for the current tree density (see TREE_ICON_SIZE_*). */
+  iconSize: number;
 };
 
 export function SpaceTreeRow({
@@ -46,11 +57,16 @@ export function SpaceTreeRow({
   tabIndex,
   treeItemProps,
   readOnly,
+  iconSize,
 }: SpaceTreeRowProps) {
   const { t } = useTranslation();
   const { spaceSlug } = useParams();
   const updatePageMutation = useUpdatePageMutation();
-  const [, setTreeData] = useAtom(treeDataAtom);
+  // Setter-only: subscribing to the whole treeDataAtom (via useAtom) re-rendered
+  // every virtualized row on any tree event, bypassing the DocTreeRow memo. This
+  // row never reads the tree value, only writes it, so useSetAtom avoids the
+  // value subscription.
+  const setTreeData = useSetAtom(treeDataAtom);
   const emit = useQueryEmit();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mobileSidebarOpened] = useAtom(mobileSidebarAtom);
@@ -90,10 +106,12 @@ export function SpaceTreeRow({
     e.stopPropagation();
   };
 
-  const handleEmojiSelect = (emoji: { native: string }) => {
-    handleUpdateNodeIcon(node.id, emoji.native);
+  // The picker hands back the serialized IconRef JSON (see icon-ref.ts). The
+  // optimistic tree update and the mutation store the string as-is.
+  const handleIconSelect = (icon: string) => {
+    handleUpdateNodeIcon(node.id, icon);
     updatePageMutation
-      .mutateAsync({ pageId: node.id, icon: emoji.native })
+      .mutateAsync({ pageId: node.id, icon })
       .then((data) => {
         setTimeout(() => {
           emit({
@@ -101,7 +119,7 @@ export function SpaceTreeRow({
             spaceId: node.spaceId,
             entity: ["pages"],
             id: node.id,
-            payload: { icon: emoji.native, parentPageId: data.parentPageId },
+            payload: { icon, parentPageId: data.parentPageId },
           });
         }, 50);
       });
@@ -124,6 +142,12 @@ export function SpaceTreeRow({
 
   const handleLoadChildren = async () => {
     if (!node.hasChildren) return;
+    // #683 `tree_expand` — mark at the expand action; measured once the children
+    // are appended and rendered (double-rAF render → paint). A cache-hit expand
+    // is ~0ms and is dropped by the report threshold; a failed fetch measures
+    // nothing (the mark expires). Includes network on a cold expand — honest, the
+    // user waits for children to appear.
+    markOperationStart("tree_expand");
     try {
       const childrenTree = await fetchAllAncestorChildren({
         pageId: node.id,
@@ -132,6 +156,13 @@ export function SpaceTreeRow({
       setTreeData((prev) =>
         treeModel.appendChildren(prev, node.id, childrenTree),
       );
+      try {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => measureOperation("tree_expand")),
+        );
+      } catch {
+        measureOperation("tree_expand");
+      }
     } catch (error) {
       console.error("Failed to fetch children:", error);
     }
@@ -159,13 +190,17 @@ export function SpaceTreeRow({
       />
 
       <div onClick={handleEmojiIconClick} style={{ marginRight: "4px" }}>
-        <EmojiPicker
-          onEmojiSelect={handleEmojiSelect}
-          icon={
-            node.icon ? node.icon : <IconFileDescription size="18" />
-          }
+        {/* The trigger ActionIcon is sized to the glyph on purpose: its default
+            (Mantine `md`, 28px) is taller than a 26px compact row, leaves a wide
+            dead gap between the icon and the title, and overlaps the
+            neighbouring rows' hit areas. PageIconPicker derives the button's own
+            border box from `size`. */}
+        <PageIconPicker
+          value={node.icon}
+          onChange={handleIconSelect}
+          onRemove={handleRemoveEmoji}
           readOnly={!canEdit}
-          removeEmojiAction={handleRemoveEmoji}
+          size={iconSize}
           actionIconProps={{ tabIndex: -1 }}
         />
       </div>
@@ -191,7 +226,33 @@ export function SpaceTreeRow({
         </Tooltip>
       )}
 
+      {node.temporaryExpiresAt && (
+        <Tooltip
+          // Children ride along to trash with the note (recursive removePage).
+          label={t("Temporary note — moves to trash unless made permanent")}
+          withArrow
+        >
+          <IconClockHour4
+            size={14}
+            stroke={1.5}
+            // Same visual-only indicator pattern as the template icon, but
+            // orange to flag the impending death timer.
+            style={{
+              flexShrink: 0,
+              marginLeft: rem(4),
+              color: "var(--mantine-color-orange-6)",
+            }}
+            aria-label={t("Temporary note")}
+            role="img"
+          />
+        </Tooltip>
+      )}
+
       <div className={classes.actions}>
+        <CopyLinkNode node={node} />
+
+        {canEdit && <DeleteNode node={node} />}
+
         <NodeMenu node={node} canEdit={canEdit} />
 
         {canEdit && (
@@ -306,6 +367,69 @@ function CreateNode({
       }}
     >
       <IconPlus style={{ width: rem(20), height: rem(20) }} stroke={2} />
+    </ActionIcon>
+  );
+}
+
+interface RowActionProps {
+  node: SpaceTreeNode;
+}
+
+// Row shortcut for the NodeMenu "Copy link" item. The URL is built exactly as
+// the menu builds it, so both entry points copy the same absolute page link.
+function CopyLinkNode({ node }: RowActionProps) {
+  const { t } = useTranslation();
+  const { spaceSlug } = useParams();
+  const clipboard = useClipboard({ timeout: 500 });
+
+  const handleCopyLink = () => {
+    const pageUrl =
+      getAppUrl() + buildPageUrl(spaceSlug, node.slugId, node.name);
+    clipboard.copy(pageUrl);
+    notifications.show({ message: t("Link copied") });
+  };
+
+  return (
+    <ActionIcon
+      size={20}
+      variant="subtle"
+      color="gray"
+      className={classes.actionIcon}
+      aria-label={t("Copy link")}
+      tabIndex={-1}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCopyLink();
+      }}
+    >
+      <IconLink style={{ width: rem(18), height: rem(18) }} stroke={2} />
+    </ActionIcon>
+  );
+}
+
+// Row shortcut for the NodeMenu "Move to trash" item. Unconfirmed on purpose —
+// it mirrors the menu item, which also deletes straight away, and the page is
+// recoverable from trash.
+function DeleteNode({ node }: RowActionProps) {
+  const { t } = useTranslation();
+  const { handleDelete } = useTreeMutation(node.spaceId);
+
+  return (
+    <ActionIcon
+      size={20}
+      variant="subtle"
+      color="gray"
+      className={`${classes.actionIcon} ${classes.actionIconDanger}`}
+      aria-label={t("Move to trash")}
+      tabIndex={-1}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleDelete(node.id);
+      }}
+    >
+      <IconTrash style={{ width: rem(18), height: rem(18) }} stroke={2} />
     </ActionIcon>
   );
 }

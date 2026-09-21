@@ -1,0 +1,63 @@
+{
+  "$comment": "Semantic palettes for drawioFromGraph (issue #425). DATA, not code: node `kind` -> fill/stroke slot, edge `kind` -> line-style props, per preset. The `default` node palette is the issue's base table; `dark` keeps the same hues on a dark canvas with lighter strokes/font; `colorblind-safe` maps every slot onto the Okabe-Ito qualitative palette (8 colours proven distinguishable for all common colour-vision deficiencies) so no two adjacent kinds collide. `fontColor`/`fillColor`/`strokeColor` are exact draw.io values. `edgeDefault` is the fallback line style; `group` is the (always-transparent) container stroke per preset.",
+  "presets": {
+    "default": {
+      "canvasDark": false,
+      "nodes": {
+        "service":  { "fillColor": "#dae8fc", "strokeColor": "#6c8ebf", "fontColor": "#000000" },
+        "db":       { "fillColor": "#d5e8d4", "strokeColor": "#82b366", "fontColor": "#000000" },
+        "queue":    { "fillColor": "#fff2cc", "strokeColor": "#d6b656", "fontColor": "#000000" },
+        "gateway":  { "fillColor": "#ffe6cc", "strokeColor": "#d79b00", "fontColor": "#000000" },
+        "error":    { "fillColor": "#f8cecc", "strokeColor": "#b85450", "fontColor": "#000000" },
+        "external": { "fillColor": "#f5f5f5", "strokeColor": "#666666", "fontColor": "#333333" },
+        "security": { "fillColor": "#e1d5e7", "strokeColor": "#9673a6", "fontColor": "#000000" }
+      },
+      "edges": {
+        "sync":  { "props": "" },
+        "async": { "props": "dashed=1;" },
+        "error": { "props": "dashed=1;strokeColor=#DD344C;" }
+      },
+      "edgeDefault": { "strokeColor": "#333333", "fontColor": "#333333" },
+      "group": { "strokeColor": "#666666", "fontColor": "#333333" }
+    },
+    "dark": {
+      "canvasDark": true,
+      "nodes": {
+        "service":  { "fillColor": "#1a2a44", "strokeColor": "#7ea6e0", "fontColor": "#dae8fc" },
+        "db":       { "fillColor": "#1f331e", "strokeColor": "#97d077", "fontColor": "#d5e8d4" },
+        "queue":    { "fillColor": "#3a3218", "strokeColor": "#e5c15a", "fontColor": "#fff2cc" },
+        "gateway":  { "fillColor": "#3a2812", "strokeColor": "#ffb570", "fontColor": "#ffe6cc" },
+        "error":    { "fillColor": "#3a1c1b", "strokeColor": "#e08e8b", "fontColor": "#f8cecc" },
+        "external": { "fillColor": "#2b2b2b", "strokeColor": "#999999", "fontColor": "#e0e0e0" },
+        "security": { "fillColor": "#2c2338", "strokeColor": "#b39ddb", "fontColor": "#e1d5e7" }
+      },
+      "edges": {
+        "sync":  { "props": "" },
+        "async": { "props": "dashed=1;" },
+        "error": { "props": "dashed=1;strokeColor=#ff6b6b;" }
+      },
+      "edgeDefault": { "strokeColor": "#cccccc", "fontColor": "#e0e0e0" },
+      "group": { "strokeColor": "#aaaaaa", "fontColor": "#e0e0e0" }
+    },
+    "colorblind-safe": {
+      "canvasDark": false,
+      "okabeIto": ["#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+      "nodes": {
+        "service":  { "fillColor": "#D6E9F5", "strokeColor": "#0072B2", "fontColor": "#000000" },
+        "db":       { "fillColor": "#D6EFE4", "strokeColor": "#009E73", "fontColor": "#000000" },
+        "queue":    { "fillColor": "#FCF8CC", "strokeColor": "#F0E442", "fontColor": "#000000" },
+        "gateway":  { "fillColor": "#FBEBD0", "strokeColor": "#E69F00", "fontColor": "#000000" },
+        "error":    { "fillColor": "#F7DDCC", "strokeColor": "#D55E00", "fontColor": "#000000" },
+        "external": { "fillColor": "#EDEDED", "strokeColor": "#000000", "fontColor": "#000000" },
+        "security": { "fillColor": "#F3DEEB", "strokeColor": "#CC79A7", "fontColor": "#000000" }
+      },
+      "edges": {
+        "sync":  { "props": "" },
+        "async": { "props": "dashed=1;" },
+        "error": { "props": "dashed=1;strokeColor=#D55E00;" }
+      },
+      "edgeDefault": { "strokeColor": "#000000", "fontColor": "#000000" },
+      "group": { "strokeColor": "#000000", "fontColor": "#000000" }
+    }
+  }
+}

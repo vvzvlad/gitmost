@@ -10,17 +10,36 @@ import { TransformHttpResponseInterceptor } from './common/interceptors/http-res
 import { WsRedisIoAdapter } from './ws/adapter/ws-redis.adapter';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyCookie from '@fastify/cookie';
+import fastifyCompress from '@fastify/compress';
 import fastifyIp from 'fastify-ip';
 import { InternalLogFilter } from './common/logger/internal-log-filter';
 import { EnvironmentService } from './integrations/environment/environment.service';
+import { SANDBOX_API_PATH } from './integrations/sandbox/sandbox.constants';
 import { resolveFrameHeader } from './common/helpers';
 import { resolveTrustProxy } from './integrations/environment/trust-proxy.util';
+import { isMetricsEnabled } from './integrations/metrics/metrics.registry';
+import { recordHttpResponse } from './integrations/metrics/http-metrics.hook';
+import { startMetricsServer } from './integrations/metrics/metrics.server';
 
 async function bootstrap() {
+  // Fastify JSON body cap. Fastify defaults to 1 MiB, which a long AI-chat
+  // research turn exceeds: the client resends the FULL message history (every
+  // tool call + search result) on each turn, so a deep conversation's POST to
+  // /api/ai-chat/stream can be several MB and would otherwise be rejected with
+  // FST_ERR_CTP_BODY_TOO_LARGE (413). Raise the cap; override with
+  // HTTP_JSON_BODY_LIMIT (bytes). A missing/invalid/non-positive value keeps the
+  // 25 MiB default. Multipart uploads are unaffected (their own @fastify/multipart
+  // limits apply); this only bounds JSON/urlencoded request bodies.
+  const bodyLimitEnv = Number(process.env.HTTP_JSON_BODY_LIMIT);
+  const bodyLimit =
+    Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0
+      ? bodyLimitEnv
+      : 25 * 1024 * 1024;
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({
       trustProxy: resolveTrustProxy(process.env.TRUST_PROXY),
+      bodyLimit,
       routerOptions: {
         maxParamLength: 1000,
         ignoreTrailingSlash: true,
@@ -40,7 +59,14 @@ async function bootstrap() {
   app.useLogger(app.get(PinoLogger));
 
   app.setGlobalPrefix('api', {
-    exclude: ['robots.txt', 'share/:shareId/p/:pageSlug', 'mcp'],
+    exclude: [
+      'robots.txt',
+      'share/:shareId/p/:pageSlug',
+      // Vanity link resolver lives outside /api so /l/<alias> is a clean
+      // public URL that 302s to the canonical share page.
+      'l/:alias',
+      'mcp',
+    ],
   });
 
   const reflector = app.get(Reflector);
@@ -52,6 +78,17 @@ async function bootstrap() {
   await app.register(fastifyIp);
   await app.register(fastifyMultipart);
   await app.register(fastifyCookie);
+  // Compress dynamic responses (API JSON, the rewritten share-SEO HTML) when the
+  // client accepts br/gzip. @fastify/compress only compresses content-types that
+  // mime-db flags `compressible` (application/json, text/html, …); `text/event-stream`
+  // is not in mime-db, so SSE is never compressed by the allowlist. The AI-chat
+  // stream additionally hijacks the raw socket (pipeUIMessageStreamToResponse ->
+  // res.raw in ai-chat.service.ts), bypassing Fastify's reply/onSend lifecycle
+  // entirely, so this hook can never buffer that stream.
+  await app.register(fastifyCompress, {
+    // Skip tiny payloads where compression overhead outweighs the savings.
+    threshold: 1024,
+  });
 
   const environmentService = app.get(EnvironmentService);
   const frameHeader = resolveFrameHeader(
@@ -82,6 +119,19 @@ async function bootstrap() {
       (request.raw as any).ip = request.ip;
       done();
     });
+
+  // #355 — HTTP request-duration histogram. Registered ONLY when METRICS_PORT is
+  // set (otherwise no collector runs at all). Uses the bounded route template
+  // label and excludes SSE/streaming responses (see recordHttpResponse).
+  if (isMetricsEnabled()) {
+    app
+      .getHttpAdapter()
+      .getInstance()
+      .addHook('onResponse', (req, reply, done) => {
+        recordHttpResponse(req, reply);
+        done();
+      });
+  }
 
   app
     .getHttpAdapter()
@@ -119,6 +169,13 @@ async function bootstrap() {
         '/api/workspace/create',
         '/api/workspace/joined',
         '/api/workspace/find-by-email',
+        // Public client perf-telemetry sink: browsers post it without a
+        // resolved workspace host, so the workspace-resolution gate must not 404 it.
+        '/api/telemetry/vitals',
+        // Anonymous in-RAM blob sandbox: a remote consumer fetches blobs by an
+        // unguessable UUID without any workspace host context, so the
+        // workspace-resolution gate must not apply.
+        SANDBOX_API_PATH,
       ];
 
       if (
@@ -142,7 +199,11 @@ async function bootstrap() {
     }),
   );
 
-  app.enableCors();
+  // #636 — `WWW-Authenticate` is NOT on the CORS-safelisted response headers, so
+  // without exposing it a browser-based MCP client (e.g. MCP Inspector) cannot read
+  // the 401's challenge at all: fetch() hides the header and the client is back to
+  // guessing OAuth — the exact failure the challenge exists to prevent.
+  app.enableCors({ exposedHeaders: ['WWW-Authenticate'] });
   app.useGlobalInterceptors(new TransformHttpResponseInterceptor(reflector));
   app.enableShutdownHooks();
 
@@ -163,6 +224,11 @@ async function bootstrap() {
       `Listening on http://127.0.0.1:${port} / ${process.env.APP_URL}`,
     );
   });
+
+  // #355 — Prometheus scrape endpoint on a SEPARATE port (METRICS_PORT),
+  // started after the app is up. No default port: a no-op when METRICS_PORT is
+  // unset. Closed on shutdown by MetricsServerLifecycle (MetricsModule).
+  startMetricsServer();
 }
 
 bootstrap();

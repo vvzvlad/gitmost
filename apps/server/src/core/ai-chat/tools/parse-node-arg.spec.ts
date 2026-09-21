@@ -1,10 +1,10 @@
-import { parseNodeArg } from './parse-node-arg';
+import { parseNodeArg } from '@docmost/prosemirror-markdown';
 
 /**
- * Unit tests for the in-app `parseNodeArg` helper. It mirrors the standalone
- * MCP helper (packages/mcp/src/lib/parse-node-arg.ts) and is used by the
- * patchNode / insertNode / updatePageJson tool adapters. Behavior must be
- * byte-identical: object passthrough, valid-string parse, invalid-string throw.
+ * Unit tests for the shared `parseNodeArg` helper (#414: now the single copy in
+ * `@docmost/prosemirror-markdown`, imported by both the server tool adapters and
+ * `@docmost/mcp`). Used by the patchNode / insertNode / updatePageJson adapters.
+ * Behavior: object passthrough, valid-string parse, invalid-string throw.
  */
 describe('parseNodeArg', () => {
   it('passes an object through unchanged', () => {

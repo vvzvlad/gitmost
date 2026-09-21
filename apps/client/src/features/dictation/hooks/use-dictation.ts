@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
 import { transcribeAudio } from "@/features/dictation/services/dictation-service";
+import {
+  classifyGetUserMediaError,
+  classifyTranscriptionError,
+  dictationErrorMessage,
+} from "@/features/dictation/dictation-status";
 
 // "loading" is set only by the streaming hook while it lazily loads the VAD
 // model on first use; the batch hook never sets it. It exists so the streaming
@@ -26,6 +31,8 @@ interface UseDictationResult {
   cancel: () => void;
   // Smoothed live microphone level in the 0..1 range while recording (0 when idle).
   audioLevel: number;
+  // The last error shown to the user (null until one occurs / on a new start).
+  errorMessage: string | null;
 }
 
 // Candidate container/codec combinations in preference order. The first one the
@@ -67,6 +74,8 @@ export function useDictation(
   const { t } = useTranslation();
   const [status, setStatus] = useState<DictationStatus>("idle");
   const [audioLevel, setAudioLevel] = useState(0);
+  // Last error message shown to the user; the mic button reads it for its tooltip.
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Keep the latest callbacks in a ref so the recorder's onstop closure always
   // calls the current handlers without re-creating the recorder.
@@ -194,15 +203,16 @@ export function useDictation(
     if (startingRef.current || recorderRef.current || streamRef.current) return;
     if (status !== "idle") return;
     startingRef.current = true;
+    // Clear any stale error from a previous attempt.
+    setErrorMessage(null);
 
     if (!navigator.mediaDevices?.getUserMedia) {
       const reason =
         "navigator.mediaDevices.getUserMedia is unavailable in this context";
       console.error("[dictation] " + reason);
-      notifications.show({
-        color: "red",
-        message: t("Audio recording is not available in this browser/context"),
-      });
+      const message = dictationErrorMessage("no-media-devices", t);
+      notifications.show({ color: "red", message });
+      setErrorMessage(message);
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -215,19 +225,16 @@ export function useDictation(
       // Always log the full error for diagnosis (name, message, stack).
       console.error("[dictation] getUserMedia failed", err);
       const name = (err as { name?: string })?.name;
-      const detail = (err as { message?: string })?.message ?? String(err);
-      let message: string;
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        message = t("Microphone access denied");
-      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-        message = t("No microphone found");
-      } else if (name === "NotReadableError" || name === "AbortError") {
-        message = t("Microphone is unavailable or already in use");
-      } else {
-        // Unknown failure: show the real reason instead of a generic string.
-        message = `${t("Could not start recording")}: ${name ? `${name}: ` : ""}${detail}`;
-      }
+      const rawDetail = (err as { message?: string })?.message ?? String(err);
+      // Prefix the DOMException name (e.g. "TypeError: …") so the generic
+      // resolver branch reproduces this hook's original "Could not start
+      // recording: <name>: <detail>" text. Each caller owns its own detail; the
+      // streaming hook intentionally does not add the name.
+      const detail = `${name ? `${name}: ` : ""}${rawDetail}`;
+      const code = classifyGetUserMediaError(err);
+      const message = dictationErrorMessage(code, t, { detail });
       notifications.show({ color: "red", message });
+      setErrorMessage(message);
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -249,10 +256,10 @@ export function useDictation(
       // The stream was acquired but the recorder failed to construct; stop the
       // tracks so the MediaStream does not leak before bailing out.
       stopTracks();
-      notifications.show({
-        color: "red",
-        message: `${t("Could not start recording")}: ${(err as { message?: string })?.message ?? String(err)}`,
-      });
+      const detail = (err as { message?: string })?.message ?? String(err);
+      const message = dictationErrorMessage("recorder-failed", t, { detail });
+      notifications.show({ color: "red", message });
+      setErrorMessage(message);
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -293,21 +300,14 @@ export function useDictation(
         .catch((err: unknown) => {
           // Log the full error for diagnosis (status + body + stack).
           console.error("[dictation] transcription failed", err);
-          const resp = (
-            err as { response?: { status?: number; data?: { message?: string } } }
-          )?.response;
-          const serverMsg = resp?.data?.message;
-          let message: string;
-          if (serverMsg && serverMsg.trim().length > 0) {
-            // The server already explains the cause (e.g. provider 404, bad
-            // format, STT not configured) — show it verbatim.
-            message = serverMsg;
-          } else if (resp?.status === 503 || resp?.status === 403) {
-            message = t("Voice dictation is not configured");
-          } else {
-            message = `${t("Transcription failed")}: ${(err as { message?: string })?.message ?? String(err)}`;
-          }
+          const { code, serverMessage } = classifyTranscriptionError(err);
+          const detail = (err as { message?: string })?.message ?? String(err);
+          const message = dictationErrorMessage(code, t, {
+            serverMessage,
+            detail,
+          });
           notifications.show({ color: "red", message });
+          setErrorMessage(message);
           setStatus("error");
           if (errorTimerRef.current !== null) {
             clearTimeout(errorTimerRef.current);
@@ -332,10 +332,10 @@ export function useDictation(
       stopTracks();
       recorderRef.current = null;
       startingRef.current = false;
-      notifications.show({
-        color: "red",
-        message: `${t("Could not start recording")}: ${(err as { message?: string })?.message ?? String(err)}`,
-      });
+      const detail = (err as { message?: string })?.message ?? String(err);
+      const message = dictationErrorMessage("recorder-failed", t, { detail });
+      notifications.show({ color: "red", message });
+      setErrorMessage(message);
       setStatus("idle");
       return;
     }
@@ -405,5 +405,5 @@ export function useDictation(
     };
   }, [clearTimer, stopTracks, stopMeter]);
 
-  return { status, start, stop, cancel, audioLevel };
+  return { status, start, stop, cancel, audioLevel, errorMessage };
 }

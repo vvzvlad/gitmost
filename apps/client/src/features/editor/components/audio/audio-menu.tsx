@@ -46,6 +46,13 @@ export function AudioMenu({ editor }: EditorMenuProps) {
         return null;
       }
 
+      // #343 PART 1: skip getAttributes unless an audio node is active. The menu
+      // only shows for an active audio node (shouldShow), so the null state while
+      // inactive is never rendered — behavior unchanged.
+      if (!ctx.editor.isActive("audio")) {
+        return null;
+      }
+
       const audioAttrs = ctx.editor.getAttributes("audio");
 
       return {

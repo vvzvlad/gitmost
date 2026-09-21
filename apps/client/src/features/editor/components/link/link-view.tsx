@@ -24,7 +24,7 @@ import classes from "./link.module.css";
 import { useTranslation } from "react-i18next";
 import { INTERNAL_LINK_REGEX } from "@/lib/constants";
 import { LinkEditorPanel } from "@/features/editor/components/link/link-editor-panel.tsx";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
 import { useSharePageQuery } from "@/features/share/queries/share-query.ts";
 import { buildSharedPageUrl } from "@/features/page/page.utils.ts";
 import { extractPageSlugId } from "@/lib";
@@ -83,7 +83,7 @@ export default function LinkView(props: MarkViewProps) {
   const isPopoverVisible = popoverState !== "closed";
   const activeView = isPopoverVisible ? popoverState : lastOpenState.current;
 
-  const { data: linkedPage } = usePageQuery({
+  const { data: linkedPage } = usePageMetaQuery({
     pageId: isPopoverVisible && slugId && !isShareRoute ? slugId : null,
   });
 

@@ -7,7 +7,7 @@ import { executeWithCursorPagination } from '@docmost/db/pagination/cursor-pagin
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { ExpressionBuilder, SelectQueryBuilder, sql } from 'kysely';
 import { DB } from '@docmost/db/types/db';
-import { dbOrTx } from '@docmost/db/utils';
+import { dbOrTx, isUniqueViolation } from '@docmost/db/utils';
 
 export const FavoriteType = {
   PAGE: 'page',
@@ -29,7 +29,8 @@ export class FavoriteRepo {
         .returningAll()
         .executeTakeFirst();
     } catch (err: any) {
-      if (err?.code === '23505') return undefined;
+      // Idempotent favorite: a duplicate (already-favorited) is not an error.
+      if (isUniqueViolation(err)) return undefined;
       throw err;
     }
   }

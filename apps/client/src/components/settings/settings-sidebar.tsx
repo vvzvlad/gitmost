@@ -10,6 +10,8 @@ import {
   IconBrush,
   IconWorld,
   IconSparkles,
+  IconKey,
+  IconPlug,
 } from "@tabler/icons-react";
 import { Link, useLocation } from "react-router-dom";
 import classes from "./settings.module.css";
@@ -23,6 +25,7 @@ import {
 import { mobileSidebarAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 import { useSettingsNavigation } from "@/hooks/use-settings-navigation";
+import { useWorkspaceEntitlementsQuery } from "@/features/workspace/queries/workspace-query.ts";
 import { useAtom } from "jotai";
 
 type DataItem = {
@@ -36,30 +39,50 @@ type DataGroup = {
   items: DataItem[];
 };
 
-const groupedData: DataGroup[] = [
-  {
-    heading: "Account",
-    items: [
-      { label: "Profile", icon: IconUser, path: "/settings/account/profile" },
-      {
-        label: "Preferences",
-        icon: IconBrush,
-        path: "/settings/account/preferences",
-      },
-    ],
-  },
-  {
-    heading: "Workspace",
-    items: [
-      { label: "General", icon: IconSettings, path: "/settings/workspace" },
-      { label: "AI", icon: IconSparkles, path: "/settings/ai" },
-      { label: "Members", icon: IconUsers, path: "/settings/members" },
-      { label: "Groups", icon: IconUsersGroup, path: "/settings/groups" },
-      { label: "Spaces", icon: IconSpaces, path: "/settings/spaces" },
-      { label: "Public sharing", icon: IconWorld, path: "/settings/sharing" },
-    ],
-  },
-];
+// Build the sidebar groups. The personal MCP-servers item (#686) is only shown
+// when the instance kill-switch (`mcpPersonalServersEnabled`) is on — the page
+// otherwise renders a disabled state, so hiding the link here keeps it tidy.
+function buildGroupedData(mcpPersonalEnabled: boolean): DataGroup[] {
+  const accountItems: DataItem[] = [
+    { label: "Profile", icon: IconUser, path: "/settings/account/profile" },
+    {
+      label: "Preferences",
+      icon: IconBrush,
+      path: "/settings/account/preferences",
+    },
+    {
+      label: "API keys",
+      icon: IconKey,
+      path: "/settings/account/api-keys",
+    },
+  ];
+
+  if (mcpPersonalEnabled) {
+    accountItems.push({
+      label: "My MCP servers",
+      icon: IconPlug,
+      path: "/settings/account/mcp-servers",
+    });
+  }
+
+  return [
+    {
+      heading: "Account",
+      items: accountItems,
+    },
+    {
+      heading: "Workspace",
+      items: [
+        { label: "General", icon: IconSettings, path: "/settings/workspace" },
+        { label: "AI", icon: IconSparkles, path: "/settings/ai" },
+        { label: "Members", icon: IconUsers, path: "/settings/members" },
+        { label: "Groups", icon: IconUsersGroup, path: "/settings/groups" },
+        { label: "Spaces", icon: IconSpaces, path: "/settings/spaces" },
+        { label: "Public sharing", icon: IconWorld, path: "/settings/sharing" },
+      ],
+    },
+  ];
+}
 
 export default function SettingsSidebar() {
   const { t } = useTranslation();
@@ -68,10 +91,15 @@ export default function SettingsSidebar() {
   const { goBack } = useSettingsNavigation();
   const [mobileSidebarOpened] = useAtom(mobileSidebarAtom);
   const toggleMobileSidebar = useToggleSidebar(mobileSidebarAtom);
+  const { data: entitlements } = useWorkspaceEntitlementsQuery();
 
   useEffect(() => {
     setActive(location.pathname);
   }, [location.pathname]);
+
+  const groupedData = buildGroupedData(
+    entitlements?.mcpPersonalServersEnabled ?? false,
+  );
 
   const menuItems = groupedData.map((group) => {
     return (

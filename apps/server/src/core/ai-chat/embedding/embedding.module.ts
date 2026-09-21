@@ -15,10 +15,7 @@ import { EmbeddingProcessor } from './embedding.processor';
  * to AI_QUEUE in this module's context (mirrors how other processors are wired).
  */
 @Module({
-  imports: [
-    AiModule,
-    BullModule.registerQueue({ name: QueueName.AI_QUEUE }),
-  ],
+  imports: [AiModule, BullModule.registerQueue({ name: QueueName.AI_QUEUE })],
   providers: [EmbeddingIndexerService, EmbeddingProcessor],
   exports: [EmbeddingIndexerService],
 })

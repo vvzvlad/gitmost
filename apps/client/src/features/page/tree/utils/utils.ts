@@ -9,25 +9,45 @@ export function sortPositionKeys(keys: any[]) {
   });
 }
 
+/**
+ * Single canonical `IPage -> SpaceTreeNode` field mapper. Every place that
+ * materialises a tree node from a page (buildTree, the optimistic insert in
+ * handleCreate, restore, duplicate) routes through here so the field copy —
+ * crucially `temporaryExpiresAt` — can never silently drift between sites. The
+ * `overrides` cover the small per-site differences (e.g. `name: ""` for an
+ * optimistic create, `name: title || "Untitled"` for restore, `canEdit: true`
+ * for duplicate). The default `temporaryExpiresAt` comes straight off the page,
+ * so restore (which the server nulls) stays permanent and a temporary create
+ * keeps its clock marker without a reload.
+ */
+export function pageToTreeNode(
+  page: IPage,
+  overrides?: Partial<SpaceTreeNode>,
+): SpaceTreeNode {
+  return {
+    id: page.id,
+    slugId: page.slugId,
+    name: page.title,
+    icon: page.icon,
+    position: page.position,
+    hasChildren: page.hasChildren,
+    spaceId: page.spaceId,
+    parentPageId: page.parentPageId,
+    canEdit: page.canEdit ?? page.permissions?.canEdit,
+    isTemplate: page.isTemplate,
+    temporaryExpiresAt: page.temporaryExpiresAt,
+    children: [],
+    ...overrides,
+  };
+}
+
 export function buildTree(pages: IPage[]): SpaceTreeNode[] {
   const pageMap: Record<string, SpaceTreeNode> = {};
 
   const tree: SpaceTreeNode[] = [];
 
   pages.forEach((page) => {
-    pageMap[page.id] = {
-      id: page.id,
-      slugId: page.slugId,
-      name: page.title,
-      icon: page.icon,
-      position: page.position,
-      hasChildren: page.hasChildren,
-      spaceId: page.spaceId,
-      parentPageId: page.parentPageId,
-      canEdit: page.canEdit ?? page.permissions?.canEdit,
-      isTemplate: page.isTemplate,
-      children: [],
-    };
+    pageMap[page.id] = pageToTreeNode(page);
   });
 
   // Defense-in-depth: a duplicate id in `pages` would push two references to the
@@ -50,18 +70,22 @@ export function findBreadcrumbPath(
   path: SpaceTreeNode[] = [],
 ): SpaceTreeNode[] | null {
   for (const node of tree) {
-    if (!node.name || node.name.trim() === "") {
-      node.name = "Untitled";
-    }
+    // Never mutate the input tree (it is the live, shared sidebar tree state).
+    // When a node has no usable name, surface "Untitled" via a shallow copy that
+    // only the returned breadcrumb chain sees — the source node stays untouched.
+    const displayNode: SpaceTreeNode =
+      !node.name || node.name.trim() === ""
+        ? { ...node, name: "Untitled" }
+        : node;
 
     if (node.id === pageId) {
-      return [...path, node];
+      return [...path, displayNode];
     }
 
     if (node.children) {
       const newPath = findBreadcrumbPath(node.children, pageId, [
         ...path,
-        node,
+        displayNode,
       ]);
       if (newPath) {
         return newPath;
@@ -267,6 +291,41 @@ export function loadedOpenBranchIds(
   };
   walk(tree);
   return ids;
+}
+
+/**
+ * Boot-cache hygiene (#159 #8): the persisted tree keeps the children of EVERY
+ * branch ever expanded — collapsing a branch never prunes them. So on reload a
+ * COLLAPSED branch hydrates with its old cached children, and `handleToggle`
+ * skips the lazy-load on first expand (children already present) → it shows
+ * STALE children (renamed / moved / deleted while the user was offline) with no
+ * reconcile. `refreshOpenBranches` only refreshes OPEN branches, so collapsed
+ * ones slip through.
+ *
+ * Fix: drop the cached children of every node NOT in the persisted open-set,
+ * resetting it to the canonical UNLOADED shape (`children: []`, `hasChildren`
+ * untouched — see pageToTreeNode). Its first expand then lazy-loads fresh, just
+ * as it did before the tree was cached to localStorage. OPEN branches keep
+ * their children (refreshOpenBranches reconciles those, so they must not be
+ * dropped here) and are recursed into so a collapsed branch nested under an
+ * open one is pruned too.
+ */
+export function pruneCollapsedChildren(
+  tree: SpaceTreeNode[],
+  openIds: ReadonlySet<string>,
+): SpaceTreeNode[] {
+  return tree.map((node) => {
+    const hasLoadedChildren = !!node.children && node.children.length > 0;
+    if (!openIds.has(node.id)) {
+      // Collapsed: drop the whole cached subtree so it reads as unloaded.
+      return hasLoadedChildren ? { ...node, children: [] } : node;
+    }
+    // Open: keep it, but recurse into its children (a nested collapsed branch
+    // must still be pruned).
+    return hasLoadedChildren
+      ? { ...node, children: pruneCollapsedChildren(node.children, openIds) }
+      : node;
+  });
 }
 
 // Collect every node id in the tree (roots, branches, leaves). Used by

@@ -1,5 +1,13 @@
 name: Test
 
+# NO `paths:` filter on purpose (issue #447). The tool-spec REGISTRY is split
+# across two packages that MUST stay in sync: the specs live in `packages/mcp`
+# but the parity/tier guard tests that read them live in the `apps/server` jest
+# suite. A PR touching only `packages/mcp/**` must therefore still run the SERVER
+# suite (and vice-versa), or an in-app wiring break slips through green and only
+# surfaces on develop after merge. The `test` job below runs BOTH suites via
+# `pnpm -r test` on every PR; the dedicated `mcp-server-parity` job makes that
+# cross-package gate explicit and fast. Do not add a `paths:` filter here.
 on:
   pull_request:
   workflow_call:
@@ -13,8 +21,80 @@ permissions:
   contents: read
 
 jobs:
+  # Guard against a long-lived branch adding a migration whose timestamped
+  # filename sorts BEFORE migrations already applied on the target branch (and
+  # thus in prod). The Kysely startup migrator rejects that as "corrupted
+  # migrations" and crash-loops the app on boot (incident #361). This gate fails
+  # the PR so the migration is renamed to a current timestamp before merge.
+  # Runs for pull_request (diff against the base branch) AND for push (#476
+  # retrospective: a DIRECT push to develop used to bypass this PR-only gate
+  # entirely — now the push is diffed against its `before` SHA; workflow_call
+  # from develop.yml inherits the caller's push event). workflow_dispatch has
+  # nothing to diff against and still skips the job.
+  migration-order:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history for the base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Added migrations must sort after the newest on the base
+        env:
+          TARGET_BRANCH: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          MIG_DIR="apps/server/src/database/migrations"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            # checkout above already did fetch-depth:0 (full history). Fetch the base
+            # WITHOUT --depth (a shallow graft would truncate the base history and
+            # break the merge-base when the base has moved ahead of the PR merge —
+            # exactly the long-branch-vs-moving-base case this gate guards, #361).
+            git fetch --no-tags origin "$TARGET_BRANCH"
+            BASE="origin/${TARGET_BRANCH}"
+          else
+            # push event: compare against the pre-push tip of the branch.
+            if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              echo "::notice::branch creation push — nothing to compare"
+              exit 0
+            fi
+            if ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              # The before-SHA is not in the clone (a force-push rewrote history).
+              # One recovery attempt — refresh every remote head (cheap: the
+              # checkout is already fetch-depth:0); a fetch failure aborts via
+              # `set -e`, which is fail-closed too.
+              git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+            fi
+            if ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              # FAIL-CLOSED: without the before-SHA there is no base to prove the
+              # ordering against, and a gate whose job is to BLOCK must not guess.
+              echo "::error::force-push detected — verify migration order manually, then re-run via workflow_dispatch"
+              exit 1
+            fi
+            BASE="$BEFORE_SHA"
+          fi
+          newest_on_target=$(git ls-tree -r --name-only "$BASE" "$MIG_DIR" | sort | tail -1)
+          # NO `|| true`: a diff failure (e.g. an unresolved merge-base) must fail
+          # the job CLOSED — a gate whose job is to BLOCK must never pass on error.
+          # `set -e` above already aborts on a non-zero diff exit.
+          added=$(git diff --diff-filter=A --name-only "${BASE}...HEAD" -- "$MIG_DIR")
+          bad=0
+          for f in $added; do
+            if [[ "$f" < "$newest_on_target" || "$f" == "$newest_on_target" ]]; then
+              echo "::error::Migration $f sorts at or before the newest on the base ($newest_on_target) — rename it with a CURRENT timestamp before merge (do not change its contents). See incident #361."
+              bad=1
+            fi
+          done
+          if [ "$bad" -eq 0 ]; then
+            echo "Migration order OK (added migrations all sort after $newest_on_target)."
+          fi
+          exit $bad
+
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Real Postgres + Redis so the server integration suite (`*.int-spec.ts`,
     # behind `pnpm --filter server test:int`) runs in CI (red-team finding #7).
     # Without it, cost-cap / FK-cascade / jsonb-round-trip / real-apply tests
@@ -26,7 +106,9 @@ jobs:
     # TEST_*_URL overrides are needed.
     services:
       postgres:
-        image: pgvector/pgvector:pg18
+        # via mirror.gcr.io (Docker Hub pull-through cache; avoids Hub anonymous
+        # pull rate-limit that randomly fails on shared GitHub runner IPs).
+        image: mirror.gcr.io/pgvector/pgvector:pg18
         env:
           POSTGRES_USER: docmost
           POSTGRES_PASSWORD: docmost_dev_pw
@@ -39,7 +121,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7
+        # via mirror.gcr.io (see postgres note above).
+        image: mirror.gcr.io/library/redis:7
         ports:
           - 6379:6379
         options: >-
@@ -68,6 +151,35 @@ jobs:
       - name: Build editor-ext
         run: pnpm --filter @docmost/editor-ext build
 
+      # @docmost/prosemirror-markdown is the shared converter (#293/#326); its
+      # build/ is gitignored, and plain `pnpm -r test` does NOT honour nx
+      # `dependsOn: ^build`, so its consumers (mcp `pretest: tsc`, git-sync vitest
+      # typecheck) fail with TS2307 Cannot find module '@docmost/prosemirror-markdown'
+      # unless it is built first. Build it before the recursive test run.
+      - name: Build prosemirror-markdown
+        run: pnpm --filter @docmost/prosemirror-markdown build
+
+      # @docmost/token-estimate is a shared workspace package the client vitest
+      # suite resolves via its dist build (main: ./dist/index.js); dist/ is
+      # gitignored and `pnpm -r test` does NOT honour nx `dependsOn: ^build`, so
+      # build it before the recursive test run or the client suite fails with
+      # "Failed to resolve import '@docmost/token-estimate'" (#490).
+      - name: Build token-estimate
+        run: pnpm --filter @docmost/token-estimate build
+
+      # The client's `test` script is `vitest run` — esbuild, which STRIPS types
+      # without checking them. Its `build` script (the release path, and what the
+      # Docker image runs) is `... && tsc && vite build`. So a type error in any
+      # client file sails through this workflow green and only surfaces when the
+      # image is built. That is not hypothetical: #624 shipped 4 TS errors in new
+      # test files with a fully green PR gate (#625). Typecheck the client
+      # explicitly, after the workspace packages it resolves are built (tsc reads
+      # their .d.ts from dist/, so this step MUST stay below the build steps).
+      # tsconfig `include` covers src/**, so *.spec/*.test files are checked too —
+      # that is the point: #624's four errors were all in test files.
+      - name: Typecheck client
+        run: pnpm --filter client typecheck
+
       - name: Run unit tests
         run: pnpm -r test
 
@@ -77,3 +189,53 @@ jobs:
       # isolated `docmost_test` DB and migrates it to latest.
       - name: Run server integration tests
         run: pnpm --filter server test:int
+
+  # Cross-package tool-spec parity gate (issue #447). The tool-spec registry lives
+  # in `packages/mcp` but its parity/tier guard tests live in the `apps/server`
+  # jest suite, so a PR touching ONLY one of the two packages must still run BOTH
+  # sides — otherwise an in-app wiring break (e.g. PR #434 drawio) passes the mcp
+  # suite green and only surfaces on develop after merge. The `test` job already
+  # runs everything via `pnpm -r test`; this job is a fast, explicitly-named guard
+  # that runs the mcp `node --test` suite AND the server tool-guard jest specs
+  # together, so the coupling is visible and can never be accidentally split by a
+  # path filter. No Postgres/Redis needed: these specs mock the DB/loader.
+  mcp-server-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Shared deps first (build/ dirs are gitignored; see test.yml build order).
+      - name: Build editor-ext
+        run: pnpm --filter @docmost/editor-ext build
+
+      - name: Build prosemirror-markdown
+        run: pnpm --filter @docmost/prosemirror-markdown build
+
+      # Build the mcp package so build/ carries a FRESH REGISTRY_STAMP (#447): the
+      # build runs gen-registry-stamp.mjs before tsc, so a build/ vs src/ skew
+      # cannot slip into the tests that exercise the loader's stale-check.
+      - name: Build mcp (regenerates REGISTRY_STAMP)
+        run: pnpm --filter @docmost/mcp build
+
+      # mcp side: the standalone MCP server's own tool-spec / instructions guards.
+      - name: Run mcp tool-spec suite
+        run: pnpm --filter @docmost/mcp test
+
+      # server side: the parity + tier guards that read packages/mcp/src/tool-specs
+      # and assert the in-app AI-chat wiring matches it.
+      - name: Run server tool-spec guard specs
+        run: pnpm --filter server exec jest shared-tool-specs.contract tool-tiers ai-chat-tools.service --runInBand

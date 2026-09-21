@@ -14,6 +14,11 @@ import {
   pageEditorAtom,
   titleEditorAtom,
 } from "@/features/editor/atoms/editor-atoms";
+import { useBodyWriteBlocked } from "@/features/editor/hooks/use-body-write-blocked";
+import {
+  markOperationStart,
+  measureOperation,
+} from "@/lib/telemetry/vitals";
 import { useSpaceAbility } from "@/features/space/permissions/use-space-ability";
 import { useSpaceQuery } from "@/features/space/queries/space-query";
 import {
@@ -30,6 +35,10 @@ export function useHistoryRestore() {
   const mainEditor = useAtomValue(pageEditorAtom);
   const mainEditorTitle = useAtomValue(titleEditorAtom);
   const setHistoryModalOpen = useSetAtom(historyAtoms);
+  // #564 — the body's Yjs write guard is rejecting every doc change (local-first
+  // read-only window). `setContent` below would be silently dropped, so restoring
+  // now would toast "Successfully restored" over an unchanged document.
+  const { refuseIfBlocked } = useBodyWriteBlocked();
 
   const { spaceSlug } = useParams();
   const { data: space } = useSpaceQuery(spaceSlug);
@@ -43,6 +52,16 @@ export function useHistoryRestore() {
   const handleRestore = useCallback(() => {
     if (!activeHistoryData) return;
 
+    // Refuse rather than lie: the write would not reach the document (#564).
+    // Checked here (not only on the button) so the confirm-modal window — the
+    // user can open it before the socket drops and confirm after — is covered.
+    if (refuseIfBlocked()) return;
+
+    // #683 `history_restore` — mark at the confirmed restore; measured once the
+    // main editor has been rebuilt AND repainted (double-rAF), which is what the
+    // user actually waits for. Only runs on the success path (past refuseIfBlocked).
+    markOperationStart("history_restore");
+
     mainEditorTitle
       .chain()
       .clearContent()
@@ -55,9 +74,26 @@ export function useHistoryRestore() {
       .setContent(activeHistoryData.content)
       .run();
 
+    // Measure after the rebuilt document paints (render → paint), not just after
+    // setContent returns. best-effort: skip if rAF is unavailable.
+    try {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => measureOperation("history_restore")),
+      );
+    } catch {
+      measureOperation("history_restore");
+    }
+
     setHistoryModalOpen(false);
     notifications.show({ message: t("Successfully restored") });
-  }, [activeHistoryData, mainEditor, mainEditorTitle, setHistoryModalOpen, t]);
+  }, [
+    activeHistoryData,
+    refuseIfBlocked,
+    mainEditor,
+    mainEditorTitle,
+    setHistoryModalOpen,
+    t,
+  ]);
 
   const confirmRestore = useCallback(() => {
     modals.openConfirmModal({

@@ -23,7 +23,12 @@ export class NotificationController {
     @Body() dto: ListNotificationsDto,
     @AuthUser() user: User,
   ) {
-    return this.notificationService.findByUserId(user.id, dto, dto.type);
+    return this.notificationService.findByUserId(
+      user.id,
+      dto,
+      dto.type,
+      user.workspaceId,
+    );
   }
 
   @HttpCode(HttpStatus.OK)

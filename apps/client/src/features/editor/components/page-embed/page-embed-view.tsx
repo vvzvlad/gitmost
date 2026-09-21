@@ -4,7 +4,6 @@ import {
   IconAlertTriangle,
   IconDots,
   IconEyeOff,
-  IconFileText,
   IconInfoCircle,
   IconRefresh,
   IconRepeat,
@@ -14,6 +13,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ErrorBoundary } from "react-error-boundary";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import classes from "../transclusion/transclusion.module.css";
 import { usePageEmbedLookup } from "./page-embed-lookup-context";
@@ -162,7 +162,9 @@ function PageEmbedBody({
     // source, so it must not disappear when title and icon are both empty.
     sourceTitle || sourceIcon || sourceHref ? (
       <div className={classes.transclusionBadge}>
-        {sourceIcon ? `${sourceIcon} ` : <IconFileText size={12} />}
+        <span style={{ marginRight: 4, display: "inline-flex" }}>
+          <PageIcon value={sourceIcon} size={12} />
+        </span>
         {sourceHref ? (
           <Link
             to={sourceHref}

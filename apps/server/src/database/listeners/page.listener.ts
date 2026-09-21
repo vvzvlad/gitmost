@@ -4,7 +4,6 @@ import { EventName } from '../../common/events/event.contants';
 import { InjectQueue } from '@nestjs/bullmq';
 import { QueueJob, QueueName } from '../../integrations/queue/constants';
 import { Queue } from 'bullmq';
-import { EnvironmentService } from '../../integrations/environment/environment.service';
 
 /**
  * Thin snapshot of a page node carried inside domain events so the WebSocket
@@ -21,6 +20,41 @@ export interface TreeNodeSnapshot {
   position: string;
   spaceId: string;
   parentPageId: string | null;
+  // Death-timer deadline carried so the `addTreeNode` broadcast shows the
+  // temporary-note clock marker immediately on every client (incl. the author,
+  // whose optimistic insert can lose the race to this broadcast). null/absent =>
+  // permanent.
+  temporaryExpiresAt?: Date | string | null;
+}
+
+/**
+ * Single canonical builder for a `TreeNodeSnapshot` from a page-like row. Both
+ * the `PAGE_CREATED` event enrichment (`page.repo.insertPage`) and the
+ * `addTreeNode` broadcast (`WsTreeService.broadcastPageCreated`) build this same
+ * snapshot; routing both through here keeps the optional `temporaryExpiresAt`
+ * (and the `?? null` normalisation that pins a permanent note to an explicit
+ * null) from silently drifting between the two literals.
+ */
+export function toTreeNodeSnapshot(page: {
+  id: string;
+  slugId: string;
+  title: string | null;
+  icon: string | null;
+  position: string;
+  spaceId: string;
+  parentPageId: string | null;
+  temporaryExpiresAt?: Date | string | null;
+}): TreeNodeSnapshot {
+  return {
+    id: page.id,
+    slugId: page.slugId,
+    title: page.title,
+    icon: page.icon,
+    position: page.position,
+    spaceId: page.spaceId,
+    parentPageId: page.parentPageId,
+    temporaryExpiresAt: page.temporaryExpiresAt ?? null,
+  };
 }
 
 export class PageEvent {
@@ -77,48 +111,24 @@ export class PageListener {
   private readonly logger = new Logger(PageListener.name);
 
   constructor(
-    private readonly environmentService: EnvironmentService,
-    @InjectQueue(QueueName.SEARCH_QUEUE) private searchQueue: Queue,
     @InjectQueue(QueueName.AI_QUEUE) private aiQueue: Queue,
   ) {}
 
   @OnEvent(EventName.PAGE_CREATED)
   async handlePageCreated(event: PageEvent) {
     const { pageIds, workspaceId } = event;
-    if (this.isTypesense()) {
-      await this.searchQueue.add(QueueJob.PAGE_CREATED, {
-        pageIds,
-      });
-    }
-
     await this.aiQueue.add(QueueJob.PAGE_CREATED, { pageIds, workspaceId });
-  }
-
-  @OnEvent(EventName.PAGE_UPDATED)
-  async handlePageUpdated(event: PageEvent) {
-    const { pageIds } = event;
-
-    await this.searchQueue.add(QueueJob.PAGE_UPDATED, { pageIds });
   }
 
   @OnEvent(EventName.PAGE_DELETED)
   async handlePageDeleted(event: PageEvent) {
     const { pageIds, workspaceId } = event;
-    if (this.isTypesense()) {
-      await this.searchQueue.add(QueueJob.PAGE_DELETED, { pageIds });
-    }
-
     await this.aiQueue.add(QueueJob.PAGE_DELETED, { pageIds, workspaceId });
   }
 
   @OnEvent(EventName.PAGE_SOFT_DELETED)
   async handlePageSoftDeleted(event: PageEvent) {
     const { pageIds, workspaceId } = event;
-
-    if (this.isTypesense()) {
-      await this.searchQueue.add(QueueJob.PAGE_SOFT_DELETED, { pageIds });
-    }
-
     await this.aiQueue.add(QueueJob.PAGE_SOFT_DELETED, {
       pageIds,
       workspaceId,
@@ -128,14 +138,6 @@ export class PageListener {
   @OnEvent(EventName.PAGE_RESTORED)
   async handlePageRestored(event: PageEvent) {
     const { pageIds, workspaceId } = event;
-    if (this.isTypesense()) {
-      await this.searchQueue.add(QueueJob.PAGE_RESTORED, { pageIds });
-    }
-
     await this.aiQueue.add(QueueJob.PAGE_RESTORED, { pageIds, workspaceId });
-  }
-
-  isTypesense(): boolean {
-    return this.environmentService.getSearchDriver() === 'typesense';
   }
 }

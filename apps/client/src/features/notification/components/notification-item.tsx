@@ -8,9 +8,9 @@ import {
 import {
   IconBell,
   IconCheck,
-  IconFileDescription,
   IconPointFilled,
 } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { Avatar } from "@mantine/core";
 import { CustomAvatar } from "@/components/ui/custom-avatar";
 import { INotification } from "../types/notification.types";
@@ -131,17 +131,9 @@ export function NotificationItem({
 
           {notification.page && (
             <Group gap={4} mt={2} wrap="nowrap">
-              {notification.page.icon ? (
-                <Text size="xs" style={{ flexShrink: 0 }}>
-                  {notification.page.icon}
-                </Text>
-              ) : (
-                <IconFileDescription
-                  size={14}
-                  stroke={1.5}
-                  style={{ flexShrink: 0, color: "var(--mantine-color-dimmed)" }}
-                />
-              )}
+              <span style={{ flexShrink: 0, display: "inline-flex" }}>
+                <PageIcon value={notification.page.icon} size={14} />
+              </span>
               <Text size="xs" c="dimmed" lineClamp={1}>
                 {notification.page.title || t("Untitled")}
               </Text>

@@ -1,13 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { withPageLock } from "../../build/lib/page-lock.js";
+import { withPageLock, isUuid } from "../../build/lib/page-lock.js";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// withPageLock now asserts its key is a canonical UUID (#449, "resolve-then-
+// lock"), so the mechanics tests below must lock under real UUIDs, not arbitrary
+// labels. Distinct valid UUIDv7-shaped ids for the distinct-page cases.
+const U = {
+  same: "11111111-1111-7111-8111-111111111111",
+  ordered: "22222222-2222-7222-8222-222222222222",
+  poison: "33333333-3333-7333-8333-333333333333",
+  poison2: "44444444-4444-7444-8444-444444444444",
+  A: "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa",
+  B: "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+  leak: "55555555-5555-7555-8555-555555555555",
+};
+
 test("two ops on the same pageId run strictly sequentially (no overlap)", async () => {
   const events = [];
-  const pageId = "same-page";
+  const pageId = U.same;
 
   const p1 = withPageLock(pageId, async () => {
     events.push("start-1");
@@ -33,7 +46,7 @@ test("two ops on the same pageId run strictly sequentially (no overlap)", async 
 });
 
 test("same pageId ordering holds for many queued ops", async () => {
-  const pageId = "ordered-page";
+  const pageId = U.ordered;
   const order = [];
   const active = { count: 0, maxConcurrent: 0 };
 
@@ -60,7 +73,7 @@ test("same pageId ordering holds for many queued ops", async () => {
 });
 
 test("a rejecting op does not poison the chain for the same page", async () => {
-  const pageId = "poison-page";
+  const pageId = U.poison;
   const events = [];
 
   const failing = withPageLock(pageId, async () => {
@@ -87,7 +100,7 @@ test("a rejecting op does not poison the chain for the same page", async () => {
 });
 
 test("failing op queued before a success both resolve/reject correctly", async () => {
-  const pageId = "poison-page-2";
+  const pageId = U.poison2;
   const order = [];
 
   const failing = withPageLock(pageId, async () => {
@@ -111,14 +124,14 @@ test("failing op queued before a success both resolve/reject correctly", async (
 test("ops on different pageIds run concurrently (overlap)", async () => {
   const events = [];
 
-  const pA = withPageLock("page-A", async () => {
+  const pA = withPageLock(U.A, async () => {
     events.push("A-start");
     await delay(40);
     events.push("A-end");
     return "A";
   });
 
-  const pB = withPageLock("page-B", async () => {
+  const pB = withPageLock(U.B, async () => {
     events.push("B-start");
     await delay(10);
     events.push("B-end");
@@ -134,7 +147,7 @@ test("ops on different pageIds run concurrently (overlap)", async () => {
 });
 
 test("no functional leak: many sequential ops on same page keep working", async () => {
-  const pageId = "leak-page";
+  const pageId = U.leak;
 
   // Run a long series of fully sequential ops (each awaited before the next is
   // queued) so the internal map entry is created and dropped repeatedly.
@@ -150,4 +163,57 @@ test("no functional leak: many sequential ops on same page keep working", async 
   // confirming the entry was not left in a broken state.
   const final = await withPageLock(pageId, async () => "still-works");
   assert.equal(final, "still-works");
+});
+
+// --- Issue #449: fail-fast on a non-canonical lock key ---------------------
+// A write method that reaches the lock path with an unresolved slugId (or any
+// non-UUID key) must fail IMMEDIATELY and LOUDLY, not lock under a split key and
+// silently lose per-page serialization. These assert withPageLock rejects such
+// a key before ever running fn.
+
+test("withPageLock throws on a raw 10-char slugId (unresolved key)", () => {
+  let ran = false;
+  assert.throws(
+    () =>
+      withPageLock("p7Xk29Lm4Q", async () => {
+        ran = true;
+        return "should-not-run";
+      }),
+    /canonical page UUID|resolve-then-lock/i,
+    "a slugId key must fail-fast at the lock",
+  );
+  // The work must NOT have started: fail-fast means no serialization was
+  // silently skipped under a bad key.
+  assert.equal(ran, false, "fn must not run when the key is rejected");
+});
+
+test("withPageLock throws on other non-UUID keys (label, empty, non-string)", () => {
+  for (const bad of ["same-page", "", "not-a-uuid", "1234"]) {
+    assert.throws(
+      () => withPageLock(bad, async () => "x"),
+      /canonical page UUID/i,
+      `expected withPageLock to reject key ${JSON.stringify(bad)}`,
+    );
+  }
+  // A non-string key is also rejected (guards a mistyped call site).
+  assert.throws(
+    () => withPageLock(/** @type {any} */ (undefined), async () => "x"),
+    /canonical page UUID/i,
+  );
+});
+
+test("withPageLock accepts a canonical UUID key (no false positive)", async () => {
+  const uuid = "0192f3a4-b5c6-7d8e-9f01-23456789abcd";
+  assert.equal(isUuid(uuid), true);
+  const r = await withPageLock(uuid, async () => "ok");
+  assert.equal(r, "ok");
+});
+
+test("isUuid discriminates UUIDs from slugIds (shared predicate)", () => {
+  // The predicate withPageLock asserts on is the SAME one resolvePageId uses to
+  // decide whether a pageId is already a UUID (imported from page-lock).
+  assert.equal(isUuid("0192f3a4-b5c6-7d8e-9f01-23456789abcd"), true);
+  assert.equal(isUuid("p7Xk29Lm4Q"), false); // 10-char nanoid slugId
+  assert.equal(isUuid("not-a-uuid"), false);
+  assert.equal(isUuid(""), false);
 });

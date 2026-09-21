@@ -10,7 +10,9 @@ import { IconChevronDown } from "@tabler/icons-react";
 import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 import { isCellSelection } from "@docmost/editor-ext";
+import { EDITOR_AUTO_UPDATE_OPTIONS } from "@/features/editor/utils/floating-auto-update";
 import { CellChevronMenu } from "./menus/cell-chevron-menu";
+import { refocusEditorAfterMenuClose } from "./hooks/use-column-row-menu-lifecycle";
 import classes from "./handle.module.css";
 
 interface CellChevronProps {
@@ -37,7 +39,9 @@ export const CellChevron = React.memo(function CellChevron({
     // column edge picks up the chevron's `cursor: pointer` instead of
     // `col-resize`, and a drag near the edge clicks the chevron.
     middleware: [offset({ mainAxis: -22, crossAxis: -10 }), hide()],
-    whileElementsMounted: autoUpdate,
+    // `layoutShift: false` — see EDITOR_AUTO_UPDATE_OPTIONS (Safari CPU burn).
+    whileElementsMounted: (reference, floating, update) =>
+      autoUpdate(reference, floating, update, EDITOR_AUTO_UPDATE_OPTIONS),
     strategy: "absolute",
   });
   const isReferenceHidden = !!middlewareData.hide?.referenceHidden;
@@ -87,6 +91,7 @@ export const CellChevron = React.memo(function CellChevron({
 
   const onClose = useCallback(() => {
     editor.commands.unfreezeHandles();
+    refocusEditorAfterMenuClose(editor);
   }, [editor]);
 
   if (!cellDom) return null;

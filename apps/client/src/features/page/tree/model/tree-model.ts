@@ -43,6 +43,26 @@ export const treeModel = {
     };
   },
 
+  // A branch is "unloaded" when the server says it HAS children (`hasChildren`)
+  // but none are present locally. The canonical unloaded form in this codebase
+  // is `children: []` (produced by `pageToTreeNode` and by `pruneCollapsedChildren`
+  // resetting collapsed branches), NOT `children: undefined` — so a predicate that
+  // only checks `=== undefined` misses the real case and materializes a misleading
+  // partial list (#525). This is the SINGLE source of truth for "should a
+  // fetch/materialize be deferred?", shared by the lazy-load gate (`handleToggle`)
+  // and the realtime insert paths (`insertByPosition` / `placeByPosition`), so they
+  // can never drift apart again. (The local raw `insert` primitive and its DnD/
+  // create-page callers do NOT yet route through this predicate — see #525
+  // follow-up.) A parent WITHOUT `hasChildren` is genuinely empty
+  // (no server children) — inserting its first child is correct, not deferred.
+  isUnloadedBranch<T extends object>(
+    node: TreeNode<T> | null | undefined,
+  ): boolean {
+    if (!node) return false;
+    const hasChildren = (node as { hasChildren?: boolean }).hasChildren === true;
+    return hasChildren && (node.children == null || node.children.length === 0);
+  },
+
   isDescendant<T extends object>(
     tree: TreeNode<T>[],
     ancestorId: string,
@@ -127,14 +147,15 @@ export const treeModel = {
     }
     const parent = treeModel.find(tree, parentId);
     // The parent is in the tree but its children have NOT been lazy-loaded yet
-    // (`children === undefined`, distinct from a loaded-but-empty `[]`). Inserting
+    // (`hasChildren` set + children absent/empty — see `isUnloadedBranch`; the
+    // canonical unloaded form is `children: []`, NOT just `undefined`). Inserting
     // here would MATERIALIZE a misleading partial child list (`[node]`) that
     // defeats the lazy-load gate — which fetches only when children are
     // absent/empty — so the parent's OTHER real children would never load and the
     // moved/added node would be the only one shown (a silent data loss, #159 #1).
     // Instead, leave the children unloaded and just flag `hasChildren` so the
     // chevron appears; expanding fetches the FULL set (including this node).
-    if (parent && parent.children === undefined) {
+    if (parent && treeModel.isUnloadedBranch(parent)) {
       return treeModel.update(
         tree,
         parentId,

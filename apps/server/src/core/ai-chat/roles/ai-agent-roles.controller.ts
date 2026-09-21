@@ -22,6 +22,12 @@ import {
   CreateAgentRoleDto,
   UpdateAgentRoleDto,
 } from './dto/agent-role.dto';
+import {
+  CatalogBundleDto,
+  CatalogQueryDto,
+  ImportFromCatalogDto,
+  UpdateFromCatalogDto,
+} from './dto/agent-role-catalog.dto';
 
 /** Path/body param for the per-role routes (update/delete). */
 class AgentRoleIdDto {
@@ -112,5 +118,55 @@ export class AiAgentRolesController {
   ) {
     this.assertAdmin(user, workspace);
     return this.rolesService.remove(workspace.id, idDto.id);
+  }
+
+  // --- Catalog (admin-only): browse + import + update imported roles. ---
+
+  /** Browse the curated catalog (localized to dto.language). */
+  @HttpCode(HttpStatus.OK)
+  @Post('catalog')
+  async catalog(
+    @Body() dto: CatalogQueryDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    this.assertAdmin(user, workspace);
+    return this.rolesService.getCatalog(dto.language);
+  }
+
+  /** Open one catalog bundle in a language (role content + versions). */
+  @HttpCode(HttpStatus.OK)
+  @Post('catalog/bundle')
+  async catalogBundle(
+    @Body() dto: CatalogBundleDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    this.assertAdmin(user, workspace);
+    return this.rolesService.getCatalogBundle(dto.bundleId, dto.language);
+  }
+
+  /** Import roles from a catalog bundle into the workspace. */
+  @HttpCode(HttpStatus.OK)
+  @Post('import')
+  async import(
+    @Body() dto: ImportFromCatalogDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    this.assertAdmin(user, workspace);
+    return this.rolesService.importFromCatalog(workspace.id, user.id, dto);
+  }
+
+  /** Update an already-imported role from its catalog source. */
+  @HttpCode(HttpStatus.OK)
+  @Post('update-from-catalog')
+  async updateFromCatalog(
+    @Body() dto: UpdateFromCatalogDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    this.assertAdmin(user, workspace);
+    return this.rolesService.updateFromCatalog(workspace.id, dto);
   }
 }

@@ -4,6 +4,11 @@ import { useTranslation } from "react-i18next";
 import { transcribeAudio } from "@/features/dictation/services/dictation-service";
 import { encodeWavPcm16 } from "@/features/dictation/utils/encode-wav";
 import type { DictationStatus } from "@/features/dictation/hooks/use-dictation";
+import {
+  classifyGetUserMediaError,
+  classifyTranscriptionError,
+  dictationErrorMessage,
+} from "@/features/dictation/dictation-status";
 
 // Lazily-imported MicVAD type. The runtime import happens inside start() so the
 // heavy onnxruntime-web / Silero model is code-split out of the main bundle and
@@ -27,6 +32,8 @@ interface UseStreamingDictationResult {
   cancel: () => void;
   // Smoothed live speech level in the 0..1 range while recording (0 when idle).
   audioLevel: number;
+  // The last error shown to the user (null until one occurs / on a new start).
+  errorMessage: string | null;
 }
 
 // Sample rate of the audio MicVAD hands to onSpeechEnd (Silero VAD runs at 16k).
@@ -60,6 +67,8 @@ export function useStreamingDictation(
   const { t } = useTranslation();
   const [status, setStatus] = useState<DictationStatus>("idle");
   const [audioLevel, setAudioLevel] = useState(0);
+  // Last error message shown to the user; the mic button reads it for its tooltip.
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Keep the latest callbacks in a ref so async VAD/HTTP closures always call the
   // current handlers without re-creating the VAD.
@@ -158,26 +167,6 @@ export function useStreamingDictation(
     }
   }, []);
 
-  // Map a transcription error to a user-facing message, mirroring the batch hook.
-  const transcriptionErrorMessage = useCallback(
-    (err: unknown): string => {
-      const resp = (
-        err as { response?: { status?: number; data?: { message?: string } } }
-      )?.response;
-      const serverMsg = resp?.data?.message;
-      if (serverMsg && serverMsg.trim().length > 0) {
-        // The server already explains the cause (e.g. provider 404, bad format,
-        // STT not configured) — show it verbatim.
-        return serverMsg;
-      }
-      if (resp?.status === 503 || resp?.status === 403) {
-        return t("Voice dictation is not configured");
-      }
-      return `${t("Transcription failed")}: ${(err as { message?: string })?.message ?? String(err)}`;
-    },
-    [t],
-  );
-
   // Handle one ended speech segment: encode to WAV and transcribe. Results are
   // buffered by seq and flushed in order. A single failed segment does NOT kill
   // the session: log + one notification, then advance past that seq so later
@@ -204,10 +193,14 @@ export function useStreamingDictation(
           if (epoch !== epochRef.current) return;
           // Log the full error for diagnosis (status + body + stack).
           console.error("[dictation] segment transcription failed", err);
-          notifications.show({
-            color: "red",
-            message: transcriptionErrorMessage(err),
+          const { code, serverMessage } = classifyTranscriptionError(err);
+          const detail = (err as { message?: string })?.message ?? String(err);
+          const message = dictationErrorMessage(code, t, {
+            serverMessage,
+            detail,
           });
+          notifications.show({ color: "red", message });
+          setErrorMessage(message);
           // Skip this seq so later segments can still flush in order.
           if (nextEmitSeqRef.current === seq) {
             nextEmitSeqRef.current += 1;
@@ -226,7 +219,7 @@ export function useStreamingDictation(
           }
         });
     },
-    [drainResults, transcriptionErrorMessage],
+    [drainResults, t],
   );
 
   const start = useCallback(async (): Promise<void> => {
@@ -236,6 +229,8 @@ export function useStreamingDictation(
     if (startingRef.current || vadRef.current || activeRef.current) return;
     if (status !== "idle") return;
     startingRef.current = true;
+    // Clear any stale error from a previous attempt.
+    setErrorMessage(null);
 
     // Notify the caller right when dictation begins (before any async work) so the
     // editor can snapshot the caret position.
@@ -354,10 +349,9 @@ export function useStreamingDictation(
       // actually runs.)
       console.error("[dictation] VAD init failed", err);
       const detail = (err as { message?: string })?.message ?? String(err);
-      notifications.show({
-        color: "red",
-        message: `${t("Could not start recording")}: ${detail}`,
-      });
+      const message = dictationErrorMessage("vad-init-failed", t, { detail });
+      notifications.show({ color: "red", message });
+      setErrorMessage(message);
       // Defensive: if MicVAD.new partially succeeded before throwing, make sure we
       // don't leak it.
       destroyVad();
@@ -379,19 +373,11 @@ export function useStreamingDictation(
     } catch (err) {
       // Always log the full error for diagnosis (name, message, stack).
       console.error("[dictation] VAD.start failed", err);
-      const name = (err as { name?: string })?.name;
       const detail = (err as { message?: string })?.message ?? String(err);
-      let message: string;
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        message = t("Microphone access denied");
-      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-        message = t("No microphone found");
-      } else if (name === "NotReadableError" || name === "AbortError") {
-        message = t("Microphone is unavailable or already in use");
-      } else {
-        message = `${t("Could not start recording")}: ${detail}`;
-      }
+      const code = classifyGetUserMediaError(err);
+      const message = dictationErrorMessage(code, t, { detail });
       notifications.show({ color: "red", message });
+      setErrorMessage(message);
       activeRef.current = false;
       destroyVad();
       setStatus("idle");
@@ -470,5 +456,5 @@ export function useStreamingDictation(
     };
   }, [clearTimer, destroyVad]);
 
-  return { status, start, stop, cancel, audioLevel };
+  return { status, start, stop, cancel, audioLevel, errorMessage };
 }

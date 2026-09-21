@@ -1,27 +1,49 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
-  parseBasicAuth,
-  FailedLoginLimiter,
   resolveMcpSessionConfig,
-  isCredentialsFailure,
-  isInitializeRequestBody,
-  verifyBearerAccess,
+  verifyMcpBearer,
+  bindMcpBearerVerifier,
   sharedTokenMatches,
-  clientIp,
-  bindAccessJwtVerifier,
   extractBearer,
-  decideBasicGate,
   mapAuthResultToResponse,
+  isCredentialHeaderPresent,
   McpAuthDeps,
+  MCP_WWW_AUTHENTICATE,
+  MCP_WWW_AUTHENTICATE_SHARED_TOKEN,
+  MCP_CHALLENGE_BEARER_DESCRIPTION,
+  MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION,
 } from './mcp-auth.helpers';
 import { JwtType } from '../../core/auth/dto/jwt-payload';
-import { CREDENTIALS_MISMATCH_MESSAGE } from '../../core/auth/auth.constants';
+import { McpService, routeMcpMetric } from './mcp.service';
 
-// The /mcp per-user auth decision logic is tested through the framework-free
+// The prom instruments are mocked so the metric ROUTING can be asserted directly:
+// the real registry is a disabled no-op under jest (no METRICS_PORT), which would
+// make any assertion against it vacuous. McpService's own tests below never touch
+// metrics, so the mock is inert for them.
+jest.mock('../metrics/metrics.registry', () => ({
+  isMetricsEnabled: jest.fn(() => false),
+  observeMcpTool: jest.fn(),
+  incConnectTimeout: jest.fn(),
+  incGetPageCacheHit: jest.fn(),
+  incGetPageCacheMiss: jest.fn(),
+  addMcpDownloadBytes: jest.fn(),
+  incMcpRyowLive: jest.fn(),
+  incMcpRyowDbrow: jest.fn(),
+  incMcpRyowExpired: jest.fn(),
+}));
+import * as metrics from '../metrics/metrics.registry';
+
+// The /mcp per-request auth decision logic is tested through the framework-free
 // `resolveMcpSessionConfig` helper that McpService delegates to. McpService
-// itself cannot be instantiated under jest because importing AuthService drags
-// in the React email templates + queue constants graph; extracting the pure
-// logic (and wiring it in) keeps it both tested AND used (per the plan).
+// itself cannot be instantiated under jest because importing the heavy auth
+// graph drags in the React email templates + queue constants graph; extracting
+// the pure logic (and wiring it in) keeps it both tested AND used.
+//
+// /mcp accepts EXACTLY ONE credential: a Bearer api_key JWT. There is no HTTP
+// Basic email:password, no human ACCESS session token, and no env service
+// account — everything else is a 401.
 
 function basicHeader(email: string, password: string): string {
   return 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
@@ -30,57 +52,14 @@ function basicHeader(email: string, password: string): string {
 function makeDeps(over: Partial<McpAuthDeps> = {}): McpAuthDeps {
   return {
     apiUrl: 'http://127.0.0.1:3000/api',
-    email: over.email,
-    password: over.password,
     findWorkspace:
       over.findWorkspace ?? jest.fn().mockResolvedValue({ id: 'ws-1' }),
-    login: over.login ?? jest.fn().mockResolvedValue('issued-user-jwt'),
-    verifyCredentials:
-      over.verifyCredentials ?? jest.fn().mockResolvedValue(undefined),
+    // Default: a valid api_key verification returning a principal.
     verifyAccessJwt:
       over.verifyAccessJwt ??
-      jest.fn().mockResolvedValue({ sub: 'user-1', email: 'u@e.com' }),
-    // Default gate is a no-op (pass-through), matching a build with no SSO
-    // enforcement and no EE MFA module. Individual tests override it to assert
-    // the SSO/MFA reject behaviour.
-    enforceBasicGate: over.enforceBasicGate,
-    limiter: over.limiter ?? new FailedLoginLimiter(5, 60_000),
-    clientIp: over.clientIp ?? '10.0.0.1',
-    // Default to the session-INIT request (no mcp-session-id) so existing
-    // assertions about login() being called keep their meaning.
-    isSessionInit: over.isSessionInit ?? true,
+      jest.fn().mockResolvedValue({ sub: 'svc-1', email: 'svc@e.com' }),
   };
 }
-
-describe('parseBasicAuth', () => {
-  it('decodes email:password', () => {
-    expect(parseBasicAuth(basicHeader('a@b.com', 'pw'))).toEqual({
-      email: 'a@b.com',
-      password: 'pw',
-    });
-  });
-
-  it('splits on the FIRST colon so passwords may contain colons', () => {
-    expect(parseBasicAuth(basicHeader('a@b.com', 'p:w:x'))).toEqual({
-      email: 'a@b.com',
-      password: 'p:w:x',
-    });
-  });
-
-  it('returns null for non-Basic / malformed headers', () => {
-    expect(parseBasicAuth(undefined)).toBeNull();
-    expect(parseBasicAuth('Bearer xyz')).toBeNull();
-    expect(
-      parseBasicAuth('Basic ' + Buffer.from('nocolon').toString('base64')),
-    ).toBeNull();
-  });
-
-  it('returns null when the email part is empty (":password")', () => {
-    expect(
-      parseBasicAuth('Basic ' + Buffer.from(':pw').toString('base64')),
-    ).toBeNull();
-  });
-});
 
 describe('extractBearer', () => {
   it('extracts the token from a "Bearer <token>" header', () => {
@@ -102,830 +81,141 @@ describe('extractBearer', () => {
   });
 });
 
-describe('isCredentialsFailure', () => {
-  it('is true for the credentials-mismatch UnauthorizedException', () => {
-    expect(
-      isCredentialsFailure(
-        new UnauthorizedException('Email or password does not match'),
-      ),
-    ).toBe(true);
+// #636 — the input to the RFC 6750 §3.1 decision ("did the request carry ANY
+// authentication information?"). It has to be right about every shape Node can hand
+// a header value in, because a wrong reading here puts (or omits) an
+// `error="invalid_token"` on a challenge about a credential that was never sent.
+describe('isCredentialHeaderPresent', () => {
+  it('a non-empty string is a presented credential', () => {
+    expect(isCredentialHeaderPresent('Bearer abc')).toBe(true);
+    expect(isCredentialHeaderPresent('shared-secret')).toBe(true);
   });
 
-  it('is false for business errors like email-not-verified', () => {
-    expect(
-      isCredentialsFailure(
-        new BadRequestException('Please verify your email address.'),
-      ),
-    ).toBe(false);
-    expect(isCredentialsFailure(new Error('boom'))).toBe(false);
+  it('an absent header is not', () => {
+    expect(isCredentialHeaderPresent(undefined)).toBe(false);
   });
 
-  // --- Cross-file coupling lock (item 1) ---------------------------------
-  // The /mcp Basic brute-force limiter ONLY counts a failure when
-  // isCredentialsFailure(err) is true. AuthService.verifyUserCredentials throws
-  // the credentials failure with the shared CREDENTIALS_MISMATCH_MESSAGE for
-  // unknown email / wrong password / disabled user. If that message were
-  // reworded without updating the matcher, the limiter would stop counting and
-  // /mcp Basic would become an unthrottled password-guessing oracle. These
-  // tests lock the coupling to the SHARED constant (single source of truth) so a
-  // reword is a compile-time/test-time break, not a silent security regression.
+  it.each(['', ' ', '\t', '  \n '])(
+    'a present-but-empty header (%j) carries NO authentication information',
+    (value) => {
+      // `Authorization:` with no value is a legal request and Node reports it as
+      // ''. RFC 6750 §3.1 asks whether the request "lacks ANY authentication
+      // information" — an empty value carries none, so it is not a bad token.
+      expect(isCredentialHeaderPresent(value)).toBe(false);
+    },
+  );
 
-  it('recognises the exact UnauthorizedException AuthService throws (the shared constant)', () => {
-    // Reconstruct the EXACT exception AuthService.verifyUserCredentials throws
-    // for every credentials-failure case (it uses CREDENTIALS_MISMATCH_MESSAGE),
-    // and assert the REAL isCredentialsFailure recognises it. No hardcoded string
-    // is duplicated here — both sides reference the single shared constant.
-    const authThrows = new UnauthorizedException(CREDENTIALS_MISMATCH_MESSAGE);
-    expect(isCredentialsFailure(authThrows)).toBe(true);
+  it('a string[] (a duplicated header) with a real value counts as presented', () => {
+    // Node joins most duplicate headers into one comma-separated string, but not
+    // all of them — an array is a shape that really reaches us, and reading it as
+    // "absent" would deny the credential the client actually sent twice.
+    expect(isCredentialHeaderPresent(['tok-a', 'tok-b'])).toBe(true);
+    expect(isCredentialHeaderPresent([''])).toBe(false);
+    expect(isCredentialHeaderPresent([])).toBe(false);
   });
 
-  it('the matcher is coupled to the single source of truth, not a local literal', () => {
-    // If someone reworded CREDENTIALS_MISMATCH_MESSAGE, this still passes only
-    // because the matcher derives its substring from the SAME constant. This
-    // pins the coupling structurally: there is one message both files share.
-    expect(CREDENTIALS_MISMATCH_MESSAGE).toBeTruthy();
-    expect(
-      isCredentialsFailure(
-        new UnauthorizedException(CREDENTIALS_MISMATCH_MESSAGE),
-      ),
-    ).toBe(true);
-    // A DIFFERENT message (a hypothetical reword that forgot to go through the
-    // constant) must NOT be silently recognised, proving the matcher is not just
-    // "always true".
-    expect(
-      isCredentialsFailure(new UnauthorizedException('totally different wording')),
-    ).toBe(false);
+  it('a non-string, non-array value is not a credential', () => {
+    expect(isCredentialHeaderPresent(null)).toBe(false);
+    expect(isCredentialHeaderPresent(42)).toBe(false);
+    expect(isCredentialHeaderPresent({})).toBe(false);
   });
 });
 
-describe('AuthService verifyUserCredentials <-> isCredentialsFailure coupling (item 1)', () => {
-  // AuthService cannot be constructed under jest: importing it pulls in
-  // src/integrations/queue/constants (a `src/`-rooted absolute import) which the
-  // jest moduleNameMapper does not resolve under rootDir:src — the heavy auth
-  // graph. So instead of a live AuthService unit, we assert the security
-  // contract structurally: AuthService.verifyUserCredentials throws an
-  // UnauthorizedException built from the SHARED CREDENTIALS_MISMATCH_MESSAGE
-  // (see auth.service.ts), and the REAL isCredentialsFailure recognises it. The
-  // single shared constant is the lock: there is no second copy of the string to
-  // drift out of sync.
-  it('the credentials-failure UnauthorizedException is counted by the limiter matcher', () => {
-    // unknown email / disabled user / wrong password all surface as this:
-    const credentialsFailure = new UnauthorizedException(
-      CREDENTIALS_MISMATCH_MESSAGE,
-    );
-    expect(isCredentialsFailure(credentialsFailure)).toBe(true);
-  });
-
-  it('email-not-verified (a different, business error) is NOT counted', () => {
-    // throwIfEmailNotVerified throws a BadRequestException, which must not burn a
-    // victim's limiter budget; the matcher rejects it.
-    expect(
-      isCredentialsFailure(
-        new BadRequestException('Please verify your email address.'),
-      ),
-    ).toBe(false);
-  });
-});
-
-describe('FailedLoginLimiter', () => {
-  it('blocks after threshold failures within the window; reset clears it', () => {
-    const lim = new FailedLoginLimiter(3, 1000);
-    const k = 'ip:1.2.3.4';
-    expect(lim.isBlocked(k, 0)).toBe(false);
-    lim.recordFailure(k, 0);
-    lim.recordFailure(k, 0);
-    expect(lim.isBlocked(k, 0)).toBe(false);
-    lim.recordFailure(k, 0);
-    expect(lim.isBlocked(k, 0)).toBe(true);
-    lim.reset(k);
-    expect(lim.isBlocked(k, 0)).toBe(false);
-  });
-
-  it('rolls over after the window', () => {
-    const lim = new FailedLoginLimiter(1, 1000);
-    const k = 'ip:1.2.3.4';
-    lim.recordFailure(k, 0);
-    expect(lim.isBlocked(k, 0)).toBe(true);
-    expect(lim.isBlocked(k, 1000)).toBe(false);
-  });
-
-  describe('tryReserve (atomic check-and-increment, brute-force race fix)', () => {
-    it('allows exactly `threshold` reserves then blocks within the window', () => {
-      const lim = new FailedLoginLimiter(3, 1000);
-      const k = 'ip:1.2.3.4';
-      // threshold (3) successful reserves return true...
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      // ...the next one is blocked (count is now at threshold).
-      expect(lim.tryReserve(k, 0)).toBe(false);
-      // A blocked reserve does NOT increment, so isBlocked stays true at threshold.
-      expect(lim.isBlocked(k, 0)).toBe(true);
-    });
-
-    it('reserves again after the window rolls over', () => {
-      const lim = new FailedLoginLimiter(2, 1000);
-      const k = 'ip:1.2.3.4';
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      expect(lim.tryReserve(k, 0)).toBe(false); // blocked in this window
-      // Past windowMs (>= is inclusive): a fresh bucket, so reserve succeeds again.
-      expect(lim.tryReserve(k, 1000)).toBe(true);
-    });
-
-    it('reset releases the reservation (reserve succeeds again after reset)', () => {
-      const lim = new FailedLoginLimiter(1, 1000);
-      const k = 'ip:1.2.3.4';
-      expect(lim.tryReserve(k, 0)).toBe(true);
-      expect(lim.tryReserve(k, 0)).toBe(false); // at threshold 1 -> blocked
-      lim.reset(k);
-      expect(lim.tryReserve(k, 0)).toBe(true); // reset cleared the bucket
-    });
-
-    it('release undoes one reservation without clearing accumulated failures', () => {
-      const lim = new FailedLoginLimiter(2, 1000);
-      const k = 'email:victim@example.com';
-      expect(lim.tryReserve(k, 0)).toBe(true); // count 1
-      expect(lim.tryReserve(k, 0)).toBe(true); // count 2 == threshold
-      expect(lim.isBlocked(k, 0)).toBe(true);
-      lim.release(k, 0); // undo exactly one -> count 1
-      expect(lim.isBlocked(k, 0)).toBe(false);
-      expect(lim.tryReserve(k, 0)).toBe(true); // count 2 again
-      expect(lim.tryReserve(k, 0)).toBe(false); // blocked: prior failures survived
-    });
-
-    it('RACE: threshold+1 SYNCHRONOUS reserves (no await) yield only `threshold` trues', () => {
-      // Simulate N concurrent /mcp requests hitting the check-and-increment with
-      // zero interleaved awaits — the very scenario the old isBlocked()-then-
-      // recordFailure() flow lost to (all saw count=0, all ran bcrypt). Because
-      // tryReserve folds check+increment into one synchronous step, only the
-      // first `threshold` callers win; the (threshold+1)-th is rejected up front.
-      const threshold = 5;
-      const lim = new FailedLoginLimiter(threshold, 60_000);
-      const k = 'email:victim@example.com';
-      const results: boolean[] = [];
-      for (let i = 0; i < threshold + 1; i++) {
-        results.push(lim.tryReserve(k, 0));
-      }
-      expect(results.filter((r) => r === true)).toHaveLength(threshold);
-      expect(results.filter((r) => r === false)).toHaveLength(1);
-      // The rejected one is the LAST: the first `threshold` all reserved.
-      expect(results[threshold]).toBe(false);
-    });
-  });
-
-  describe('sweep (expired-bucket eviction, injectable clock)', () => {
-    // sweep() drops buckets whose windowStart is older than windowMs so
-    // never-revisited keys cannot accumulate forever. It takes an injectable
-    // `now` so the behaviour is deterministic without faking timers.
-    it('drops a bucket strictly older than windowMs', () => {
-      const lim = new FailedLoginLimiter(5, 1000);
-      // Seed a bucket at t=0 (windowStart=0).
-      lim.recordFailure('stale', 0);
-      // Sweep well past the window: now - windowStart = 5000 >= 1000 -> dropped.
-      lim.sweep(5000);
-      // A dropped bucket means a brand-new bucket is created on next touch, so
-      // the prior failure count is gone (a single fresh failure is far from 5).
-      lim.recordFailure('stale', 5001);
-      expect(lim.isBlocked('stale', 5001)).toBe(false);
-    });
-
-    it('drops a bucket exactly at the windowMs boundary (>= is inclusive)', () => {
-      const lim = new FailedLoginLimiter(1, 1000);
-      lim.recordFailure('boundary', 0); // windowStart=0, blocked at threshold 1
-      expect(lim.isBlocked('boundary', 0)).toBe(true);
-      // now - windowStart = 1000 == windowMs -> the >= check evicts it.
-      lim.sweep(1000);
-      // Re-touch at the same instant: a fresh bucket (count 0) is created, so the
-      // key is no longer blocked, proving the boundary bucket was swept.
-      expect(lim.isBlocked('boundary', 1000)).toBe(false);
-    });
-
-    it('retains a fresh bucket still within the window', () => {
-      const lim = new FailedLoginLimiter(1, 1000);
-      lim.recordFailure('fresh', 0); // windowStart=0
-      // now - windowStart = 999 < 1000 -> the bucket survives the sweep.
-      lim.sweep(999);
-      // Still blocked because the bucket (and its count) was retained.
-      expect(lim.isBlocked('fresh', 999)).toBe(true);
-    });
-  });
-});
-
-describe('verifyBearerAccess (Bearer revocation/disabled checks)', () => {
-  const goodPayload = {
-    sub: 'user-1',
-    email: 'u@e.com',
-    workspaceId: 'ws-1',
-    sessionId: 'sess-1',
-  };
-
-  function bearerDeps(over: Partial<Parameters<typeof verifyBearerAccess>[1]> = {}) {
-    return {
-      verifyJwt: over.verifyJwt ?? jest.fn().mockResolvedValue(goodPayload),
-      findUser:
-        over.findUser ?? jest.fn().mockResolvedValue({ deactivatedAt: null }),
-      findActiveSession:
-        over.findActiveSession ??
-        jest
-          .fn()
-          .mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1' }),
-    };
-  }
-
-  it('valid token + active session + enabled user -> resolves identity', async () => {
-    const res = await verifyBearerAccess('t', bearerDeps());
-    expect(res).toEqual({ sub: 'user-1', email: 'u@e.com' });
-  });
-
-  it('rejects when the session is no longer active (logged out / revoked)', async () => {
-    await expect(
-      verifyBearerAccess(
-        't',
-        bearerDeps({ findActiveSession: jest.fn().mockResolvedValue(undefined) }),
-      ),
-    ).rejects.toThrow(UnauthorizedException);
-  });
-
-  it('rejects when the session belongs to a different user', async () => {
-    await expect(
-      verifyBearerAccess(
-        't',
-        bearerDeps({
-          findActiveSession: jest
-            .fn()
-            .mockResolvedValue({ userId: 'other', workspaceId: 'ws-1' }),
-        }),
-      ),
-    ).rejects.toThrow(UnauthorizedException);
-  });
-
-  it('rejects when the user is disabled (deactivated/deleted)', async () => {
-    await expect(
-      verifyBearerAccess(
-        't',
-        bearerDeps({
-          findUser: jest.fn().mockResolvedValue({ deactivatedAt: new Date() }),
-        }),
-      ),
-    ).rejects.toThrow(UnauthorizedException);
-    await expect(
-      verifyBearerAccess(
-        't',
-        bearerDeps({ findUser: jest.fn().mockResolvedValue(undefined) }),
-      ),
-    ).rejects.toThrow(UnauthorizedException);
-  });
-
-  it('propagates a verifyJwt failure (bad signature/exp/type)', async () => {
-    await expect(
-      verifyBearerAccess(
-        't',
-        bearerDeps({
-          verifyJwt: jest
-            .fn()
-            .mockRejectedValue(new UnauthorizedException('jwt expired')),
-        }),
-      ),
-    ).rejects.toThrow('jwt expired');
-  });
-
-  // Item 3: bind the Bearer token to THIS instance's workspace (mirrors
-  // JwtStrategy). A token whose workspaceId claim differs from the instance
-  // workspace must be rejected; matching/absent expectedWorkspaceId is allowed.
-  it('rejects a token from a DIFFERENT workspace when expectedWorkspaceId is set', async () => {
-    await expect(
-      verifyBearerAccess('t', {
-        ...bearerDeps(),
-        expectedWorkspaceId: 'ws-OTHER',
-      }),
-    ).rejects.toThrow(UnauthorizedException);
-  });
-
-  it('accepts a token whose workspace matches expectedWorkspaceId', async () => {
-    const res = await verifyBearerAccess('t', {
-      ...bearerDeps(),
-      expectedWorkspaceId: 'ws-1',
-    });
-    expect(res).toEqual({ sub: 'user-1', email: 'u@e.com' });
-  });
-
-  it('does NOT enforce a workspace when expectedWorkspaceId is undefined (single-workspace no-op)', async () => {
-    const res = await verifyBearerAccess('t', bearerDeps());
-    expect(res).toEqual({ sub: 'user-1', email: 'u@e.com' });
-  });
-});
-
-describe('resolveMcpSessionConfig', () => {
-  it('Basic good creds -> calls login with the default workspace, returns a getToken config', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const findWorkspace = jest.fn().mockResolvedValue({ id: 'ws-1' });
-    const resolved = await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'pw'),
-      makeDeps({ login, findWorkspace }),
-    );
-    expect(findWorkspace).toHaveBeenCalled();
-    expect(login).toHaveBeenCalledWith(
-      { email: 'user@example.com', password: 'pw' },
-      'ws-1',
-    );
-    expect('getToken' in resolved.config).toBe(true);
-    const cfg = resolved.config as { getToken: () => Promise<string> };
-    await expect(cfg.getToken()).resolves.toBe('issued-user-jwt');
-    expect(resolved.identity).toBe('basic:user@example.com');
-  });
-
-  it('Basic password containing a colon is split on the first colon', async () => {
-    const login = jest.fn().mockResolvedValue('jwt');
-    await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'a:b:c'),
-      makeDeps({ login }),
-    );
-    expect(login).toHaveBeenCalledWith(
-      { email: 'user@example.com', password: 'a:b:c' },
-      'ws-1',
-    );
-  });
-
-  it('Basic bad creds -> specific 401 (not generic) and increments the limiter', async () => {
-    const limiter = new FailedLoginLimiter(5, 60_000);
-    const login = jest
-      .fn()
-      .mockRejectedValue(
-        new UnauthorizedException('Email or password does not match'),
-      );
-    const deps = makeDeps({ login, limiter });
-
-    await expect(
-      resolveMcpSessionConfig(basicHeader('user@example.com', 'wrong'), deps),
-    ).rejects.toThrow('Email or password does not match');
-    // The failure was recorded; drive to the threshold (5) -> throttled message.
-    for (let i = 0; i < 4; i++) {
-      await resolveMcpSessionConfig(
-        basicHeader('user@example.com', 'wrong'),
-        deps,
-      ).catch(() => undefined);
-    }
-    await expect(
-      resolveMcpSessionConfig(basicHeader('user@example.com', 'wrong'), deps),
-    ).rejects.toThrow(/Too many failed MCP login attempts/);
-  });
-
-  it('concurrent Basic requests cannot bypass the limiter (atomic reserve before bcrypt)', async () => {
-    // The race the fix closes: fire threshold+ concurrent /mcp Basic logins for
-    // one email. Each login() (bcrypt-bearing) resolves only after all requests
-    // have entered the flow, so under the OLD check-then-act code every request
-    // would pass the read-only isBlocked() pre-check (count=0) and run bcrypt.
-    // With the atomic reserve, only `threshold` requests get past the synchronous
-    // tryReserve; the rest are throttled BEFORE login() is invoked.
-    const threshold = 5;
-    const limiter = new FailedLoginLimiter(threshold, 60_000);
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const login = jest.fn().mockImplementation(async () => {
-      await gate; // hold every in-flight login open until we release the gate
-      throw new UnauthorizedException('Email or password does not match');
-    });
-    const total = threshold + 4;
-    const calls = Array.from({ length: total }, () =>
-      resolveMcpSessionConfig(
-        basicHeader('victim@example.com', 'wrong'),
-        makeDeps({ login, limiter, clientIp: '10.0.0.1' }),
-      ).then(
-        () => 'resolved' as const,
-        (e) => (/Too many failed/.test(e.message) ? 'throttled' : 'badcreds'),
-      ),
-    );
-    release();
-    const outcomes = await Promise.all(calls);
-    // Only `threshold` requests ever reached bcrypt/login(); the extras were
-    // rejected up front by the atomic reserve, never invoking login().
-    expect(login).toHaveBeenCalledTimes(threshold);
-    expect(outcomes.filter((o) => o === 'badcreds')).toHaveLength(threshold);
-    expect(outcomes.filter((o) => o === 'throttled')).toHaveLength(
-      total - threshold,
-    );
-  });
-
-  it('Bearer -> verifies as ACCESS and returns a getToken config', async () => {
+describe('resolveMcpSessionConfig (Bearer api_key ONLY)', () => {
+  it('valid api_key Bearer -> verifies and returns a getToken config', async () => {
     const verifyAccessJwt = jest
       .fn()
-      .mockResolvedValue({ sub: 'user-9', email: 'u@e.com' });
+      .mockResolvedValue({ sub: 'svc-9', email: 'svc@e.com' });
     const resolved = await resolveMcpSessionConfig(
-      'Bearer some.jwt.value',
+      'Bearer some.api.key',
       makeDeps({ verifyAccessJwt }),
     );
-    expect(verifyAccessJwt).toHaveBeenCalledWith('some.jwt.value');
+    expect(verifyAccessJwt).toHaveBeenCalledWith('some.api.key');
     const cfg = resolved.config as { getToken: () => Promise<string> };
-    await expect(cfg.getToken()).resolves.toBe('some.jwt.value');
-    expect(resolved.identity).toBe('bearer:user-9');
+    await expect(cfg.getToken()).resolves.toBe('some.api.key');
+    expect(resolved.identity).toBe('bearer:svc-9');
   });
 
-  it('Bearer invalid -> specific 401 from verifyAccessJwt', async () => {
-    const verifyAccessJwt = jest
-      .fn()
-      .mockRejectedValue(new UnauthorizedException('jwt expired'));
-    await expect(
-      resolveMcpSessionConfig('Bearer expired', makeDeps({ verifyAccessJwt })),
-    ).rejects.toThrow('jwt expired');
-  });
-
-  it('no creds + env service account configured -> service-account config', async () => {
-    const resolved = await resolveMcpSessionConfig(
-      undefined,
-      makeDeps({ email: 'svc@example.com', password: 'svcpw' }),
-    );
-    expect('email' in resolved.config).toBe(true);
-    const cfg = resolved.config as { email: string; password: string };
-    expect(cfg.email).toBe('svc@example.com');
-    expect(cfg.password).toBe('svcpw');
-    expect(resolved.identity).toBe('service-account');
-  });
-
-  it('no creds + no env service account -> meaningful 401 listing accepted methods', async () => {
-    await expect(
-      resolveMcpSessionConfig(undefined, makeDeps()),
-    ).rejects.toThrow(/HTTP Basic auth.*Bearer access token.*service account/s);
-  });
-
-  it('SESSION INIT Basic -> mints a session via login() (verifyCredentials NOT called)', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const verifyCredentials = jest.fn().mockResolvedValue(undefined);
-    const resolved = await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'pw'),
-      makeDeps({ login, verifyCredentials, isSessionInit: true }),
-    );
-    expect(login).toHaveBeenCalledTimes(1);
-    expect(verifyCredentials).not.toHaveBeenCalled();
-    const cfg = resolved.config as { getToken: () => Promise<string> };
-    await expect(cfg.getToken()).resolves.toBe('issued-user-jwt');
-    expect(resolved.identity).toBe('basic:user@example.com');
-  });
-
-  it('SUBSEQUENT Basic correct creds -> uses verifyCredentials, NEVER login() (no new session/audit), same identity', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const verifyCredentials = jest.fn().mockResolvedValue(undefined);
-    const resolved = await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'pw'),
-      makeDeps({ login, verifyCredentials, isSessionInit: false }),
-    );
-    // The side-effecting login() (audit + lastLoginAt + user_sessions insert)
-    // is NOT hit on a subsequent request: only the non-side-effecting verify.
-    expect(login).not.toHaveBeenCalled();
-    expect(verifyCredentials).toHaveBeenCalledWith(
-      { email: 'user@example.com', password: 'pw' },
-      'ws-1',
-    );
-    // Identity still matches the init identity so anti-fixation accepts it.
-    expect(resolved.identity).toBe('basic:user@example.com');
-  });
-
-  it('SUBSEQUENT Basic wrong password -> still 401 (anti-fixation), without minting a session', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const verifyCredentials = jest
-      .fn()
-      .mockRejectedValue(
-        new UnauthorizedException('Email or password does not match'),
-      );
-    await expect(
-      resolveMcpSessionConfig(
-        basicHeader('user@example.com', 'wrong'),
-        makeDeps({ login, verifyCredentials, isSessionInit: false }),
-      ),
-    ).rejects.toThrow('Email or password does not match');
-    expect(login).not.toHaveBeenCalled();
-  });
-
-  it('global per-email limiter key blocks an attacker rotating IP/XFF for one account', async () => {
-    const limiter = new FailedLoginLimiter(5, 60_000);
-    const login = jest
-      .fn()
-      .mockRejectedValue(
-        new UnauthorizedException('Email or password does not match'),
-      );
-    // 5 failures against the SAME email but DIFFERENT IPs each time. The per-IP
-    // and per-IP+email keys never accumulate, but the global per-email key does.
-    for (let i = 0; i < 5; i++) {
-      await resolveMcpSessionConfig(
-        basicHeader('victim@example.com', 'wrong'),
-        makeDeps({ login, limiter, clientIp: `10.0.0.${i}` }),
-      ).catch(() => undefined);
-    }
-    // A 6th attempt from yet another fresh IP is now throttled purely by the
-    // email key — proving IP/XFF rotation no longer evades the limiter.
-    await expect(
-      resolveMcpSessionConfig(
-        basicHeader('victim@example.com', 'wrong'),
-        makeDeps({ login, limiter, clientIp: '10.0.0.99' }),
-      ),
-    ).rejects.toThrow(/Too many failed MCP login attempts/);
-  });
-
-  it('limiter does NOT count business errors (email not verified) as a failed login', async () => {
-    const limiter = new FailedLoginLimiter(1, 60_000);
-    const login = jest
-      .fn()
-      .mockRejectedValue(
-        new BadRequestException('Please verify your email address.'),
-      );
-    const deps = () =>
-      makeDeps({ login, limiter, clientIp: '10.0.0.7' });
-    // First attempt: business error, surfaced as 401, but must NOT increment.
-    await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'pw'),
-      deps(),
-    ).catch(() => undefined);
-    // With threshold 1, if it had counted, the next attempt would be throttled.
-    // Instead it should reach login() again (same business error, NOT throttle).
-    await expect(
-      resolveMcpSessionConfig(basicHeader('user@example.com', 'pw'), deps()),
-    ).rejects.toThrow(/verify your email/);
-  });
-
-  it('anti-fixation: different users yield different identity keys (compared by the http identify hook)', async () => {
-    const a = await resolveMcpSessionConfig(
-      basicHeader('alice@example.com', 'pw'),
-      makeDeps(),
-    );
-    const b = await resolveMcpSessionConfig(
-      basicHeader('bob@example.com', 'pw'),
-      makeDeps(),
-    );
-    expect(a.identity).toBe('basic:alice@example.com');
-    expect(b.identity).toBe('basic:bob@example.com');
-    expect(a.identity).not.toBe(b.identity);
-  });
-
-  // --- BLOCKER: SSO/MFA pre-token gate on the Basic path ---
-
-  it('Basic rejected (no token) when the SSO/MFA gate throws (SSO enforced)', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const verifyCredentials = jest.fn().mockResolvedValue(undefined);
-    // The service wires enforceBasicGate to validateSsoEnforcement + the lazy
-    // MFA check. Here we stub it to throw as it would for an SSO-enforced
-    // workspace; the gate runs BEFORE login()/verifyCredentials, so no token.
-    const enforceBasicGate = jest
-      .fn()
-      .mockRejectedValue(
-        new UnauthorizedException('This workspace has enforced SSO login.'),
-      );
+  it('HTTP Basic email:password -> 401 (api_key only), verify NOT called', async () => {
+    const verifyAccessJwt = jest.fn();
     await expect(
       resolveMcpSessionConfig(
         basicHeader('user@example.com', 'pw'),
-        makeDeps({ login, verifyCredentials, enforceBasicGate }),
+        makeDeps({ verifyAccessJwt }),
       ),
-    ).rejects.toThrow(/enforced SSO/);
-    expect(enforceBasicGate).toHaveBeenCalledWith(
-      { id: 'ws-1' },
-      { email: 'user@example.com', password: 'pw' },
-    );
-    // The pre-token gate fired first: no token-minting login() and no
-    // verifyCredentials() happened.
-    expect(login).not.toHaveBeenCalled();
-    expect(verifyCredentials).not.toHaveBeenCalled();
+    ).rejects.toThrow(/Bearer api_key/);
+    // A Basic header is not a Bearer token, so the verifier is never consulted.
+    expect(verifyAccessJwt).not.toHaveBeenCalled();
   });
 
-  it('Basic rejected with a "use a Bearer token" message when MFA is required', async () => {
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    // Mirror McpService.enforceBasicLoginGate when the EE MFA module is present
-    // and the user has MFA: it throws telling the caller to use a Bearer token.
-    const enforceBasicGate = jest
+  it('a Bearer token the {API_KEY} allowlist refuses (e.g. an ACCESS session JWT) -> generic 401', async () => {
+    // In production verifyAccessJwt is verifyMcpBearer, whose bound verifier pins
+    // the allowlist to {API_KEY}; a human ACCESS-session token is rejected there
+    // with an UnauthorizedException. resolveMcpSessionConfig must surface the
+    // UNIFORM generic 401 (anti-enumeration), not the specific reason.
+    const verifyAccessJwt = jest
       .fn()
-      .mockRejectedValue(
-        new UnauthorizedException(
-          'This account requires multi-factor authentication. MCP HTTP Basic ' +
-            'cannot complete MFA — log in normally and use a Bearer access token ' +
-            'instead.',
-        ),
-      );
+      .mockRejectedValue(new UnauthorizedException('invalid token type'));
     await expect(
       resolveMcpSessionConfig(
-        basicHeader('mfa-user@example.com', 'pw'),
-        makeDeps({ login, enforceBasicGate }),
+        'Bearer human.access.jwt',
+        makeDeps({ verifyAccessJwt }),
       ),
-    ).rejects.toThrow(/use a Bearer access token/);
-    expect(login).not.toHaveBeenCalled();
+    ).rejects.toThrow('Invalid or expired token');
   });
 
-  it('SSO/MFA gate rejection does NOT burn the limiter budget (no token, no count)', async () => {
-    // Follow-up to #83: the brute-force keys are reserved at the TOP of the
-    // Basic flow (before any await) to close the concurrency race. But an
-    // enforceBasicGate rejection is a BUSINESS error (SSO enforced / MFA
-    // required), NOT a password-guess signal, so it must release the reservation
-    // — otherwise an attacker could exhaust an SSO/MFA victim's per-email
-    // backstop by firing gate-rejected requests with any password (no bcrypt
-    // even runs). Drive threshold+1 such requests and confirm none are blocked:
-    // every one reaches the gate (proving the email bucket never filled).
-    const threshold = 3;
-    const limiter = new FailedLoginLimiter(threshold, 60_000);
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const enforceBasicGate = jest
-      .fn()
-      .mockRejectedValue(
-        new UnauthorizedException('This workspace has enforced SSO login.'),
-      );
-    for (let i = 0; i < threshold + 1; i++) {
+  it('no Authorization header -> 401, EVEN when MCP_DOCMOST_EMAIL/PASSWORD are set (no service-account fallback)', async () => {
+    // Prove there is no env service-account fallback: with the old service-account
+    // vars set, a credential-less request STILL 401s. The helper never reads env.
+    const prevEmail = process.env.MCP_DOCMOST_EMAIL;
+    const prevPassword = process.env.MCP_DOCMOST_PASSWORD;
+    process.env.MCP_DOCMOST_EMAIL = 'svc@example.com';
+    process.env.MCP_DOCMOST_PASSWORD = 'svcpw';
+    try {
+      const verifyAccessJwt = jest.fn();
       await expect(
-        resolveMcpSessionConfig(
-          basicHeader('victim@example.com', `pw-${i}`),
-          makeDeps({ login, enforceBasicGate, limiter }),
-        ),
-      ).rejects.toThrow(/enforced SSO/);
+        resolveMcpSessionConfig(undefined, makeDeps({ verifyAccessJwt })),
+      ).rejects.toThrow(/Bearer api_key/);
+      expect(verifyAccessJwt).not.toHaveBeenCalled();
+    } finally {
+      if (prevEmail === undefined) delete process.env.MCP_DOCMOST_EMAIL;
+      else process.env.MCP_DOCMOST_EMAIL = prevEmail;
+      if (prevPassword === undefined) delete process.env.MCP_DOCMOST_PASSWORD;
+      else process.env.MCP_DOCMOST_PASSWORD = prevPassword;
     }
-    // The gate fired on every attempt (the limiter never throttled before it),
-    // and login() never ran: the victim's budget was preserved.
-    expect(enforceBasicGate).toHaveBeenCalledTimes(threshold + 1);
-    expect(login).not.toHaveBeenCalled();
-    // The global per-email backstop is still fully under budget afterwards.
-    expect(limiter.isBlocked('email:victim@example.com')).toBe(false);
   });
 
-  it('missing-workspace config error does NOT burn the limiter budget', async () => {
-    // findWorkspace() returning undefined is a CONFIG error, not a brute-force
-    // signal, so (like the gate) it must release the up-front reservation. With
-    // threshold 1, a counted attempt would throttle the very next one; instead
-    // every attempt reaches findWorkspace() and surfaces the same config 401.
-    const limiter = new FailedLoginLimiter(1, 60_000);
-    const findWorkspace = jest.fn().mockResolvedValue(undefined);
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const deps = () =>
-      makeDeps({ findWorkspace, login, limiter, clientIp: '10.0.0.42' });
+  it('Bearer INFRA error -> propagates (NOT masked as 401)', async () => {
+    // A non-UnauthorizedException (e.g. a DB outage in the api-key row-check) is
+    // not an auth verdict: it must propagate so the surface maps it to 5xx.
+    const verifyAccessJwt = jest
+      .fn()
+      .mockRejectedValue(new Error('connection terminated'));
     await expect(
-      resolveMcpSessionConfig(basicHeader('user@example.com', 'pw'), deps()),
-    ).rejects.toThrow(/No workspace is configured/);
-    // If the first attempt had counted, threshold 1 would now throttle. Instead
-    // the second attempt must reach findWorkspace() again (same config error).
-    await expect(
-      resolveMcpSessionConfig(basicHeader('user@example.com', 'pw'), deps()),
-    ).rejects.toThrow(/No workspace is configured/);
-    expect(findWorkspace).toHaveBeenCalledTimes(2);
-    expect(login).not.toHaveBeenCalled();
-    expect(limiter.isBlocked('email:user@example.com')).toBe(false);
+      resolveMcpSessionConfig('Bearer x', makeDeps({ verifyAccessJwt })),
+    ).rejects.toThrow('connection terminated');
   });
 
-  it('Bearer path is NOT subjected to the Basic SSO/MFA gate', async () => {
-    // The gate is only consulted on the Basic branch. A Bearer token (minted
-    // post-gate by the normal login) must not be blocked by it.
-    const enforceBasicGate = jest.fn();
-    const resolved = await resolveMcpSessionConfig(
-      'Bearer some.jwt.value',
-      makeDeps({ enforceBasicGate }),
+  it('different keys yield different identity keys (anti-fixation)', async () => {
+    const a = await resolveMcpSessionConfig(
+      'Bearer key-a',
+      makeDeps({
+        verifyAccessJwt: jest.fn().mockResolvedValue({ sub: 'svc-a' }),
+      }),
     );
-    expect(enforceBasicGate).not.toHaveBeenCalled();
-    expect('getToken' in resolved.config).toBe(true);
-  });
-
-  it('a session-INIT login() success DOES reset the global per-email key', async () => {
-    const limiter = new FailedLoginLimiter(5, 60_000);
-    // Pre-load some failure budget on the global email key.
-    const emailKey = 'email:victim@example.com';
-    limiter.recordFailure(emailKey);
-    limiter.recordFailure(emailKey);
-    await resolveMcpSessionConfig(
-      basicHeader('victim@example.com', 'pw'),
-      makeDeps({ limiter, isSessionInit: true }),
+    const b = await resolveMcpSessionConfig(
+      'Bearer key-b',
+      makeDeps({
+        verifyAccessJwt: jest.fn().mockResolvedValue({ sub: 'svc-b' }),
+      }),
     );
-    // After a real init login, the deliberate authentication clears the email
-    // bucket entirely.
-    expect(limiter.isBlocked(emailKey)).toBe(false);
-    limiter.recordFailure(emailKey);
-    // Only one failure now (bucket was reset), so still far from threshold 5.
-    expect(limiter.isBlocked(emailKey)).toBe(false);
-  });
-
-  it('a SUBSEQUENT valid login does NOT reset the global per-email bucket (only per-IP keys)', async () => {
-    const limiter = new FailedLoginLimiter(2, 60_000);
-    const clientIp = '10.0.0.5';
-    const emailLc = 'victim@example.com';
-    const emailKey = `email:${emailLc}`;
-    const ipKey = `ip:${clientIp}`;
-    const ipEmailKey = `ip-email:${clientIp}:${emailLc}`;
-    // An attacker (different IP rotation) has driven the global email key to the
-    // threshold; also seed the per-IP keys for the victim's own IP.
-    limiter.recordFailure(emailKey);
-    limiter.recordFailure(emailKey);
-    limiter.recordFailure(ipKey);
-    limiter.recordFailure(ipEmailKey);
-
-    // The victim's live session would be throttled too (shared email key), so to
-    // exercise the SUBSEQUENT success path we use a SEPARATE limiter assertion:
-    // verify the reset behaviour directly on the keys the helper touches. Build a
-    // limiter where only the per-IP budget is set so the request is not blocked.
-    const lim2 = new FailedLoginLimiter(2, 60_000);
-    lim2.recordFailure(emailKey); // 1 failure on the global email key
-    lim2.recordFailure(ipKey);
-    lim2.recordFailure(ipEmailKey);
-    const verifyCredentials = jest.fn().mockResolvedValue(undefined);
-    await resolveMcpSessionConfig(
-      basicHeader(emailLc, 'pw'),
-      makeDeps({ limiter: lim2, clientIp, verifyCredentials, isSessionInit: false }),
-    );
-    expect(verifyCredentials).toHaveBeenCalled();
-    // Per-IP keys were cleared by the subsequent success...
-    expect(lim2.isBlocked(ipKey)).toBe(false);
-    // ...but the global per-email key was DELIBERATELY left intact (still 1).
-    lim2.recordFailure(emailKey); // -> 2 == threshold
-    expect(lim2.isBlocked(emailKey)).toBe(true);
+    expect(a.identity).toBe('bearer:svc-a');
+    expect(b.identity).toBe('bearer:svc-b');
+    expect(a.identity).not.toBe(b.identity);
   });
 });
 
-// A full, valid JSON-RPC InitializeRequest as the @modelcontextprotocol/sdk
-// `isInitializeRequest` predicate (which isInitializeRequestBody now delegates
-// to) requires: jsonrpc + id + method === 'initialize' + params.protocolVersion.
-const fullInitializeRequest = {
-  jsonrpc: '2.0',
-  id: 1,
-  method: 'initialize',
-  params: {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'test-client', version: '1.0.0' },
-  },
-};
-
-describe('isInitializeRequestBody (session-INIT detection, matches SDK predicate)', () => {
-  it('true for a FULL valid InitializeRequest (the SDK predicate signal)', () => {
-    expect(isInitializeRequestBody(fullInitializeRequest)).toBe(true);
-  });
-
-  it('false for a bare { method: "initialize" } with no id/params (item 1)', () => {
-    // Item 1: this previously returned true (method-only check) and let an
-    // authenticated client POST a params-less body with no mcp-session-id, which
-    // ran the side-effecting login() before http.ts 400'd it. The SDK predicate
-    // rejects it (no id, no params.protocolVersion), so it no longer mints a
-    // session / audit row.
-    expect(isInitializeRequestBody({ method: 'initialize' })).toBe(false);
-    expect(
-      isInitializeRequestBody({ jsonrpc: '2.0', method: 'initialize' }),
-    ).toBe(false);
-    expect(
-      isInitializeRequestBody({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-    ).toBe(false);
-  });
-
-  it('false for a non-initialize method (e.g. tools/call)', () => {
-    expect(
-      isInitializeRequestBody({ ...fullInitializeRequest, method: 'tools/call' }),
-    ).toBe(false);
-  });
-
-  it('false for a batch (array) body, null/undefined, or a non-object', () => {
-    expect(isInitializeRequestBody([fullInitializeRequest])).toBe(false);
-    expect(isInitializeRequestBody(undefined)).toBe(false);
-    expect(isInitializeRequestBody(null)).toBe(false);
-    expect(isInitializeRequestBody('initialize')).toBe(false);
-  });
-});
-
-describe('isSessionInit decision (no mcp-session-id AND initialize body)', () => {
-  // The service computes isSessionInit = !mcp-session-id && isInitializeRequestBody(body).
-  // This proves a header-less but NON-initialize request is NOT treated as init,
-  // so it goes down the non-side-effecting verifyCredentials path (no orphan
-  // session/audit before http.ts 400s it).
-  const decide = (sessionId: string | undefined, body: unknown): boolean =>
-    !sessionId && isInitializeRequestBody(body);
-
-  it('no header + full initialize body -> init', () => {
-    expect(decide(undefined, fullInitializeRequest)).toBe(true);
-  });
-
-  it('no header + bare params-less initialize body -> NOT init (item 1)', () => {
-    // A header-less { method: 'initialize' } with no params is no longer treated
-    // as an init by the SDK predicate, so it does not mint a session via login().
-    expect(decide(undefined, { method: 'initialize' })).toBe(false);
-  });
-
-  it('no header + non-initialize body -> NOT init (verifyCredentials path)', () => {
-    expect(decide(undefined, { method: 'tools/list' })).toBe(false);
-  });
-
-  it('has session-id -> never init regardless of body', () => {
-    expect(decide('sess-1', fullInitializeRequest)).toBe(false);
-  });
-});
-
-describe('resolveMcpSessionConfig non-initialize request side effects', () => {
-  it('header-less NON-initialize request does NOT call session-minting login() (uses verifyCredentials)', async () => {
-    // Simulate the service decision: no mcp-session-id but body is NOT initialize
-    // -> isSessionInit false -> the helper must use verifyCredentials, not login.
-    const login = jest.fn().mockResolvedValue('issued-user-jwt');
-    const verifyCredentials = jest.fn().mockResolvedValue(undefined);
-    const isSessionInit = isInitializeRequestBody({ method: 'tools/call' }); // false
-    await resolveMcpSessionConfig(
-      basicHeader('user@example.com', 'pw'),
-      makeDeps({ login, verifyCredentials, isSessionInit }),
-    );
-    expect(login).not.toHaveBeenCalled();
-    expect(verifyCredentials).toHaveBeenCalledWith(
-      { email: 'user@example.com', password: 'pw' },
-      'ws-1',
-    );
-  });
-});
-
-describe('sharedTokenMatches (X-MCP-Token constant-time guard, item 2)', () => {
+describe('sharedTokenMatches (X-MCP-Token constant-time guard)', () => {
   it('equal token -> true', () => {
     expect(sharedTokenMatches('s3cr3t-token', 's3cr3t-token')).toBe(true);
   });
@@ -961,182 +251,159 @@ describe('sharedTokenMatches (X-MCP-Token constant-time guard, item 2)', () => {
   });
 });
 
-describe('clientIp (XFF-fallback precedence, item 5)', () => {
-  it('req.ip wins over socket.remoteAddress AND over X-Forwarded-For', () => {
-    expect(
-      clientIp({
-        ip: '1.1.1.1',
-        socket: { remoteAddress: '2.2.2.2' },
-        headers: { 'x-forwarded-for': '3.3.3.3' },
-      }),
-    ).toBe('1.1.1.1');
-  });
-
-  it('socket.remoteAddress is used only when req.ip is absent (still beats XFF)', () => {
-    expect(
-      clientIp({
-        socket: { remoteAddress: '2.2.2.2' },
-        headers: { 'x-forwarded-for': '3.3.3.3' },
-      }),
-    ).toBe('2.2.2.2');
-  });
-
-  it('X-Forwarded-For is the LAST resort, and only the FIRST hop is taken', () => {
-    expect(
-      clientIp({
-        headers: { 'x-forwarded-for': '3.3.3.3, 4.4.4.4, 5.5.5.5' },
-      }),
-    ).toBe('3.3.3.3');
-  });
-
-  it("returns 'unknown' when nothing usable is present", () => {
-    expect(clientIp({ headers: {} })).toBe('unknown');
-    // An array-valued XFF header is not treated as a string source -> unknown.
-    expect(
-      clientIp({ headers: { 'x-forwarded-for': ['3.3.3.3'] } }),
-    ).toBe('unknown');
-    // An empty XFF string is ignored too.
-    expect(clientIp({ headers: { 'x-forwarded-for': '' } })).toBe('unknown');
-  });
-});
-
-describe('bindAccessJwtVerifier enforces JwtType.ACCESS (item 3)', () => {
-  it('calls TokenService.verifyJwt with JwtType.ACCESS as the second argument', async () => {
-    // Mock TokenService: assert the type literal is pinned to ACCESS so swapping
-    // to REFRESH (or omitting the type) breaks this test.
-    const verifyJwt = jest
+describe('bindMcpBearerVerifier pins the {API_KEY} allowlist (#558)', () => {
+  it('calls verifyJwtOneOf with exactly [API_KEY]', async () => {
+    const verifyJwtOneOf = jest
       .fn()
-      .mockResolvedValue({ sub: 'user-1', workspaceId: 'ws-1' });
-    const verify = bindAccessJwtVerifier({ verifyJwt });
-
-    await verify('the.access.jwt');
-
-    expect(verifyJwt).toHaveBeenCalledTimes(1);
-    expect(verifyJwt).toHaveBeenCalledWith('the.access.jwt', JwtType.ACCESS);
-    // Pin the real enum value too, so renaming/repointing the enum member is caught.
-    expect(verifyJwt.mock.calls[0][1]).toBe('access');
-  });
-
-  it('passes through the verified payload', async () => {
-    const payload = { sub: 'user-9', email: 'u@e.com', workspaceId: 'ws-1' };
-    const verifyJwt = jest.fn().mockResolvedValue(payload);
-    await expect(
-      bindAccessJwtVerifier({ verifyJwt })('t'),
-    ).resolves.toBe(payload);
-  });
-
-  // The Bearer revocation/disabled checks (verifyBearerAccess) are covered above;
-  // this binds the ACCESS-type enforcement that verifyMcpBearer wires in.
-  it('feeds verifyBearerAccess so the whole Bearer chain enforces ACCESS', async () => {
-    const verifyJwt = jest.fn().mockResolvedValue({
-      sub: 'user-1',
-      workspaceId: 'ws-1',
-      sessionId: 'sess-1',
-    });
-    const res = await verifyBearerAccess('t', {
-      verifyJwt: bindAccessJwtVerifier({ verifyJwt }),
-      findUser: jest.fn().mockResolvedValue({ deactivatedAt: null }),
-      findActiveSession: jest
-        .fn()
-        .mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1' }),
-    });
-    expect(verifyJwt).toHaveBeenCalledWith('t', JwtType.ACCESS);
-    expect(res).toEqual({ sub: 'user-1', email: undefined });
+      .mockResolvedValue({ type: JwtType.API_KEY, sub: 'u-1' });
+    await bindMcpBearerVerifier({ verifyJwtOneOf })('the.jwt');
+    expect(verifyJwtOneOf).toHaveBeenCalledWith('the.jwt', [JwtType.API_KEY]);
+    // Pin the concrete enum value too — an ACCESS token is NOT accepted.
+    expect(verifyJwtOneOf.mock.calls[0][1]).toEqual(['api_key']);
+    expect(verifyJwtOneOf.mock.calls[0][1]).not.toContain('access');
   });
 });
 
-describe('decideBasicGate (pure SSO/MFA pre-token gate, refactor R1)', () => {
-  // The pure decision extracted out of McpService.enforceBasicLoginGate. It is
-  // tested WITHOUT ModuleRef and WITHOUT an on-disk EE MFA module: the SSO verdict
-  // and the MFA requirement result are passed in as plain values.
+describe('verifyMcpBearer (API_KEY only)', () => {
+  const apiKeyDeps = (over: any = {}) => ({
+    verifyJwtOneOf: jest.fn(),
+    expectedWorkspaceId: 'ws-1',
+    validateApiKey: jest.fn(),
+    ...over,
+  });
 
-  it('SSO enforced -> throws Unauthorized ("enforced SSO")', () => {
-    expect(() => decideBasicGate({ ssoEnforced: true })).toThrow(
+  it('API_KEY -> row-checks via validateApiKey and returns the principal', async () => {
+    const deps = apiKeyDeps({
+      verifyJwtOneOf: jest.fn().mockResolvedValue({
+        type: JwtType.API_KEY,
+        sub: 'svc-1',
+        workspaceId: 'ws-1',
+        apiKeyId: 'k-1',
+      }),
+      validateApiKey: jest.fn().mockResolvedValue({ user: { id: 'svc-1' } }),
+    });
+    const res = await verifyMcpBearer('tok', deps);
+    expect(deps.validateApiKey).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ sub: 'svc-1' });
+  });
+
+  it('API_KEY for ANOTHER workspace -> rejected before the row-check', async () => {
+    const deps = apiKeyDeps({
+      verifyJwtOneOf: jest.fn().mockResolvedValue({
+        type: JwtType.API_KEY,
+        sub: 'svc-1',
+        workspaceId: 'ws-OTHER',
+        apiKeyId: 'k-1',
+      }),
+      validateApiKey: jest.fn(),
+    });
+    await expect(verifyMcpBearer('tok', deps)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(() => decideBasicGate({ ssoEnforced: true })).toThrow(/enforced SSO/);
-    // SSO takes precedence even if MFA flags are also set.
-    expect(() =>
-      decideBasicGate({ ssoEnforced: true, mfa: { userHasMfa: true } }),
-    ).toThrow(/enforced SSO/);
+    expect(deps.validateApiKey).not.toHaveBeenCalled();
   });
 
-  it('no SSO + no MFA module (mfa undefined) -> resolves (Basic allowed)', () => {
-    // A community/fork build with no EE MFA module passes mfa: undefined and the
-    // gate must allow the password login (same as the controller with no MFA).
-    expect(() => decideBasicGate({ ssoEnforced: false })).not.toThrow();
-    expect(() =>
-      decideBasicGate({ ssoEnforced: false, mfa: undefined }),
-    ).not.toThrow();
-  });
-
-  it('MFA present + userHasMfa -> rejects ("use a Bearer access token")', () => {
-    expect(() =>
-      decideBasicGate({ ssoEnforced: false, mfa: { userHasMfa: true } }),
-    ).toThrow(/use a Bearer access token/);
-    expect(() =>
-      decideBasicGate({ ssoEnforced: false, mfa: { userHasMfa: true } }),
-    ).toThrow(UnauthorizedException);
-  });
-
-  it('MFA present + requiresMfaSetup -> rejects', () => {
-    expect(() =>
-      decideBasicGate({ ssoEnforced: false, mfa: { requiresMfaSetup: true } }),
-    ).toThrow(/use a Bearer access token/);
-  });
-
-  it('MFA present but none required (both flags false) -> resolves', () => {
-    expect(() =>
-      decideBasicGate({
-        ssoEnforced: false,
-        mfa: { userHasMfa: false, requiresMfaSetup: false },
+  it('API_KEY infra error from validateApiKey PROPAGATES (not masked)', async () => {
+    const boom = new Error('db down');
+    const deps = apiKeyDeps({
+      verifyJwtOneOf: jest.fn().mockResolvedValue({
+        type: JwtType.API_KEY,
+        sub: 'svc-1',
+        workspaceId: 'ws-1',
+        apiKeyId: 'k-1',
       }),
-    ).not.toThrow();
+      validateApiKey: jest.fn().mockRejectedValue(boom),
+    });
+    await expect(verifyMcpBearer('tok', deps)).rejects.toBe(boom);
+  });
+
+  it('a non-API_KEY payload (defence in depth) -> 401 without touching validateApiKey', async () => {
+    // The allowlist already pins the type to API_KEY, so verifyJwtOneOf would
+    // reject an ACCESS token first; if a non-API_KEY payload ever reached here,
+    // verifyMcpBearer must still deny it uniformly and never row-check it.
+    const deps = apiKeyDeps({
+      verifyJwtOneOf: jest.fn().mockResolvedValue({
+        type: JwtType.ACCESS,
+        sub: 'u-1',
+        workspaceId: 'ws-1',
+        sessionId: 'sess-1',
+      }),
+    });
+    await expect(verifyMcpBearer('tok', deps)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(deps.validateApiKey).not.toHaveBeenCalled();
+  });
+
+  it('verifies the signature exactly ONCE (single verifyJwtOneOf)', async () => {
+    const verifyJwtOneOf = jest.fn().mockResolvedValue({
+      type: JwtType.API_KEY,
+      sub: 'svc-1',
+      workspaceId: 'ws-1',
+      apiKeyId: 'k-1',
+    });
+    await verifyMcpBearer('tok', apiKeyDeps({ verifyJwtOneOf }));
+    expect(verifyJwtOneOf).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('mapAuthResultToResponse (handle status/body mapping, refactor R2)', () => {
+describe('mapAuthResultToResponse (handle status/body mapping)', () => {
   // The pure response decision extracted out of McpService.handle. It maps the
   // pre-hijack gauntlet (shared token, enablement, auth error) to either a fixed
-  // JSON error response or the hijack path — never leaking the password/header.
+  // JSON error response or the hijack path — never leaking the token/header.
 
   it('wrong X-MCP-Token -> 401 {error:"Unauthorized"} and NOT the hijack path', () => {
-    const d = mapAuthResultToResponse({ sharedTokenOk: false, enabled: true });
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: false,
+      enabled: true,
+      sharedTokenPresented: true,
+      bearerPresented: true,
+    });
     expect(d).toEqual({
       kind: 'respond',
       status: 401,
       body: { error: 'Unauthorized' },
+      headers: { 'WWW-Authenticate': MCP_WWW_AUTHENTICATE_SHARED_TOKEN },
     });
   });
 
-  it('workspace MCP disabled -> 403', () => {
-    const d = mapAuthResultToResponse({ sharedTokenOk: true, enabled: false });
+  it('workspace MCP disabled -> 403 with NO WWW-Authenticate (not an auth challenge)', () => {
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: true,
+      enabled: false,
+      sharedTokenPresented: true,
+      bearerPresented: true,
+    });
     expect(d.kind).toBe('respond');
     if (d.kind === 'respond') {
       expect(d.status).toBe(403);
       expect(d.body).toEqual({ error: 'MCP is disabled for this workspace' });
+      // #636 explicitly leaves the 403 (MCP disabled) path untouched: no
+      // credential would help, so it carries no challenge.
+      expect(d.headers).toBeUndefined();
     }
   });
 
-  it('an UnauthorizedException -> 401 with err.message; no password/header leaked', () => {
+  it('an UnauthorizedException -> 401 with err.message; no token/header leaked', () => {
     // Construct an UnauthorizedException whose message is the SPECIFIC auth reason.
-    const err = new UnauthorizedException('Email or password does not match');
+    const err = new UnauthorizedException('Invalid or expired token');
     const d = mapAuthResultToResponse({
       sharedTokenOk: true,
       enabled: true,
       error: err,
+      sharedTokenPresented: true,
+      bearerPresented: true,
     });
     expect(d).toEqual({
       kind: 'respond',
       status: 401,
-      body: { error: 'Email or password does not match' },
+      body: { error: 'Invalid or expired token' },
+      headers: { 'WWW-Authenticate': MCP_WWW_AUTHENTICATE },
     });
     // The surfaced body is ONLY the exception message — never the raw secret.
     if (d.kind === 'respond') {
       const serialized = JSON.stringify(d.body);
-      expect(serialized).not.toContain('password=');
       expect(serialized).not.toContain('Authorization');
-      expect(serialized).not.toContain('Basic ');
       expect(serialized).not.toContain('Bearer ');
     }
   });
@@ -1147,6 +414,8 @@ describe('mapAuthResultToResponse (handle status/body mapping, refactor R2)', ()
       sharedTokenOk: true,
       enabled: true,
       error: err,
+      sharedTokenPresented: true,
+      bearerPresented: true,
     });
     expect(d).toEqual({
       kind: 'respond',
@@ -1160,7 +429,12 @@ describe('mapAuthResultToResponse (handle status/body mapping, refactor R2)', ()
   });
 
   it('happy path (auth resolved, no error) -> hijack', () => {
-    const d = mapAuthResultToResponse({ sharedTokenOk: true, enabled: true });
+    const d = mapAuthResultToResponse({
+      sharedTokenOk: true,
+      enabled: true,
+      sharedTokenPresented: true,
+      bearerPresented: true,
+    });
     expect(d).toEqual({ kind: 'hijack' });
   });
 
@@ -1171,11 +445,666 @@ describe('mapAuthResultToResponse (handle status/body mapping, refactor R2)', ()
       sharedTokenOk: false,
       enabled: false,
       error: new UnauthorizedException('should not surface'),
+      sharedTokenPresented: true,
+      bearerPresented: true,
     });
     expect(d).toEqual({
       kind: 'respond',
       status: 401,
       body: { error: 'Unauthorized' },
+      headers: { 'WWW-Authenticate': MCP_WWW_AUTHENTICATE_SHARED_TOKEN },
     });
+  });
+
+  // #636 — the 401 must state the credential /mcp ACTUALLY wants (RFC 6750 §3) and
+  // must NOT advertise an OAuth authorization server we do not have.
+  describe('WWW-Authenticate challenge on 401 (#636)', () => {
+    const four01s = [
+      [
+        'shared-token mismatch',
+        {
+          sharedTokenOk: false,
+          enabled: true,
+          sharedTokenPresented: true,
+          bearerPresented: true,
+        },
+        MCP_WWW_AUTHENTICATE_SHARED_TOKEN,
+      ],
+      [
+        'bad/missing api_key',
+        {
+          sharedTokenOk: true,
+          enabled: true,
+          error: new UnauthorizedException(
+            MCP_CHALLENGE_BEARER_DESCRIPTION,
+          ) as unknown,
+          sharedTokenPresented: true,
+          bearerPresented: true,
+        },
+        MCP_WWW_AUTHENTICATE,
+      ],
+    ] as const;
+
+    it.each(four01s)(
+      'the 401 branch (%s) carries a Bearer challenge naming the credential it wants',
+      (_name, input, expected) => {
+        const d = mapAuthResultToResponse(input);
+        expect(d.kind).toBe('respond');
+        if (d.kind !== 'respond') return;
+        expect(d.status).toBe(401);
+        const challenge = d.headers?.['WWW-Authenticate'];
+        expect(challenge).toBe(expected);
+        expect(challenge).toContain('Bearer');
+        expect(challenge).toContain('error="invalid_token"');
+        expect(challenge).toContain('api_key');
+      },
+    );
+
+    // The bug this finding is about: when MCP_TOKEN is set and the client omits (or
+    // mis-sends) X-MCP-Token, a challenge that names ONLY the Bearer api_key sends
+    // the client into an endless loop — it adds `Authorization: Bearer <api_key>`,
+    // still misses the shared header, and 401s forever. The challenge MUST name the
+    // header it is actually missing.
+    it('the shared-token 401 names X-MCP-Token (not just the Bearer api_key)', () => {
+      const d = mapAuthResultToResponse({
+        sharedTokenOk: false,
+        enabled: true,
+        sharedTokenPresented: true,
+        bearerPresented: true,
+      });
+      expect(d.kind).toBe('respond');
+      if (d.kind !== 'respond') return;
+      const challenge = d.headers?.['WWW-Authenticate'];
+      expect(challenge).toContain('X-MCP-Token');
+      // It still names the api_key too — BOTH credentials are required here.
+      expect(challenge).toContain('Authorization: Bearer <api_key>');
+      // And it is NOT the api_key-only challenge, which would be the bug.
+      expect(challenge).not.toBe(MCP_WWW_AUTHENTICATE);
+    });
+
+    // RFC 6750 §3.1: "If the request lacks any authentication information ... the
+    // resource server SHOULD NOT include an error code." `error="invalid_token"`
+    // means "you sent a token and it was bad" — a lie for `claude mcp add` with no
+    // --header, and it sends the user hunting a token they never sent.
+    it.each([
+      [
+        'no credential at all -> NO error code',
+        {
+          sharedTokenOk: true,
+          enabled: true,
+          sharedTokenPresented: false,
+          bearerPresented: false,
+        },
+        false,
+      ],
+      [
+        'a credential was presented and rejected -> error="invalid_token"',
+        {
+          sharedTokenOk: true,
+          enabled: true,
+          sharedTokenPresented: true,
+          bearerPresented: true,
+        },
+        true,
+      ],
+    ] as const)('%s', (_name, base, expectErrorCode) => {
+      const d = mapAuthResultToResponse({
+        ...base,
+        error: new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+      });
+      expect(d.kind).toBe('respond');
+      if (d.kind !== 'respond') return;
+      const challenge = d.headers?.['WWW-Authenticate'] ?? '';
+      expect(challenge).toContain('Bearer realm="mcp"');
+      // The description (what the client must actually DO) is always there.
+      expect(challenge).toContain(MCP_CHALLENGE_BEARER_DESCRIPTION);
+      if (expectErrorCode) {
+        expect(challenge).toContain('error="invalid_token"');
+      } else {
+        expect(challenge).not.toContain('error="invalid_token"');
+        expect(challenge).not.toContain('error=');
+      }
+    });
+
+    it('the same §3.1 rule holds for the shared-token branch', () => {
+      const d = mapAuthResultToResponse({
+        sharedTokenOk: false,
+        enabled: true,
+        sharedTokenPresented: false,
+        bearerPresented: false,
+      });
+      expect(d.kind).toBe('respond');
+      if (d.kind !== 'respond') return;
+      const challenge = d.headers?.['WWW-Authenticate'] ?? '';
+      expect(challenge).not.toContain('error=');
+      expect(challenge).toContain('X-MCP-Token');
+    });
+
+    // The §3.1 signal is PER BRANCH: the two 401s challenge two DIFFERENT
+    // credentials, so "did the client present one?" has two different answers. One
+    // shared flag would resurrect #636's own bug in miniature — an error code about
+    // a credential that was never presented.
+    describe('the error code is read per credential, not "any credential" (#636)', () => {
+      it('the shared-token 401 stays code-free when the client sent ONLY the api_key', () => {
+        // The deployment sets MCP_TOKEN. The client did exactly what the api_key
+        // challenge told it to — `Authorization: Bearer <api_key>` and nothing else.
+        // It never presented an X-MCP-Token, and THIS challenge is about X-MCP-Token,
+        // so calling it an `invalid_token` would name a credential it never sent.
+        const d = mapAuthResultToResponse({
+          sharedTokenOk: false,
+          enabled: true,
+          sharedTokenPresented: false,
+          bearerPresented: true,
+        });
+        expect(d.kind).toBe('respond');
+        if (d.kind !== 'respond') return;
+        const challenge = d.headers?.['WWW-Authenticate'] ?? '';
+        expect(challenge).not.toContain('error=');
+        // It still TELLS the client what to send — that is the whole point.
+        expect(challenge).toContain('X-MCP-Token');
+        expect(challenge).toContain(MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION);
+      });
+
+      it('the api_key 401 stays code-free when the client sent ONLY X-MCP-Token', () => {
+        // The mirror case: no Authorization header at all, so the Bearer challenge
+        // must not claim the api_key it never got was invalid.
+        const d = mapAuthResultToResponse({
+          sharedTokenOk: true,
+          enabled: true,
+          error: new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+          sharedTokenPresented: true,
+          bearerPresented: false,
+        });
+        expect(d.kind).toBe('respond');
+        if (d.kind !== 'respond') return;
+        const challenge = d.headers?.['WWW-Authenticate'] ?? '';
+        expect(challenge).not.toContain('error=');
+        expect(challenge).toContain(MCP_CHALLENGE_BEARER_DESCRIPTION);
+      });
+
+      it('each branch still emits the code for ITS OWN rejected credential', () => {
+        // X-MCP-Token WAS sent (and mismatched) while Authorization was not: the
+        // shared-token challenge is a genuine `invalid_token`.
+        const shared = mapAuthResultToResponse({
+          sharedTokenOk: false,
+          enabled: true,
+          sharedTokenPresented: true,
+          bearerPresented: false,
+        });
+        expect(shared.kind).toBe('respond');
+        if (shared.kind !== 'respond') return;
+        expect(shared.headers?.['WWW-Authenticate']).toBe(
+          MCP_WWW_AUTHENTICATE_SHARED_TOKEN,
+        );
+
+        // ...and symmetrically for a rejected api_key with no X-MCP-Token sent.
+        const bearer = mapAuthResultToResponse({
+          sharedTokenOk: true,
+          enabled: true,
+          error: new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+          sharedTokenPresented: false,
+          bearerPresented: true,
+        });
+        expect(bearer.kind).toBe('respond');
+        if (bearer.kind !== 'respond') return;
+        expect(bearer.headers?.['WWW-Authenticate']).toBe(MCP_WWW_AUTHENTICATE);
+      });
+    });
+
+    it.each([
+      ['bearer', MCP_WWW_AUTHENTICATE],
+      ['shared-token', MCP_WWW_AUTHENTICATE_SHARED_TOKEN],
+    ])(
+      'the %s challenge does NOT advertise OAuth (no resource_metadata)',
+      (_name, challenge) => {
+        // Under the MCP spec `resource_metadata=` means "I have an OAuth AS, here
+        // is its metadata" — that false promise is the root of #636. We have no AS.
+        expect(challenge).not.toContain('resource_metadata');
+        expect(challenge).not.toContain('.well-known');
+        expect(challenge).not.toContain('oauth');
+      },
+    );
+
+    // A comma inside the quoted error_description is legal (RFC 7235 §2.1) but
+    // reckless: `WWW-Authenticate` is a comma-separated list, and the many naive
+    // clients/proxies that split on `,` without honouring quotes would tear the
+    // challenge in half and hand the user a garbage second "challenge".
+    it.each([
+      ['bearer', MCP_WWW_AUTHENTICATE],
+      ['shared-token', MCP_WWW_AUTHENTICATE_SHARED_TOKEN],
+    ])(
+      'the %s challenge puts NO comma inside its quoted error_description',
+      (_name, challenge) => {
+        const marker = 'error_description="';
+        const start = challenge.indexOf(marker) + marker.length;
+        // Everything between the opening quote and the header's final quote.
+        const description = challenge.slice(start, challenge.length - 1);
+        expect(description.length).toBeGreaterThan(0);
+        expect(description).not.toContain(',');
+      },
+    );
+
+    // F9 — the header's error_description and the JSON body's message are the SAME
+    // sentence (same constant), punctuation included.
+    it('the error_description matches the 401 body message byte for byte', () => {
+      const d = mapAuthResultToResponse({
+        sharedTokenOk: true,
+        enabled: true,
+        error: new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+        sharedTokenPresented: true,
+        bearerPresented: true,
+      });
+      expect(d.kind).toBe('respond');
+      if (d.kind !== 'respond') return;
+      expect(d.body.error).toBe(MCP_CHALLENGE_BEARER_DESCRIPTION);
+      expect(d.headers?.['WWW-Authenticate']).toContain(
+        `error_description="${d.body.error}"`,
+      );
+      expect(MCP_CHALLENGE_BEARER_DESCRIPTION.endsWith('.')).toBe(true);
+      expect(MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION.endsWith('.')).toBe(true);
+    });
+
+    it('the 401 BODIES are unchanged by the challenge', () => {
+      const shared = mapAuthResultToResponse({
+        sharedTokenOk: false,
+        enabled: true,
+        sharedTokenPresented: true,
+        bearerPresented: true,
+      });
+      expect(shared.kind).toBe('respond');
+      if (shared.kind === 'respond') {
+        expect(shared.body).toEqual({ error: 'Unauthorized' });
+      }
+
+      const badKey = mapAuthResultToResponse({
+        sharedTokenOk: true,
+        enabled: true,
+        error: new UnauthorizedException('Invalid or expired token'),
+        sharedTokenPresented: true,
+        bearerPresented: true,
+      });
+      expect(badKey.kind).toBe('respond');
+      if (badKey.kind === 'respond') {
+        expect(badKey.body).toEqual({ error: 'Invalid or expired token' });
+      }
+    });
+
+    it('the 500 (infra) path carries no challenge either', () => {
+      const d = mapAuthResultToResponse({
+        sharedTokenOk: true,
+        enabled: true,
+        error: new Error('boom'),
+        sharedTokenPresented: true,
+        bearerPresented: true,
+      });
+      expect(d.kind).toBe('respond');
+      if (d.kind === 'respond') {
+        expect(d.status).toBe(500);
+        expect(d.headers).toBeUndefined();
+      }
+    });
+  });
+});
+
+// The docs quote the challenge VERBATIM (a user copies the header out of the README
+// to debug a 401). A constant changed without the docs is a silent lie, so scrape
+// them — the same drift-guard shape as the metric-name guard below.
+describe('the docs quote the challenge byte for byte (#636)', () => {
+  const repoRoot = resolve(__dirname, '../../../../..');
+
+  it.each([
+    'packages/mcp/README.md',
+    'packages/mcp/README.ru.md',
+    'CHANGELOG.md',
+  ])('%s carries the exact WWW-Authenticate values', (relPath) => {
+    const doc = readFileSync(join(repoRoot, relPath), 'utf8');
+    expect(doc).toContain(MCP_WWW_AUTHENTICATE);
+    expect(doc).toContain(MCP_WWW_AUTHENTICATE_SHARED_TOKEN);
+  });
+});
+
+// #636 F1 — the REAL McpService.handle must APPLY the challenge to the reply. The
+// pure mapping above only proves the decision CARRIES the header; this proves the
+// service actually writes it, and writes it BEFORE the body (a header set after
+// send() would never reach the wire).
+describe('McpService.handle applies the WWW-Authenticate challenge (#636)', () => {
+  function makeReply() {
+    const res = {
+      header: jest.fn(() => res),
+      status: jest.fn(() => res),
+      send: jest.fn(() => res),
+      hijack: jest.fn(),
+      raw: {},
+    };
+    return res;
+  }
+
+  function makeService(): McpService {
+    // The constructor only stores its deps, so bare stubs suffice.
+    const svc = new McpService({} as any, {} as any, {} as any, {} as any);
+    (svc as any).isEnabled = jest.fn().mockResolvedValue(true);
+    return svc;
+  }
+
+  // `string[]` is a real shape: Node joins most duplicate headers into one string,
+  // but not all of them, so a client that sends X-MCP-Token twice can surface here
+  // as an array — see isCredentialHeaderPresent.
+  function makeRequest(headers: Record<string, string | string[]> = {}) {
+    return { headers, raw: {}, body: undefined } as any;
+  }
+
+  function challengeOf(res: ReturnType<typeof makeReply>): string | undefined {
+    return res.header.mock.calls.find(
+      (c) => c[0] === 'WWW-Authenticate',
+    )?.[1] as string | undefined;
+  }
+
+  const savedMcpToken = process.env.MCP_TOKEN;
+  afterEach(() => {
+    if (savedMcpToken === undefined) delete process.env.MCP_TOKEN;
+    else process.env.MCP_TOKEN = savedMcpToken;
+  });
+
+  it('a 401 from a rejected api_key carries the Bearer challenge, set BEFORE send', async () => {
+    delete process.env.MCP_TOKEN;
+    const svc = makeService();
+    svc.resolveSessionConfig = jest
+      .fn()
+      .mockRejectedValue(new UnauthorizedException('Invalid or expired token'));
+
+    const res = makeReply();
+    await svc.handle(makeRequest({ authorization: 'Bearer bad-key' }), res);
+
+    expect(res.header).toHaveBeenCalledWith(
+      'WWW-Authenticate',
+      MCP_WWW_AUTHENTICATE,
+    );
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.send).toHaveBeenCalledWith({
+      error: 'Invalid or expired token',
+    });
+    expect(res.hijack).not.toHaveBeenCalled();
+
+    // The header MUST be written before the body is sent, or it never ships.
+    const headerCall = res.header.mock.invocationCallOrder[0];
+    const sendCall = res.send.mock.invocationCallOrder[0];
+    expect(headerCall).toBeLessThan(sendCall);
+  });
+
+  it('a request with NO credential gets a challenge without error= (RFC 6750 §3.1)', async () => {
+    delete process.env.MCP_TOKEN;
+    const svc = makeService();
+    svc.resolveSessionConfig = jest
+      .fn()
+      .mockRejectedValue(
+        new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+      );
+
+    const res = makeReply();
+    await svc.handle(makeRequest(), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    const challenge = res.header.mock.calls.find(
+      (c) => c[0] === 'WWW-Authenticate',
+    )?.[1] as string;
+    expect(challenge).toBeDefined();
+    expect(challenge).toContain(MCP_CHALLENGE_BEARER_DESCRIPTION);
+    expect(challenge).not.toContain('error=');
+  });
+
+  it('a missing X-MCP-Token 401 names X-MCP-Token, with NO error code (none was sent)', async () => {
+    process.env.MCP_TOKEN = 'shared-secret';
+    const svc = makeService();
+
+    const res = makeReply();
+    // The client did what the OLD challenge told it to: it sent the api_key. It
+    // still has no X-MCP-Token, so the challenge must now say so...
+    await svc.handle(makeRequest({ authorization: 'Bearer good-key' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    const challenge = challengeOf(res);
+    expect(challenge).toContain('X-MCP-Token');
+    expect(challenge).toContain(MCP_CHALLENGE_SHARED_TOKEN_DESCRIPTION);
+    // ...and, per RFC 6750 §3.1, it must NOT call that absent X-MCP-Token invalid.
+    // The Authorization header the client DID send is a different credential — this
+    // challenge is not about it. Claiming `invalid_token` here would send the user
+    // hunting a shared secret it never sent: the very "the error names a credential
+    // that was never presented" bug #636 is about.
+    expect(challenge).not.toContain('error=');
+    expect(challenge).not.toBe(MCP_WWW_AUTHENTICATE_SHARED_TOKEN);
+  });
+
+  it('a WRONG X-MCP-Token (one WAS sent) does get error="invalid_token"', async () => {
+    process.env.MCP_TOKEN = 'shared-secret';
+    const svc = makeService();
+
+    const res = makeReply();
+    await svc.handle(makeRequest({ 'x-mcp-token': 'nope' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    // The credential this challenge asks for WAS presented and WAS rejected, so the
+    // full challenge (with the error code) is correct here.
+    expect(challengeOf(res)).toBe(MCP_WWW_AUTHENTICATE_SHARED_TOKEN);
+  });
+
+  it('a duplicated X-MCP-Token (Node hands us a string[]) still counts as presented', async () => {
+    process.env.MCP_TOKEN = 'shared-secret';
+    const svc = makeService();
+
+    const res = makeReply();
+    await svc.handle(
+      makeRequest({ 'x-mcp-token': ['nope', 'also-nope'] }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    // Reading an array as "absent" would drop the error code on a request that
+    // presented the credential twice.
+    expect(challengeOf(res)).toBe(MCP_WWW_AUTHENTICATE_SHARED_TOKEN);
+  });
+
+  it('an EMPTY X-MCP-Token header carries no authentication information -> no error code', async () => {
+    process.env.MCP_TOKEN = 'shared-secret';
+    const svc = makeService();
+
+    const res = makeReply();
+    // `X-MCP-Token:` with no value is a legal request and Node reports it as ''.
+    // RFC 6750 §3.1 turns on whether the request "lacks ANY authentication
+    // information" — an empty value carries none, so it is not a bad token.
+    await svc.handle(makeRequest({ 'x-mcp-token': '   ' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(challengeOf(res)).not.toContain('error=');
+  });
+
+  it('the api_key 401 does not claim invalid_token when only X-MCP-Token was sent', async () => {
+    // Mirror case: no MCP_TOKEN configured (so the shared gate passes trivially),
+    // the client sent only X-MCP-Token and no Authorization. The Bearer challenge
+    // must not claim an api_key it never received was invalid.
+    delete process.env.MCP_TOKEN;
+    const svc = makeService();
+    svc.resolveSessionConfig = jest
+      .fn()
+      .mockRejectedValue(
+        new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+      );
+
+    const res = makeReply();
+    await svc.handle(makeRequest({ 'x-mcp-token': 'irrelevant' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    const challenge = challengeOf(res);
+    expect(challenge).toContain(MCP_CHALLENGE_BEARER_DESCRIPTION);
+    expect(challenge).not.toContain('error=');
+  });
+
+  it('an EMPTY Authorization header -> the Bearer challenge carries no error code', async () => {
+    delete process.env.MCP_TOKEN;
+    const svc = makeService();
+    svc.resolveSessionConfig = jest
+      .fn()
+      .mockRejectedValue(
+        new UnauthorizedException(MCP_CHALLENGE_BEARER_DESCRIPTION),
+      );
+
+    const res = makeReply();
+    await svc.handle(makeRequest({ authorization: '' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(challengeOf(res)).not.toContain('error=');
+  });
+
+  it('the 403 (MCP disabled) response carries no challenge', async () => {
+    delete process.env.MCP_TOKEN;
+    const svc = makeService();
+    (svc as any).isEnabled = jest.fn().mockResolvedValue(false);
+
+    const res = makeReply();
+    await svc.handle(makeRequest({ authorization: 'Bearer good-key' }), res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.header).not.toHaveBeenCalledWith(
+      'WWW-Authenticate',
+      expect.anything(),
+    );
+  });
+});
+
+// #486: onModuleDestroy tears down the live loopback CollabSessions so the
+// embedded MCP's collab sockets do not keep docs pinned open on the collab
+// server past process exit. The teardown goes through an overridable seam
+// (destroyAllMcpSessions) so it can be spied without loading the ESM-only
+// @docmost/mcp package.
+describe('McpService.onModuleDestroy — CollabSession teardown (#486)', () => {
+  function makeService(): McpService {
+    // The constructor only stores its deps, so bare stubs suffice.
+    return new McpService({} as any, {} as any, {} as any, {} as any);
+  }
+
+  it('destroys all sessions on shutdown', async () => {
+    const svc = makeService();
+    const destroy = jest.fn().mockResolvedValue(undefined);
+    (svc as any).destroyAllMcpSessions = destroy;
+
+    await svc.onModuleDestroy();
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a teardown failure so shutdown never throws', async () => {
+    const svc = makeService();
+    (svc as any).destroyAllMcpSessions = jest
+      .fn()
+      .mockRejectedValue(new Error('collab teardown boom'));
+
+    await expect(svc.onModuleDestroy()).resolves.toBeUndefined();
+  });
+});
+
+// The @docmost/mcp package is dependency-neutral: it emits generic
+// (name, value, labels) samples through its `onMetric` sink and knows nothing
+// about prom-client. routeMcpMetric is the ONLY place those names are mapped onto
+// this app's instruments, and the mapping is CLOSED — a name with no branch is
+// silently DISCARDED and never reaches /metrics. That is a real failure mode
+// (#613 shipped mcp_download_bytes_total in the package with no branch here, so
+// the metric existed in the package's unit tests and nowhere else), hence both a
+// per-name mapping test AND a drift guard that scrapes the package source.
+describe('routeMcpMetric — the package→prom metric mapping (#402/#479/#613)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('routes mcp_tool_duration_seconds onto the tool histogram, by tool label', () => {
+    routeMcpMetric('mcp_tool_duration_seconds', 0.25, { tool: 'getPage' });
+    expect(metrics.observeMcpTool).toHaveBeenCalledWith('getPage', 0.25);
+  });
+
+  it('routes an unlabelled duration sample to the bounded "other" bucket', () => {
+    routeMcpMetric('mcp_tool_duration_seconds', 0.5, undefined);
+    expect(metrics.observeMcpTool).toHaveBeenCalledWith('other', 0.5);
+  });
+
+  it('routes collab_connect_timeouts_total and the getPage cache counters', () => {
+    routeMcpMetric('collab_connect_timeouts_total', 1);
+    routeMcpMetric('mcp_getpage_cache_hits_total', 1);
+    routeMcpMetric('mcp_getpage_cache_misses_total', 1);
+    expect(metrics.incConnectTimeout).toHaveBeenCalledTimes(1);
+    expect(metrics.incGetPageCacheHit).toHaveBeenCalledTimes(1);
+    expect(metrics.incGetPageCacheMiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes mcp_download_bytes_total onto the download counter WITH its tool label (#613)', () => {
+    routeMcpMetric('mcp_download_bytes_total', 4096, { tool: 'downloadFile' });
+    expect(metrics.addMcpDownloadBytes).toHaveBeenCalledWith(
+      'downloadFile',
+      4096,
+    );
+    // It must NOT be mistaken for a duration observation.
+    expect(metrics.observeMcpTool).not.toHaveBeenCalled();
+  });
+
+  it('routes the three RYOW freshness samples, dbrow carrying its bounded reason label', () => {
+    routeMcpMetric('mcp_ryow_live_total', 1);
+    routeMcpMetric('mcp_ryow_dbrow_total', 1, { reason: 'owner_unreachable' });
+    routeMcpMetric('mcp_ryow_expired_total', 1);
+    expect(metrics.incMcpRyowLive).toHaveBeenCalledTimes(1);
+    expect(metrics.incMcpRyowDbrow).toHaveBeenCalledWith('owner_unreachable');
+    expect(metrics.incMcpRyowExpired).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards an unknown name without throwing (the closed mapping)', () => {
+    expect(() =>
+      routeMcpMetric('totally_unknown_total', 1, { tool: 'x' }),
+    ).not.toThrow();
+    expect(metrics.observeMcpTool).not.toHaveBeenCalled();
+    expect(metrics.incConnectTimeout).not.toHaveBeenCalled();
+    expect(metrics.addMcpDownloadBytes).not.toHaveBeenCalled();
+  });
+
+  // Drift guard: EVERY metric name the package emits must have a branch here.
+  // Scraped from the package source, so a new `onMetric(...)` sample added there
+  // with no branch here reds THIS test instead of silently vanishing at runtime.
+  it('has a branch for every metric name the @docmost/mcp package emits', () => {
+    const pkgSrc = resolve(__dirname, '../../../../../packages/mcp/src');
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.ts')) files.push(full);
+      }
+    };
+    walk(pkgSrc);
+
+    const emitted = new Set<string>();
+    for (const file of files) {
+      const src = readFileSync(file, 'utf8');
+      for (const m of src.matchAll(
+        /onMetric(?:Fn)?\?\.\(\s*["']([a-z0-9_]+)["']/g,
+      )) {
+        emitted.add(m[1]);
+      }
+    }
+    // Sanity: if the scrape regressed, fail loudly rather than pass vacuously.
+    expect(emitted.size).toBeGreaterThanOrEqual(5);
+    expect(emitted.has('mcp_download_bytes_total')).toBe(true);
+
+    for (const name of emitted) {
+      jest.clearAllMocks();
+      routeMcpMetric(name, 1, { tool: 'downloadFile' });
+      const routed =
+        (metrics.observeMcpTool as jest.Mock).mock.calls.length +
+        (metrics.incConnectTimeout as jest.Mock).mock.calls.length +
+        (metrics.incGetPageCacheHit as jest.Mock).mock.calls.length +
+        (metrics.incGetPageCacheMiss as jest.Mock).mock.calls.length +
+        (metrics.addMcpDownloadBytes as jest.Mock).mock.calls.length +
+        (metrics.incMcpRyowLive as jest.Mock).mock.calls.length +
+        (metrics.incMcpRyowDbrow as jest.Mock).mock.calls.length +
+        (metrics.incMcpRyowExpired as jest.Mock).mock.calls.length;
+      if (routed !== 1) {
+        throw new Error(
+          `the package emits "${name}" but routeMcpMetric routed it to ${routed} ` +
+            `instrument(s) — with 0 the sample is DISCARDED and never reaches /metrics`,
+        );
+      }
+    }
   });
 });

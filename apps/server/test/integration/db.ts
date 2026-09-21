@@ -38,6 +38,24 @@ export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
   'postgresql://docmost:docmost_dev_pw@localhost:5432/docmost_test';
 
+// Build the raw postgres.js client (mirrors database.module.ts: max pool,
+// silenced notices, bigint-as-number parsing). Kept separate so the singleton
+// can hold a reference to bound its shutdown in destroyTestDb.
+function buildTestSql(url: string = TEST_DATABASE_URL) {
+  return postgres(url, {
+    max: 5,
+    onnotice: () => {},
+    types: {
+      bigint: {
+        to: 20,
+        from: [20, 1700],
+        serialize: (value: number) => value.toString(),
+        parse: (value: string) => Number.parseInt(value),
+      },
+    },
+  });
+}
+
 /**
  * Build a Kysely instance that MIRRORS the app's setup in database.module.ts:
  * PostgresJSDialect over postgres(), CamelCasePlugin, and the bigint type
@@ -47,38 +65,40 @@ export const TEST_DATABASE_URL =
  */
 export function buildTestDb(url: string = TEST_DATABASE_URL): Kysely<any> {
   return new Kysely<any>({
-    dialect: new PostgresJSDialect({
-      postgres: postgres(url, {
-        max: 5,
-        onnotice: () => {},
-        types: {
-          bigint: {
-            to: 20,
-            from: [20, 1700],
-            serialize: (value: number) => value.toString(),
-            parse: (value: string) => Number.parseInt(value),
-          },
-        },
-      }),
-    }),
+    dialect: new PostgresJSDialect({ postgres: buildTestSql(url) }),
     plugins: [new CamelCasePlugin()],
   });
 }
 
 let singleton: Kysely<any> | undefined;
+let singletonSql: ReturnType<typeof buildTestSql> | undefined;
 
 /** Lazily-built shared Kysely for the test suite (one per worker; maxWorkers=1). */
 export function getTestDb(): Kysely<any> {
   if (!singleton) {
-    singleton = buildTestDb();
+    singletonSql = buildTestSql();
+    singleton = new Kysely<any>({
+      dialect: new PostgresJSDialect({ postgres: singletonSql }),
+      plugins: [new CamelCasePlugin()],
+    });
   }
   return singleton;
 }
 
 export async function destroyTestDb(): Promise<void> {
-  if (singleton) {
-    await singleton.destroy();
-    singleton = undefined;
+  if (!singleton) return;
+  const sql = singletonSql;
+  // Clear the refs first so a hung end() cannot leave a half-closed singleton.
+  singleton = undefined;
+  singletonSql = undefined;
+  // postgres.js .end() waits indefinitely for in-flight queries by default; a
+  // leaked/stuck pooled connection would hang the afterAll hook (a 60s hook
+  // timeout in CI). Bound the shutdown: the { timeout } grace period lets
+  // active queries drain, then force-closes lingering sockets so teardown
+  // always completes. We close the pool directly instead of Kysely.destroy()
+  // (which would call sql.end() again with no timeout).
+  if (sql) {
+    await sql.end({ timeout: 5 });
   }
 }
 
@@ -132,6 +152,62 @@ export async function createUser(
   return { id: row.id as string };
 }
 
+// The default group every workspace has; `groupUserRepo.addUserToDefaultGroup`
+// (invoked by acceptInvitation) looks it up by `isDefault = true`, so a
+// workspace under test must have exactly one for the accept path to complete.
+export async function createDefaultGroup(
+  db: Kysely<any>,
+  workspaceId: string,
+  overrides: { name?: string } = {},
+): Promise<{ id: string }> {
+  const id = randomUUID();
+  const suffix = shortId(id);
+  const row = await db
+    .insertInto('groups')
+    .values({
+      id,
+      // name is unique per workspace + NOT NULL.
+      name: overrides.name ?? `group-${suffix}`,
+      isDefault: true,
+      workspaceId,
+    })
+    .returning(['id'])
+    .executeTakeFirstOrThrow();
+  return { id: row.id as string };
+}
+
+// A pending workspace invitation. `role`/`token` are NOT NULL; `groupIds` is a
+// nullable uuid[] and `invitedById` a nullable FK to users. Returns the fields a
+// spec needs to drive acceptInvitation (id + token + the invited email).
+export async function createInvitation(
+  db: Kysely<any>,
+  args: {
+    workspaceId: string;
+    email: string;
+    invitedById?: string | null;
+    role?: string;
+    token?: string;
+    groupIds?: string[] | null;
+  },
+): Promise<{ id: string; token: string; email: string }> {
+  const id = randomUUID();
+  const token = args.token ?? `tok-${shortId(id)}`;
+  const row = await db
+    .insertInto('workspaceInvitations')
+    .values({
+      id,
+      email: args.email,
+      role: args.role ?? 'member',
+      token,
+      groupIds: (args.groupIds ?? null) as any,
+      invitedById: args.invitedById ?? null,
+      workspaceId: args.workspaceId,
+    })
+    .returning(['id'])
+    .executeTakeFirstOrThrow();
+  return { id: row.id as string, token, email: args.email };
+}
+
 export async function createSpace(
   db: Kysely<any>,
   workspaceId: string,
@@ -168,6 +244,40 @@ export async function createPage(
       title: args.title ?? `page-${suffix}`,
       spaceId: args.spaceId,
       workspaceId: args.workspaceId,
+    })
+    .returning(['id'])
+    .executeTakeFirstOrThrow();
+  return { id: row.id as string };
+}
+
+export async function createComment(
+  db: Kysely<any>,
+  args: {
+    workspaceId: string;
+    spaceId: string;
+    pageId: string;
+    creatorId?: string | null;
+    parentCommentId?: string | null;
+    content?: unknown;
+    selection?: string | null;
+    suggestedText?: string | null;
+    type?: string | null;
+  },
+): Promise<{ id: string }> {
+  const id = randomUUID();
+  const row = await db
+    .insertInto('comments')
+    .values({
+      id,
+      workspaceId: args.workspaceId,
+      spaceId: args.spaceId,
+      pageId: args.pageId,
+      creatorId: args.creatorId ?? null,
+      parentCommentId: args.parentCommentId ?? null,
+      content: (args.content ?? null) as any,
+      selection: args.selection ?? null,
+      suggestedText: args.suggestedText ?? null,
+      type: args.type ?? 'page',
     })
     .returning(['id'])
     .executeTakeFirstOrThrow();

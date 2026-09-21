@@ -70,7 +70,14 @@ export const SubpagesMenu = React.memo(
     // toggle without re-rendering on every keystroke.
     const isRecursive = useEditorState({
       editor,
-      selector: (ctx) => ctx.editor?.getAttributes("subpages")?.recursive ?? false,
+      // #343 PART 1: skip getAttributes unless a subpages node is active. The
+      // menu only shows for an active subpages node (shouldShow), so the value
+      // is only read then; getAttributes on an inactive node returns the default
+      // (recursive === false) anyway, so this is behavior-preserving.
+      selector: (ctx) =>
+        ctx.editor?.isActive("subpages")
+          ? (ctx.editor.getAttributes("subpages")?.recursive ?? false)
+          : false,
     });
 
     return (

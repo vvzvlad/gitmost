@@ -3,6 +3,7 @@ import {
   resolveAdoptedChatId,
   newlyAddedChatIds,
   extractServerChatId,
+  extractRunId,
 } from "./adopt-chat-id";
 
 describe("resolveAdoptedChatId", () => {
@@ -68,5 +69,19 @@ describe("extractServerChatId", () => {
 
   it("returns undefined for an undefined message", () => {
     expect(extractServerChatId(undefined)).toBeUndefined();
+  });
+});
+
+describe("extractRunId", () => {
+  it("reads a string runId from the start metadata", () => {
+    expect(extractRunId({ metadata: { runId: "run-1" } })).toBe("run-1");
+  });
+  it("returns undefined when runId is absent", () => {
+    expect(extractRunId({ metadata: { chatId: "c" } })).toBeUndefined();
+    expect(extractRunId({})).toBeUndefined();
+    expect(extractRunId(undefined)).toBeUndefined();
+  });
+  it("returns undefined for a non-string runId", () => {
+    expect(extractRunId({ metadata: { runId: 7 } })).toBeUndefined();
   });
 });

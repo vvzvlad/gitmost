@@ -25,6 +25,13 @@ export function PdfMenu({ editor }: EditorMenuProps) {
         return null;
       }
 
+      // #343 PART 1: skip getAttributes unless a pdf node is active. The menu
+      // only shows for an active pdf node (shouldShow), so the null state while
+      // inactive is never rendered — behavior unchanged.
+      if (!ctx.editor.isActive("pdf")) {
+        return null;
+      }
+
       const pdfAttrs = ctx.editor.getAttributes("pdf");
 
       return {

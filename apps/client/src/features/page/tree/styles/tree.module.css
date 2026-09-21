@@ -65,6 +65,14 @@
     color: light-dark(var(--mantine-color-dark-3), var(--mantine-color-gray-4));
 }
 
+/* Destructive row action (move to trash): neutral at rest like its neighbours,
+   red once pointed at so a one-click delete is not mistaken for the neutral
+   icons around it. */
+.actionIconDanger:hover,
+.actionIconDanger:focus-visible {
+    color: light-dark(var(--mantine-color-red-6), var(--mantine-color-red-5));
+}
+
 .text {
     flex: 1;
     /* min-width: 0 lets a flex child shrink below its content size — required
@@ -148,6 +156,45 @@
         var(--mantine-color-red-5),
         var(--mantine-color-red-7)
     );
+}
+
+/* "A page just moved in here" cue (#523). A make-child drop no longer expands
+   the collapsed target, so the moved page is momentarily invisible; pulse the
+   target row in a distinct teal (NOT the blue make-child highlight, NOT the
+   neutral post-move flash) so the landing is noticeable while the node stays
+   collapsed. Two short pulses fit inside DROP_LANDED_HIGHLIGHT_MS (1.8s), after
+   which the row clears the attribute and the animation stops. */
+@keyframes landedChildPulse {
+    0% {
+        background-color: light-dark(
+            var(--mantine-color-teal-2),
+            rgba(45, 212, 191, 0.30)
+        );
+        outline-color: light-dark(
+            var(--mantine-color-teal-6),
+            var(--mantine-color-teal-5)
+        );
+    }
+    100% {
+        background-color: transparent;
+        outline-color: transparent;
+    }
+}
+
+.node[data-landed-child="true"] {
+    outline: 2px solid transparent;
+    outline-offset: -1px;
+    animation: landedChildPulse 0.9s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .node[data-landed-child="true"] {
+        animation: none;
+        background-color: light-dark(
+            var(--mantine-color-teal-1),
+            rgba(45, 212, 191, 0.18)
+        );
+    }
 }
 
 .dropLine {

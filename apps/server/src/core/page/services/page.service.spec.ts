@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { PageService } from './page.service';
 import { MovePageDto } from '../dto/move-page.dto';
 import { Page } from '@docmost/db/types/entity.types';
+import { DEFAULT_TEMPORARY_NOTE_HOURS } from '../constants/temporary-note.constants';
 
 // Direct instantiation with stub deps. The Test.createTestingModule form failed
 // to resolve the @InjectKysely()/@InjectQueue() tokens at compile(), and this
@@ -418,6 +419,81 @@ describe('PageService', () => {
         expect(payload).not.toHaveProperty('lastUpdatedSource');
         expect(payload).not.toHaveProperty('lastUpdatedAiChatId');
       });
+    });
+  });
+
+  describe('create() temporary deadline (#201)', () => {
+    // db stub for the workspaces.temporaryNoteHours lookup:
+    // selectFrom('workspaces').select(['temporaryNoteHours']).where(...).executeTakeFirst()
+    const makeDb = (workspaceRow: any) => {
+      const builder: any = {
+        selectFrom: jest.fn(() => builder),
+        select: jest.fn(() => builder),
+        where: jest.fn(() => builder),
+        executeTakeFirst: jest.fn().mockResolvedValue(workspaceRow),
+      };
+      return builder;
+    };
+
+    const makeGeneralQueue = () =>
+      ({ add: jest.fn().mockReturnValue({ catch: jest.fn() }) }) as any;
+
+    const run = async (dto: any, workspaceRow: any) => {
+      const pageRepo = {
+        insertPage: jest.fn().mockResolvedValue({ id: 'p1' }),
+      };
+      const db = makeDb(workspaceRow);
+      const svc = new PageService(
+        pageRepo as any, // pageRepo
+        {} as any, // pagePermissionRepo
+        {} as any, // attachmentRepo
+        db as any, // db
+        {} as any, // storageService
+        {} as any, // attachmentQueue
+        {} as any, // aiQueue
+        makeGeneralQueue(), // generalQueue
+        {} as any, // eventEmitter
+        {} as any, // collaborationGateway
+        {} as any, // watcherService
+        {} as any, // transclusionService
+      );
+      // nextPagePosition runs a real db query; stub it out.
+      jest.spyOn(svc, 'nextPagePosition').mockResolvedValue('a0' as any);
+      await svc.create('u1', 'w1', dto, undefined);
+      return { payload: pageRepo.insertPage.mock.calls[0][0], db };
+    };
+
+    afterEach(() => jest.useRealTimers());
+
+    it('freezes temporaryExpiresAt at now + workspace hours when temporary', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-06-26T00:00:00.000Z'));
+      const { payload } = await run(
+        { title: 't', spaceId: 's1', temporary: true },
+        { temporaryNoteHours: 5 },
+      );
+      expect(payload.temporaryExpiresAt).toEqual(
+        new Date(Date.now() + 5 * 60 * 60 * 1000),
+      );
+    });
+
+    it('falls back to DEFAULT_TEMPORARY_NOTE_HOURS when the workspace hours are null', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-06-26T00:00:00.000Z'));
+      const { payload } = await run(
+        { title: 't', spaceId: 's1', temporary: true },
+        { temporaryNoteHours: null },
+      );
+      expect(payload.temporaryExpiresAt).toEqual(
+        new Date(Date.now() + DEFAULT_TEMPORARY_NOTE_HOURS * 60 * 60 * 1000),
+      );
+    });
+
+    it('leaves temporaryExpiresAt undefined and skips the workspace lookup for a non-temporary page', async () => {
+      const { payload, db } = await run(
+        { title: 't', spaceId: 's1' },
+        { temporaryNoteHours: 5 },
+      );
+      expect(payload.temporaryExpiresAt).toBeUndefined();
+      expect(db.selectFrom).not.toHaveBeenCalled();
     });
   });
 });

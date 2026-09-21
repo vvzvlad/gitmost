@@ -14,8 +14,8 @@ import {
   IconDots,
   IconRestore,
   IconTrash,
-  IconFileDescription,
 } from "@tabler/icons-react";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { TrashBanner } from "@/features/page/trash/components/trash-banner.tsx";
 import {
   useDeletedPagesQuery,
@@ -118,15 +118,8 @@ export default function Trash() {
                         style={{ cursor: "pointer" }}
                         onClick={() => handlePageClick(page)}
                       >
-                        {page.icon || (
-                          <ActionIcon
-                            variant="transparent"
-                            color="gray"
-                            size={18}
-                          >
-                            <IconFileDescription size={18} />
-                          </ActionIcon>
-                        )}
+                        <PageIcon value={page.icon} size={18} />
+
                         <div>
                           <Text fw={500} size="sm" lineClamp={1}>
                             {page.title || t("Untitled")}

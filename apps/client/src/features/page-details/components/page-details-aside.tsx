@@ -12,7 +12,7 @@ import { useAtomValue } from "jotai";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { extractPageSlugId } from "@/lib";
-import { usePageQuery } from "@/features/page/queries/page-query.ts";
+import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
 import { pageEditorAtom } from "@/features/editor/atoms/editor-atoms.ts";
 import { useBacklinksCountQuery } from "@/features/page-details/queries/backlinks-query.ts";
 import { BacklinksModal } from "./backlinks-modal";
@@ -23,7 +23,7 @@ import { LabelsSection } from "@/features/label/components/labels-section.tsx";
 
 export function PageDetailsAside() {
   const { pageSlug } = useParams();
-  const { data: page } = usePageQuery({
+  const { data: page } = usePageMetaQuery({
     pageId: extractPageSlugId(pageSlug),
   });
   const pageEditor = useAtomValue(pageEditorAtom);

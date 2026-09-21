@@ -9,6 +9,7 @@ import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { PageAccessService } from '../../page-access/page-access.service';
 import { JwtAuthGuard } from '../../../../common/guards/jwt-auth.guard';
 import { UserThrottlerGuard } from '../../../../integrations/throttle/user-throttler.guard';
+import { KYSELY_MODULE_CONNECTION_TOKEN } from 'nestjs-kysely';
 
 describe('PageTemplateController.toggleTemplate', () => {
   let controller: PageTemplateController;
@@ -40,6 +41,8 @@ describe('PageTemplateController.toggleTemplate', () => {
         { provide: TransclusionService, useValue: transclusionService },
         { provide: PageRepo, useValue: pageRepo },
         { provide: PageAccessService, useValue: pageAccessService },
+        // toggleTemporary reads the workspace lifetime; toggleTemplate ignores it.
+        { provide: KYSELY_MODULE_CONNECTION_TOKEN(), useValue: {} },
       ],
     })
       .overrideGuard(JwtAuthGuard)

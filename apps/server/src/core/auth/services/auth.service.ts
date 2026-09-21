@@ -92,22 +92,21 @@ export class AuthService {
       includePassword: true,
     });
 
-    // Single source of truth (see auth.constants): the /mcp brute-force limiter
-    // recognises this exact message via isCredentialsFailure.
+    // Single source of truth (see auth.constants) so the surfaced 401 message is
+    // uniform (anti-enumeration) for every credentials-failure case.
     const errorMessage = CREDENTIALS_MISMATCH_MESSAGE;
     if (!user || isUserDisabled(user) || !user.password) {
       // SSO/LDAP-only accounts have no local password hash (user.password is
       // null): feeding null to native bcrypt makes it REJECT with
       // "data and hash arguments required", which surfaces as a 500 on
-      // /api/auth/login and as a leaky 401 (not recognised by the /mcp
-      // brute-force limiter) on /mcp. Treat such accounts like a missing user.
+      // /api/auth/login. Treat such accounts like a missing user.
       //
       // Constant-time intent: run ONE bcrypt comparison (against a dummy hash)
       // even when the user is missing/disabled/password-less, so this path takes
       // about the same time as the real-user wrong-password path below. This
       // closes the user-enumeration timing oracle (registered vs. not). The
-      // result is intentionally discarded — we always throw the same
-      // credentials error (recognised by isCredentialsFailure on /mcp).
+      // result is intentionally discarded — we always throw the same uniform
+      // credentials error.
       await comparePasswordHash(loginDto.password, DUMMY_PASSWORD_HASH);
       throw new UnauthorizedException(errorMessage);
     }
@@ -375,10 +374,20 @@ export class AuthService {
     }
   }
 
-  async getCollabToken(user: User, workspaceId: string) {
+  async getCollabToken(
+    user: User,
+    workspaceId: string,
+    // Origin of the request minting this collab token (#501). When the caller is
+    // an api-key principal, its apiKeyId is threaded into the token so the collab
+    // seam can re-check the key on connect (closing api-key -> long-lived-collab
+    // laundering). Absent for a normal session/human request.
+    apiKey?: { apiKeyId: string },
+  ) {
     const token = await this.tokenService.generateCollabToken(
       user,
       workspaceId,
+      undefined,
+      apiKey,
     );
     return { token };
   }

@@ -1,0 +1,17 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "columns",
+      "attrs": { "layout": "two", "widthMode": "normal" },
+      "content": [
+        { "type": "column", "attrs": { "width": 50 }, "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "Left column." }] }
+        ]},
+        { "type": "column", "attrs": { "width": 50 }, "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "Right column." }] }
+        ]}
+      ]
+    }
+  ]
+}

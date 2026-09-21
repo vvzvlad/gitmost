@@ -389,6 +389,13 @@ export class ResizableNodeView {
 
   /** Last known editable state of the editor */
   private lastEditableState: boolean | undefined = undefined;
+  // ONE stable reference for the editor 'update' subscription. `.bind()`
+  // returns a new function on every call, so binding inline in both `on` and
+  // `off` meant `off` never removed anything: every node view ever
+  // constructed (and they are rebuilt whenever ProseMirror redraws them) left
+  // a permanent listener behind, making every keystroke progressively more
+  // expensive over a session.
+  private readonly boundEditorUpdate = (): void => this.handleEditorUpdate();
 
   /** Map of handle elements by direction */
   private handleMap = new Map<ResizableNodeViewDirection, HTMLElement>();
@@ -454,7 +461,7 @@ export class ResizableNodeView {
       this.attachHandles();
     }
 
-    this.editor.on('update', this.handleEditorUpdate.bind(this));
+    this.editor.on('update', this.boundEditorUpdate);
   }
 
   /**
@@ -545,7 +552,7 @@ export class ResizableNodeView {
       this.activeHandle = null;
     }
 
-    this.editor.off('update', this.handleEditorUpdate.bind(this));
+    this.editor.off('update', this.boundEditorUpdate);
 
     this.container.remove();
   }

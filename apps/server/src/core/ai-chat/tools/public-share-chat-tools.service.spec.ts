@@ -210,6 +210,55 @@ describe('PublicShareChatToolsService.forShare', () => {
     });
   });
 
+  describe('getSharePage under approved publication (owner decision: assistant sees the frozen saved version)', () => {
+    it('reads the FROZEN saved content/title returned by the boundary, not a live re-fetch', async () => {
+      // #370 Stage B owner decision: ALL public reads — including the share
+      // assistant's page-read tool — see the published saved version, so a
+      // visitor and the assistant see the same bytes. The content swap lives in
+      // resolveReadableSharePage (the single canonical boundary), so the tool
+      // simply consumes the frozen { page } it returns: the assistant must never
+      // re-read the live draft behind the boundary's back.
+      const frozenContent = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [{ type: 'text', text: 'FROZEN saved version body' }],
+          },
+        ],
+      };
+      // The boundary already swapped content+title to the manual version while
+      // preserving the live id (its unit test pins that); the tool sees this.
+      const frozenPage = {
+        id: 'page-1',
+        title: 'Saved Version Title',
+        deletedAt: null,
+        content: frozenContent,
+      };
+
+      const { svc, shareService } = makeService({
+        resolveReadableSharePage: jest
+          .fn()
+          .mockResolvedValue({ share: { id: 'SHARE-A' }, page: frozenPage }),
+      });
+      // updatePublicAttachments sanitizes the FROZEN page it was handed.
+      shareService.updatePublicAttachments.mockResolvedValue(frozenContent);
+
+      const tools = svc.forShare('SHARE-A', 'ws-1');
+      const out = (await (tools.getSharePage as unknown as ToolExec).execute({
+        pageId: 'page-1',
+      })) as { title: string; markdown: string };
+
+      // Sanitizer is handed the frozen page (never a separate live fetch).
+      expect(shareService.updatePublicAttachments).toHaveBeenCalledWith(
+        frozenPage,
+      );
+      // Title + body come from the saved (frozen) version.
+      expect(out.title).toBe('Saved Version Title');
+      expect(out.markdown).toContain('FROZEN saved version body');
+    });
+  });
+
   describe('getSharePage non-resolving page (deleted / restricted / out-of-share)', () => {
     it('resolveReadableSharePage returns null (e.g. soft-deleted page) => generic error, NO content sanitized/returned', async () => {
       // The canonical boundary 404s a soft-deleted / restricted / out-of-tree
@@ -224,7 +273,7 @@ describe('PublicShareChatToolsService.forShare', () => {
         (tools.getSharePage as unknown as ToolExec).execute({
           pageId: 'page-1',
         }),
-      ).rejects.toThrow('That page is not part of this published share.');
+      ).rejects.toThrow('The requested page is not available in this share.');
 
       // No content is ever fetched/returned for a non-resolving page.
       expect(shareService.updatePublicAttachments).not.toHaveBeenCalled();

@@ -60,6 +60,7 @@ describe('CommentService — behavior', () => {
     };
     const generalQueue: any = { add: jest.fn(() => Promise.resolve()) };
     const notificationQueue: any = { add: jest.fn(async () => undefined) };
+    const auditService: any = { log: jest.fn() };
 
     const service = new CommentService(
       commentRepo,
@@ -68,14 +69,17 @@ describe('CommentService — behavior', () => {
       collaborationGateway,
       generalQueue,
       notificationQueue,
+      auditService,
     );
 
     return {
       service,
       commentRepo,
       wsService,
+      collaborationGateway,
       generalQueue,
       notificationQueue,
+      auditService,
     };
   }
 
@@ -181,6 +185,95 @@ describe('CommentService — behavior', () => {
     });
   });
 
+  describe('create — suggested edit validation & storage', () => {
+    it('rejects a suggestedText on a reply (not a top-level comment)', async () => {
+      const parentComment = {
+        id: 'parent-1',
+        pageId: 'page-1',
+        parentCommentId: null,
+      };
+      const { service, commentRepo } = makeService({ parentComment });
+
+      await expect(
+        service.create(
+          { page: page(), workspaceId: 'ws-1', user: user() },
+          {
+            content: JSON.stringify(docMentioning()),
+            parentCommentId: 'parent-1',
+            selection: 'hello world',
+            suggestedText: 'goodbye world',
+          } as any,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(commentRepo.insertComment).not.toHaveBeenCalled();
+    });
+
+    it('rejects a suggestedText without a selection', async () => {
+      const { service, commentRepo } = makeService();
+
+      await expect(
+        service.create(
+          { page: page(), workspaceId: 'ws-1', user: user() },
+          {
+            content: JSON.stringify(docMentioning()),
+            suggestedText: 'new text',
+          } as any,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(commentRepo.insertComment).not.toHaveBeenCalled();
+    });
+
+    it('rejects a suggestedText identical to the selection (no-op)', async () => {
+      const { service, commentRepo } = makeService();
+
+      await expect(
+        service.create(
+          { page: page(), workspaceId: 'ws-1', user: user() },
+          {
+            content: JSON.stringify(docMentioning()),
+            selection: 'same text',
+            // Only differs by surrounding whitespace → still a no-op after trim.
+            suggestedText: '  same text  ',
+          } as any,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(commentRepo.insertComment).not.toHaveBeenCalled();
+    });
+
+    it('stores a valid suggestedText (trimmed) on the inserted row', async () => {
+      const { service, commentRepo } = makeService();
+
+      await service.create(
+        { page: page(), workspaceId: 'ws-1', user: user() },
+        {
+          content: JSON.stringify(docMentioning()),
+          selection: 'old text',
+          type: 'inline',
+          suggestedText: '  new text  ',
+        } as any,
+      );
+
+      const insertArg = commentRepo.insertComment.mock.calls[0][0];
+      expect(insertArg.suggestedText).toBe('new text');
+      expect(insertArg.selection).toBe('old text');
+    });
+
+    it('leaves suggestedText null for an ordinary comment', async () => {
+      const { service, commentRepo } = makeService();
+
+      await service.create(
+        { page: page(), workspaceId: 'ws-1', user: user() },
+        { content: JSON.stringify(docMentioning()) } as any,
+      );
+
+      const insertArg = commentRepo.insertComment.mock.calls[0][0];
+      expect(insertArg.suggestedText).toBeNull();
+    });
+  });
+
   describe('resolveComment — provenance & resolve notifications', () => {
     it('stamps resolvedSource:"agent" when an agent resolves', async () => {
       const { service, commentRepo } = makeService();
@@ -220,11 +313,15 @@ describe('CommentService — behavior', () => {
       });
 
       const [patch] = commentRepo.updateComment.mock.calls[0];
-      expect(patch).toEqual({
+      // #399: resolve/unresolve now also stamps updatedAt (the async mark
+      // worker's race-guard reads it to order out-of-order events). The
+      // resolve-state fields are still cleared to null on unresolve.
+      expect(patch).toMatchObject({
         resolvedAt: null,
         resolvedById: null,
         resolvedSource: null,
       });
+      expect(patch.updatedAt).toBeInstanceOf(Date);
     });
 
     it("notifies the author when SOMEONE ELSE resolves their comment", async () => {

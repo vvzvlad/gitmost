@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod/v4";
 import {
   ActionIcon,
@@ -37,6 +37,7 @@ import {
 } from "@/features/workspace/queries/ai-settings-query.ts";
 import {
   AiTestCapability,
+  IAiSettings,
   IAiSettingsUpdate,
   SttApiStyle,
   ChatApiStyle,
@@ -169,6 +170,129 @@ export function resolveKeyField(
   return { set: false };
 }
 
+// Subset of the status payload that drives the reindex poll decisions.
+type ReindexStatus = Pick<
+  IAiSettings,
+  "reindexing" | "indexedPages" | "totalPages" | "runId" | "reindexStartedAt"
+>;
+
+/**
+ * A stable per-RUN key for the reindex poll: `runId:startedAt`, or `null` when
+ * the status carries no run identity (no active run, or a legacy/degraded
+ * server record with an empty runId). Two polls of the SAME run share a key; a
+ * new run mints a fresh runId and so a different key.
+ *
+ * This is the single place the client turns the server's run identity into the
+ * value it keys on — it removes the "is this the same run I've been watching or
+ * a brand-new one?" ambiguity that made a class of reindex-status bugs (a stale
+ * pre-reindex snapshot vs a fresh run) get fixed twice (#262). `startedAt` is
+ * folded in so a run that somehow reuses a runId but restarted is still new.
+ */
+export function reindexRunKey(status: ReindexStatus | undefined): string | null {
+  const runId = status?.runId;
+  if (!runId) return null;
+  return `${runId}:${status?.reindexStartedAt ?? ""}`;
+}
+
+/**
+ * Decide whether the latest poll represents a NEW reindex run relative to the
+ * run key the client last latched (`prevKey`, `null` if none yet). True only
+ * when the status carries an identity AND it differs from the latched one — the
+ * signal to reset any per-run poll state (the "seen active" latch / progress the
+ * UI held). The same identity (or no identity) is NOT a new run, so an unchanged
+ * or identity-less poll never resets mid-run.
+ */
+export function isNewReindexRun(
+  prevKey: string | null,
+  status: ReindexStatus | undefined,
+): boolean {
+  const key = reindexRunKey(status);
+  return key !== null && key !== prevKey;
+}
+
+/**
+ * Decide the TanStack Query `refetchInterval` while a reindex may be running.
+ * Returns the poll interval (ms) to keep polling, or `false` to stop.
+ *
+ * Polls while the server reports an ACTIVE run (`reindexing === true`) OR we are
+ * still within the deadline window and not yet fully indexed. Stops once the run
+ * has finished AND everything is indexed (server cleared its progress record and
+ * fell back to the DB coverage count), or the deadline cap is hit — the cap
+ * always wins so a stuck/never-clearing progress record can't poll forever.
+ *
+ * `seenActive` guards the just-started window: right after "Reindex now" the
+ * client still holds the PRE-reindex settings snapshot, which for an already
+ * fully-indexed workspace reads as `reindexing=false, indexed>=total`. Treating
+ * that stale snapshot as "done" would stop polling before the first post-reindex
+ * poll ever lands (counter frozen at 0). So completion is only honored once a
+ * poll has actually observed the active run (the enqueue-time pre-seed makes
+ * `reindexing=true` visible from the first poll until the run truly clears).
+ */
+export function nextReindexPollInterval(args: {
+  deadline: number | null;
+  now: number;
+  intervalMs: number;
+  status?: ReindexStatus;
+  seenActive: boolean;
+}): number | false {
+  const { deadline, now, intervalMs, status, seenActive } = args;
+  if (deadline === null) return false;
+  // Cap always wins.
+  if (now > deadline) return false;
+  // Active run → keep polling even if the momentary counts already look full.
+  if (status?.reindexing) return intervalMs;
+  // Finished and fully indexed (incl. an empty workspace, 0 >= 0) → stop. Reuse
+  // isReindexComplete so the completeness check lives in exactly one place.
+  if (isReindexComplete(status, seenActive)) return false;
+  // Within the deadline and not yet done → keep polling.
+  return intervalMs;
+}
+
+/**
+ * Whether the reindex poll deadline should be cleared: a poll has observed the
+ * active run (`seenActive`) AND the server now reports no active run AND the
+ * count is complete. The single source of truth for the "reindex finished"
+ * check — `nextReindexPollInterval` reuses it for its stop condition (sans the
+ * cap, which the effect handles via time).
+ *
+ * The `seenActive` requirement is what keeps the STALE pre-reindex snapshot
+ * (already fully indexed → `reindexing=false, indexed>=total`) from being read
+ * as "finished" in the window before the first post-reindex poll arrives. Once
+ * a poll has seen `reindexing=true` (guaranteed by the server's enqueue-time
+ * pre-seed for the whole run), this flips to a genuine completion check.
+ */
+export function isReindexComplete(
+  status: ReindexStatus | undefined,
+  seenActive: boolean,
+): boolean {
+  return (
+    seenActive &&
+    !!status &&
+    !status.reindexing &&
+    status.indexedPages >= status.totalPages
+  );
+}
+
+/**
+ * Whether the reindex button should show its spinner (and stay disabled).
+ *
+ * Spins while the POST is in flight, and for the WHOLE background run while the
+ * server reports `reindexing === true`. The `deadline !== null` gate is the
+ * load-bearing part: once the 120s poll cap fires it nulls `reindexDeadline`
+ * and stops refetching, so `status` (settings?.reindexing) can be a stale
+ * `true` from the last poll. Without the gate the spinner would stick forever
+ * for a run that outlives the cap and block a restart; gating on the active
+ * poll window clears it so the admin can re-trigger.
+ */
+export function isReindexButtonLoading(args: {
+  mutationPending: boolean;
+  deadline: number | null;
+  status?: boolean;
+}): boolean {
+  const { mutationPending, deadline, status } = args;
+  return mutationPending || (deadline !== null && status === true);
+}
+
 // Translate the dot's tooltip label. Kept in one place so all three endpoint
 // cards share identical wording.
 function cardStatusLabel(status: CardStatus, t: (k: string) => string): string {
@@ -215,31 +339,63 @@ export default function AiProviderSettings() {
   // PRE-job counts immediately, so the only way the "Indexed X of Y" counter
   // visibly climbs is to keep polling the settings query while the job runs.
   // `reindexDeadline` is the timestamp until which we poll (set on reindex
-  // success); polling stops early once indexed === total. Bounded so a stuck
-  // job can never poll forever.
-  const REINDEX_POLL_INTERVAL = 3000; // ms between refetches while indexing
+  // success). Polling tracks the server's `reindexing` flag: it keeps going for
+  // the whole active run and stops promptly once the server reports the run is
+  // finished. Bounded by the cap so a stuck/never-clearing progress record can
+  // never poll forever.
+  const REINDEX_POLL_INTERVAL = 5000; // ms between refetches while indexing
   const REINDEX_POLL_CAP_MS = 120000; // ~2 min hard cap
   const [reindexDeadline, setReindexDeadline] = useState<number | null>(null);
+  // Whether any poll in the CURRENT window has actually observed the active run
+  // (`reindexing === true`). Reset when a new reindex is kicked off. Gates the
+  // completion check so the STALE pre-reindex snapshot (an already fully-indexed
+  // workspace reads as `reindexing=false, indexed>=total`) can't be mistaken for
+  // "finished" before the first post-reindex poll lands — which would freeze the
+  // counter at 0 until a manual reload. A ref (not state) because it must not
+  // trigger a render and is only ever read where `reindexing` is already false.
+  const reindexSeenActiveRef = useRef(false);
+  // The run identity (runId:startedAt) the current poll window is keyed on. When
+  // a poll reports a DIFFERENT runId the server has started a NEW run, so we
+  // re-latch to it and reset `reindexSeenActiveRef` — a fresh run must never
+  // inherit the previous run's "seen active"/completion state (which would stop
+  // polling immediately or read the old run's counters as this run's). null =
+  // no run keyed yet (steady state, or a legacy record without a runId).
+  const reindexRunKeyRef = useRef<string | null>(null);
 
   // Only admins may read the (masked) AI settings; the server enforces this too.
-  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) => {
-    if (reindexDeadline === null) return false;
-    // Past the cap → stop polling (cleared via the effect below too).
-    if (Date.now() > reindexDeadline) return false;
-    const data = query.state.data;
-    // Stop once everything is indexed; otherwise keep polling.
-    if (data && data.indexedPages >= data.totalPages) return false;
-    return REINDEX_POLL_INTERVAL;
-  });
+  const { data: settings, isLoading } = useAiSettingsQuery(isAdmin, (query) =>
+    nextReindexPollInterval({
+      deadline: reindexDeadline,
+      now: Date.now(),
+      intervalMs: REINDEX_POLL_INTERVAL,
+      status: query.state.data,
+      seenActive: reindexSeenActiveRef.current,
+    }),
+  );
 
-  // Stop polling once the work is done or the cap is reached. Also clears on
+  // Stop polling once the run is finished or the cap is reached. Also clears on
   // unmount because the deadline state goes away with the component.
   useEffect(() => {
     if (reindexDeadline === null) return;
-    // "Done" matches the refetchInterval stop condition (indexed >= total),
-    // including an empty workspace (0 >= 0), so the deadline clears promptly
-    // instead of waiting out the cap.
-    if (settings && settings.indexedPages >= settings.totalPages) {
+    // Key the poll on the run identity: if this poll carries a runId different
+    // from the one we latched, the server started a NEW run, so adopt it and
+    // drop the per-run "seen active" latch (a fresh run must not inherit the
+    // previous run's completion state). Same runId => same run, leave it alone.
+    if (isNewReindexRun(reindexRunKeyRef.current, settings)) {
+      reindexRunKeyRef.current = reindexRunKey(settings);
+      reindexSeenActiveRef.current = false;
+    }
+    // Latch "we have seen the active run" the moment a poll reports it, so the
+    // completion check below (and the refetchInterval's) only fires once the run
+    // has genuinely started — never on the stale pre-reindex snapshot.
+    if (settings?.reindexing) reindexSeenActiveRef.current = true;
+    // "Done" matches the refetchInterval stop condition: a poll has observed the
+    // active run AND the server now reports no active run AND the count is
+    // complete (indexed >= total, incl. an empty workspace 0 >= 0), so the
+    // deadline clears promptly instead of waiting out the cap. While `reindexing`
+    // is still true (or no poll has seen it active yet) we keep the deadline so
+    // polling continues for the whole run.
+    if (isReindexComplete(settings, reindexSeenActiveRef.current)) {
       setReindexDeadline(null);
       return;
     }
@@ -287,6 +443,10 @@ export default function AiProviderSettings() {
     useState<boolean>(
       workspace?.settings?.ai?.publicShareAssistant ?? false,
     );
+  // #184: detached/autonomous agent runs (settings.ai.autonomousRuns).
+  const [autonomousRunsEnabled, setAutonomousRunsEnabled] = useState<boolean>(
+    workspace?.settings?.ai?.autonomousRuns ?? false,
+  );
   const [chatToggleLoading, setChatToggleLoading] = useState(false);
   const [searchToggleLoading, setSearchToggleLoading] = useState(false);
   const [dictationToggleLoading, setDictationToggleLoading] = useState(false);
@@ -296,6 +456,8 @@ export default function AiProviderSettings() {
     publicShareAssistantToggleLoading,
     setPublicShareAssistantToggleLoading,
   ] = useState(false);
+  const [autonomousRunsToggleLoading, setAutonomousRunsToggleLoading] =
+    useState(false);
 
   // Whether a key is currently stored server-side (drives the placeholder).
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -623,6 +785,37 @@ export default function AiProviderSettings() {
     }
   }
 
+  // Optimistic toggle for detached/autonomous agent runs
+  // (settings.ai.autonomousRuns). When on, a chat turn becomes a server-side run
+  // that survives a browser disconnect and can be reconnected to / live-followed;
+  // only an explicit Stop ends it. Off by default; single-instance-only in phase 1.
+  async function handleToggleAutonomousRuns(value: boolean) {
+    setAutonomousRunsToggleLoading(true);
+    const previous = autonomousRunsEnabled;
+    setAutonomousRunsEnabled(value);
+    try {
+      const updated = await updateWorkspace({ autonomousRuns: value });
+      setWorkspace({
+        ...updated,
+        settings: {
+          ...updated.settings,
+          ai: { ...updated.settings?.ai, autonomousRuns: value },
+        },
+      });
+      notifications.show({ message: t("Updated successfully") });
+    } catch (err) {
+      setAutonomousRunsEnabled(previous);
+      const message = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message;
+      notifications.show({
+        message: message ?? t("Failed to update data"),
+        color: "red",
+      });
+    } finally {
+      setAutonomousRunsToggleLoading(false);
+    }
+  }
+
   // Admins only — match the previous behavior.
   if (!isAdmin) {
     return (
@@ -676,17 +869,21 @@ export default function AiProviderSettings() {
     !enabledRoles.some((r: IAiRole) => r.id === selectedRoleId)
       ? (roles ?? []).find((r: IAiRole) => r.id === selectedRoleId)
       : undefined;
+  // A Select option label is a plain string used for display AND filtering, so
+  // it cannot embed a rendered Lucide glyph — the role glyph (now a serialized
+  // IconRef, not a native emoji) is intentionally omitted here; the label is the
+  // role name only so no raw JSON can leak.
   const roleOptions = [
     { value: "", label: t("Built-in assistant persona") },
     ...enabledRoles.map((r: IAiRole) => ({
       value: r.id,
-      label: r.emoji ? `${r.emoji} ${r.name}` : r.name,
+      label: r.name,
     })),
     ...(selectedDisabledRole
       ? [
           {
             value: selectedDisabledRole.id,
-            label: `${selectedDisabledRole.emoji ? `${selectedDisabledRole.emoji} ` : ""}${selectedDisabledRole.name} (${t("disabled")})`,
+            label: `${selectedDisabledRole.name} (${t("disabled")})`,
           },
         ]
       : []),
@@ -852,6 +1049,31 @@ export default function AiProviderSettings() {
           disabled={isLoading || !publicShareAssistantEnabled}
           {...form.getInputProps("publicShareAssistantRoleId")}
         />
+
+        {/* Detached/autonomous agent runs: a chat turn becomes a server-side run
+            that survives a browser disconnect; only an explicit Stop ends it.
+            Single-instance-only in phase 1. */}
+        <Group justify="space-between" align="center" wrap="nowrap" mt="md">
+          <Stack gap={0}>
+            <Text fw={600} size="sm">
+              {t("Autonomous agent runs")}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {t(
+                "Keep an agent turn running server-side even if the browser disconnects; reconnect and follow it on reopen. Single-instance deployments only.",
+              )}
+            </Text>
+          </Stack>
+          <Switch
+            label={t("Enabled")}
+            labelPosition="left"
+            checked={autonomousRunsEnabled}
+            disabled={autonomousRunsToggleLoading}
+            onChange={(e) =>
+              handleToggleAutonomousRuns(e.currentTarget.checked)
+            }
+          />
+        </Group>
 
         <Group mt="md" align="center">
           <Button
@@ -1031,13 +1253,32 @@ export default function AiProviderSettings() {
             <Button
               variant="subtle"
               size="compact-sm"
-              loading={reindexMutation.isPending}
+              // Spin for the WHOLE run: the POST resolves immediately, but the
+              // background job keeps running, so also stay loading while the
+              // server reports `reindexing` (this also blocks a redundant
+              // re-trigger mid-run; the server de-dupes regardless). The
+              // deadline gate (and why it matters post-cap) lives in
+              // `isReindexButtonLoading`, which is unit-tested.
+              loading={isReindexButtonLoading({
+                mutationPending: reindexMutation.isPending,
+                deadline: reindexDeadline,
+                status: settings?.reindexing,
+              })}
               onClick={() =>
                 reindexMutation.mutate(undefined, {
                   // Begin bounded polling so the counter climbs as the async
                   // background job indexes (it does not update on its own).
-                  onSuccess: () =>
-                    setReindexDeadline(Date.now() + REINDEX_POLL_CAP_MS),
+                  // Clear the "seen active" latch first so this fresh window
+                  // doesn't inherit a previous run's completion state and stop
+                  // immediately.
+                  onSuccess: () => {
+                    reindexSeenActiveRef.current = false;
+                    // Forget the previous run's identity so the first poll of
+                    // this window (carrying the new run's runId) is recognized
+                    // as a new run and keyed afresh.
+                    reindexRunKeyRef.current = null;
+                    setReindexDeadline(Date.now() + REINDEX_POLL_CAP_MS);
+                  },
                 })
               }
             >

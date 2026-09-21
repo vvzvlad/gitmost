@@ -35,4 +35,25 @@ describe('jsonbBind', () => {
     expect(out).not.toBeNull();
     expect(out).toBeDefined();
   });
+
+  // preserveEmpty (#476): opts a column OUT of the empty-to-null collapse so an
+  // empty container is persisted verbatim (e.g. `[]` = deny-all for
+  // tool_allowlist). null stays null regardless of the flag.
+  describe('preserveEmpty', () => {
+    it('returns a (non-null) bind for an empty array', () => {
+      const out = jsonbBind([], { preserveEmpty: true });
+      expect(out).not.toBeNull();
+      expect(out).toBeDefined();
+    });
+
+    it('returns a (non-null) bind for an empty object', () => {
+      const out = jsonbBind({}, { preserveEmpty: true });
+      expect(out).not.toBeNull();
+      expect(out).toBeDefined();
+    });
+
+    it('still returns null for null (null means null, flag or not)', () => {
+      expect(jsonbBind(null, { preserveEmpty: true })).toBeNull();
+    });
+  });
 });

@@ -7,7 +7,6 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { IsString } from 'class-validator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../../common/decorators/auth-user.decorator';
 import { AuthWorkspace } from '../../../common/decorators/auth-workspace.decorator';
@@ -20,12 +19,7 @@ import {
 import { McpServersService } from './mcp-servers.service';
 import { CreateMcpServerDto } from './dto/create-mcp-server.dto';
 import { UpdateMcpServerDto } from './dto/update-mcp-server.dto';
-
-/** Path param for the per-server routes (update/delete/test). */
-class McpServerIdDto {
-  @IsString()
-  id: string;
-}
+import { McpServerIdDto } from './dto/mcp-server-id.dto';
 
 /**
  * Admin-only external MCP server management (§7.3 / E3 backend). Routes are POST

@@ -39,6 +39,10 @@ describe('AiAgentRolesController admin gate', () => {
       create: jest.fn().mockResolvedValue({ id: 'r1' }),
       update: jest.fn().mockResolvedValue({ id: 'r1' }),
       remove: jest.fn().mockResolvedValue({ success: true }),
+      getCatalog: jest.fn().mockResolvedValue({ languages: [], bundles: [] }),
+      getCatalogBundle: jest.fn().mockResolvedValue({ roles: [] }),
+      importFromCatalog: jest.fn().mockResolvedValue({ created: 0 }),
+      updateFromCatalog: jest.fn().mockResolvedValue({ updated: false }),
     };
     const controller = new AiAgentRolesController(
       rolesService as never,
@@ -106,6 +110,90 @@ describe('AiAgentRolesController admin gate', () => {
       const { controller, rolesService } = makeController(true);
       await controller.remove({ id: 'r1' }, user, workspace);
       expect(rolesService.remove).toHaveBeenCalledWith('ws-1', 'r1');
+    });
+  });
+
+  // Catalog routes (browse + import) are ALL admin-only: a non-admin caller must
+  // get ForbiddenException with the service untouched; an admin delegates with
+  // the right arguments (import/update-from-catalog carry workspace.id).
+  describe('catalog routes admin gate', () => {
+    const catalogDto = { language: 'en' } as never;
+    const bundleDto = { bundleId: 'general', language: 'en' } as never;
+    const importDto = {
+      bundleId: 'general',
+      language: 'en',
+      conflict: 'skip',
+    } as never;
+    const updateDto = { id: 'r1' } as never;
+
+    describe('non-admin is rejected and the service is NOT called', () => {
+      it('catalog', async () => {
+        const { controller, rolesService } = makeController(false);
+        await expect(
+          controller.catalog(catalogDto, user, workspace),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(rolesService.getCatalog).not.toHaveBeenCalled();
+      });
+
+      it('catalog/bundle', async () => {
+        const { controller, rolesService } = makeController(false);
+        await expect(
+          controller.catalogBundle(bundleDto, user, workspace),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(rolesService.getCatalogBundle).not.toHaveBeenCalled();
+      });
+
+      it('import', async () => {
+        const { controller, rolesService } = makeController(false);
+        await expect(
+          controller.import(importDto, user, workspace),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(rolesService.importFromCatalog).not.toHaveBeenCalled();
+      });
+
+      it('update-from-catalog', async () => {
+        const { controller, rolesService } = makeController(false);
+        await expect(
+          controller.updateFromCatalog(updateDto, user, workspace),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(rolesService.updateFromCatalog).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('admin delegates to the service', () => {
+      it('catalog passes the requested language', async () => {
+        const { controller, rolesService } = makeController(true);
+        await controller.catalog(catalogDto, user, workspace);
+        expect(rolesService.getCatalog).toHaveBeenCalledWith('en');
+      });
+
+      it('catalog/bundle passes bundleId + language', async () => {
+        const { controller, rolesService } = makeController(true);
+        await controller.catalogBundle(bundleDto, user, workspace);
+        expect(rolesService.getCatalogBundle).toHaveBeenCalledWith(
+          'general',
+          'en',
+        );
+      });
+
+      it('import passes workspace.id + user.id + dto', async () => {
+        const { controller, rolesService } = makeController(true);
+        await controller.import(importDto, user, workspace);
+        expect(rolesService.importFromCatalog).toHaveBeenCalledWith(
+          'ws-1',
+          'u1',
+          importDto,
+        );
+      });
+
+      it('update-from-catalog passes workspace.id + dto', async () => {
+        const { controller, rolesService } = makeController(true);
+        await controller.updateFromCatalog(updateDto, user, workspace);
+        expect(rolesService.updateFromCatalog).toHaveBeenCalledWith(
+          'ws-1',
+          updateDto,
+        );
+      });
     });
   });
 

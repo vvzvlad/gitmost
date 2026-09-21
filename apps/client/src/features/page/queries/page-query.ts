@@ -32,12 +32,15 @@ import {
 import { notifications } from "@mantine/notifications";
 import { IPagination, QueryParams } from "@/lib/types.ts";
 import { queryClient } from "@/main.tsx";
-import { buildTree } from "@/features/page/tree/utils";
+import { buildTree, pageToTreeNode } from "@/features/page/tree/utils";
 import { useEffect } from "react";
 import { validate as isValidUuid } from "uuid";
 import { useTranslation } from "react-i18next";
 import { useSetAtom, useStore } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom";
+import { writePageMetaAtom } from "@/features/page/atoms/page-meta-cache-atom";
+import { clearPageTombstoneOnAccess } from "@/features/editor/page-ydoc-eviction";
+import { isLocalFirstEnabled } from "@/lib/config";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { SpaceTreeNode } from "@/features/page/tree/types";
 import { useQueryEmit } from "@/features/websocket/use-query-emit";
@@ -46,11 +49,25 @@ import { moveToTrashNotificationMessage } from "@/features/page/components/move-
 export function usePageQuery(
   pageInput: Partial<IPageInput>,
 ): UseQueryResult<IPage, Error> {
+  const store = useStore();
   const query = useQuery({
     queryKey: ["pages", pageInput.pageId],
     queryFn: () => getPageById(pageInput),
     enabled: !!pageInput.pageId,
     staleTime: 5 * 60 * 1000,
+    // Keep the previously-loaded page visible while navigating to a new one
+    // instead of flashing a blank/skeleton frame (the new page's content
+    // streams in when ready). isLoading stays true only for the very first load.
+    placeholderData: keepPreviousData,
+    // #563 — FORCED reconciliation of the page-meta boot cache. This query feeds
+    // the localStorage cache the chrome paints from, so it must revalidate on
+    // EVERY mount: the global defaults (refetchOnMount:false + staleTime 5min,
+    // main.tsx) would otherwise suppress the refetch inside a 5-minute window,
+    // and a page renamed / deleted / access-revoked less than 5 minutes ago
+    // would keep showing stale chrome with nothing ever correcting it. The
+    // refetch is a background one (cached data stays on screen), and it is gated
+    // on the flag so a flag-off deployment behaves exactly as it does today.
+    refetchOnMount: isLocalFirstEnabled() ? "always" : false,
   });
 
   useEffect(() => {
@@ -60,8 +77,78 @@ export function usePageQuery(
       } else {
         queryClient.setQueryData(["pages", query.data.id], query.data);
       }
+      // Write-through to the boot cache (no-op when the flag is off or the user
+      // is not resolved yet). Reconciliation: the freshly fetched page always
+      // overwrites the cached entry, so a server-side rename/icon/permission
+      // change lands in the cache the moment it arrives.
+      store.set(writePageMetaAtom, query.data);
+      // #640, invariant 7 / acceptance 5 — a successful page fetch PROVES access
+      // returned (restored from trash / access regranted), so lift any ydoc
+      // tombstone under both aliases. This is the ONLY tombstone-removal path.
+      clearPageTombstoneOnAccess(query.data);
     }
-  }, [query.data]);
+  }, [query.data, store]);
+
+  return query;
+}
+
+/**
+ * A page view that omits the large, frequently-changing `content` field. Every
+ * other field is preserved, so consumers that read only metadata (title, icon,
+ * permissions, id, creator, timestamps, …) keep working unchanged.
+ */
+export type IPageMeta = Omit<IPage, "content">;
+
+function selectPageMeta(page: IPage): IPageMeta {
+  // Drop `content`; react-query's structural sharing (replaceEqualDeep) then
+  // returns the SAME reference whenever the remaining fields are unchanged, so a
+  // pure content churn (typing / debouncedUpdateContent, collab `page.updated`)
+  // no longer changes this slice's identity and its ~13 subscribers don't
+  // re-render on every keystroke wave.
+  const { content: _content, ...meta } = page;
+  return meta as IPageMeta;
+}
+
+/**
+ * Metadata-only variant of {@link usePageQuery}. Shares the SAME query cache
+ * entry (`["pages", pageId]`, full object incl. content), but this hook returns
+ * a stable content-less slice so peripheral subscribers stop re-rendering on
+ * every content update. Use it anywhere the full `content` is not read.
+ */
+export function usePageMetaQuery(
+  pageInput: Partial<IPageInput>,
+): UseQueryResult<IPageMeta, Error> {
+  const store = useStore();
+  const query = useQuery({
+    queryKey: ["pages", pageInput.pageId],
+    queryFn: () => getPageById(pageInput),
+    enabled: !!pageInput.pageId,
+    staleTime: 5 * 60 * 1000,
+    select: selectPageMeta,
+    // Match usePageQuery: keep the previous page's metadata visible while
+    // navigating so the periphery (header, breadcrumb, …) doesn't flash blank.
+    placeholderData: keepPreviousData,
+  });
+
+  // Mirror usePageQuery's cross-key alias write so a page fetched by one
+  // identifier is also cached under the other. The cache stores the FULL page
+  // (select only narrows what THIS hook returns), so read the full object back
+  // from the cache and alias THAT — never the content-less slice.
+  useEffect(() => {
+    if (!query.data) return;
+    const full = queryClient.getQueryData<IPage>(["pages", pageInput.pageId]);
+    if (!full) return;
+    if (isValidUuid(pageInput.pageId)) {
+      queryClient.setQueryData(["pages", full.slugId], full);
+    } else {
+      queryClient.setQueryData(["pages", full.id], full);
+    }
+    // #563 — same write-through as usePageQuery: any resolved page keeps the
+    // boot cache current, whichever hook fetched it.
+    store.set(writePageMetaAtom, full);
+    // #640 — same tombstone lift on proof of access (see usePageQuery).
+    clearPageTombstoneOnAccess(full);
+  }, [query.data, store]);
 
   return query;
 }
@@ -210,18 +297,15 @@ export function useRestorePageMutation() {
 
       // Check if the page already exists in the tree (it shouldn't)
       if (!treeModel.find(currentTree, restoredPage.id)) {
-        // Create the tree node data with hasChildren from backend
-        const nodeData: SpaceTreeNode = {
-          id: restoredPage.id,
-          slugId: restoredPage.slugId,
+        // Create the tree node data with hasChildren from backend. Routed
+        // through the canonical mapper so the field copy stays in lockstep with
+        // buildTree. The server NULLS `temporaryExpiresAt` on restore (a restored
+        // page is made permanent), so the mapper carries that null through and
+        // the node correctly shows no clock marker.
+        const nodeData: SpaceTreeNode = pageToTreeNode(restoredPage, {
           name: restoredPage.title || "Untitled",
-          icon: restoredPage.icon,
-          position: restoredPage.position,
-          spaceId: restoredPage.spaceId,
-          parentPageId: restoredPage.parentPageId,
           hasChildren: restoredPage.hasChildren || false,
-          children: [],
-        };
+        });
 
         // Determine the parent and index
         const parentId = restoredPage.parentPageId || null;
@@ -354,6 +438,12 @@ export function useRecentChangesQuery(spaceId?: string) {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.meta.hasNextPage ? lastPage.meta.nextCursor : undefined,
+    // KEEP refetchOnMount:true (against the global default false): recent-changes
+    // IS invalidated on page create/update/move/delete, but invalidateQueries only
+    // marks an UNMOUNTED query stale — it doesn't refetch it. The widget isn't
+    // always mounted, so an event that lands while it's unmounted leaves it stale,
+    // and the global refetchOnMount:false would not re-fetch on remount. The mount
+    // refetch closes that gap.
     refetchOnMount: true,
   });
 }
@@ -370,6 +460,9 @@ export function useCreatedByQuery(params?: {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.meta.hasNextPage ? lastPage.meta.nextCursor : undefined,
+    // KEEP refetchOnMount:true: the "created-by" key is never invalidated (no
+    // socket/mutation path), so the mount refetch is its ONLY freshness mechanism
+    // — without it the list shows stale cache on navigation.
     refetchOnMount: true,
   });
 }
@@ -383,8 +476,14 @@ export function useDeletedPagesQuery(
     queryFn: () => getDeletedPages(spaceId, params),
     enabled: !!spaceId,
     placeholderData: keepPreviousData,
-    refetchOnMount: true,
     staleTime: 0,
+    // KEEP refetchOnMount:true: ["trash-list"] IS invalidated by the
+    // move-to-trash / delete / restore mutations, but invalidateQueries only marks
+    // an unmounted query stale — it doesn't refetch it. The trash panel isn't
+    // usually mounted when a page is trashed, so on opening it the global
+    // refetchOnMount:false would show a stale list; the mount refetch closes that.
+    // (Do NOT remove the three trash-list invalidations — they are not dead code.)
+    refetchOnMount: true,
   });
 }
 
@@ -410,6 +509,11 @@ export function invalidateOnCreatePage(data: Partial<IPage>) {
     slugId: data.slugId,
     spaceId: data.spaceId,
     title: data.title,
+    // Carry the death-timer deadline so a note created as temporary keeps its
+    // sidebar clock marker when the tree is rebuilt from this cached entry
+    // (buildTree → mergeRootTrees). Omitting it overwrote the optimistic/socket
+    // node's marker with `undefined`, hiding it until a reload.
+    temporaryExpiresAt: data.temporaryExpiresAt,
   };
 
   let queryKey: QueryKey = null;
@@ -514,7 +618,35 @@ export function invalidateOnUpdatePage(
   title: string,
   icon: string,
 ) {
-  invalidatePageTree();
+  // Scoped page-tree refresh (was a blanket `invalidatePageTree()`): this is the
+  // FIELD-only update path (title/icon — no structural change), and the sidebar
+  // tree is already updated pointwise (applyUpdateOne / optimistic setData) plus
+  // via the sidebar-pages cache below. Invalidating ALL ["page-tree"] queries
+  // here refetched every open recursive subpages-embed block on each
+  // rename/icon-change — pure duplicate work. Instead patch just the affected
+  // node IN PLACE in every cached embed subtree: same visible result, no network
+  // churn, no full embed-tree rebuild. Structural events (create/move/delete)
+  // keep the blanket invalidate in their own helpers.
+  const pageTreeMatches = queryClient.getQueriesData<IPage[]>({
+    queryKey: ["page-tree"],
+  });
+  pageTreeMatches.forEach(([key, items]) => {
+    if (!items || !items.some((p) => p.id === id)) return;
+    queryClient.setQueryData<IPage[]>(key, (old) =>
+      old?.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              // Guard undefined so a title-only event can't wipe the icon (and
+              // vice versa) in the embed cache.
+              ...(title !== undefined ? { title } : {}),
+              ...(icon !== undefined ? { icon } : {}),
+            }
+          : p,
+      ),
+    );
+  });
+
   let queryKey: QueryKey = null;
   if (parentPageId === null) {
     queryKey = ["root-sidebar-pages", spaceId];
@@ -532,7 +664,14 @@ export function invalidateOnUpdatePage(
           ...page,
           items: page.items.map((sidebarPage: IPage) =>
             sidebarPage.id === id
-              ? { ...sidebarPage, title: title, icon: icon }
+              ? {
+                  ...sidebarPage,
+                  // Guard undefined so a title-only event can't wipe the icon
+                  // (and vice versa) in the sidebar-pages cache — mirrors the
+                  // embed-cache patch above.
+                  ...(title !== undefined ? { title } : {}),
+                  ...(icon !== undefined ? { icon } : {}),
+                }
               : sidebarPage,
           ),
         })),
@@ -554,6 +693,13 @@ export function updateCacheOnMovePage(
   pageData: Partial<IPage>,
 ) {
   invalidatePageTree();
+  // Invalidate the moved page's breadcrumbs (#523). The tree-side child-loss
+  // guard removes the moved node from the local tree when its new parent is an
+  // unloaded branch, so `findBreadcrumbPath` misses it and the breadcrumb bar
+  // falls back to the server `["breadcrumbs", pageId]` query — which this move
+  // must invalidate, otherwise the crumbs keep showing the OLD parent until a
+  // refocus/navigation.
+  queryClient.invalidateQueries({ queryKey: ["breadcrumbs", pageId] });
   // Remove page from old parent's cache
   const oldQueryKey =
     oldParentId === null

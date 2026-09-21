@@ -14,6 +14,22 @@ import { notifications } from "@mantine/notifications";
 import { exportSpace } from "@/features/space/services/space-service";
 import { useTranslation } from "react-i18next";
 
+// The export request uses `responseType: "blob"`, so a server error body arrives
+// as a Blob rather than parsed JSON — `err.response?.data.message` is therefore
+// always undefined. Read and parse the blob to surface the real error message.
+async function extractExportError(err: any): Promise<string> {
+  const data = err?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const json = JSON.parse(await data.text());
+      return json?.message ?? "";
+    } catch {
+      return "";
+    }
+  }
+  return data?.message ?? err?.message ?? "";
+}
+
 interface ExportModalProps {
   id: string;
   type: "space" | "page";
@@ -52,8 +68,9 @@ export default function ExportModal({
       });
       onClose();
     } catch (err) {
+      const message = await extractExportError(err);
       notifications.show({
-        message: "Export failed:" + err.response?.data.message,
+        message: t("Export failed") + (message ? `: ${message}` : ""),
         color: "red",
       });
       console.error("export error", err);

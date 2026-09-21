@@ -1,6 +1,6 @@
 import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
-import { Stack, Text, Anchor, ActionIcon } from "@mantine/core";
-import { IconFileDescription } from "@tabler/icons-react";
+import { Stack, Text, Anchor } from "@mantine/core";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import {
   useGetSidebarPagesQuery,
   useGetPageTreeQuery,
@@ -62,19 +62,11 @@ function TreeNode({ node, depth, shareId, spaceSlug, t }: TreeNodeProps) {
         draggable={false}
         style={{ paddingLeft: depth * 16 }}
       >
-        {node?.icon ? (
-          <span style={{ marginRight: "4px" }}>{node.icon}</span>
-        ) : (
-          <ActionIcon
-            variant="transparent"
-            color="gray"
-            component="span"
-            size={18}
-            style={{ verticalAlign: "text-bottom" }}
-          >
-            <IconFileDescription size={18} />
-          </ActionIcon>
-        )}
+        <span
+          style={{ marginRight: "4px", verticalAlign: "text-bottom" }}
+        >
+          <PageIcon value={node?.icon} size={18} />
+        </span>
 
         <span className={styles.pageMentionText}>
           {node?.title || t("untitled")}
@@ -212,19 +204,11 @@ function FlatSubpages({
               className={styles.pageMentionLink}
               draggable={false}
             >
-              {page?.icon ? (
-                <span style={{ marginRight: "4px" }}>{page.icon}</span>
-              ) : (
-                <ActionIcon
-                  variant="transparent"
-                  color="gray"
-                  component="span"
-                  size={18}
-                  style={{ verticalAlign: "text-bottom" }}
-                >
-                  <IconFileDescription size={18} />
-                </ActionIcon>
-              )}
+              <span
+                style={{ marginRight: "4px", verticalAlign: "text-bottom" }}
+              >
+                <PageIcon value={page?.icon} size={18} />
+              </span>
 
               <span className={styles.pageMentionText}>
                 {page?.title || t("untitled")}

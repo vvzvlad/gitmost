@@ -5,7 +5,7 @@ import {
   Button,
   useMantineColorScheme,
 } from "@mantine/core";
-import { useClickOutside, useDisclosure, useWindowEvent } from "@mantine/hooks";
+import { useClickOutside, useDisclosure } from "@mantine/hooks";
 import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -57,14 +57,22 @@ function EmojiPicker({
     [dropdown, target],
   );
 
-  // We need this because the default Mantine popover closeOnEscape does not work
-  useWindowEvent("keydown", (event) => {
-    if (opened && event.key === "Escape") {
-      event.stopPropagation();
-      event.preventDefault();
-      handlers.close();
-    }
-  });
+  // We need this because the default Mantine popover closeOnEscape does not work.
+  // Attach the global keydown ONLY while the picker is open (every tree row
+  // renders an EmojiPicker, so an always-on window listener meant ~20-30 idle
+  // keydown handlers firing on each keystroke).
+  useEffect(() => {
+    if (!opened) return;
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.preventDefault();
+        handlers.close();
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [opened, handlers]);
 
   // emoji-mart's built-in autoFocus calls .focus() without preventScroll, which
   // makes the browser scroll every scrollable ancestor of the search input to

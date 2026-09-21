@@ -16,6 +16,7 @@ import {
   getWorkspace,
   getWorkspacePublicData,
   getAppVersion,
+  getWorkspaceEntitlements,
   deleteWorkspaceMember,
   deactivateWorkspaceMember,
   activateWorkspaceMember,
@@ -28,6 +29,7 @@ import {
   IPublicWorkspace,
   IVersion,
   IWorkspace,
+  IWorkspaceEntitlements,
 } from "@/features/workspace/types/workspace.types.ts";
 import { IUser } from "@/features/user/types/user.types.ts";
 import { useTranslation } from "react-i18next";
@@ -36,6 +38,17 @@ export function useWorkspaceQuery(): UseQueryResult<IWorkspace, Error> {
   return useQuery({
     queryKey: ["workspace"],
     queryFn: () => getWorkspace(),
+  });
+}
+
+export function useWorkspaceEntitlementsQuery(): UseQueryResult<
+  IWorkspaceEntitlements,
+  Error
+> {
+  return useQuery({
+    queryKey: ["workspace-entitlements"],
+    queryFn: () => getWorkspaceEntitlements(),
+    staleTime: 5 * 60 * 1000, // 5 min — a kill-switch flag rarely flips
   });
 }
 
@@ -243,6 +256,5 @@ export function useAppVersion(
     queryFn: () => getAppVersion(),
     staleTime: 60 * 60 * 1000, // 1 hr
     enabled: isEnabled,
-    refetchOnMount: true,
   });
 }

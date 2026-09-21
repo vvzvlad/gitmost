@@ -8,6 +8,7 @@ import {
   IPublicWorkspace,
   IInvitationLink,
   IVersion,
+  IWorkspaceEntitlements,
 } from "../types/workspace.types";
 import { IPagination, QueryParams } from "@/lib/types.ts";
 import { ISetupWorkspace } from "@/features/auth/types/auth.types.ts";
@@ -120,5 +121,10 @@ export async function createWorkspace(
 
 export async function getAppVersion(): Promise<IVersion> {
   const req = await api.post("/version");
+  return req.data;
+}
+
+export async function getWorkspaceEntitlements(): Promise<IWorkspaceEntitlements> {
+  const req = await api.post<IWorkspaceEntitlements>("/workspace/entitlements");
   return req.data;
 }

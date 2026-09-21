@@ -1,8 +1,17 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { getDefaultStore } from "jotai";
-import { WebSocketStatus } from "@hocuspocus/provider";
-import { Editor } from "@tiptap/core";
+
+// Literal value of WebSocketStatus.Connected from @hocuspocus/provider. Inlined
+// so this always-mounted global bridge does not statically import
+// @hocuspocus/provider — that import pulls Yjs (and, through a shared chunk, the
+// whole TipTap engine) into the eager startup graph. yjsConnectionStatusAtom
+// already stores these raw status strings.
+const YJS_STATUS_CONNECTED = "connected";
+// Type-only: importing Editor as a type keeps @tiptap/core (the whole editor
+// engine) out of the eager global-shell graph — the bridge only uses it for
+// annotations/casts, never as a runtime value.
+import type { Editor } from "@tiptap/core";
 import {
   pageEditorAtom,
   yjsConnectionStatusAtom,
@@ -16,15 +25,19 @@ import {
   getSidebarPages,
 } from "@/features/page/services/page-service.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
-import {
+// Types are erased at build time, so importing them does not pull the module's
+// runtime (which drags in @tiptap + the editor-ext barrel). The actual recording
+// helpers are dynamically imported at call time inside createPageWithRecording,
+// keeping the editor engine out of the eager global-shell startup graph — the
+// bridge is mounted for every authenticated user but recording is a rare,
+// native-host-driven action.
+import type {
   GitmostBridge,
   GitmostCreatePagePayload,
   GitmostCreatePageResult,
   GitmostListPagesPayload,
   GitmostListPagesResult,
   GitmostListSpacesResult,
-  gitmostDecodePayloadToFile,
-  gitmostUploadFileToEditor,
 } from "@/features/editor/gitmost/gitmost-recording.ts";
 
 // How long to wait for a freshly-navigated page's editor to mount, become
@@ -57,7 +70,7 @@ function gitmostWaitForEditor(
         !editor.isDestroyed &&
         editor.isEditable &&
         editorPageId === pageId &&
-        yjsStatus === WebSocketStatus.Connected;
+        yjsStatus === YJS_STATUS_CONNECTED;
       if (ready) {
         resolve(editor);
         return;
@@ -171,6 +184,15 @@ export default function GitmostGlobalBridge() {
           };
         }
 
+        // Load the recording helpers on demand (see the import note above). This
+        // is the only place they are needed, so the @tiptap/editor-ext code they
+        // pull in stays out of the eager startup graph.
+        const {
+          gitmostDecodePayloadToFile,
+          gitmostUploadFileToEditor,
+          gitmostInsertTranscriptIntoEditor,
+        } = await import("@/features/editor/gitmost/gitmost-recording.ts");
+
         // Validate/decode the recording BEFORE creating the page so a bad
         // payload never leaves an empty junk page behind. Per the createPage
         // error contract, any decode failure collapses to "insert-failed" (the
@@ -281,6 +303,18 @@ export default function GitmostGlobalBridge() {
             pageId: page.id,
           };
         }
+
+        // Best-effort: append the transcript (heading + one paragraph per line)
+        // below the just-inserted audio node. The audio insert already
+        // succeeded, so a transcript failure must NOT turn this into an error —
+        // wrap it and, on any throw, log and still return ok. A missing/empty/
+        // non-string transcript is a no-op inside the helper (audio only).
+        try {
+          gitmostInsertTranscriptIntoEditor(editor, payload?.transcript);
+        } catch (err) {
+          console.error("[gitmost] transcript insert failed", err);
+        }
+
         return { ok: true, pageId: page.id };
       } catch (err: any) {
         console.error("[gitmost] createPageWithRecording failed", err);

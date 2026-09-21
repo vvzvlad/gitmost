@@ -1,6 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as path from 'path';
-import { jsonToText } from '../../../collaboration/collaboration.util';
+import {
+  jsonToHtml,
+  jsonToText,
+} from '../../../collaboration/collaboration.util';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import {
@@ -18,7 +21,11 @@ import { generateSlugId } from '../../../common/helpers';
 import { v7 } from 'uuid';
 import { generateJitteredKeyBetween } from 'fractional-indexing-jittered';
 import { FileTask, InsertablePage } from '@docmost/db/types/entity.types';
-import { markdownToHtml } from '@docmost/editor-ext';
+import { canonicalizeFootnotes } from '@docmost/editor-ext';
+import {
+  markdownToProseMirror,
+  normalizeForeignMarkdown,
+} from '@docmost/prosemirror-markdown';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
 import { formatImportHtml } from '../utils/import-formatter';
 import {
@@ -461,7 +468,18 @@ export class FileImportTaskService {
               content = await fs.readFile(absPath, 'utf-8');
 
               if (page.fileExtension.toLowerCase() === '.md') {
-                content = await markdownToHtml(content);
+                // Parse markdown with the single canonical converter
+                // (`@docmost/prosemirror-markdown`), after normalizing foreign
+                // reference footnotes, then serialize to HTML so the shared HTML
+                // pipeline below (processAttachments + formatImportHtml +
+                // processHTML) keeps handling `.md` and `.html` imports
+                // uniformly. The markdown PARSE no longer goes through the
+                // editor-ext markdown layer (issue #345) — the drift source is
+                // gone. The PM -> HTML -> PM hop that follows is lossless
+                // plumbing for attachment/link resolution, NOT a second parse.
+                content = jsonToHtml(
+                  await markdownToProseMirror(normalizeForeignMarkdown(content)),
+                );
               }
             } catch (err: any) {
               if (err?.code === 'ENOENT') {
@@ -496,8 +514,20 @@ export class FileImportTaskService {
               await this.importService.processHTML(html),
             );
 
-            const { title, prosemirrorJson } =
+            const { title, prosemirrorJson: extractedJson } =
               this.importService.extractTitleAndRemoveHeading(pmState);
+
+            // Canonicalize footnote topology on this non-editor write path
+            // (the HTML pipeline's processHTML never runs footnoteSyncPlugin), so
+            // a zip-imported page's footnotes are reference-ordered, deduped, and
+            // orphan-free like the editor's invariant (issue #228). Pure +
+            // idempotent + shape-safe; a footnote-free doc is unchanged. (For a
+            // `.md` file the package parser already yields canonical footnotes,
+            // so this is a no-op there.)
+            // (Future consolidation, architecture B: like import.service, this
+            // path persists directly rather than via PageService — a shared
+            // "prepare JSON for persist" helper would centralize this call.)
+            const prosemirrorJson = canonicalizeFootnotes(extractedJson);
 
             const insertablePage: InsertablePage = {
               id: page.id,

@@ -4,6 +4,9 @@ import { IPage } from "@/features/page/types/page.types";
 import {
   ICreateShare,
   IShare,
+  IShareAlias,
+  IShareAliasAvailability,
+  ISetShareAlias,
   ISharedItem,
   ISharedPage,
   ISharedPageTree,
@@ -55,5 +58,35 @@ export async function getSharedPageTree(
   shareId: string,
 ): Promise<ISharedPageTree> {
   const req = await api.post<ISharedPageTree>("/shares/tree", { shareId });
+  return req.data;
+}
+
+export async function getShareAliasForPage(
+  pageId: string,
+): Promise<IShareAlias | null> {
+  const req = await api.post<IShareAlias | null>("/share-aliases/for-page", {
+    pageId,
+  });
+  return req.data;
+}
+
+export async function setShareAlias(
+  data: ISetShareAlias,
+): Promise<IShareAlias> {
+  const req = await api.post<IShareAlias>("/share-aliases/set", data);
+  return req.data;
+}
+
+export async function removeShareAlias(aliasId: string): Promise<void> {
+  await api.post("/share-aliases/remove", { aliasId });
+}
+
+export async function checkShareAliasAvailability(
+  alias: string,
+): Promise<IShareAliasAvailability> {
+  const req = await api.post<IShareAliasAvailability>(
+    "/share-aliases/availability",
+    { alias },
+  );
   return req.data;
 }

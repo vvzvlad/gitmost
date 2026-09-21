@@ -12,7 +12,10 @@ import { AiAgentRoleRepo } from '@docmost/db/repos/ai-agent-roles/ai-agent-roles
 import { AiAgentRole } from '@docmost/db/types/entity.types';
 import { AiService } from '../../integrations/ai/ai.service';
 import { AiSettingsService } from '../../integrations/ai/ai-settings.service';
-import { PublicShareChatToolsService } from './tools/public-share-chat-tools.service';
+import {
+  PublicShareChatToolsService,
+  ShareToolError,
+} from './tools/public-share-chat-tools.service';
 import { buildShareSystemPrompt } from './public-share-chat.prompt';
 import { roleModelOverride } from './roles/role-model-config';
 import {
@@ -100,6 +103,30 @@ export function filterShareTranscript(messages: UIMessage[]): UIMessage[] {
   return (messages ?? []).filter(
     (m) => m?.role === 'user' || m?.role === 'assistant',
   );
+}
+
+/**
+ * Fixed, classified strings an ANONYMOUS share reader may see when the assistant
+ * stream fails (#394). These reveal NOTHING about the internal provider, its
+ * baseUrl, the model name, or the raw response body — unlike describeProviderError
+ * (which is for the server log / the authenticated operator only). We classify by
+ * HTTP status where available so the reader still gets a useful hint (retry vs.
+ * give up) without any internal detail.
+ */
+export function classifyAnonStreamError(error: unknown): string {
+  const status =
+    typeof error === 'object' && error !== null
+      ? (error as { statusCode?: number }).statusCode
+      : undefined;
+  if (status === 429) {
+    return 'The assistant is receiving too many requests right now. Please try again shortly.';
+  }
+  if (typeof status === 'number' && status >= 500) {
+    return 'The assistant is temporarily unavailable. Please try again.';
+  }
+  // Any other failure (including a bare connection error with no status): a
+  // single neutral line. No provider identity, no config, no response body.
+  return 'The assistant could not complete your request. Please try again.';
 }
 
 /**
@@ -280,6 +307,10 @@ export class PublicShareChatService {
         system,
         messages: modelMessages,
         tools,
+        // Pin the AI SDK per-request retry budget explicitly (matches the SDK
+        // default of 2). Connection arithmetic: (1 + maxRetries) × (1 +
+        // AI_STREAM_PRE_RESPONSE_RETRIES) worst-case connects per turn.
+        maxRetries: 2,
         // Bound the agent loop for anonymous callers.
         stopWhen: stepCountIs(5),
         // Cap per-request output so one anonymous call cannot run up the provider
@@ -318,11 +349,28 @@ export class PublicShareChatService {
       result.pipeUIMessageStreamToResponse(res.raw, {
         headers: { 'X-Accel-Buffering': 'no' },
         onError: (error: unknown) => {
-          // Reuse the shared formatter so provider error formatting stays
-          // unified between the log line and the streamed error message — a
-          // share reader sees 402/429/503 causes consistently with the
-          // authenticated path.
-          return describeProviderError(error, 'AI stream error');
+          // SECURITY (#394): the string this returns is written verbatim into the
+          // SSE error frame delivered to an ANONYMOUS reader (for a tool failure
+          // it becomes the atomic `tool-output-error` frame's errorText; for a
+          // stream/provider failure, the terminal error frame).
+          //
+          // A ShareToolError is already a classified, safe tool message (see
+          // PublicShareChatToolsService.wrapToolErrors) — pass it through so the
+          // reader still gets the useful "page not available in this share" hint.
+          if (error instanceof ShareToolError) {
+            return error.message;
+          }
+          // Anything else is a provider/stream error. describeProviderError
+          // bundles the provider statusCode AND response body, which can carry the
+          // internal baseUrl or model name — NEVER expose that to the public. Log
+          // the full detail server-side only and return a fixed classified string.
+          this.logger.error(
+            `Public share chat pipe error: ${describeProviderError(
+              error,
+              'AI stream error',
+            )}`,
+          );
+          return classifyAnonStreamError(error);
         },
       });
 

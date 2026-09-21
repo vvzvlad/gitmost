@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { CreateShareDto, ShareInfoDto, UpdateShareDto } from './dto/share.dto';
 import { InjectKysely } from 'nestjs-kysely';
-import { KyselyDB } from '@docmost/db/types/kysely.types';
+import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
+import { executeTx } from '@docmost/db/utils';
+import {
+  PublishedMode,
+  DEFAULT_PUBLISHED_MODE,
+} from './published-mode.constants';
 import { nanoIdGen } from '../../common/helpers';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { TokenService } from '../auth/services/token.service';
@@ -19,6 +24,7 @@ import {
 } from '../../common/helpers/prosemirror/utils';
 import { Node } from '@tiptap/pm/model';
 import { ShareRepo } from '@docmost/db/repos/share/share.repo';
+import { PageHistoryRepo } from '@docmost/db/repos/page/page-history.repo';
 import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { updateAttachmentAttr } from './share.util';
 import { Page } from '@docmost/db/types/entity.types';
@@ -44,6 +50,7 @@ export class ShareService {
     private readonly tokenService: TokenService,
     private readonly transclusionService: TransclusionService,
     private readonly workspaceRepo: WorkspaceRepo,
+    private readonly pageHistoryRepo: PageHistoryRepo,
   ) {}
 
   /**
@@ -92,20 +99,48 @@ export class ShareService {
   }) {
     const { authUserId, workspaceId, page, createShareDto } = opts;
 
-    try {
-      const shares = await this.shareRepo.findByPageId(page.id);
-      if (shares) {
-        return shares;
-      }
+    const includeSubPages = createShareDto.includeSubPages ?? false;
+    const publishedMode = createShareDto.publishedMode ?? DEFAULT_PUBLISHED_MODE;
 
-      return await this.shareRepo.insertShare({
-        key: nanoIdGen().toLowerCase(),
-        pageId: page.id,
-        includeSubPages: createShareDto.includeSubPages ?? false,
-        searchIndexing: createShareDto.searchIndexing ?? false,
-        creatorId: authUserId,
-        spaceId: page.spaceId,
-        workspaceId,
+    // #370 Stage B — 'approved' freezes a SINGLE page to its saved version; a
+    // sub-tree cannot be version-frozen in the MVP, so the two are mutually
+    // exclusive. Thrown before the try so the specific 400 reaches the client
+    // instead of being flattened to the generic "Failed to share page".
+    this.assertPublishedModeCompatible(publishedMode, includeSubPages);
+
+    try {
+      // Atomic share-write + baseline mint (F1): the share row insert and the
+      // approved baseline are one transaction, so an approved share can never
+      // durably exist WITHOUT its baseline. That "approved without baseline"
+      // state is what the public read path fails OPEN to (serving the live
+      // draft) — making it unreachable closes that confidentiality leak.
+      return await executeTx(this.db, async (trx) => {
+        const shares = await this.shareRepo.findByPageId(page.id, { trx });
+        if (shares) {
+          return shares;
+        }
+
+        const share = await this.shareRepo.insertShare(
+          {
+            key: nanoIdGen().toLowerCase(),
+            pageId: page.id,
+            includeSubPages,
+            searchIndexing: createShareDto.searchIndexing ?? false,
+            publishedMode,
+            creatorId: authUserId,
+            spaceId: page.spaceId,
+            workspaceId,
+          },
+          trx,
+        );
+
+        // Guarantee an approved share always has a saved version to serve: mint
+        // the first manual baseline from the page's current content on enable.
+        if (publishedMode === 'approved') {
+          await this.ensureApprovedBaseline(page.id, trx);
+        }
+
+        return share;
       });
     } catch (err) {
       this.logger.error(err);
@@ -114,18 +149,97 @@ export class ShareService {
   }
 
   async updateShare(shareId: string, updateShareDto: UpdateShareDto) {
+    // Resolve the current share so the XOR gate can be evaluated against the
+    // EFFECTIVE post-update state (either field may be absent from the DTO).
+    const current = await this.shareRepo.findById(shareId);
+    if (!current) {
+      throw new NotFoundException('Share not found');
+    }
+
+    const effectiveIncludeSubPages =
+      updateShareDto.includeSubPages ?? current.includeSubPages ?? false;
+    const effectivePublishedMode = (updateShareDto.publishedMode ??
+      current.publishedMode ??
+      DEFAULT_PUBLISHED_MODE) as PublishedMode;
+
+    // #370 Stage B — enforce the approved/includeSubPages XOR on the merged
+    // state. Thrown before the try so the specific 400 reaches the client.
+    this.assertPublishedModeCompatible(
+      effectivePublishedMode,
+      effectiveIncludeSubPages,
+    );
+
     try {
-      return this.shareRepo.updateShare(
-        {
-          includeSubPages: updateShareDto.includeSubPages,
-          searchIndexing: updateShareDto.searchIndexing,
-        },
-        shareId,
-      );
+      // Atomic share-write + baseline mint (F1): the share update and the
+      // approved baseline commit together, so a share can never durably land in
+      // approved mode WITHOUT a baseline. That gap is what the public read path
+      // fails OPEN to (serving the live draft) — one transaction makes it
+      // unreachable and closes the confidentiality leak.
+      return await executeTx(this.db, async (trx) => {
+        const updated = await this.shareRepo.updateShare(
+          {
+            includeSubPages: updateShareDto.includeSubPages,
+            searchIndexing: updateShareDto.searchIndexing,
+            publishedMode: updateShareDto.publishedMode,
+          },
+          shareId,
+          trx,
+        );
+
+        // On (or while) enabling approved mode, ensure a manual baseline exists
+        // so public readers always have a saved version to serve. Idempotent: a
+        // no-op when the page already has a manual history row.
+        if (effectivePublishedMode === 'approved') {
+          await this.ensureApprovedBaseline(current.pageId, trx);
+        }
+
+        return updated;
+      });
     } catch (err) {
       this.logger.error(err);
       throw new BadRequestException('Failed to update share');
     }
+  }
+
+  /**
+   * #370 Stage B — 'approved' publication is mutually exclusive with
+   * includeSubPages: a whole sub-tree cannot be version-frozen in the MVP.
+   */
+  private assertPublishedModeCompatible(
+    publishedMode: PublishedMode,
+    includeSubPages: boolean,
+  ): void {
+    if (publishedMode === 'approved' && includeSubPages) {
+      throw new BadRequestException(
+        'Approved publication cannot be combined with including sub-pages',
+      );
+    }
+  }
+
+  /**
+   * #370 Stage B — guarantee an approved share has a saved version to serve.
+   * When the page has NO manual history row yet, snapshot its CURRENT content as
+   * the first manual version. Idempotent: returns early when a manual version
+   * already exists, so it is safe to call on every approved update.
+   */
+  private async ensureApprovedBaseline(
+    pageId: string,
+    trx: KyselyTransaction,
+  ): Promise<void> {
+    const existing = await this.pageHistoryRepo.findLatestByPageIdAndKind(
+      pageId,
+      'manual',
+      { trx },
+    );
+    if (existing) return;
+
+    const page = await this.pageRepo.findById(pageId, {
+      includeContent: true,
+      trx,
+    });
+    if (!page) return;
+
+    await this.pageHistoryRepo.saveHistory(page, { kind: 'manual', trx });
   }
 
   /**
@@ -173,7 +287,7 @@ export class ShareService {
     // passes no shareId (it resolved the share from the page itself).
     if (shareId != null && share.id !== shareId) return null;
 
-    const page = await this.pageRepo.findById(pageId, {
+    let page = await this.pageRepo.findById(pageId, {
       includeContent: true,
       includeCreator: opts?.includeCreator ?? false,
     });
@@ -185,13 +299,37 @@ export class ShareService {
       return null;
     }
 
+    // #370 Stage B — "approved" publication freezes what public readers see to
+    // the LAST manually-saved version (page_history.kind='manual'), not the live
+    // draft. This is the SINGLE canonical resolver every public read funnels
+    // through (the shared-page view, the SEO controller, AND the share
+    // assistant's page-read tool), so the swap here freezes ALL of them
+    // consistently — a public visitor and the assistant see the same bytes.
+    //
+    // Swap ONLY content + title. page.id and page.workspaceId stay LIVE on
+    // purpose: downstream updatePublicAttachments mints per-attachment tokens
+    // off page.id/workspaceId, so freezing those would mint tokens for the
+    // wrong owner. The SEO controller reads resolved.page.title, so the frozen
+    // title flows through automatically. If no manual version exists yet (rare —
+    // enabling an approved share auto-creates a baseline), fall back to live.
+    if (share.publishedMode === 'approved') {
+      const hist = await this.pageHistoryRepo.findLatestByPageIdAndKind(
+        page.id,
+        'manual',
+        { includeContent: true },
+      );
+      if (hist) {
+        page = { ...page, content: hist.content, title: hist.title };
+      }
+    }
+
     return { share, page };
   }
 
   async getSharedPage(dto: ShareInfoDto, workspaceId: string) {
-    // Resolve via the single canonical boundary. There is no independent
-    // requested shareId here (the share is resolved FROM the page), so no
-    // share-id match is performed.
+    // Resolve via the single canonical boundary. The share is resolved FROM the
+    // page (the request carries the page slug), so the boundary itself performs
+    // no share-id match here.
     const resolved = await this.resolveReadableSharePage(
       null,
       dto.pageId,
@@ -205,9 +343,83 @@ export class ShareService {
 
     const { share, page } = resolved;
 
+    // Bind content to the requested share (#218). When the caller supplies a
+    // shareId/key (the `/share/:shareId/p/:slug` route now forwards it), the
+    // page must be reachable THROUGH that exact share — a forged or mismatched
+    // shareId must 404 instead of rendering the page off its slug alone, and it
+    // must not be answerable with the page's real (canonical) share key. A
+    // request with no shareId keeps the legacy slug-capability behavior (the
+    // `/share/p/:slug` route + internal title look-ups); the slug nanoid stays
+    // the access secret there — an inherited Docmost design we don't widen.
+    // FUTURE: this ancestor-aware match could fold INTO resolveReadableSharePage
+    // (so the boundary's narrow `share.id === shareId` gate isn't effectively
+    // dead). Deferred — it widens the contract for the 3 other callers that pass
+    // no shareId (share-alias.controller, share-alias.service, share-seo.controller);
+    // the two ai-chat callers (public-share-chat.controller,
+    // public-share-chat-tools.service) already pass a real shareId. Kept here as
+    // a local post-check until that consolidation is worth the blast radius.
+    if (dto.shareId) {
+      const reachable = await this.isPageReachableThroughShare(
+        dto.shareId,
+        share,
+        page.id,
+        workspaceId,
+      );
+      if (!reachable) {
+        throw new NotFoundException('Shared page not found');
+      }
+    }
+
     page.content = await this.updatePublicAttachments(page);
 
     return { page, share };
+  }
+
+  /**
+   * Does `requestedShareId` (a share id OR key) legitimately grant access to
+   * `pageId`? True when it names the page's own resolved share, or an ancestor
+   * share with `includeSubPages` that contains the page. Any other value
+   * (unknown key, wrong workspace, a sibling share that doesn't cover the page)
+   * is false, so a guessed slug paired with a forged shareId can't render.
+   */
+  private async isPageReachableThroughShare(
+    requestedShareId: string,
+    resolvedShare: NonNullable<
+      Awaited<ReturnType<ShareService['getShareForPage']>>
+    >,
+    pageId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    // Fast path: the request names the page's own resolved share.
+    if (this.shareIdGrantsAccess(requestedShareId, resolvedShare)) {
+      return true;
+    }
+
+    // Otherwise it may name an includeSubPages ANCESTOR share: the page has its
+    // own closer share but is also served under the ancestor's public tree.
+    const requested = await this.shareRepo.findById(requestedShareId);
+    if (!requested || requested.workspaceId !== workspaceId) return false;
+    if (!requested.includeSubPages) return false;
+
+    const ancestor = await this.getShareAncestorPage(requested.pageId, pageId);
+    return !!ancestor;
+  }
+
+  /**
+   * Does the requested share id/key directly name `resolvedShare` — by id, or
+   * by key (case-insensitive)? This is the "names the page's OWN share" half of
+   * the access concept; ancestor includeSubPages shares are matched separately.
+   * Intentionally narrower than `resolveReadableSharePage`'s id-only gate, which
+   * keeps its own contract for the callers that pass a shareId there.
+   */
+  private shareIdGrantsAccess(
+    requestedShareId: string,
+    resolvedShare: { id: string; key?: string | null },
+  ): boolean {
+    return (
+      requestedShareId === resolvedShare.id ||
+      requestedShareId.toLowerCase() === resolvedShare.key?.toLowerCase()
+    );
   }
 
   async getShareForPage(pageId: string, workspaceId: string) {
@@ -228,6 +440,7 @@ export class ShareService {
             'shares.key as shareKey',
             'shares.includeSubPages',
             'shares.searchIndexing',
+            'shares.publishedMode',
             'shares.creatorId',
             'shares.spaceId',
             'shares.workspaceId',
@@ -252,6 +465,7 @@ export class ShareService {
                   's.key as shareKey',
                   's.includeSubPages',
                   's.searchIndexing',
+                  's.publishedMode',
                   's.creatorId',
                   's.spaceId',
                   's.workspaceId',
@@ -281,6 +495,7 @@ export class ShareService {
       key: share.shareKey,
       includeSubPages: share.includeSubPages,
       searchIndexing: share.searchIndexing,
+      publishedMode: share.publishedMode,
       pageId: share.id,
       creatorId: share.creatorId,
       spaceId: share.spaceId,
@@ -351,7 +566,14 @@ export class ShareService {
         .limit(1)
         .executeTakeFirst();
     } catch (err) {
-      // empty
+      // Fail closed (return null -> caller 404s), but never silently: this is
+      // now a live public-share path (isPageReachableThroughShare), so a
+      // transient DB error here would otherwise turn a legitimate viewer of an
+      // includeSubPages descendant into a misleading "not found" with no trace.
+      this.logger.error(
+        `getShareAncestorPage failed (ancestorPageId=${ancestorPageId}, childPageId=${childPageId})`,
+        err instanceof Error ? err.stack : String(err),
+      );
     }
 
     return ancestor;

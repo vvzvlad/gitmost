@@ -7,7 +7,7 @@ import {
 } from "@tiptap/core";
 import { ResizableNodeView } from "../resizable-nodeview";
 import type { ResizableNodeViewDirection } from "../resizable-nodeview";
-import { normalizeFileUrl } from "../media-utils";
+import { attachMediaPlaceholder, normalizeFileUrl } from "../media-utils";
 
 export type ImageResizeOptions = {
   enabled: boolean;
@@ -32,6 +32,7 @@ export interface ImageOptions extends DefaultImageOptions {
 export interface ImageAttributes {
   src?: string;
   alt?: string;
+  caption?: string;
   align?: string;
   attachmentId?: string;
   size?: number;
@@ -52,7 +53,13 @@ declare module "@tiptap/core" {
         attributes: ImageAttributes & { pos: number | Range },
       ) => ReturnType;
       setImageAlign: (
-        align: "left" | "center" | "right" | "floatLeft" | "floatRight",
+        align:
+          | "left"
+          | "center"
+          | "right"
+          | "floatLeft"
+          | "floatRight"
+          | "inline",
       ) => ReturnType;
       setImageWidth: (width: number) => ReturnType;
       setImageSize: (width: number, height: number) => ReturnType;
@@ -124,6 +131,13 @@ export const TiptapImage = Image.extend<ImageOptions>({
         renderHTML: (attributes: ImageAttributes) => ({
           alt: attributes.alt,
         }),
+      },
+      caption: {
+        default: undefined,
+        parseHTML: (element) => element.getAttribute("data-caption") || undefined,
+        // Emit data-caption only when set, so caption-less images stay clean.
+        renderHTML: (attributes: ImageAttributes) =>
+          attributes.caption ? { "data-caption": attributes.caption } : {},
       },
       attachmentId: {
         default: undefined,
@@ -304,6 +318,10 @@ export const TiptapImage = Image.extend<ImageOptions>({
             el.alt = updatedNode.attrs.alt || "";
           }
 
+          if (updatedNode.attrs.caption !== currentNode.attrs.caption) {
+            applyCaption(updatedNode.attrs.caption);
+          }
+
           const w = updatedNode.attrs.width;
           const h = updatedNode.attrs.height;
           if (w != null) {
@@ -335,6 +353,28 @@ export const TiptapImage = Image.extend<ImageOptions>({
 
       const dom = nodeView.dom as HTMLElement;
 
+      // Re-parent the resizable wrapper into a <figure> so the caption sits BELOW
+      // the image, OUTSIDE nodeView.wrapper. onCommit measures the img's
+      // offsetHeight for the persisted height/aspectRatio, and the left/right
+      // resize handles span the wrapper — both must cover the image only. The
+      // <figure> stays the single flex child of the container, so applyAlignment
+      // and the float modes keep working. This path also drives read-only/share.
+      const figure = document.createElement("figure");
+      figure.style.margin = "0";
+      figure.style.display = "inline-block"; // shrink-to-fit to image width
+      figure.appendChild(nodeView.wrapper);
+      dom.appendChild(figure);
+
+      const figcaption = document.createElement("figcaption");
+      figcaption.className = "image-caption";
+      const applyCaption = (text?: string) => {
+        const value = (text || "").trim();
+        figcaption.textContent = value;
+        figcaption.style.display = value ? "block" : "none";
+      };
+      applyCaption(node.attrs.caption);
+      figure.appendChild(figcaption);
+
       // Apply initial alignment
       applyAlignment(dom, node.attrs.align || "center");
 
@@ -362,14 +402,13 @@ export const TiptapImage = Image.extend<ImageOptions>({
         });
       }
 
-      // Show skeleton background while image loads from server
-      dom.style.pointerEvents = "none";
-      el.classList.add("media-pulse");
-
-      el.onload = () => {
-        dom.style.pointerEvents = "";
-        el.classList.remove("media-pulse");
-      };
+      // Show the skeleton placeholder while the image loads from the server.
+      // Settles on success AND on error — see attachMediaPlaceholder.
+      attachMediaPlaceholder(el, dom, {
+        nodeType: "image",
+        src: el.src,
+        readyEvent: "load",
+      });
 
       return nodeView;
     };
@@ -381,6 +420,14 @@ export function applyAlignment(container: HTMLElement, align: string) {
   // (a previous float must not leak into a later left/center/right).
   container.style.cssFloat = "";
   container.style.padding = "";
+  // The ResizableNodeView constructor sets an inline `display: flex` on the
+  // container; the inline mode overrides it with `inline-block`, so the reset
+  // restores the constructor's flex here. This keeps the container's layout
+  // independent of any app-level CSS class (which also happens to set flex)
+  // and makes non-inline modes carry exactly the same inline styles as before
+  // the inline mode existed.
+  container.style.display = "flex";
+  container.style.verticalAlign = "";
   // Mirror the resolved alignment onto the CONTAINER as a data attribute so the
   // responsive stylesheet can neutralize the float on small screens (an inline
   // `float` can only be overridden by `!important`, which keys off this attr).
@@ -396,6 +443,17 @@ export function applyAlignment(container: HTMLElement, align: string) {
     container.style.cssFloat = "right";
     container.style.padding = "0 0 0 10px";
     container.style.justifyContent = "flex-end";
+  } else if (align === "inline") {
+    // Consecutive inline images sit side by side on one line box and wrap to
+    // the next line when the viewport is narrow. The right/bottom padding
+    // provides the gap between images in a row and between wrapped rows;
+    // vertical-align: top keeps rows of different-height images aligned by
+    // their top edge. Horizontal centering of the whole row is handled by the
+    // client stylesheet (media.css) via a :has() rule on the parent block
+    // container, since the row has no wrapper element of its own.
+    container.style.display = "inline-block";
+    container.style.verticalAlign = "top";
+    container.style.padding = "0 10px 10px 0";
   } else if (align === "left") {
     container.style.justifyContent = "flex-start";
   } else if (align === "right") {

@@ -2,6 +2,7 @@ import { FC } from "react";
 import type { Editor } from "@tiptap/react";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import {
+  IconAsterisk,
   IconBold,
   IconChevronDown,
   IconClearFormatting,
@@ -103,6 +104,16 @@ export const InlineMarksGroup: FC<Props> = ({ editor, state }) => {
             onClick={() => editor.chain().focus().toggleSuperscript().run()}
           >
             {t("Superscript")}
+          </Menu.Item>
+          <Menu.Item
+            leftSection={<IconAsterisk size={16} />}
+            onClick={() => {
+              // Collapse to the selection end so the marker lands after the text.
+              const to = editor.state.selection.to;
+              editor.chain().focus().setTextSelection(to).setFootnote().run();
+            }}
+          >
+            {t("Footnote")}
           </Menu.Item>
           <Menu.Divider />
           <Menu.Item

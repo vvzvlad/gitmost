@@ -74,6 +74,11 @@ function buildService(opts?: {
   };
   const attachmentQueue = { add: jest.fn().mockResolvedValue(undefined) };
 
+  // #686: personal external-MCP cache eviction, invoked AFTER commit in
+  // deleteUser. Captured so tests can assert the user's warm toolset cache is
+  // dropped when they are deleted.
+  const mcpClients = { invalidateUser: jest.fn() };
+
   const service = new WorkspaceService(
     {} as any, // workspaceRepo
     {} as any, // spaceService
@@ -93,9 +98,18 @@ function buildService(opts?: {
     {} as any, // aiQueue
     auditService as any, // auditService
     userSessionRepo as any, // userSessionRepo
+    mcpClients as any, // mcpClients (#686)
   );
 
-  return { service, userRepo, auditService, db, userSessionRepo };
+  return {
+    service,
+    userRepo,
+    auditService,
+    db,
+    userSessionRepo,
+    trxChain,
+    mcpClients,
+  };
 }
 
 const authUser = (role: UserRole, id = 'auth-1') =>
@@ -343,10 +357,11 @@ describe('WorkspaceService.deleteUser guards', () => {
   });
 
   it('deletes a normal member: anonymises + revokes sessions inside the tx', async () => {
-    const { service, userRepo, userSessionRepo, db } = buildService({
-      target: { id: 'u-member', role: UserRole.MEMBER },
-      ownerCount: 2,
-    });
+    const { service, userRepo, userSessionRepo, db, trxChain, mcpClients } =
+      buildService({
+        target: { id: 'u-member', role: UserRole.MEMBER },
+        ownerCount: 2,
+      });
 
     await service.deleteUser(authUser(UserRole.OWNER), 'u-member', WORKSPACE_ID);
 
@@ -354,5 +369,19 @@ describe('WorkspaceService.deleteUser guards', () => {
     expect(userRepo.updateUser).toHaveBeenCalledTimes(1);
     expect(userRepo.updateUser.mock.calls[0][1]).toBe('u-member');
     expect(userSessionRepo.revokeByUserId).toHaveBeenCalled();
+
+    // #686 (ARCH #8): deleteUser is a SOFT delete, so the aiMcpServers FK
+    // `ON DELETE CASCADE` never fires in prod — the user's encrypted personal
+    // MCP secrets would outlive them. The service must therefore purge them
+    // EXPLICITLY inside the tx, scoped to the deleted user, and then evict the
+    // user's warm toolset cache after commit. Assert BOTH so removing either
+    // line in the product code reddens this test (the CASCADE int-test only
+    // covers the HARD-delete path that never runs in prod).
+    expect(trxChain.deleteFrom).toHaveBeenCalledWith('aiMcpServers');
+    expect(trxChain.where).toHaveBeenCalledWith('userId', '=', 'u-member');
+    expect(mcpClients.invalidateUser).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      'u-member',
+    );
   });
 });

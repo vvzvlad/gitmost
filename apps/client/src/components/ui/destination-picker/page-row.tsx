@@ -1,8 +1,9 @@
 import { KeyboardEvent, useState } from "react";
 import { ActionIcon } from "@mantine/core";
-import { IconChevronRight, IconFileDescription } from "@tabler/icons-react";
+import { IconChevronRight } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { IPage } from "@/features/page/types/page.types";
+import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { PageChildren } from "./page-children";
 import classes from "./destination-picker.module.css";
 
@@ -80,18 +81,7 @@ export function PageRow({
         )}
 
         <div className={classes.iconWrapper}>
-          {page.icon ? (
-            page.icon
-          ) : (
-            <ActionIcon
-              component="div"
-              variant="transparent"
-              c="gray"
-              size={22}
-            >
-              <IconFileDescription size={18} />
-            </ActionIcon>
-          )}
+          <PageIcon value={page.icon} size={18} />
         </div>
 
         <div className={classes.pageTitle}>
