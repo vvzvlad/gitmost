@@ -65,6 +65,14 @@
     color: light-dark(var(--mantine-color-dark-3), var(--mantine-color-gray-4));
 }
 
+/* Destructive row action (move to trash): neutral at rest like its neighbours,
+   red once pointed at so a one-click delete is not mistaken for the neutral
+   icons around it. */
+.actionIconDanger:hover,
+.actionIconDanger:focus-visible {
+    color: light-dark(var(--mantine-color-red-6), var(--mantine-color-red-5));
+}
+
 .text {
     flex: 1;
     /* min-width: 0 lets a flex child shrink below its content size — required
