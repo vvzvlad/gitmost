@@ -6,7 +6,7 @@ import { convertProseMirrorToMarkdown } from '../../src/lib/markdown-converter.j
 // load (expected, required for @tiptap/html's generateJSON under Node).
 import { markdownToProseMirror } from '../../src/lib/markdown-to-prosemirror.js';
 import { docsCanonicallyEqual, canonicalizeContent } from '../../src/lib/index.js';
-import { firstDivergence } from '../roundtrip-helpers.js';
+import { canonicalizeMarkdownWhitespace, firstDivergence } from '../roundtrip-helpers.js';
 import {
   schema,
   allSchemaAttrKeys,
@@ -253,11 +253,21 @@ describe('#351 flat generative round-trip — properties', () => {
     await fc.assert(
       fc.asyncProperty(p1Union, async (doc) => {
         const { doc2 } = await roundTrip(doc);
-        if (!docsCanonicallyEqual(doc2, doc)) {
+        // Both sides go through canonicalizeMarkdownWhitespace, which forgives the
+        // TWO whitespace positions markdown cannot represent: inside a bare
+        // emphasis delimiter (`**x **` does not close) and as leading block
+        // indentation (dropped, or worse, an indented code block). Neither rule
+        // touches a mark, a mark's identity or a block's type, so mark LOSS and
+        // paragraph→list/heading/codeBlock still fail loudly — see the helper's
+        // contract. A no-op for every run without edge whitespace, i.e. for the
+        // whole pre-existing corpus.
+        const got = canonicalizeMarkdownWhitespace(doc2);
+        const want = canonicalizeMarkdownWhitespace(doc);
+        if (!docsCanonicallyEqual(got, want)) {
           // Surface the precise divergence in the failure message.
           const div = firstDivergence(
-            JSON.parse(JSON.stringify(canonicalizeContent(doc2))),
-            JSON.parse(JSON.stringify(canonicalizeContent(doc))),
+            JSON.parse(JSON.stringify(canonicalizeContent(got))),
+            JSON.parse(JSON.stringify(canonicalizeContent(want))),
           );
           throw new Error(
             `P1 divergence @ ${div?.path}: got=${JSON.stringify(div?.a)} want=${JSON.stringify(div?.b)}`,

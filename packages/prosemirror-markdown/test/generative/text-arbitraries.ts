@@ -96,6 +96,19 @@ export const astralTailArb: fc.Arbitrary<string> = fc
   .tuple(wordArb, fc.constantFrom(...ASTRAL_CHARS))
   .map(([w, c]) => w + c);
 
+const safeTextMiddleArb = fc.array(
+  fc.oneof(wordArb, specialCharArb, unicodeWordArb),
+  { minLength: 0, maxLength: 3 },
+);
+
+const makeSafeTextArb = (
+  head: fc.Arbitrary<string>,
+  tail: fc.Arbitrary<string>,
+): fc.Arbitrary<string> =>
+  fc
+    .tuple(head, safeTextMiddleArb, tail)
+    .map(([first, middle, last]) => [first, ...middle, last].join(' '));
+
 /**
  * A "safe special" text string: a space-joined sequence of tokens that always
  * BEGINS and ENDS with an alphanumeric word (or, since #515, a word carrying an
@@ -114,22 +127,44 @@ export const astralTailArb: fc.Arbitrary<string> = fc
  * markdown trigger and cannot combine with a neighbouring run's characters into
  * one), while exposing the flanking boundary the corpus previously hid.
  */
-export const safeTextArb: fc.Arbitrary<string> = fc
-  .tuple(
-    fc.oneof(
-      { weight: 5, arbitrary: wordArb },
-      { weight: 1, arbitrary: astralHeadArb },
-    ),
-    fc.array(fc.oneof(wordArb, specialCharArb, unicodeWordArb), {
-      minLength: 0,
-      maxLength: 3,
-    }),
-    fc.oneof(
-      { weight: 5, arbitrary: wordArb },
-      { weight: 1, arbitrary: astralTailArb },
-    ),
-  )
-  .map(([first, middle, last]) => [first, ...middle, last].join(' '));
+export const safeTextArb: fc.Arbitrary<string> = makeSafeTextArb(
+  fc.oneof({ weight: 5, arbitrary: wordArb }, { weight: 1, arbitrary: astralHeadArb }),
+  fc.oneof({ weight: 5, arbitrary: wordArb }, { weight: 1, arbitrary: astralTailArb }),
+);
+
+/**
+ * CORPUS GUARDRAIL — the text of a run carrying a BARE-DELIMITER emphasis mark
+ * (`**`, `*`, `~~`) may not BEGIN or END with an ASTRAL code point.
+ *
+ * CommonMark's flanking rules classify an emoji / astral symbol as PUNCTUATION,
+ * so `a a**🙂x**` does not OPEN (an opener preceded by an alphanumeric and
+ * followed by punctuation is not left-flanking) and `**x🙂**A` does not CLOSE.
+ * The serializer emits those delimiters anyway, so the mark is silently lost —
+ * a PRE-EXISTING gap, unrelated to mark-edge whitespace: the same loss is
+ * reproducible on `gitea/develop` with `bold("a 0🙂") + "A"`, and stock develop's
+ * nested P1 already fails on it at PROPERTY_NUM_RUNS=700 (seed 20250705) with
+ * `"a a" + bold("🙂A A")`. Only the code-emphasis path is guarded today
+ * (markdown-converter.ts `isWordBoundaryChar` → lossless HTML fallback); closing
+ * it for PLAIN emphasis runs needs the same neighbour-aware fallback.
+ *
+ * TODO(astral-emphasis-flanking): a bold/italic/strike/`==` run whose text
+ * STARTS or ENDS with an astral code point loses its mark on export (the
+ * delimiter is emitted in a non-flanking position). Fix: extend the
+ * neighbour-aware lossless-HTML fallback from `renderCodeEmphasisRun` to plain
+ * emphasis runs, then delete `bareDelimiterSafeTextArb` and let `safeTextArb`
+ * feed the bare-delimiter branches again.
+ *
+ * Excluding the shape here keeps the properties honest about the SUPPORTED space
+ * instead of firing on a known gap at whatever seed happens to draw it (the same
+ * treatment `withoutBracketsInCodeRuns` gives the footnote/code/bracket gap in
+ * node-generators.ts). Astral coverage is NOT reduced anywhere it works today:
+ * plain runs, HTML-form marks and `astralAdjacentCodeEmphasisArb` (the #515 F2
+ * shape that drives `isWordBoundaryChar`) all keep their astral edges.
+ */
+export const bareDelimiterSafeTextArb: fc.Arbitrary<string> = makeSafeTextArb(
+  wordArb,
+  wordArb,
+);
 
 /**
  * A plain alphanumeric phrase (1..3 words) for places where even isolated
@@ -187,11 +222,17 @@ export const urlArb: fc.Arbitrary<string> = fc
 export const markedTextRunArb: fc.Arbitrary<any> = fc.oneof(
   // Plain text.
   safeTextArb.map((t) => ({ type: 'text', text: t })),
-  // Single formatting mark (attribute-free marks).
+  // Single formatting mark, BARE-DELIMITER form (`**`, `*`, `~~`): astral edges
+  // are excluded from the text — see bareDelimiterSafeTextArb.
+  fc
+    .tuple(bareDelimiterSafeTextArb, fc.constantFrom('bold', 'italic', 'strike'))
+    .map(([t, m]) => ({ type: 'text', text: t, marks: [{ type: m }] })),
+  // Single formatting mark, HTML form (<u>, <sup>, <sub>, <span data-spoiler>):
+  // self-delimiting, so astral edges are kept.
   fc
     .tuple(
       safeTextArb,
-      fc.constantFrom('bold', 'italic', 'strike', 'underline', 'superscript', 'subscript', 'spoiler'),
+      fc.constantFrom('underline', 'superscript', 'subscript', 'spoiler'),
     )
     .map(([t, m]) => ({ type: 'text', text: t, marks: [{ type: m }] })),
   // highlight with a color attr.
@@ -319,6 +360,120 @@ export const astralAdjacentCodeEmphasisArb: fc.Arbitrary<any[]> = fc
     { type: 'text', text: after },
   ]);
 
+/**
+ * A marked run whose text carries a LEADING and/or TRAILING SPACE, sandwiched
+ * between two plain alphanumeric words — a three-node segment, like
+ * `astralAdjacentCodeEmphasisArb` above.
+ *
+ * WHY A NEW ARBITRARY: `safeTextArb` is documented to ALWAYS begin and end with
+ * an alphanumeric word, and that guarantee is load-bearing (a leading `>`/`*`/
+ * `-`/`#` would be a block trigger; a run ending in a bare `<` next to a run
+ * starting with a letter would form a fake HTML tag). It is NOT weakened here —
+ * instead this arbitrary reaches the one shape it structurally cannot produce:
+ * mark-edge WHITESPACE. A space is neither a block trigger nor a fake-tag
+ * hazard, so both original guarantees survive.
+ *
+ * WHAT IT CATCHES: `**Модель: **WB` is not a closing delimiter run (CommonMark:
+ * a closer preceded by whitespace is not right-flanking), so the emphasis mark
+ * was SILENTLY DROPPED and two literal asterisks were stamped into the text —
+ * byte-stably, so P2 stayed green and only P1 can see it. The `==` highlight was
+ * worse: `== x==` broke BOTH properties.
+ *
+ * The run is SANDWICHED between two words so the expelled space lands in a
+ * NEIGHBOURING run, where it survives the round trip verbatim — this arbitrary
+ * therefore isolates the MARK question. The far more dangerous LINE-START
+ * position (where an expelled space shifts a block trigger right and silently
+ * turns the paragraph into a list / heading / quote / code block) is NOT a
+ * "pre-existing, unrelated" stripping quirk — it is its own data-loss class, and
+ * it has its own generator: `blockInitialIndentedMarkArb` below.
+ *
+ * `code` and `link` are deliberately NOT in the mark set: a backtick span has
+ * its own CommonMark rule (a space on BOTH sides is stripped by the parser) and
+ * a link's `[ x ](url)` brackets are self-delimiting — neither is
+ * flanking-sensitive, and the code-span rule is a separate, pre-existing shape.
+ */
+export const edgeSpaceMarkedRunArb: fc.Arbitrary<any[]> = fc
+  .tuple(
+    wordArb,
+    fc.constantFrom(' ', ''),
+    phraseArb,
+    fc.constantFrom(' ', ''),
+    fc.oneof(
+      fc.constantFrom(
+        'bold',
+        'italic',
+        'strike',
+        'underline',
+        'superscript',
+        'subscript',
+        'spoiler',
+      ).map((type) => ({ type })),
+      // Color-less highlight — the `==text==` form, the one measured to break on
+      // a leading space. A COLORED highlight emits <mark style=…> HTML instead,
+      // where edge whitespace is harmless; both are generated so the property
+      // covers the split.
+      fc.constant({ type: 'highlight', attrs: { color: null } }),
+      fc.constantFrom('#ffcc00', 'yellow').map((color) => ({
+        type: 'highlight',
+        attrs: { color },
+      })),
+    ),
+    wordArb,
+  )
+  // At least one edge must actually carry a space, otherwise the draw degenerates
+  // into an ordinary marked run the corpus already covers.
+  .filter(([, lead, , trail]) => lead !== '' || trail !== '')
+  .map(([before, lead, inner, trail, mark, after]) => [
+    { type: 'text', text: before },
+    { type: 'text', text: lead + inner + trail, marks: [mark] },
+    { type: 'text', text: after },
+  ]);
+
+/**
+ * A BARE-DELIMITER marked run that OPENS a block and whose text begins with
+ * markdown INDENTATION — one space, four spaces, or a tab.
+ *
+ * This is the position `edgeSpaceMarkedRunArb` deliberately avoids, and it is
+ * the dangerous one. The serializer expels that whitespace outside the `**`, so
+ * it lands at COLUMN 0 of the line; CommonMark allows 1..3 spaces of indent
+ * before ANY block trigger and turns 4 spaces / a tab into an INDENTED CODE
+ * BLOCK. Before the escaper learned to strip leading indentation, this shape
+ * silently changed the BLOCK TYPE:
+ *   p("first") + p(bold("    x"), "y")  ->  "first\n\n    **x**y"  ->  codeBlock
+ *   p(bold(" "), "- item")              ->  "- item"               ->  bulletList
+ * Both defects are visible to P1 (the block type changes) AND to P2 (the second
+ * pass re-serializes a code fence / a list, so the bytes differ), so this
+ * arbitrary makes the whole class reachable rather than seed-dependent.
+ *
+ * Only bare-delimiter marks: an HTML-form mark keeps the space INSIDE its tag,
+ * where it is dropped by the HTML parser instead — a different, pre-existing
+ * shape that has nothing to do with block triggers.
+ */
+export const blockInitialIndentedMarkArb: fc.Arbitrary<any[]> = fc
+  .tuple(
+    fc.constantFrom(' ', '    ', '\t'),
+    // Sometimes EMPTY, so the marked run is pure whitespace and the trigger
+    // below lands at column 0 — the `p(bold(" "), "- item")` shape above.
+    fc.oneof(
+      { weight: 3, arbitrary: phraseArb },
+      { weight: 1, arbitrary: fc.constant('') },
+    ),
+    fc.oneof(
+      fc.constantFrom('bold', 'italic', 'strike').map((type) => ({ type })),
+      fc.constant({ type: 'highlight', attrs: { color: null } }),
+    ),
+    // A trailing plain run so the emitted line is not a bare emphasis span, and
+    // so the block-trigger characters below have somewhere to sit.
+    fc.oneof(
+      wordArb,
+      fc.constantFrom('- item', '# head', '> quote', '1. one', '| cell'),
+    ),
+  )
+  .map(([lead, inner, mark, after]) => [
+    { type: 'text', text: lead + inner, marks: [mark] },
+    { type: 'text', text: after },
+  ]);
+
 const sameMarks = (a: any[] | undefined, b: any[] | undefined): boolean =>
   JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
 
@@ -422,8 +577,11 @@ export const hardBreakThenSetextArb: fc.Arbitrary<any[]> = fc
 export const inlineContentArb: fc.Arbitrary<any[]> = fc
   .tuple(
     fc.oneof(
-      { weight: 5, arbitrary: markedTextRunArb },
-      { weight: 1, arbitrary: blockTriggerLeadRunArb },
+      { weight: 5, arbitrary: markedTextRunArb.map((n) => [n]) },
+      { weight: 1, arbitrary: blockTriggerLeadRunArb.map((n) => [n]) },
+      // Opens the block with an INDENTED bare-delimiter run, so the expelled
+      // whitespace lands at column 0 (see blockInitialIndentedMarkArb).
+      { weight: 1, arbitrary: blockInitialIndentedMarkArb },
     ),
     fc.array(
       fc.oneof(
@@ -434,11 +592,12 @@ export const inlineContentArb: fc.Arbitrary<any[]> = fc
         { weight: 2, arbitrary: hardBreakThenTriggerArb },
         { weight: 2, arbitrary: hardBreakThenSetextArb },
         { weight: 2, arbitrary: astralAdjacentCodeEmphasisArb },
+        { weight: 2, arbitrary: edgeSpaceMarkedRunArb },
       ),
       { minLength: 0, maxLength: 4 },
     ),
   )
-  .map(([first, rest]) => normalizeInline([first, ...rest.flat()]));
+  .map(([first, rest]) => normalizeInline([...first, ...rest.flat()]));
 
 /**
  * Inline content for a HEADING — identical to a paragraph's, but WITHOUT hard

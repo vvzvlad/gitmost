@@ -9,7 +9,7 @@ import {
   docsCanonicallyEqual,
   canonicalizeContent,
 } from '../../src/lib/index.js';
-import { firstDivergence } from '../roundtrip-helpers.js';
+import { canonicalizeMarkdownWhitespace, firstDivergence } from '../roundtrip-helpers.js';
 import { schema, docArb } from './doc-generator.js';
 import { envInt } from './env-int.js';
 
@@ -97,10 +97,14 @@ describe('#351 nested generative round-trip — properties', () => {
     await fc.assert(
       fc.asyncProperty(docArb, async (doc) => {
         const { doc2 } = await roundTrip(doc);
-        if (!docsCanonicallyEqual(doc2, doc)) {
+        // Mark-edge whitespace is normalized on BOTH sides — see the flat
+        // sibling's P1 for the rationale; mark LOSS still fails loudly.
+        const got = canonicalizeMarkdownWhitespace(doc2);
+        const want = canonicalizeMarkdownWhitespace(doc);
+        if (!docsCanonicallyEqual(got, want)) {
           const div = firstDivergence(
-            JSON.parse(JSON.stringify(canonicalizeContent(doc2))),
-            JSON.parse(JSON.stringify(canonicalizeContent(doc))),
+            JSON.parse(JSON.stringify(canonicalizeContent(got))),
+            JSON.parse(JSON.stringify(canonicalizeContent(want))),
           );
           throw new Error(
             `P1 divergence @ ${div?.path}: got=${JSON.stringify(div?.a)} want=${JSON.stringify(div?.b)}`,

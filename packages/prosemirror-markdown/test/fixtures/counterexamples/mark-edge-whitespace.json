@@ -1,0 +1,46 @@
+{
+  "doc": {
+    "type": "doc",
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "marks": [{ "type": "bold" }], "text": "Модель: " },
+          { "type": "text", "text": "WB-MGE" }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "text": "a" },
+          {
+            "type": "text",
+            "marks": [{ "type": "highlight", "attrs": { "color": null } }],
+            "text": " hl "
+          },
+          { "type": "text", "text": "b" }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "text": "x" },
+          {
+            "type": "text",
+            "marks": [{ "type": "bold" }, { "type": "italic" }],
+            "text": " both "
+          },
+          { "type": "text", "text": "y" }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "text": "s" },
+          { "type": "text", "marks": [{ "type": "strike" }], "text": " out " },
+          { "type": "text", "text": "e" }
+        ]
+      }
+    ]
+  }
+}
