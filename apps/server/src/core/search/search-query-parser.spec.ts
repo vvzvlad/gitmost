@@ -71,7 +71,7 @@ describe('parseSearchQuery — tokenization & operators (A2)', () => {
 
 describe('parseSearchQuery — match=auto classification (A3)', () => {
   it('routes identifier-like terms to the substring branch', () => {
-    expect(parseSearchQuery('10.31.41').positive[0].branch).toBe('substring');
+    expect(parseSearchQuery('192.0.2').positive[0].branch).toBe('substring');
     expect(parseSearchQuery('esp32').positive[0].branch).toBe('substring');
     expect(parseSearchQuery('WB-MGE-30D86B').positive[0].branch).toBe('substring');
   });
@@ -153,13 +153,13 @@ describe('parseSearchQuery — term cap (stack-depth guard)', () => {
   });
 
   it('leaves a normal (<= cap) query completely unchanged', () => {
-    const p = parseSearchQuery('+кофейня -архив "воздушный шар" ресторан 10.31.41');
+    const p = parseSearchQuery('+кофейня -архив "воздушный шар" ресторан 192.0.2');
     expect(p.required.map((t) => t.text)).toEqual(['кофейня']);
     expect(p.excluded.map((t) => t.text)).toEqual(['архив']);
     expect(p.positive.map((t) => t.text)).toEqual([
       'воздушный шар',
       'ресторан',
-      '10.31.41',
+      '192.0.2',
     ]);
     // Phrase / substring branch handling survives under the cap.
     expect(p.positive[0].branch).toBe('phrase');

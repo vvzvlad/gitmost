@@ -19,7 +19,7 @@ export class SearchDTO {
   query: string;
 
   // #529 A3 — match mode. `auto` (default) routes identifier-like terms
-  // (10.31.41, esp32, WB-MGE-30D86B) to the substring/trigram branch and words
+  // (192.0.2, esp32, WB-MGE-30D86B) to the substring/trigram branch and words
   // to full-text; `word`/`prefix`/`substring` are explicit overrides.
   @IsOptional()
   @IsIn(['auto', 'word', 'prefix', 'substring'])

@@ -7,17 +7,22 @@ import {
 import { useAtom, useSetAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { ActionIcon, rem, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   IconChevronDown,
   IconChevronRight,
   IconClockHour4,
+  IconLink,
   IconPlus,
   IconPointFilled,
   IconTemplate,
+  IconTrash,
 } from "@tabler/icons-react";
 
 import { PageIconPicker } from "@/components/ui/page-icon.tsx";
 import { queryClient } from "@/main.tsx";
+import { useClipboard } from "@/hooks/use-clipboard";
+import { getAppUrl } from "@/lib/config.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { getPageById } from "@/features/page/services/page-service.ts";
 import {
@@ -244,6 +249,10 @@ export function SpaceTreeRow({
       )}
 
       <div className={classes.actions}>
+        <CopyLinkNode node={node} />
+
+        {canEdit && <DeleteNode node={node} />}
+
         <NodeMenu node={node} canEdit={canEdit} />
 
         {canEdit && (
@@ -358,6 +367,69 @@ function CreateNode({
       }}
     >
       <IconPlus style={{ width: rem(20), height: rem(20) }} stroke={2} />
+    </ActionIcon>
+  );
+}
+
+interface RowActionProps {
+  node: SpaceTreeNode;
+}
+
+// Row shortcut for the NodeMenu "Copy link" item. The URL is built exactly as
+// the menu builds it, so both entry points copy the same absolute page link.
+function CopyLinkNode({ node }: RowActionProps) {
+  const { t } = useTranslation();
+  const { spaceSlug } = useParams();
+  const clipboard = useClipboard({ timeout: 500 });
+
+  const handleCopyLink = () => {
+    const pageUrl =
+      getAppUrl() + buildPageUrl(spaceSlug, node.slugId, node.name);
+    clipboard.copy(pageUrl);
+    notifications.show({ message: t("Link copied") });
+  };
+
+  return (
+    <ActionIcon
+      size={20}
+      variant="subtle"
+      color="gray"
+      className={classes.actionIcon}
+      aria-label={t("Copy link")}
+      tabIndex={-1}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCopyLink();
+      }}
+    >
+      <IconLink style={{ width: rem(18), height: rem(18) }} stroke={2} />
+    </ActionIcon>
+  );
+}
+
+// Row shortcut for the NodeMenu "Move to trash" item. Unconfirmed on purpose —
+// it mirrors the menu item, which also deletes straight away, and the page is
+// recoverable from trash.
+function DeleteNode({ node }: RowActionProps) {
+  const { t } = useTranslation();
+  const { handleDelete } = useTreeMutation(node.spaceId);
+
+  return (
+    <ActionIcon
+      size={20}
+      variant="subtle"
+      color="gray"
+      className={`${classes.actionIcon} ${classes.actionIconDanger}`}
+      aria-label={t("Move to trash")}
+      tabIndex={-1}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleDelete(node.id);
+      }}
+    >
+      <IconTrash style={{ width: rem(18), height: rem(18) }} stroke={2} />
     </ActionIcon>
   );
 }

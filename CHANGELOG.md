@@ -10,7 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-09-21
+
+This release makes the wiki local-first: page chrome and body paint from a
+local cache and the local collaboration replica, the app shell no longer waits
+for `/me`, an unreachable server degrades to a read-only offline view instead
+of an error screen, and locally cached content expires on its own after
+`OFFLINE_GRACE`. AI chat gains detached runs that survive a browser
+disconnect, a server-side "interrupt and send now", personal external MCP
+servers every member can attach, and an importable multilingual agent-roles
+catalog. The MCP surface is reworked — camelCase tool names, api_key-only
+authentication, Markdown by default from `getNode`, read-your-own-writes on
+the structural read tools, and a `baseHash` write-CAS that stops an agent from
+clobbering a concurrent human edit. The editor picks up side-by-side image
+rows, image captions, a spoiler mark, intentional page versions saved with
+`Cmd/Ctrl+S` — and loses the Safari 100%-CPU burn on any page containing a
+table.
+
 ### Breaking Changes
+
+- **MCP `updatePageJson` / `updatePageMarkdown` now require a `baseHash`
+  (server-side write-CAS).** A full-body overwrite used to be unguarded: an agent
+  that read a page and wrote it back silently clobbered a newer edit made by a
+  human or another agent in between. The write is now compare-and-set: the body
+  is applied only if the authoritative LIVE document still hashes to the
+  `baseHash` the caller read, inside one synchronous collaboration transaction
+  (no TOCTOU window). `getPage` / `getPageJson` now return that `baseHash`, so
+  the required flow is read → keep `baseHash` → write it back with the hash.
+  *Migration (external MCP clients and scripts):* pass `baseHash` on every
+  `updatePageJson`/`updatePageMarkdown` call that supplies `content` — without
+  it the tool now fails with an explicit `baseHash is required …` error instead
+  of overwriting (a title-only update still needs no hash). On a concurrent
+  edit the write is REJECTED with `409` plus the `currentHash` and **nothing**
+  is written — no history entry, no `updatedAt` bump; re-read for a fresh hash
+  and retry a bounded number of times. If the live document owner is
+  unreachable the write fails with `503` rather than applying against a stale
+  hash (fail-closed — the comparison never falls back to the DB snapshot). The
+  REST `/pages/update` endpoint is unchanged for other callers: `baseHash` is
+  optional there and an omitted hash performs the previous unguarded replace.
+  The in-app AI agent already passes the hash and is unaffected. (#647)
 
 - **The embedded `/mcp` endpoint now authenticates ONLY with a Bearer api_key.**
   The three former inbound auth paths — HTTP Basic `email:password`, a Bearer
@@ -146,6 +184,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every member can attach their OWN external MCP servers.** Until now only an
+  admin could give the agent external tools (web search, etc.), workspace-wide.
+  A new account page — Settings → Account → MCP servers, mirroring the account
+  API-keys page — lets any member register personal MCP servers; an agent turn
+  run by that user gets the union of the admin-managed servers and their own
+  personal ones (on a name collision the admin server keeps the canonical tool
+  prefix). Personal servers are strictly private: every admin query is scoped to
+  `user_id IS NULL`, personal CRUD is owner-scoped (someone else's id is a
+  `404`), auth headers are write-only (encrypted at rest, never returned in any
+  response or log), the outbound URL passes the same SSRF guard on create AND on
+  every URL change, and deleting a member destroys their personal rows — with
+  their encrypted secrets — in the same transaction. Two operator knobs (see
+  `.env.example`): `MCP_PERSONAL_SERVERS_ENABLED` (default **on**; set to
+  `false` to make the personal endpoints answer `403`, hide the page and drop
+  personal rows from the agent's toolset, without a code revert) and
+  `MCP_PERSONAL_SERVERS_MAX` (per-user cap, default `10`, enforced
+  transactionally so a parallel burst cannot exceed it). Connect failures are no
+  longer silent: the turn reports them to the client on the stream's start
+  event, persists them into the assistant message metadata, and increments
+  `ai_external_mcp_connect_failures_total{level=admin|personal}`; the combined
+  tool-description block is capped at 16k with a loud ERROR on truncation.
+  **Upgrade note:** migration `20260719T120000` adds a nullable `user_id` to
+  `ai_mcp_servers` (additive, no backfill, no table rewrite). (#686)
+
+- **The MCP structural read tools now read your own writes.** After an agent
+  write, a follow-up `getOutline` / `getNode` / `searchInPage` / `tableGet` on
+  the same page within a short window is served from the LIVE collaboration
+  document instead of the (possibly lagging) database row, and each response
+  carries a freshness marker saying which it was. The agent does not ask for
+  this — the client decides locally, with no extra request, and a page with no
+  recent write takes the byte-identical old path. If the live document is not
+  loaded or its owner is unreachable the server falls back to the DB row
+  (after, never before, the permission check). Freshness and degradation are
+  visible on `/metrics` as `mcp_ryow_{live,dbrow,expired}_total`. (#654)
+
+- **`searchInPage` matches through invisible characters in literal mode.** Like
+  `editPageText`, literal search now folds soft hyphens, zero-width characters,
+  the NBSP/thin-space family and collapsed whitespace runs on both sides (plus
+  case folding), and maps hit offsets back onto the original text, so a query
+  typed with ordinary spaces finds text the editor stored with an NBSP. The
+  returned `match` keeps the original invisible characters — it is data for
+  `createComment`, not a diagnostic — and an additive `folded: true` flags a
+  fragment that only matched after folding. Regex mode is deliberately
+  untouched (folding would break offsets, character classes and groups). (#659)
+
+- **The right panel and the AI-chat window survive a reload.** Whether the
+  right panel is open, its position/collapsed state and which tab it shows, and
+  whether the AI-chat window is open plus its geometry, are now persisted.
+  Deliberately NOT persisted (they reset to the defaults every load): the
+  composer draft, the active chat, the selected role, the History expansion,
+  the Open/Resolved tab and the scroll position. Window geometry is clamped to
+  the viewport — size as well as position — so a window saved on a big monitor
+  cannot land off-screen, and a browser that blocks site data degrades to the
+  old behaviour instead of failing to load the app. (#662)
+
+- **The Lucide icon picker now exposes the whole catalog, searchable by
+  meaning.** It used to show 112 curated icons, with the rest reachable only by
+  an English substring search capped at 120 hits. The full catalog (1746
+  canonical icons) is now browsable in a virtualized grid and searchable by
+  tags, aliases and common Russian words; a stored alias still resolves to its
+  canonical icon, and the name tooltip that drifted while scrolling is gone.
+  The catalog ships as a lazily-loaded chunk (it never enters the initial
+  bundle), and if that chunk fails to load the picker says so and offers Retry
+  in a visible limited mode rather than silently showing nothing. (#696)
+
+- **Copy-link and trash actions straight from the page-tree row.** Copying a
+  page link or moving a page to trash used to require opening the row's "⋮"
+  menu. Both are now their own hover icons in the row (order: link → trash →
+  menu → plus). They call exactly the same code paths as the menu items — the
+  same "Link copied" notification, and the same soft delete whose removal
+  notification already carries an Undo, so there is no confirmation dialog. The
+  trash icon renders only for users who can edit, and turns red on hover.
+
+- **More client-side latency and operation metrics for operators.** With client
+  telemetry enabled, the browser now reports `operation_ms{op}` for 14 heavy
+  user-perceived operations that previously ran blind — `comments_open`,
+  `ai_chat_open`, `spotlight_open`, `search_full`, `comment_resolve`,
+  `comment_apply`, `history_restore`, `tree_dragdrop`, `tree_expand`,
+  `history_diff`, `code_highlight` and the three diagram renders (`mermaid`,
+  `excalidraw`, `drawio`). Interaction-style operations are measured
+  success-only, so retry-inflated failures cannot pollute the p95/p99, and
+  `code_highlight` is timed only on a real decoration recompute, never on the
+  keystroke fast path. Added alongside: `editor_key_latency_ms` — the full
+  keydown→next-paint duration via the Event Timing API, which `editor_tx_ms`
+  is structurally blind to (it only measures the synchronous ProseMirror
+  transaction, not the React re-render that follows) — and, for the local-first
+  work, `page_open_body_ms` (time to the first frame of real body content) with
+  its `body_paint_timeout` survivorship-bias counter. Server-side,
+  `ai_chat_bind_skipped_total{reason}` makes the silent "did not bind this chat
+  to this page" outcomes (all of them HTTP 200) visible. (#683, #681, #639,
+  #665)
+
+- **The app shell no longer waits for `/me` before painting.** Under
+  `LOCAL_FIRST_ENABLED` (default `false`), the first frame is rendered from the
+  persisted current user (identity, workspace, role) instead of an empty frame
+  held until the `/me` round-trip completes; the real response always wins and
+  arrives within one RTT. A `401` clears the persisted user before any redirect,
+  so a stale seeded user can never bounce the browser between `/login` and the
+  app. With the flag off, nothing is read or written and behaviour is
+  unchanged. (#642)
+
+- **Offline: a transport failure is no longer treated as an application
+  error.** Under `LOCAL_FIRST_ENABLED` (default `false`), an unreachable server
+  no longer collapses the page into an error screen: with cached metadata and a
+  local body you get the page chrome plus a read-only body and an "offline"
+  banner (sticky until a real sync, so it cannot flicker); with metadata but no
+  local body you get an explicit offline empty state; an auth error still
+  resolves to not-found and evicts the cached copy. Crucially a `5xx` is NOT
+  offline — a real server response gets an honest error screen and a safety
+  metric, never the offline banner; only a genuinely unreachable server is
+  absorbed into local rendering. The user provider degrades the same way: with
+  data and a non-auth failure it mounts the app with a degraded indicator
+  instead of blocking. The offline-critical requests (`/me`, `/pages/info`,
+  `/spaces/*`) get a 15s per-request timeout so a hung request settles into a
+  transport error instead of leaving the page pending forever. (#641)
+
+- **Locally cached content now expires on its own, network or not
+  (`OFFLINE_GRACE`).** A device that has not had a successful `/me` for longer
+  than `OFFLINE_GRACE` refuses to draw ANY local content — chrome, tree and
+  ydoc body — and purges it, so a laptop that stays offline cannot keep showing
+  wiki content indefinitely after its session has died server-side. It defaults
+  to `JWT_TOKEN_EXPIRES_IN` (the server considers the session dead after that
+  anyway) and can be overridden in `.env` (see `.env.example`). In the same
+  pass, a page that answered `403`/`404` is tombstoned: its local database is
+  not merely deleted but blocked from being recreated, and the denylist fails
+  CLOSED — if the store cannot be read or written, local painting is disabled
+  for the rest of the session rather than drawing everything. (#640)
+
 - **`editPageText` and comment-anchoring now match across invisible characters.**
   The matcher gained a `fold` tier: after the existing exact and markdown-strip
   passes miss, it retries with a fold pass that collapses soft-hyphens
@@ -208,6 +374,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "open it in the editor and save" message), never a silent captionless vector.
   Excalidraw is out of scope (its SVG is not broken); tracked separately (#632).
   The habr-mcp receiver's hard-fail safety net is a separate repo (habr-mcp#1).
+  The embedded PNG is exported at 2x (retina) and steps down a 2 → 1 → 0.5
+  scale ladder when it would exceed the byte budget, instead of being dropped
+  on a false state-mismatch.
 
 - **Page chrome paints from a local boot cache instead of waiting for the page
   request.** With the new `LOCAL_FIRST_ENABLED` env var (default `false`), the
@@ -442,6 +611,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The page→chat binding now follows the chat you actually have open.** Which
+  AI chat opens for a page used to be an implicit, write-once guess ("the most
+  recent chat whose `page_id` is X"), so selecting a different chat from the
+  history, or starting a new one, did not change what the page opened next
+  time. The binding is now explicit, mutable, per-user state: selecting a chat
+  re-binds it to the open page, "New chat" clears the binding (an empty chat is
+  a legitimate "nothing bound"), and following a deep link from a chat badge
+  deliberately does NOT move it. `ai_chats.page_id` keeps its original meaning —
+  immutable provenance of where a chat was born, and the "· PageTitle" line in
+  the history list. Also fixes a live bug: a chat opened from `/home` could
+  latch onto the last page visited, because the open-page resolution read a
+  stale placeholder instead of the current route. **Upgrade note:** migration
+  `20260716T130000` creates `ai_chat_page_bindings` and backfills it from the
+  retired heuristic (newest non-deleted chat per creator+page), so nothing is
+  lost on release day. (#665)
+
+- **Bigger, more legible page icons in the sidebar tree.** The icon tile was
+  fixed at 18px inside a 28px button, leaving a wide dead gap before the title,
+  and its background was a 10% tint that read as a washed-out square. Icons now
+  scale with the tree density (20px compact / 24px standard) and the tile
+  carries roughly 3x more colour, with the glyph tone decoupled from the tile
+  hue so every palette colour still clears the 3:1 non-text contrast bar in
+  both light and dark schemes.
+
+- **MCP tool descriptions no longer promise block ids on nodes that have
+  none.** Verified against the built schema, only paragraphs and headings carry
+  a block anchor (plus the cross-reference keys on footnotes/mentions/
+  transclusions) — the docs for `getNode`, `patchNode`, `deleteNode`, the six
+  draw.io tools and both READMEs claimed callouts, images and diagrams did too,
+  which stalled agents on "this block cannot be edited because it has no id".
+  `patchNode` and `deleteNode` now carry the escape hatch (a nested paragraph is
+  patchable by its own id if it has one; markdown-imported blocks often have
+  none; `getOutline` never shows nested ids; an id-less container goes through a
+  scripted transform), `docmostTransform`'s context helpers are documented by
+  their real path (`ctx.helpers.X`, not `ctx.X`), and `editPageText`'s docs now
+  distinguish the tolerant markdown handling of `find` from the literal
+  treatment of `replace`. Text only — no behaviour, schema or parameter change.
+
 - **The MCP/agent verify diff now uses the fixed in-app diff algorithm, and its
   DoS size guard was tightened to actually hold its ~200ms budget (byte cap
   `12 KiB` → `4 KiB`).** `diffDocs` (the precise diff behind every agent edit's
@@ -520,6 +727,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   base-URL contract is unchanged. (#229)
 
 ### Fixed
+
+- **Safari no longer burns 100% CPU with the editor open on a page containing
+  tables, and pinned table headers finally pin.** Four coupled feedback loops,
+  each measured on a live instance rather than guessed. (1) No table node view
+  was ever installed, so ProseMirror's default mutation handling "repaired"
+  every class write on the table wrapper by re-rendering the node, which
+  destroyed the wrapper, which re-applied the same classes — a self-feeding
+  loop at 150 Hz and ~9000 DOM mutations per second. That is also why header
+  pinning never actually worked in edit mode: the wrappers were destroyed
+  before their IntersectionObserver could settle (measured 0 pinned tables
+  before, 5/5 after). (2) The pin-offset watcher observed `document.body` and
+  wrote an inherited custom property on the document element, so its own write
+  changed the body box and re-triggered it, oscillating by 1px forever; it now
+  observes only the fixed anchors, takes viewport changes from a `resize`
+  event, runs only while something consumes the value, and latches with a
+  warning if it ever oscillates again. (3) floating-ui's `autoUpdate` ran with
+  `layoutShift` enabled, which rebuilds an IntersectionObserver in a loop until
+  two ratios compare exactly equal — never, for table cells in a fixed-layout
+  table clipped by an overflow wrapper, in WebKit — and one click into any cell
+  left three such watchers spinning for the rest of the session; layout-shift
+  tracking is now off at all seven call sites and the table handle state is
+  cleared on editor blur. (4) The read-only table sort plugin swept every table
+  in the document on EVERY transaction, including each mouse-move during a
+  table drag and each remote collaborative step; it is now gated on real
+  document/editability changes.
+
+- **A failed image, video or diagram no longer pulses forever and stays
+  unclickable, and the editor no longer gets slower the longer a session
+  runs.** The media placeholder shimmer was removed only in the `load` handler,
+  so a `404`/`403`/deleted attachment kept pulsing AND kept
+  `pointer-events: none` permanently; it now settles on error too, logs the
+  specific failure, and animates opacity instead of a 400%-wide gradient that
+  could not be composited. Separately, every resizable node view (image, video,
+  draw.io, excalidraw, pdf) leaked an update listener on every rebuild — typing
+  got monotonically slower over a session — and a failing collaboration socket
+  reconnected as fast as the browser could fail it, because a hook dependency
+  re-ran the reconnect effect on every render and each attempt cancelled the
+  backoff; ordinary failures are now left to the backoff.
+
+- **The sort affordance on read-only table headers comes back, and a nested
+  table no longer steals the outer table's sort state.** A redraw with no
+  document change drops the chevron from the header cell, which on a read-only
+  page may never be re-rendered; a click-time self-heal restores it on the
+  first header click. The chevron lookup is also scoped to direct children — a
+  plain descendant query found a NESTED table's chevron and wrote the outer
+  table's sort state onto it.
+
+- **Opening a page no longer leaks a timer, and no longer burns an 800ms poll
+  looking for a scroll target that does not exist.** The scroll-restore helper
+  polled with an interval that had no deadline and no cleanup, created one per
+  retry (up to ten) and ran on every editor construction — including the common
+  case of a URL with no `#hash` at all. The target and retry budget are now
+  resolved before waiting, both timers are cleared on every exit path, and a
+  give-up warns instead of failing silently.
 
 - **A page's local editor cache is no longer shared across users on the same
   device.** The offline ydoc was stored in IndexedDB under `page.<pageId>` with no
@@ -615,16 +876,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and, in a spec-conformant client, falls straight into that broken OAuth path.
   Replace the header with `Authorization: Bearer <api_key>`.
 
-- **CI: клиент теперь проверяется тайпчекером на каждом PR.** Скрипт `test` у
-  клиента — это `vitest run`, то есть esbuild: он *вырезает* типы, ничего не
-  проверяя. А релизный путь (`build`, и он же в docker-образе) — это
-  `tsc && vite build`. В результате ошибка типов в любом клиентском файле
-  проходила PR-гейт полностью зелёной и всплывала только на сборке образа: так в
-  develop уехали четыре TS-ошибки в новых тестовых файлах. Добавлен явный шаг
-  `Typecheck client` (`pnpm --filter client typecheck` → `tsc --noEmit`) после
-  сборки workspace-пакетов, чьи `.d.ts` он читает, и до прогона тестов. Файлы
-  тестов лежат под `src/` и попадают в `include` — они проверяются тоже, что и
-  требовалось.
+- **CI: the client is now typechecked on every PR.** The client's `test` script
+  is `vitest run`, i.e. esbuild — it *strips* types without checking them, while
+  the release path (`build`, the same one the docker image takes) is
+  `tsc && vite build`. A type error in any client file therefore passed the PR
+  gate fully green and only surfaced when the image was built; four TS errors
+  reached develop that way, in new test files. An explicit `Typecheck client`
+  step (`pnpm --filter client typecheck` → `tsc --noEmit`) now runs after the
+  workspace packages whose `.d.ts` it reads are built, and before the tests.
+  Test files live under `src/` and are covered by `include`, so they are
+  checked too — as intended.
 
 - **A public share no longer serves an attachment whose page has been trashed.**
   The public file endpoint validated the share token but never re-read the
@@ -871,6 +1132,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **An external MCP server whose stored auth headers cannot be decrypted is now
+  SKIPPED instead of being connected without them.** After an `APP_SECRET`
+  rotation the encrypted header blob becomes unreadable; the old behaviour fell
+  open and opened an anonymous, header-less connection to the external server.
+  It now fails closed — the server is dropped from the turn with an
+  `auth-unreadable` outcome, a WARN carrying the server/workspace id (never the
+  blob) and an `ai_external_mcp_connect_failures_total` sample, so the operator
+  sees the outage instead of a silently unauthenticated connection. Applies to
+  admin-managed and personal servers alike. (#686)
+
 - **The anonymous public-share page payload is trimmed to an explicit allowlist.**
   The `/shares/page-info` route (the only unauthenticated path serializing a
   page + its share) now returns only the fields the public renderer needs;
@@ -894,7 +1165,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "No restrictions" is still expressible — a genuinely unrestricted server stores
   NULL, and clearing the field on such a server keeps it NULL. Operationally
   significant: audit any server that was created or left with a literal `[]`, as
-  it now exposes no tools until an explicit allowlist (or NULL) is set. (#476)
+  it now exposes no tools until an explicit allowlist (or NULL) is set. The same
+  semantics now also apply on the per-run transport-recovery reconnect path,
+  which still read an empty allowlist as allow-all. (#476, #685)
 
 - **Tool and provider error text no longer leaks to anonymous readers in the
   public-share AI chat.** A failing tool's raw error (which could carry an
@@ -1271,7 +1544,8 @@ knowledge layer, an embedded MCP server, and the Gitmost rebrand.
 - Build: drop the private EE submodule, retarget CI to GHCR, and update the
   Docker image to the GHCR registry.
 
-[Unreleased]: https://github.com/vvzvlad/gitmost/compare/v0.94.0...HEAD
+[Unreleased]: https://github.com/vvzvlad/gitmost/compare/v0.96.0...HEAD
+[0.96.0]: https://github.com/vvzvlad/gitmost/compare/v0.94.0...v0.96.0
 [0.94.0]: https://github.com/vvzvlad/gitmost/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/vvzvlad/gitmost/compare/v0.91.0...v0.93.0
 [0.91.0]: https://github.com/vvzvlad/gitmost/compare/v0.90.1...v0.91.0
