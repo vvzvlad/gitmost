@@ -64,3 +64,20 @@ describe('UpdateWorkspaceDto.htmlEmbed validation', () => {
     expect(hasError(errors, 'htmlEmbed', 'isBoolean')).toBe(true);
   });
 });
+
+describe('UpdateWorkspaceDto.treeQuickActions validation', () => {
+  it('accepts treeQuickActions: true', async () => {
+    const errors = await validateDto({ treeQuickActions: true });
+    expect(hasError(errors, 'treeQuickActions')).toBe(false);
+  });
+
+  it('accepts treeQuickActions: false', async () => {
+    const errors = await validateDto({ treeQuickActions: false });
+    expect(hasError(errors, 'treeQuickActions')).toBe(false);
+  });
+
+  it('rejects a non-boolean treeQuickActions with an isBoolean error', async () => {
+    const errors = await validateDto({ treeQuickActions: 'yes' });
+    expect(hasError(errors, 'treeQuickActions', 'isBoolean')).toBe(true);
+  });
+});

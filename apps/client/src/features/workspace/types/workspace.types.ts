@@ -38,6 +38,9 @@ export interface IWorkspace {
   // Write-only field for updateWorkspace({ htmlEmbed }). Read state lives at
   // settings.htmlEmbed.
   htmlEmbed?: boolean;
+  // Write-only field for updateWorkspace({ treeQuickActions }). Read state lives
+  // at settings.treeQuickActions.
+  treeQuickActions?: boolean;
   // Write-only field for updateWorkspace({ trackerHead }). Read state lives at
   // settings.trackerHead.
   trackerHead?: string;
@@ -52,6 +55,11 @@ export interface IWorkspaceSettings {
   // renders in a sandboxed iframe, so this is a feature switch, not a security
   // gate. ABSENT/false => OFF (default).
   htmlEmbed?: boolean;
+  // Sidebar page-tree row quick actions (copy link + move to trash icons).
+  // ABSENT => ON (default) — read it as `treeQuickActions !== false`, never
+  // `=== true`, because the icons already ship and a missing key must keep them
+  // visible.
+  treeQuickActions?: boolean;
   // Admin-only analytics/tracker snippet injected into the <head> of public
   // share pages (same-origin). ABSENT/empty => none.
   trackerHead?: string;

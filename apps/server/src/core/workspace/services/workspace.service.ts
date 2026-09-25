@@ -577,6 +577,23 @@ export class WorkspaceService {
         );
       }
 
+      if (typeof updateWorkspaceDto.treeQuickActions !== 'undefined') {
+        // Sidebar page-tree row quick actions (copy link + move to trash icons).
+        // ABSENT => ON, so the previous value defaults to `true` (unlike the
+        // other toggles, which default to false).
+        const prev = settingsBefore?.treeQuickActions ?? true;
+        if (prev !== updateWorkspaceDto.treeQuickActions) {
+          before.treeQuickActions = prev;
+          after.treeQuickActions = updateWorkspaceDto.treeQuickActions;
+        }
+        await this.workspaceRepo.updateSetting(
+          workspaceId,
+          'treeQuickActions',
+          updateWorkspaceDto.treeQuickActions,
+          trx,
+        );
+      }
+
       if (typeof updateWorkspaceDto.trackerHead !== 'undefined') {
         // Admin-only analytics/tracker snippet injected into the <head> of
         // public share pages (same-origin). Persisted at settings.trackerHead.
@@ -618,6 +635,7 @@ export class WorkspaceService {
       delete updateWorkspaceDto.aiDictationStreaming;
       delete updateWorkspaceDto.autonomousRuns;
       delete updateWorkspaceDto.htmlEmbed;
+      delete updateWorkspaceDto.treeQuickActions;
       delete updateWorkspaceDto.trackerHead;
       delete updateWorkspaceDto.aiPublicShareAssistant;
 
