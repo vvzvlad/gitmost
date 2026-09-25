@@ -133,40 +133,6 @@ export const safeTextArb: fc.Arbitrary<string> = makeSafeTextArb(
 );
 
 /**
- * CORPUS GUARDRAIL — the text of a run carrying a BARE-DELIMITER emphasis mark
- * (`**`, `*`, `~~`) may not BEGIN or END with an ASTRAL code point.
- *
- * CommonMark's flanking rules classify an emoji / astral symbol as PUNCTUATION,
- * so `a a**🙂x**` does not OPEN (an opener preceded by an alphanumeric and
- * followed by punctuation is not left-flanking) and `**x🙂**A` does not CLOSE.
- * The serializer emits those delimiters anyway, so the mark is silently lost —
- * a PRE-EXISTING gap, unrelated to mark-edge whitespace: the same loss is
- * reproducible on `gitea/develop` with `bold("a 0🙂") + "A"`, and stock develop's
- * nested P1 already fails on it at PROPERTY_NUM_RUNS=700 (seed 20250705) with
- * `"a a" + bold("🙂A A")`. Only the code-emphasis path is guarded today
- * (markdown-converter.ts `isWordBoundaryChar` → lossless HTML fallback); closing
- * it for PLAIN emphasis runs needs the same neighbour-aware fallback.
- *
- * TODO(astral-emphasis-flanking): a bold/italic/strike/`==` run whose text
- * STARTS or ENDS with an astral code point loses its mark on export (the
- * delimiter is emitted in a non-flanking position). Fix: extend the
- * neighbour-aware lossless-HTML fallback from `renderCodeEmphasisRun` to plain
- * emphasis runs, then delete `bareDelimiterSafeTextArb` and let `safeTextArb`
- * feed the bare-delimiter branches again.
- *
- * Excluding the shape here keeps the properties honest about the SUPPORTED space
- * instead of firing on a known gap at whatever seed happens to draw it (the same
- * treatment `withoutBracketsInCodeRuns` gives the footnote/code/bracket gap in
- * node-generators.ts). Astral coverage is NOT reduced anywhere it works today:
- * plain runs, HTML-form marks and `astralAdjacentCodeEmphasisArb` (the #515 F2
- * shape that drives `isWordBoundaryChar`) all keep their astral edges.
- */
-export const bareDelimiterSafeTextArb: fc.Arbitrary<string> = makeSafeTextArb(
-  wordArb,
-  wordArb,
-);
-
-/**
  * A plain alphanumeric phrase (1..3 words) for places where even isolated
  * specials are not wanted (e.g. code-block language, mention labels, status
  * text, table cells rendered on the plain-markdown path).
@@ -222,10 +188,11 @@ export const urlArb: fc.Arbitrary<string> = fc
 export const markedTextRunArb: fc.Arbitrary<any> = fc.oneof(
   // Plain text.
   safeTextArb.map((t) => ({ type: 'text', text: t })),
-  // Single formatting mark, BARE-DELIMITER form (`**`, `*`, `~~`): astral edges
-  // are excluded from the text — see bareDelimiterSafeTextArb.
+  // Single formatting mark, BARE-DELIMITER form (`**`, `*`, `~~`). Astral edges
+  // included: an emoji edge next to a word neighbour does not flank, and the
+  // serializer takes the lossless HTML form there (bareDelimitersFlank).
   fc
-    .tuple(bareDelimiterSafeTextArb, fc.constantFrom('bold', 'italic', 'strike'))
+    .tuple(safeTextArb, fc.constantFrom('bold', 'italic', 'strike'))
     .map(([t, m]) => ({ type: 'text', text: t, marks: [{ type: m }] })),
   // Single formatting mark, HTML form (<u>, <sup>, <sub>, <span data-spoiler>):
   // self-delimiting, so astral edges are kept.
