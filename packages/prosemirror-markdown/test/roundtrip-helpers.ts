@@ -3,6 +3,7 @@
  * round-trip harness that drives these lives in the package's tests, not in the
  * engine.
  */
+import { isBareDelimiterMark } from "../src/lib/markdown-converter.js";
 
 /**
  * Recursively strip every `attrs.id` from a ProseMirror node tree. Block ids
@@ -29,6 +30,134 @@ export function stripBlockIds(node: any): any {
     return out;
   }
   return node;
+}
+
+/**
+ * Canonicalize the two whitespace positions markdown CANNOT represent, so the
+ * P1 semantic round-trip compares what markdown can actually carry. Returns a
+ * NEW tree; the input is not mutated. Both rules are applied to BOTH sides of
+ * the comparison, and neither can hide a LOST MARK or a CHANGED BLOCK TYPE —
+ * the two defects they exist alongside.
+ *
+ * RULE 1 — expel whitespace at the EDGE of a text run carrying a BARE-DELIMITER
+ * mark out of that mark, then merge adjacent runs that end up with identical
+ * marks.
+ *
+ * WHY this is a legitimate canonicalization (and not a fudge that hides a bug):
+ * markdown's bare emphasis delimiters (`**`, `*`, `~~`, `==`) are
+ * FLANKING-SENSITIVE — `**x **` does not close, so emphasis over a run with edge
+ * whitespace is INEXPRESSIBLE in CommonMark. The serializer therefore expels that
+ * whitespace outside the delimiters (markdown-converter.ts
+ * `wrapFlankingDelimited`), and the re-imported document legitimately carries the
+ * space in the neighbouring run instead. The rendered result is identical; only
+ * the mark BOUNDARY moved by one whitespace character.
+ *
+ * SCOPE — strictly the marks the serializer actually expels for, read from the
+ * serializer's own exported predicate (`isBareDelimiterMark`), NOT a hand-synced
+ * copy of the list. For a SELF-DELIMITING mark (link, `<u>`, `<sup>`, `<sub>`,
+ * spoiler, comment anchor, colored highlight) a mark-edge space IS
+ * representable and must stay exactly where the author put it, so those runs are
+ * left untouched here and a space escaping from under a `<u>` fails P1 loudly.
+ *
+ * It can NEVER hide the defect it was written for: a LOST mark is not a
+ * whitespace position — `bold("Модель: ")` degrading to plain text
+ * `**Модель: **` still diverges.
+ *
+ * RULE 2 — drop LEADING space/tab from an UNMARKED text run that starts a
+ * block's inline content. Markdown has no way to carry it: 1..3 spaces are
+ * dropped by the parser, 4 spaces or a tab open an INDENTED CODE BLOCK, and
+ * `&#32;` / `&#9;` / a `<span>` or `<strong>` wrapper all lose it too
+ * (measured). The serializer therefore strips it (markdown-converter.ts
+ * `escapeLeadingBlockTrigger`) rather than shipping a line whose block trigger
+ * has been pushed right — which is what silently turned a paragraph into a
+ * list / heading / quote / code block. Scoped to an UNMARKED run so a space
+ * escaping from under a self-delimiting mark is still a P1 failure, and only to
+ * space/tab (CommonMark's indentation class) so a leading NBSP — which the
+ * importer DOES preserve — must still survive. The BLOCK TYPE is untouched by
+ * this rule, so the regression it guards (paragraph → codeBlock) stays red.
+ */
+export function canonicalizeMarkdownWhitespace(node: any): any {
+  if (Array.isArray(node)) return node.map(canonicalizeMarkdownWhitespace);
+  if (!node || typeof node !== "object") return node;
+
+  const out: any = {};
+  for (const key of Object.keys(node)) {
+    if (key !== "content" || !Array.isArray(node.content)) {
+      out[key] = canonicalizeMarkdownWhitespace(node[key]);
+      continue;
+    }
+    const expelled = expelInlineEdgeWhitespace(node.content);
+    // RULE 2 does not apply to a code block: a fenced block carries leading
+    // indentation losslessly, so losing it there is a real defect P1 must see.
+    out[key] =
+      node.type === "codeBlock" ? expelled : dropLeadingBlockIndent(expelled);
+  }
+  return out;
+}
+
+/** RULE 2, applied after RULE 1 has moved any expelled whitespace into place. */
+function dropLeadingBlockIndent(nodes: any[]): any[] {
+  const first = nodes[0];
+  if (first?.type !== "text" || (first.marks?.length ?? 0) > 0) return nodes;
+  const text = String(first.text ?? "").replace(/^[ \t]+/, "");
+  if (text === first.text) return nodes;
+  return text === ""
+    ? nodes.slice(1)
+    : [{ ...first, text }, ...nodes.slice(1)];
+}
+
+const sameMarksJson = (a: any[] | undefined, b: any[] | undefined): boolean =>
+  JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+
+function expelInlineEdgeWhitespace(nodes: any[]): any[] {
+  const out: any[] = [];
+  const push = (n: any): void => {
+    if (n?.type === "text" && n.text === "") return;
+    const prev = out[out.length - 1];
+    if (
+      n?.type === "text" &&
+      prev?.type === "text" &&
+      sameMarksJson(prev.marks, n.marks)
+    ) {
+      prev.text += n.text;
+      return;
+    }
+    out.push(n);
+  };
+
+  for (const raw of nodes) {
+    const node = canonicalizeMarkdownWhitespace(raw);
+    if (
+      node?.type !== "text" ||
+      !Array.isArray(node.marks) ||
+      !node.marks.some(isBareDelimiterMark)
+    ) {
+      push(node);
+      continue;
+    }
+    const text: string = typeof node.text === "string" ? node.text : "";
+    const kept = node.marks.filter((m: any) => !isBareDelimiterMark(m));
+    // A run with no non-whitespace character cannot carry a bare delimiter at
+    // all (`** **` re-imports as two literal asterisks), so the serializer emits
+    // it undelimited. Only the BARE-delimiter marks are dropped here; a `link` /
+    // comment anchor / `<u>` on the same run is self-delimiting, survives the
+    // round trip, and must still be compared.
+    if (!/\S/.test(text)) {
+      push(kept.length > 0 ? { ...node, marks: kept } : { type: "text", text });
+      continue;
+    }
+    const lead = /^\s*/.exec(text)![0];
+    const trail = /\s*$/.exec(text)![0];
+    // The expelled whitespace leaves only the bare-delimiter marks behind; a
+    // self-delimiting mark (`<u>`, link, comment anchor) keeps covering it, so a
+    // space escaping from under one of those still fails P1.
+    const edge = (t: string) =>
+      kept.length > 0 ? { type: "text", text: t, marks: kept } : { type: "text", text: t };
+    if (lead) push(edge(lead));
+    push({ ...node, text: text.slice(lead.length, text.length - trail.length) });
+    if (trail) push(edge(trail));
+  }
+  return out;
 }
 
 /**

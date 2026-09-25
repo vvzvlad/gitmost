@@ -27,6 +27,7 @@ import {
   plainInlineContentArb,
   phraseArb,
   markedTextRunArb,
+  edgeSpaceMarkedRunArb,
 } from './text-arbitraries.js';
 
 const doc = (node: any) => ({ type: 'doc', content: [node] });
@@ -283,17 +284,29 @@ const gen = {
 
   // ── marks: a paragraph of marked runs (covers every mark type) ───────────
   marksOnText: (_m: AttrMode) =>
-    fc.array(markedTextRunArb, { minLength: 1, maxLength: 5 }).map((runs) => {
-      // Merge adjacent same-mark runs (see text-arbitraries.normalizeInline).
-      const out: any[] = [];
-      for (const r of runs) {
-        const prev = out[out.length - 1];
-        if (prev && JSON.stringify(prev.marks ?? []) === JSON.stringify(r.marks ?? [])) {
-          prev.text += r.text;
-        } else out.push({ ...r });
-      }
-      return doc(para(out));
-    }),
+    fc
+      .array(
+        fc.oneof(
+          { weight: 5, arbitrary: markedTextRunArb.map((n) => [n]) },
+          // A marked run carrying a LEADING/TRAILING SPACE, sandwiched between
+          // two plain words (see edgeSpaceMarkedRunArb): the shape safeTextArb
+          // structurally cannot produce, and the one that used to lose its mark
+          // byte-stably (`**Модель: **WB-MGE`).
+          { weight: 2, arbitrary: edgeSpaceMarkedRunArb },
+        ),
+        { minLength: 1, maxLength: 5 },
+      )
+      .map((segments) => {
+        // Merge adjacent same-mark runs (see text-arbitraries.normalizeInline).
+        const out: any[] = [];
+        for (const r of segments.flat()) {
+          const prev = out[out.length - 1];
+          if (prev && JSON.stringify(prev.marks ?? []) === JSON.stringify(r.marks ?? [])) {
+            prev.text += r.text;
+          } else out.push({ ...r });
+        }
+        return doc(para(out));
+      }),
 };
 
 /** Build the full list of named generators for a given mode. */

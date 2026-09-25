@@ -102,6 +102,87 @@ export interface ConvertProseMirrorToMarkdownOptions {
 const LIST_MARKER_SEPARATOR = "<!-- -->";
 
 /**
+ * True for a mark whose markdown form is a BARE, collidable, FLANKING-SENSITIVE
+ * delimiter run: `**` (bold), `*` (italic), `~~` (strike), `==` (a highlight
+ * with NO color — a colored one emits `<mark style=…>` HTML instead).
+ *
+ * This is the single predicate behind two invariants, so it lives at module
+ * scope and is exported rather than duplicated:
+ *   1. edge whitespace is expelled outside the delimiters for exactly these
+ *      marks (`applyInlineMark` → wrapFlankingDelimited);
+ *   2. exactly these delimiters can collide with a neighbouring code span's
+ *      backticks, which drives the #515 code-emphasis run coalescing and its
+ *      lossless-HTML flanking fallback.
+ * Every other mark (link, underline, sub/sup, spoiler, comment anchor,
+ * textStyle, colored highlight) has SELF-DELIMITING boundaries, where edge
+ * whitespace is legal and must be left where the author put it.
+ */
+export function isBareDelimiterMark(m: any): boolean {
+  return (
+    m?.type === "bold" ||
+    m?.type === "italic" ||
+    m?.type === "strike" ||
+    (m?.type === "highlight" && !m?.attrs?.color)
+  );
+}
+
+/**
+ * Wrap `text` in a BARE markdown delimiter run (`**`, `*`, `~~`, `==`), moving
+ * any leading/trailing whitespace OUTSIDE the delimiters first — the standard
+ * serializer behaviour prosemirror-markdown calls `expelEnclosingWhitespace`.
+ *
+ * WHY: these delimiters are FLANKING-SENSITIVE. A closing run preceded by
+ * whitespace is not right-flanking and an opening run followed by whitespace is
+ * not left-flanking, so `**Model: **rest` NEVER closes: the mark is SILENTLY
+ * LOST and two literal `**` are stamped into the document text. The corrupted
+ * form is byte-stable (it re-exports identically), so the byte-fixpoint property
+ * cannot see it — only the semantic round-trip can. Expelling the whitespace
+ * emits `**Model:** rest`, which renders identically and re-imports with the
+ * mark intact.
+ *
+ * WHITESPACE CLASS: JS `\s`, because that is exactly what every parser on this
+ * path uses — marked's emphasis flanking classes are `[\s\p{P}\p{S}]` /
+ * `[^\s\p{P}\p{S}]`, its GFM strikethrough rule is `^(~~?)(?=[^\s~])…`, and this
+ * repo's `==` highlight extension (markdown-to-prosemirror.ts) is `^==(?=\S)…`.
+ * So U+00A0 NBSP and the other Unicode spaces ARE flanking whitespace here —
+ * measured: a bold run ending in NBSP loses its mark exactly like one ending in
+ * U+0020.
+ *
+ * THIS FUNCTION only MOVES the character — it never deletes it. END-TO-END,
+ * though, the expelled character can still be dropped by the markdown layer,
+ * and that is ACCEPTED (it is dropped in the exact same positions when it is a
+ * plain unmarked space, so nothing is made worse; the mark is what is rescued):
+ *   • at a LINE EDGE — leading indentation is stripped by
+ *     escapeLeadingBlockTrigger (measured: no encoding of it survives import,
+ *     see that function), and a trailing space is removed by the final `.trim()`
+ *     / eaten as a hardBreak marker;
+ *   • on a CONTINUATION line after a hardBreak, for the same reason;
+ *   • at a TABLE-CELL edge, where the cell text is trimmed on re-import;
+ *   • when it MERGES with an adjacent space in the neighbouring text, in which
+ *     case the two collapse to one on re-import (and the doc re-exports with one
+ *     — a single one-time normalization, byte-stable from the second pass on).
+ * A NBSP is NOT markdown indentation and is NOT stripped by the escaper, but
+ * everything that trims with JS `trim()` (which eats NBSP) still drops it: the
+ * very start/end of the whole document (the converter's final `.trim()`), the
+ * edges of an ATX heading's content, and the edges of a table cell.
+ *
+ * A run with NO non-whitespace character is emitted BARE (no delimiters at all):
+ * CommonMark cannot express emphasis over pure whitespace, and `** **` would
+ * re-import as two literal asterisks — the very data loss this closes.
+ */
+function wrapFlankingDelimited(
+  text: string,
+  open: string,
+  close: string,
+): string {
+  if (!/\S/.test(text)) return text;
+  const lead = /^\s*/.exec(text)![0];
+  const trail = /\s*$/.exec(text)![0];
+  const core = text.slice(lead.length, text.length - trail.length);
+  return lead + open + core + close + trail;
+}
+
+/**
  * Backslash-escape a leading markdown BLOCK trigger so a serialized paragraph
  * line re-parses as a PARAGRAPH, not another block. Without this, a paragraph
  * whose text begins at column 0 with an ATX heading `#`, a blockquote/callout
@@ -124,8 +205,27 @@ const LIST_MARKER_SEPARATOR = "<!-- -->";
  * single, canonical fix for the class the client bridge worked around with a
  * ZWSP (`gitmost-recording.ts`) and the generative suite self-censored around
  * (`text-arbitraries.ts`) — both now removed.
+ *
+ * LEADING INDENTATION IS STRIPPED FIRST, and that is load-bearing, not tidying.
+ * CommonMark allows 1..3 spaces of indent BEFORE any block trigger, and 4 spaces
+ * (or a tab) opens an INDENTED CODE BLOCK. So a trigger that has been pushed
+ * right by a space still opens its block while the column-0 patterns below stop
+ * matching — a paragraph would silently become a list / heading / quote / table /
+ * code block. Whitespace lands there whenever a mark's edge whitespace is
+ * expelled to the start of a line (wrapFlankingDelimited) and, since before that,
+ * whenever the user's own paragraph text simply begins with spaces.
+ *
+ * Stripping costs NOTHING that survives a round trip: the importer preserves
+ * leading space/tab indentation in NO form (measured — 1..3 spaces are dropped;
+ * 4 spaces or a tab become a codeBlock; `&#32;`, `&#9;` and a `<span>`/`<strong>`
+ * wrapper all lose it; `\ ` leaves a literal backslash). Only space and TAB are
+ * stripped — exactly CommonMark's indentation class — so a leading NBSP (which
+ * IS preserved on import, and is not indentation) stays put.
  */
-function escapeLeadingBlockTrigger(line: string): string {
+function escapeLeadingBlockTrigger(rawLine: string): string {
+  // Strip markdown INDENTATION (space/tab only) so the trigger tests below,
+  // which are anchored at column 0, see the line the parser will actually see.
+  const line = rawLine.replace(/^[ \t]+/, "");
   // ATX heading: 1..6 `#` then whitespace/EOL.
   if (/^#{1,6}(?:\s|$)/.test(line)) return "\\" + line;
   // Blockquote / Docmost callout opener (`>` or `> [!info]`).
@@ -294,8 +394,15 @@ export function convertProseMirrorToMarkdown(
   // SAME shape the importer's schema parseHTML rebuilds (span/div carrying the
   // LaTeX in a `text="…"` attribute). Kept as small helpers so the readable
   // `$…$`/`$$…$$` markdown forms and the raw-HTML forms cannot drift apart.
+  // Line breaks in the inline form are encoded (`\n` -> `&#10;`, `\r` ->
+  // `&#13;`): this span sits inside a paragraph, which is split on `\n` for
+  // escapeLeadingBlockTrigger, so a raw newline would expose the LaTeX's next
+  // line to block-trigger escaping and leading-indentation stripping; a raw CR
+  // would be normalized to an extra LF by the HTML parser. Both decode back.
   const mathInlineHtml = (latex: string): string =>
-    `<span data-type="mathInline" data-katex="true" text="${escapeAttr(latex)}"></span>`;
+    `<span data-type="mathInline" data-katex="true" text="${escapeAttr(latex)
+      .replace(/\r/g, "&#13;")
+      .replace(/\n/g, "&#10;")}"></span>`;
   const mathBlockHtml = (latex: string): string =>
     `<div data-type="mathBlock" data-katex="true" text="${escapeAttr(latex)}"></div>`;
 
@@ -559,10 +666,12 @@ export function convertProseMirrorToMarkdown(
     let textContent = inner;
     switch (mark.type) {
       case "bold":
-        textContent = `**${textContent}**`;
+        // Edge whitespace is expelled OUTSIDE the `**` (see
+        // wrapFlankingDelimited) — `**x **` would not close at all.
+        textContent = wrapFlankingDelimited(textContent, "**", "**");
         break;
       case "italic":
-        textContent = `*${textContent}*`;
+        textContent = wrapFlankingDelimited(textContent, "*", "*");
         break;
       case "code":
         // #515: `code` is applied FIRST (innermost) by the callers, never
@@ -585,7 +694,9 @@ export function convertProseMirrorToMarkdown(
         break;
       }
       case "strike":
-        textContent = `~~${textContent}~~`;
+        // GFM strikethrough is flanking-sensitive on BOTH sides (marked's `del`
+        // rule is `^(~~?)(?=[^\s~])…[^\s~\\]\1`), so the same expulsion applies.
+        textContent = wrapFlankingDelimited(textContent, "~~", "~~");
         break;
       case "underline":
         textContent = `<u>${textContent}</u>`;
@@ -606,10 +717,19 @@ export function convertProseMirrorToMarkdown(
         // inner textContent already had any literal `==` backslash-
         // escaped above, so a highlight over text containing `==` still
         // round-trips.
+        // MEASURED (not assumed): the `==` importer extension is
+        // `/^==(?=\S)([\s\S]+?)==/`, so a LEADING space breaks the mark — and
+        // worse, `== x==` is not even byte-stable (it re-exports as the escaped
+        // `\=\= x\=\=`, so the second pass differs from the first). A TRAILING
+        // space happens to survive our own importer, but the run is
+        // flanking-sensitive all the same, so it gets the SAME both-sided
+        // expulsion as `**`/`*`/`~~`: `==x== ` is the symmetric, portable form
+        // every `==` implementation accepts. A COLORED highlight emits HTML,
+        // where edge whitespace is harmless, so it is left alone.
         const color = mark.attrs?.color;
         textContent = color
           ? `<mark style="background-color: ${escapeAttr(color)}">${textContent}</mark>`
-          : `==${textContent}==`;
+          : wrapFlankingDelimited(textContent, "==", "==");
         break;
       }
       case "textStyle":
@@ -1395,12 +1515,9 @@ export function convertProseMirrorToMarkdown(
   // processNode as before and BREAK any run.
   // ---------------------------------------------------------------------------
 
-  /** Marks whose markdown form is a bare, collidable delimiter. */
-  const isBareDelimiterMark = (m: any): boolean =>
-    m.type === "bold" ||
-    m.type === "italic" ||
-    m.type === "strike" ||
-    (m.type === "highlight" && !m.attrs?.color);
+  // Marks whose markdown form is a bare, collidable delimiter — the module-level
+  // `isBareDelimiterMark` (see its contract there; it is also what decides edge-
+  // whitespace expulsion, so the two can never drift apart).
 
   const hasCodeMark = (n: any): boolean =>
     (n?.marks || []).some((m: any) => m.type === "code");
@@ -1562,6 +1679,13 @@ export function convertProseMirrorToMarkdown(
     // Flanking guard (see above). Only a BARE delimiter (`*`/`~`/`=`) that is
     // glued to a backtick can be disqualified; an HTML-form mark (<u>, <mark
     // style>, <span>, a link's brackets) is self-delimiting and always safe.
+    // Both tests are anchored, so they correctly STOP matching once edge
+    // whitespace has been expelled outside the delimiters (`out` then begins/ends
+    // with that space): a `**` separated from the backtick by a space is exactly
+    // the flanking-safe position this guard exists to avoid, so falling through
+    // to the plain markdown emission is the RIGHT answer, not a missed case.
+    // Pinned by mark-edge-whitespace.test.ts ("#515 code-emphasis flanking guard
+    // with edge whitespace").
     const openerHitsCode = /^[*~=]+`/.test(out);
     const closerHitsCode = /`[*~=]+$/.test(out);
     const prevChar = lastCodePoint(prevPart);
@@ -1773,6 +1897,32 @@ export function convertProseMirrorToMarkdown(
       })
       .join("");
 
+  /**
+   * `inlineToHtml` for the inline content of a WHOLE BLOCK (`<p>`, `<hN>`,
+   * `<summary>`, the `<div>` fallback) on the raw-HTML path.
+   *
+   * An HTML parser DROPS whitespace at the start of a block's content, so
+   * emitting it produces markdown that is not a byte fixpoint: the re-imported
+   * doc has lost the space and re-exports one byte shorter (`<p>  a</p>` ->
+   * `<p>a</p>` — reproducible on `gitea/develop` with a plain unmarked run, no
+   * marks involved). This is the raw-HTML twin of the leading-indentation strip
+   * `escapeLeadingBlockTrigger` does on the markdown path, so both paths refuse
+   * to emit the same unrepresentable whitespace. Only space/tab, and only on the
+   * FIRST text run: a mid-block space is real content the parser keeps, and
+   * `inlineToHtml` itself is also used MID-LINE by the code-emphasis fallback,
+   * where it must never strip anything.
+   */
+  const blockInlineToHtml = (children: any[]): string => {
+    const nodes = children || [];
+    const first = nodes[0];
+    if (typeof first?.text !== "string") return inlineToHtml(nodes);
+    const text = first.text.replace(/^[ \t]+/, "");
+    if (text === first.text) return inlineToHtml(nodes);
+    return inlineToHtml(
+      text === "" ? nodes.slice(1) : [{ ...first, text }, ...nodes.slice(1)],
+    );
+  };
+
   // Emit the schema-matching <img> for an image node. Shared so the image is
   // emitted as real HTML wherever a raw-HTML container needs it (inside a column
   // or a spanned table cell), where markdown `![](...)` would NOT be re-parsed
@@ -1824,7 +1974,7 @@ export function convertProseMirrorToMarkdown(
     return `<details${open}>${inner}</details>`;
   };
   const detailsSummaryToHtml = (node: any): string =>
-    `<summary data-type="detailsSummary">${inlineToHtml(node.content || [])}</summary>`;
+    `<summary data-type="detailsSummary">${blockInlineToHtml(node.content || [])}</summary>`;
   const detailsContentToHtml = (node: any): string => {
     const inner = (node.content || []).map(blockToHtml).join("");
     return `<div data-type="detailsContent">${inner}</div>`;
@@ -1864,7 +2014,7 @@ export function convertProseMirrorToMarkdown(
           pAlign && pAlign !== "left"
             ? ` style="text-align:${escapeAttr(pAlign)}"`
             : "";
-        return `<p${pStyle}>${inlineToHtml(children)}</p>`;
+        return `<p${pStyle}>${blockInlineToHtml(children)}</p>`;
       }
       case "heading": {
         // Same for a heading nested in an HTML container: emit the alignment as
@@ -1876,7 +2026,7 @@ export function convertProseMirrorToMarkdown(
           hAlign && hAlign !== "left"
             ? ` style="text-align:${escapeAttr(hAlign)}"`
             : "";
-        return `<h${level}${hStyle}>${inlineToHtml(children)}</h${level}>`;
+        return `<h${level}${hStyle}>${blockInlineToHtml(children)}</h${level}>`;
       }
       case "bulletList":
         return `<ul>${children
@@ -2022,7 +2172,7 @@ export function convertProseMirrorToMarkdown(
         if (children.length && children.some((c: any) => c.type !== "text")) {
           return `<div>${children.map(blockToHtml).join("")}</div>`;
         }
-        return `<div>${inlineToHtml(children)}</div>`;
+        return `<div>${blockInlineToHtml(children)}</div>`;
     }
   };
 
