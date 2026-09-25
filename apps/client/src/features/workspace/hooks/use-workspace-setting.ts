@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
  * write-only field on the update payload and a read field under
  * `workspace.settings`, so the value type is derived from the settings shape.
  */
-type WorkspaceSettingKey = "htmlEmbed" | "trackerHead";
+type WorkspaceSettingKey = "htmlEmbed" | "treeQuickActions" | "trackerHead";
 type WorkspaceSettingValue<K extends WorkspaceSettingKey> =
   NonNullable<IWorkspace["settings"][K]>;
 

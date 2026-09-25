@@ -4,7 +4,7 @@ import {
   markOperationStart,
   measureOperation,
 } from "@/lib/telemetry/vitals";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { ActionIcon, rem, Tooltip } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -33,6 +33,7 @@ import { useQueryEmit } from "@/features/websocket/use-query-emit.ts";
 import { mobileSidebarAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar.ts";
 
+import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom.ts";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
@@ -71,6 +72,12 @@ export function SpaceTreeRow({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mobileSidebarOpened] = useAtom(mobileSidebarAtom);
   const toggleMobileSidebar = useToggleSidebar(mobileSidebarAtom);
+  const workspace = useAtomValue(workspaceAtom);
+
+  // Workspace toggle for the row quick-action icons. ABSENT => ON (default),
+  // because the icons already shipped — so compare against `false` rather than
+  // testing for an explicit `true`. The "⋮" menu keeps both actions either way.
+  const quickActionsEnabled = workspace?.settings?.treeQuickActions !== false;
 
   const canEdit = !readOnly && node.canEdit !== false;
   const pageUrl = buildPageUrl(spaceSlug, node.slugId, node.name);
@@ -249,9 +256,9 @@ export function SpaceTreeRow({
       )}
 
       <div className={classes.actions}>
-        <CopyLinkNode node={node} />
+        {quickActionsEnabled && <CopyLinkNode node={node} />}
 
-        {canEdit && <DeleteNode node={node} />}
+        {quickActionsEnabled && canEdit && <DeleteNode node={node} />}
 
         <NodeMenu node={node} canEdit={canEdit} />
 

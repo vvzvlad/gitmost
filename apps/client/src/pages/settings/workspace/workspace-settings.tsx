@@ -2,6 +2,7 @@ import SettingsTitle from "@/components/settings/settings-title.tsx";
 import WorkspaceNameForm from "@/features/workspace/components/settings/components/workspace-name-form";
 import WorkspaceIcon from "@/features/workspace/components/settings/components/workspace-icon.tsx";
 import HtmlEmbedSettings from "@/features/workspace/components/settings/components/html-embed-settings.tsx";
+import TreeQuickActionsSettings from "@/features/workspace/components/settings/components/tree-quick-actions-settings.tsx";
 import TrackerSettings from "@/features/workspace/components/settings/components/tracker-settings.tsx";
 import TemporaryNoteSettings from "@/features/workspace/components/settings/components/temporary-note-settings.tsx";
 import { useTranslation } from "react-i18next";
@@ -19,6 +20,7 @@ export default function WorkspaceSettings() {
       <WorkspaceIcon />
       <WorkspaceNameForm />
       <HtmlEmbedSettings />
+      <TreeQuickActionsSettings />
       <TrackerSettings />
       <TemporaryNoteSettings />
     </>
