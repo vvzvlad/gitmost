@@ -1,3 +1,9 @@
+# Upstream Docmost's quickstart compose, kept in this fork for reference and as a working
+# starting point for running it locally. The placeholders in it — `REPLACE_WITH_LONG_SECRET`,
+# `STRONG_DB_PASSWORD`, `localhost:3000` — are upstream's own; fill them in for your own run and
+# never commit real values in their place. This file does not describe any deployment of ours,
+# and it is not kept in sync with one.
+
 services:
   docmost:
     image: ghcr.io/vvzvlad/gitmost:latest
