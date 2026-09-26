@@ -106,13 +106,16 @@ const LIST_MARKER_SEPARATOR = "<!-- -->";
  * delimiter run: `**` (bold), `*` (italic), `~~` (strike), `==` (a highlight
  * with NO color — a colored one emits `<mark style=…>` HTML instead).
  *
- * This is the single predicate behind two invariants, so it lives at module
+ * This is the single predicate behind three invariants, so it lives at module
  * scope and is exported rather than duplicated:
  *   1. edge whitespace is expelled outside the delimiters for exactly these
  *      marks (`applyInlineMark` → wrapFlankingDelimited);
  *   2. exactly these delimiters can collide with a neighbouring code span's
  *      backticks, which drives the #515 code-emphasis run coalescing and its
- *      lossless-HTML flanking fallback.
+ *      lossless-HTML flanking fallback;
+ *   3. exactly the text nodes carrying one of these marks go through the
+ *      edge-punctuation flanking guard (renderInlineChildren →
+ *      bareDelimitersFlank).
  * Every other mark (link, underline, sub/sup, spoiler, comment anchor,
  * textStyle, colored highlight) has SELF-DELIMITING boundaries, where edge
  * whitespace is legal and must be left where the author put it.
@@ -169,6 +172,11 @@ export function isBareDelimiterMark(m: any): boolean {
  * A run with NO non-whitespace character is emitted BARE (no delimiters at all):
  * CommonMark cannot express emphasis over pure whitespace, and `** **` would
  * re-import as two literal asterisks — the very data loss this closes.
+ *
+ * Also called with `<strong>`/`</strong>`-style tags for the flanking fallback
+ * (applyInlineMark `htmlDelimiters`): an HTML parser drops whitespace at the
+ * edge of the tag's content just as markdown does, so the same expulsion keeps
+ * that form byte-stable.
  */
 function wrapFlankingDelimited(
   text: string,
@@ -176,8 +184,10 @@ function wrapFlankingDelimited(
   close: string,
 ): string {
   if (!/\S/.test(text)) return text;
-  const lead = /^\s*/.exec(text)![0];
-  const trail = /\s*$/.exec(text)![0];
+  // trimStart/trimEnd strip exactly the `\s` class, in linear time (a `/\s*$/`
+  // regex is quadratic on a long whitespace run that is not at the end).
+  const lead = text.slice(0, text.length - text.trimStart().length);
+  const trail = text.slice(text.trimEnd().length);
   const core = text.slice(lead.length, text.length - trail.length);
   return lead + open + core + close + trail;
 }
@@ -661,17 +671,31 @@ export function convertProseMirrorToMarkdown(
    * Wrap already-rendered inline content in ONE mark's markdown (or HTML) form.
    * Called in marks-array order, so the first mark of the array ends up
    * innermost — exactly as the historical in-place loop did.
+   *
+   * `htmlDelimiters`: emit bold / italic / strike as `<strong>` / `<em>` / `<s>`
+   * instead of `**` / `*` / `~~`, for a run whose bare delimiters would not
+   * flank next to its neighbours (bareDelimitersFlank). Everything else — the
+   * inner markdown escaping, the other marks, the edge-whitespace expulsion — is
+   * unchanged, so the tags carry the same markdown-parsed content.
    */
-  const applyInlineMark = (mark: any, inner: string): string => {
+  const applyInlineMark = (
+    mark: any,
+    inner: string,
+    htmlDelimiters = false,
+  ): string => {
     let textContent = inner;
     switch (mark.type) {
       case "bold":
         // Edge whitespace is expelled OUTSIDE the `**` (see
         // wrapFlankingDelimited) — `**x **` would not close at all.
-        textContent = wrapFlankingDelimited(textContent, "**", "**");
+        textContent = htmlDelimiters
+          ? wrapFlankingDelimited(textContent, "<strong>", "</strong>")
+          : wrapFlankingDelimited(textContent, "**", "**");
         break;
       case "italic":
-        textContent = wrapFlankingDelimited(textContent, "*", "*");
+        textContent = htmlDelimiters
+          ? wrapFlankingDelimited(textContent, "<em>", "</em>")
+          : wrapFlankingDelimited(textContent, "*", "*");
         break;
       case "code":
         // #515: `code` is applied FIRST (innermost) by the callers, never
@@ -696,7 +720,9 @@ export function convertProseMirrorToMarkdown(
       case "strike":
         // GFM strikethrough is flanking-sensitive on BOTH sides (marked's `del`
         // rule is `^(~~?)(?=[^\s~])…[^\s~\\]\1`), so the same expulsion applies.
-        textContent = wrapFlankingDelimited(textContent, "~~", "~~");
+        textContent = htmlDelimiters
+          ? wrapFlankingDelimited(textContent, "<s>", "</s>")
+          : wrapFlankingDelimited(textContent, "~~", "~~");
         break;
       case "underline":
         textContent = `<u>${textContent}</u>`;
@@ -768,6 +794,33 @@ export function convertProseMirrorToMarkdown(
         // mode) then leave the text unwrapped — the historical behavior.
         warnLoss("mark", String(mark.type));
         break;
+    }
+    return textContent;
+  };
+
+  /** A text node's markdown (the body of `case "text"`), see applyInlineMark. */
+  const renderTextRun = (node: any, htmlDelimiters = false): string => {
+    const marks: any[] = node.marks || [];
+    // #515: a run may now carry `code` TOGETHER with other marks (the schema's
+    // `code` mark no longer declares `excludes: "_"`, matching CommonMark:
+    // ``**`x`**`` is <strong><code>x</code></strong>). Serialize `code` FIRST
+    // so the backtick span is the INNERMOST wrapper, then apply the remaining
+    // marks in the SAME array order as before — so a run WITHOUT `code` is
+    // byte-identical to the historical output.
+    const hasCode = marks.some((m: any) => m.type === "code");
+    // The escape gate stays scoped to NON-code runs: a code span's content is
+    // literal (`==`, `$…$`, `^[`, `<br>` are not re-parsed inside backticks),
+    // so escaping it would permanently stamp backslashes into the code.
+    let textContent = hasCode
+      ? node.text || ""
+      : escapeInlineText(node.text || "");
+    if (hasCode) {
+      textContent = `\`${textContent}\``;
+    }
+    // Apply the remaining marks (bold, italic, link, …), `code` already done.
+    for (const mark of marks) {
+      if (mark.type === "code") continue;
+      textContent = applyInlineMark(mark, textContent, htmlDelimiters);
     }
     return textContent;
   };
@@ -871,31 +924,8 @@ export function convertProseMirrorToMarkdown(
         return headingLine;
       }
 
-      case "text": {
-        const marks: any[] = node.marks || [];
-        // #515: a run may now carry `code` TOGETHER with other marks (the schema's
-        // `code` mark no longer declares `excludes: "_"`, matching CommonMark:
-        // ``**`x`**`` is <strong><code>x</code></strong>). Serialize `code` FIRST
-        // so the backtick span is the INNERMOST wrapper, then apply the remaining
-        // marks in the SAME array order as before — so a run WITHOUT `code` is
-        // byte-identical to the historical output.
-        const hasCode = marks.some((m: any) => m.type === "code");
-        // The escape gate stays scoped to NON-code runs: a code span's content is
-        // literal (`==`, `$…$`, `^[`, `<br>` are not re-parsed inside backticks),
-        // so escaping it would permanently stamp backslashes into the code.
-        let textContent = hasCode
-          ? node.text || ""
-          : escapeInlineText(node.text || "");
-        if (hasCode) {
-          textContent = `\`${textContent}\``;
-        }
-        // Apply the remaining marks (bold, italic, link, …), `code` already done.
-        for (const mark of marks) {
-          if (mark.type === "code") continue;
-          textContent = applyInlineMark(mark, textContent);
-        }
-        return textContent;
-      }
+      case "text":
+        return renderTextRun(node);
 
       case "codeBlock":
         const language = node.attrs?.language || "";
@@ -1618,6 +1648,69 @@ export function convertProseMirrorToMarkdown(
   const firstCodePoint = (s: string): string => Array.from(s.slice(0, 2))[0] ?? "";
 
   /**
+   * Does a bare `*` / `~` delimiter run at the OUTER edges of `out` still open
+   * and close once `out` sits between `prevPart` and `nextPart`?
+   *
+   * CommonMark: an opener FOLLOWED by punctuation is left-flanking only if it is
+   * PRECEDED by whitespace/punctuation; a closer PRECEDED by punctuation is
+   * right-flanking only if it is FOLLOWED by whitespace/punctuation. So
+   * `**x:**A`, `A**(x)**` and `**x🙂**A` (an emoji is a symbol, i.e.
+   * punctuation, to marked) never open/close and the mark is silently lost —
+   * measured for bold, italic and strike alike. The inner edge character is
+   * classified by its real code point (an astral LETTER such as U+1D400 is not
+   * punctuation, and measured fine).
+   *
+   * The OUTER neighbour is classified differently per side, as marked does it:
+   *   • before an opener, through isWordBoundaryChar (marked reads that char with
+   *     a UTF-16 `.slice(-1)`, so every astral counts as a word char);
+   *   • after a closer, by its real code point (`**Done!**🎉` closes), EXCEPT
+   *     that `~` counts as a word char (marked's GFM punctuation class for
+   *     right-flanking leaves it out), and so does `*` after a `*` closer (it
+   *     merges into the closing run) — both measured to lose the mark
+   *     (`**Итого:**~5`, `**a:***b*c`).
+   * `==` is not checked: this repo's highlight extension has no flanking rule.
+   */
+  const bareDelimitersFlank = (
+    out: string,
+    prevPart: string,
+    nextPart: string,
+  ): boolean => {
+    const isPunct = (c: string): boolean => c !== "" && /[\p{P}\p{S}]/u.test(c);
+    const open = /^[*~]+/.exec(out);
+    if (
+      open &&
+      isPunct(firstCodePoint(out.slice(open[0].length))) &&
+      !isWordBoundaryChar(lastCodePoint(prevPart))
+    ) {
+      return false;
+    }
+    // Trailing delimiter run, scanned from the end (a `/[*~]+$/` regex is
+    // quadratic on a long run of `*`/`~` that is not at the end).
+    let closeAt = out.length;
+    while (closeAt > 0 && (out[closeAt - 1] === "*" || out[closeAt - 1] === "~")) {
+      closeAt--;
+    }
+    if (closeAt < out.length && isPunct(lastCodePoint(out.slice(0, closeAt)))) {
+      const next = firstCodePoint(nextPart);
+      // A following `*` merges only into a closing run made of `*` (a `~~`
+      // closer followed by `**b**` is fine); a following `~` breaks both.
+      const merges = next === "~" || (next === "*" && out.endsWith("*"));
+      const nextIsBoundary =
+        next === "" || (!merges && /[\s\p{P}\p{S}]/u.test(next));
+      if (!nextIsBoundary) return false;
+    }
+    return true;
+  };
+
+  /** Nearest NON-EMPTY rendered part from `i` in direction `step` ("" if none). */
+  const nearestPart = (parts: string[], i: number, step: 1 | -1): string => {
+    for (let j = i + step; j >= 0 && j < parts.length; j += step) {
+      if (parts[j]) return parts[j];
+    }
+    return "";
+  };
+
+  /**
    * Emit one detected code-emphasis run. `prevPart` / `nextPart` are the already
    * rendered markdown of the immediately surrounding siblings ("" at the edges) —
    * needed for the flanking check below.
@@ -1662,9 +1755,11 @@ export function convertProseMirrorToMarkdown(
     // `case "text"` already emitted (2a: code span innermost, other marks around
     // it in mark-array order) — reuse that rendering verbatim rather than
     // duplicating it, so `case "text"` stays the single source for a single run.
-    let out = soloPart;
-    if (run.length > 1) {
-      out = run
+    const renderRun = (htmlDelimiters: boolean): string => {
+      if (run.length === 1) {
+        return htmlDelimiters ? renderTextRun(run[0], true) : soloPart;
+      }
+      let rendered = run
         .map((n: any) => {
           const raw = n.text || "";
           // `code` is the INNERMOST wrapper; its content is literal (unescaped).
@@ -1672,9 +1767,11 @@ export function convertProseMirrorToMarkdown(
         })
         .join("");
       for (const mark of nonCodeMarks(run[0])) {
-        out = applyInlineMark(mark, out);
+        rendered = applyInlineMark(mark, rendered, htmlDelimiters);
       }
-    }
+      return rendered;
+    };
+    const out = renderRun(false);
 
     // Flanking guard (see above). Only a BARE delimiter (`*`/`~`/`=`) that is
     // glued to a backtick can be disqualified; an HTML-form mark (<u>, <mark
@@ -1696,6 +1793,9 @@ export function convertProseMirrorToMarkdown(
     ) {
       return inlineToHtml(run);
     }
+    // Edge punctuation next to a word neighbour (bareDelimitersFlank): the same
+    // run with `<strong>`/`<em>`/`<s>` in place of the bare delimiters.
+    if (!bareDelimitersFlank(out, prevPart, nextPart)) return renderRun(true);
     return out;
   };
 
@@ -1705,8 +1805,9 @@ export function convertProseMirrorToMarkdown(
   // closing `$`, which the pandoc inline rule refuses to parse as math (the
   // currency guard) — so the node would re-import as literal text (data loss).
   // For that node ONLY we fall back to the lossless schema-HTML `<span>` form.
-  // Every other inline node is rendered exactly as processNode would, so output
-  // is unchanged whenever no math sits directly before a digit.
+  // The other per-neighbour rewrites below are the #515 code-emphasis runs, the
+  // emphasis flanking guard (bareDelimitersFlank) and the position-aware
+  // hardBreak; every other inline node is rendered exactly as processNode would.
   const renderInlineChildren = (nodes: any[]): string => {
     const parts = nodes.map(processNode);
 
@@ -1721,6 +1822,7 @@ export function convertProseMirrorToMarkdown(
     // that was already expressible before #515 therefore contains no seed at all
     // and takes ZERO passes through here, keeping its historical markdown output
     // byte-for-byte.
+    const inCodeEmphasisRun = new Set<number>();
     for (let i = 0; i < nodes.length; ) {
       if (!isRunSeed(nodes[i])) {
         i++;
@@ -1730,6 +1832,7 @@ export function convertProseMirrorToMarkdown(
       while (start - 1 >= 0 && isRunMember(nodes[start - 1])) start--;
       let end = i;
       while (end + 1 < nodes.length && isRunMember(nodes[end + 1])) end++;
+      for (let j = start; j <= end; j++) inCodeEmphasisRun.add(j);
       // The neighbours are never run members (the run is maximal), so their parts
       // are already final markdown — safe to read for the flanking check.
       parts[start] = renderCodeEmphasisRun(
@@ -1741,6 +1844,27 @@ export function convertProseMirrorToMarkdown(
       );
       for (let j = start + 1; j <= end; j++) parts[j] = "";
       i = end + 1;
+    }
+
+    // The same flanking guard for PLAIN emphasis runs (code-emphasis runs got it
+    // above): a node whose bare `*`/`~` delimiter would sit between an edge
+    // punctuation character and a neighbouring word character is re-rendered
+    // with `<strong>`/`<em>`/`<s>` in place of those delimiters
+    // (`<strong>x:</strong>A`); its escaped content stays markdown. Left to right,
+    // so a neighbour already switched is seen as its final `<…>` rendering.
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (inCodeEmphasisRun.has(i) || n?.type !== "text") continue;
+      if (!(n.marks || []).some(isBareDelimiterMark)) continue;
+      if (
+        !bareDelimitersFlank(
+          parts[i],
+          nearestPart(parts, i, -1),
+          nearestPart(parts, i, 1),
+        )
+      ) {
+        parts[i] = renderTextRun(n, true);
+      }
     }
 
     for (let i = 0; i < nodes.length - 1; i++) {
