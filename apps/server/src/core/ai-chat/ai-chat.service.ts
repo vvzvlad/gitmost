@@ -2155,9 +2155,6 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
                   : 'Assistant message could not be persisted (finalize failed).',
               );
             }
-            // Lifecycle: release the external MCP clients leased for this turn.
-            await closeExternalClients();
-
             // Turn end (#274): snapshot the open page's current Markdown (after all
             // of the agent's edits this turn) so the NEXT turn can diff against it
             // and detect edits a human made in between. Self-clearing — the agent's
@@ -2166,6 +2163,17 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
             await snapshotTurnEnd();
             // #490: persist the deferred-tool activation set for the next turn.
             await persistActivatedTools();
+
+            // Lifecycle: release the external MCP clients leased for this turn.
+            // ORDER MATTERS: both turn-end writes above are read by the NEXT turn,
+            // and the lease release is the last per-turn action an observer (the
+            // turn-lifecycle integration test's barrier, an operator watching
+            // connections) treats as "turn finished" — so it runs after them, not
+            // before. Putting the writes first is safe precisely because BOTH are
+            // self-guarding: snapshotOpenPage and persistActivatedTools swallow and
+            // log their own errors, so neither can throw and skip this release —
+            // which the SDK would swallow silently (it ignores onFinish rejections).
+            await closeExternalClients();
 
             // Generate the chat title for a freshly created chat AFTER the stream's
             // provider call has completed — NOT concurrently with it. The z.ai coding
@@ -2234,13 +2242,14 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
             );
             // #184: settle the RUN as failed, carrying the provider/transport cause.
             if (runId) await runHooks?.onSettled?.(runId, 'error', errorText);
-            await closeExternalClients();
             // Advance the page snapshot even on failure (#274): an agent edit that
             // committed before the error must be baked into the snapshot, or the
             // next turn would mis-report it as a user edit.
             await snapshotTurnEnd();
             // #490: persist the deferred-tool activation set for the next turn.
             await persistActivatedTools();
+            // Released last — see the onFinish path for why the order matters.
+            await closeExternalClients();
           },
           onAbort: async ({ steps }) => {
             // #444: distinguish a degeneration abort (our internal controller) from
@@ -2266,10 +2275,11 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
                   'error',
                   OUTPUT_DEGENERATION_ERROR,
                 );
-              await closeExternalClients();
               await snapshotTurnEnd();
               // #490: persist the deferred-tool activation set for the next turn.
               await persistActivatedTools();
+              // Released last — see the onFinish path for why the order matters.
+              await closeExternalClients();
               return;
             }
             const partialChars =
@@ -2302,13 +2312,14 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
             // #184: settle the RUN as aborted (an explicit user stop reached the
             // run's signal; a disconnect does not abort a run-wrapped turn).
             if (runId) await runHooks?.onSettled?.(runId, 'aborted');
-            await closeExternalClients();
             // Advance the page snapshot even on abort (#274): an agent edit that
             // committed before the client disconnect / stop() must be baked into the
             // snapshot, or the next turn would mis-report it as a user edit.
             await snapshotTurnEnd();
             // #490: persist the deferred-tool activation set for the next turn.
             await persistActivatedTools();
+            // Released last — see the onFinish path for why the order matters.
+            await closeExternalClients();
           },
         });
 
