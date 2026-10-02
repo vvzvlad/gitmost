@@ -1,4 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import type { SpaceTreeNode } from "@/features/page/tree/types";
 import type { ICurrentUser } from "@/features/user/types/user.types";
 
@@ -59,6 +67,17 @@ function currentUser(workspaceId: string, userId: string): ICurrentUser {
     workspace: { id: workspaceId },
   } as unknown as ICurrentUser;
 }
+
+// The FIRST import of this module graph is cold — the first Vite transform of
+// the app modules plus the first load of the heavy deps they pull in
+// transitively (tree-data-atom imports page-meta-cache-atom, which reaches
+// @mantine/core and icon packs via lib/config -> lib/utils.tsx ->
+// components/ui/page-icon.tsx). Inside a test body that cost counts against the
+// default 5s test timeout and on a loaded CI runner can tip the first test over
+// it, so pay it once here, under its own generous budget.
+beforeAll(async () => {
+  await freshImport();
+}, 30000);
 
 beforeEach(() => {
   localStorage.clear();
