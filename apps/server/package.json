@@ -201,7 +201,11 @@
       "^.+\\.(t|j)sx?$": [
         "ts-jest",
         {
-          "isolatedModules": true
+          "diagnostics": {
+            "exclude": [
+              "**/packages/git-sync/**"
+            ]
+          }
         }
       ]
     },
