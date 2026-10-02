@@ -53,7 +53,15 @@ export const Heading = TiptapHeading.extend<TiptapHeadingOptions>({
 
                     return icon;
                   },
-                  { side: 1 }, // render after node content
+                  {
+                    side: 1, // render after node content
+                    // A fresh toDOM closure is built on every decorations()
+                    // call, so without a key ProseMirror never matches the old
+                    // widget and rebuilds every heading's button (and forces a
+                    // relayout) on each view update. The closure only reads
+                    // node.attrs.id, so the id is enough to make reuse safe.
+                    key: `heading-link-${node.attrs.id}`,
+                  },
                 );
                 decorations.push(deco);
               }

@@ -547,6 +547,16 @@ export default function PageEditor({
     ];
   }, [activeProviders, currentUser?.user, pageId, localFirst]);
 
+  // Stable editorProps for the static read-only copy. Its EditorProvider has
+  // `deps=[]`, so TipTap compares options by reference on every render and calls
+  // setOptions -> view.setProps (a full view update) on any mismatch. A fresh
+  // object literal here re-rendered the whole static body on every PageEditor
+  // render during page open (~0.2 s each on a 400K-char page).
+  const staticEditorProps = useMemo(
+    () => ({ attributes: { "aria-label": t("Page content") } }),
+    [t],
+  );
+
   // getJSON() serialization + cache write live in the hook, off the keystroke
   // path, and flush on unmount so the last snapshot survives navigation (#343).
   // MUST be declared before useEditor: React runs effect cleanups in declaration
@@ -1098,11 +1108,7 @@ export default function PageEditor({
                   immediatelyRender={true}
                   extensions={mainExtensions}
                   content={content}
-                  editorProps={{
-                    attributes: {
-                      "aria-label": t("Page content"),
-                    },
-                  }}
+                  editorProps={staticEditorProps}
                 />
               </div>
             ) : (
