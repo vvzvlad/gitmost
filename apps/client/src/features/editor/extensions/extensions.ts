@@ -15,6 +15,9 @@ import SlashCommand, {
 import renderItems from "@/features/editor/components/slash-menu/render-items";
 import getSuggestionItems from "@/features/editor/components/slash-menu/menu-items";
 import { Collaboration, isChangeOrigin } from "@tiptap/extension-collaboration";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
+import type { Plugin } from "@tiptap/pm/state";
+import type { EditorView } from "@tiptap/pm/view";
 import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
@@ -510,8 +513,43 @@ export const templateExtensions = [
   UndoRedo,
 ] as any;
 
+// y-tiptap's ySyncPlugin view rebuilds the whole ProseMirror doc from Yjs
+// (`binding._forceRerender`) every time its plugin view is created, and
+// ProseMirror re-creates ALL plugin views whenever the plugin set changes — so
+// every registerPlugin/unregisterPlugin (each BubbleMenu mount) re-derived the
+// full document, ~10 times per page open. A re-creation for the SAME EditorView
+// needs no rerender: ProseMirror destroys and re-creates the views
+// synchronously inside one updateState call, so neither the doc nor the Yjs
+// fragment can change in between and the binding mapping stays valid. Only the
+// first view creation per EditorView keeps the forced rerender.
+const CollaborationWithoutRerenderOnReconfigure = Collaboration.extend({
+  addProseMirrorPlugins() {
+    const plugins: Plugin[] = this.parent?.() ?? [];
+    const ySync = plugins.find((plugin) => plugin?.spec.key === ySyncPluginKey);
+    const createView = ySync?.spec.view;
+    if (!createView) return plugins;
+
+    let renderedView: EditorView | null = null;
+    ySync.spec.view = (view) => {
+      const binding = ySyncPluginKey.getState(view.state)?.binding;
+      if (view !== renderedView || !binding) {
+        renderedView = view;
+        return createView(view);
+      }
+      const forceRerender = binding._forceRerender;
+      binding._forceRerender = () => {};
+      try {
+        return createView(view);
+      } finally {
+        binding._forceRerender = forceRerender;
+      }
+    };
+    return plugins;
+  },
+});
+
 export const collabExtensions: CollabExtensions = (provider, user) => [
-  Collaboration.configure({
+  CollaborationWithoutRerenderOnReconfigure.configure({
     document: provider.document,
     provider,
   }),

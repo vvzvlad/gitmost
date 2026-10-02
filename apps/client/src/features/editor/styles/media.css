@@ -103,7 +103,10 @@
   text-align: center;
 }
 
-.ProseMirror:has(> [data-image-align="inline"]) > :not([data-image-align="inline"]),
-.ProseMirror :has(> [data-image-align="inline"]) > :not([data-image-align="inline"]) {
+/* The other children are marked by a ProseMirror plugin
+   (inlineImageSiblingPlugin in editor-ext image.ts) rather than selected with
+   `:has(> [data-image-align="inline"]) > :not(…)`: that form made Chrome
+   restyle the whole editor on every block insertion or removal. */
+.ProseMirror .inline-image-sibling {
   text-align: start;
 }
