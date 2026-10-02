@@ -1,4 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import { createStore, getDefaultStore } from "jotai";
 import { QueryClient } from "@tanstack/react-query";
 import type { IPage } from "@/features/page/types/page.types";
@@ -58,6 +66,17 @@ function persistedMetaKeys(): string[] {
   }
   return keys;
 }
+
+// The FIRST import of this module graph is cold — the first Vite transform of
+// the app modules plus the first load of the heavy deps they pull in
+// transitively (@mantine/core and icon packs via lib/config -> lib/utils.tsx ->
+// components/ui/page-icon.tsx) — and costs ~0.6s locally vs ~2ms for every
+// re-import after vi.resetModules(). Inside a test body that cost counts against
+// the default 5s test timeout, and on a loaded CI runner it tipped the first test
+// over it. Pay it once here, under its own generous budget.
+beforeAll(async () => {
+  await freshImport();
+}, 30000);
 
 beforeEach(() => {
   localStorage.clear();
