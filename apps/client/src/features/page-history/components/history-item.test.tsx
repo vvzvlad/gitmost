@@ -143,7 +143,6 @@ function renderItem(item: IPageHistory) {
     <MantineProvider>
       <HistoryItem
         historyItem={item}
-        index={0}
         onSelect={vi.fn()}
         isActive={false}
       />
