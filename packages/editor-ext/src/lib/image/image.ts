@@ -5,6 +5,9 @@ import {
   mergeAttributes,
   Range,
 } from "@tiptap/core";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { ResizableNodeView } from "../resizable-nodeview";
 import type { ResizableNodeViewDirection } from "../resizable-nodeview";
 import { attachMediaPlaceholder, normalizeFileUrl } from "../media-utils";
@@ -211,6 +214,10 @@ export const TiptapImage = Image.extend<ImageOptions>({
     };
   },
 
+  addProseMirrorPlugins() {
+    return [...(this.parent?.() ?? []), inlineImageSiblingPlugin()];
+  },
+
   addNodeView() {
     const resize = this.options.resize;
 
@@ -415,6 +422,59 @@ export const TiptapImage = Image.extend<ImageOptions>({
   },
 });
 
+const isInlineImage = (node: ProseMirrorNode) =>
+  node.type.name === "image" && node.attrs.align === "inline";
+
+// Class on every non-inline-image sibling of an inline image, i.e. on every
+// other child of a container that media.css centers for an inline image row.
+// media.css resets their text-align through this class instead of a
+// `:has(> [data-image-align="inline"]) > :not(…)` selector: that selector made
+// Chrome restyle the whole editor on every block insertion or removal
+// (~70 ms per change on a 400K-char page, dozens of times during page open).
+function buildInlineImageSiblingDecorations(doc: ProseMirrorNode) {
+  const decorations: Decoration[] = [];
+  const visit = (parent: ProseMirrorNode, contentStart: number) => {
+    let hasInlineImage = false;
+    parent.forEach((child) => {
+      if (isInlineImage(child)) hasInlineImage = true;
+    });
+    parent.forEach((child, offset) => {
+      const pos = contentStart + offset;
+      if (hasInlineImage && !isInlineImage(child)) {
+        decorations.push(
+          Decoration.node(pos, pos + child.nodeSize, {
+            class: "inline-image-sibling",
+          }),
+        );
+      }
+      // Images are block nodes, so they never sit inside a textblock.
+      if (!child.isTextblock && !child.isLeaf) visit(child, pos + 1);
+    });
+  };
+  visit(doc, 0);
+  return decorations.length
+    ? DecorationSet.create(doc, decorations)
+    : DecorationSet.empty;
+}
+
+const inlineImageSiblingKey = new PluginKey<DecorationSet>(
+  "inlineImageSibling",
+);
+
+function inlineImageSiblingPlugin() {
+  return new Plugin<DecorationSet>({
+    key: inlineImageSiblingKey,
+    state: {
+      init: (_config, state) => buildInlineImageSiblingDecorations(state.doc),
+      apply: (tr, old) =>
+        tr.docChanged ? buildInlineImageSiblingDecorations(tr.doc) : old,
+    },
+    props: {
+      decorations: (state) => inlineImageSiblingKey.getState(state),
+    },
+  });
+}
+
 export function applyAlignment(container: HTMLElement, align: string) {
   // Reset the float-mode styles first so toggling between any two modes is clean
   // (a previous float must not leak into a later left/center/right).
@@ -450,7 +510,8 @@ export function applyAlignment(container: HTMLElement, align: string) {
     // vertical-align: top keeps rows of different-height images aligned by
     // their top edge. Horizontal centering of the whole row is handled by the
     // client stylesheet (media.css) via a :has() rule on the parent block
-    // container, since the row has no wrapper element of its own.
+    // container, since the row has no wrapper element of its own; the other
+    // children of that container are reset via inlineImageSiblingPlugin.
     container.style.display = "inline-block";
     container.style.verticalAlign = "top";
     container.style.padding = "0 10px 10px 0";
