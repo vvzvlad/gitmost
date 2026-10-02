@@ -2,6 +2,7 @@ import "@/features/editor/styles/index.css";
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1103,10 +1104,7 @@ export default function PageEditor({
               collab provider connects aren't silently swallowed (#218). Shown
               only when the user is otherwise allowed to edit. */}
                 {connectingBadge}
-                <EditorProvider
-                  editable={false}
-                  immediatelyRender={true}
-                  extensions={mainExtensions}
+                <StaticBodyEditor
                   content={content}
                   editorProps={staticEditorProps}
                 />
@@ -1182,6 +1180,43 @@ export default function PageEditor({
         </PageEmbedAncestryProvider>
       </PageEmbedLookupProvider>
     </TransclusionLookupProvider>
+  );
+}
+
+// The static read-only copy of the body, shown until the live editor swaps in.
+function StaticBodyEditor({
+  content,
+  editorProps,
+}: {
+  content: any;
+  editorProps: React.ComponentProps<typeof EditorProvider>["editorProps"];
+}) {
+  const editorRef = useRef<Editor | null>(null);
+  const onBeforeCreate = useCallback(({ editor }: { editor: Editor }) => {
+    editorRef.current = editor;
+  }, []);
+
+  // Destroy the editor in this layout cleanup, which React runs BEFORE the
+  // child EditorContent's componentWillUnmount. That unmount otherwise calls
+  // view.setProps({ nodeViews: {} }) on a still-live view, which redraws the
+  // whole body once more right before it is thrown away (~150 ms on a
+  // 400K-char page); on a destroyed editor it skips that call.
+  // injectCSS is off because this synchronous destroy would otherwise remove
+  // tiptap's shared <style data-tiptap-style> when no other .tiptap element is
+  // in the document yet (page-to-page navigation); the title and live editors
+  // are constructed earlier and own that tag.
+  useLayoutEffect(() => () => editorRef.current?.destroy(), []);
+
+  return (
+    <EditorProvider
+      editable={false}
+      immediatelyRender={true}
+      injectCSS={false}
+      extensions={mainExtensions}
+      content={content}
+      editorProps={editorProps}
+      onBeforeCreate={onBeforeCreate}
+    />
   );
 }
 
