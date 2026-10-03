@@ -130,6 +130,7 @@ import AutoJoiner from "@/features/editor/extensions/autojoiner.ts";
 import GlobalDragHandle from "@/features/editor/extensions/drag-handle.ts";
 import { CleanStyles } from "@/features/editor/extensions/clean-styles.ts";
 import { IntentionalClear } from "@/features/editor/extensions/intentional-clear.ts";
+import { SingleDocumentBuild } from "@/features/editor/extensions/single-document-build.ts";
 
 const lowlight = createLowlight(common);
 lowlight.register("mermaid", plaintext);
@@ -481,6 +482,9 @@ export const mainExtensions = [
   AutoJoiner.configure({
     elementsToJoin: [],
   }),
+  // Builds the document DOM once per mount instead of twice; every editor
+  // built from mainExtensions (live, static, history, readonly, embeds) gets it.
+  SingleDocumentBuild,
 ] as any;
 
 type CollabExtensions = (provider: HocuspocusProvider, user: IUser) => any[];
