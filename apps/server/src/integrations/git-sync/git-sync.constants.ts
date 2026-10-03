@@ -33,12 +33,14 @@ export const GIT_SYNC_PAGE_EVENTS = [
 export const GIT_SYNC_LOCK_PREFIX = 'git-sync:lock:';
 
 /**
- * Leader-lock TTL (ms). Must exceed the maximum expected cycle duration so the
- * lock is not lost mid-cycle; on a crash it expires on its own. The
- * in-process mutex (orchestrator) prevents overlapping cycles on one instance,
- * and the Redis lock prevents two instances racing the same space.
+ * Leader-lock TTL (ms). Short on purpose: the holder renews it every TTL/3 while
+ * it works (SpaceLockService heartbeat), so a long cycle keeps the lock, while
+ * the lock of a holder that died without releasing (crash, kill -9) expires
+ * within this TTL instead of blocking the space for minutes. The in-process
+ * mutex prevents overlapping cycles on one instance, and the Redis lock prevents
+ * two instances racing the same space.
  */
-export const GIT_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
+export const GIT_SYNC_LOCK_TTL_MS = 30_000;
 
 /**
  * Bounded retry budget for ACQUIRING the per-space lock on the PUSH (external

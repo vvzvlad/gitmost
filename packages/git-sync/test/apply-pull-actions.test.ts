@@ -56,6 +56,8 @@ function makeGit(
       string,
       { base?: string | null; ours: string | null; theirs: string | null }
     >;
+    /** Paths of the merge result (`listTrackedFiles`). */
+    tracked?: string[];
   },
 ) {
   const order: string[] = [];
@@ -89,6 +91,9 @@ function makeGit(
     }),
     // Stands in for `git merge-file -p --ours` (covered on real git elsewhere).
     mergeFileOurs: vi.fn(async () => 'per-hunk merged body\n'),
+    listTrackedFiles: vi.fn(async () => conflictStages?.tracked ?? []),
+    grepFilesAtRef: vi.fn(async () => [] as string[]),
+    showFileAtRef: vi.fn(async () => null),
     commitMerge: vi.fn(async (subject: string) => {
       order.push(`commitMerge:${subject}`);
     }),
@@ -130,6 +135,7 @@ function makeFs(opts?: { failWriteFor?: Set<string> }) {
 // spy instead of console.warn/console.error. `deps()` creates a fresh spy per
 // call and stashes it on `lastLog` for the current test to assert against.
 let lastLog: ReturnType<typeof vi.fn>;
+let lastWarn: ReturnType<typeof vi.fn>;
 
 function deps(
   client: any,
@@ -137,6 +143,7 @@ function deps(
   fs: ReturnType<typeof makeFs>,
 ): ApplyPullActionsDeps {
   lastLog = vi.fn();
+  lastWarn = vi.fn();
   return {
     client,
     git,
@@ -144,6 +151,7 @@ function deps(
     mkdir: fs.fs.mkdir,
     rm: fs.fs.rm,
     log: lastLog,
+    warn: lastWarn,
   };
 }
 
@@ -510,18 +518,23 @@ describe('applyPullActions — merge result is surfaced, not swallowed', () => {
     expect(g.git.commitMerge).toHaveBeenCalledTimes(1);
   });
 
-  it('add/add conflict (no base stage): keeps the DOCMOST side and says so', async () => {
+  it('add/add conflict (no base stage): keeps the DOCMOST side, keeps git\'s version as a new file and warns', async () => {
     // Without a common ancestor nothing tells which blocks git changed; writing
     // OURS would make the push send git's whole body over the page and revert
-    // its Docmost content. The Docmost side is kept.
+    // its Docmost content. The Docmost side is kept at the path; git's version
+    // goes to a free disambiguated sibling without its gitmost_id.
     const { client } = makeClient();
     const g = makeGit(
       { ok: false, conflict: true, output: 'CONFLICT (add/add)' },
       {
-        unmerged: ['New.md'],
+        unmerged: ['Dir/New.md'],
         stages: {
-          'New.md': { ours: 'git body\n', theirs: 'docmost body\n' },
+          'Dir/New.md': {
+            ours: '---\ngitmost_id: some-id\n---\n\ngit body\n',
+            theirs: 'docmost body\n',
+          },
         },
+        tracked: ['Dir/New.md', 'Dir/New ~git.md'],
       },
     );
     const fs = makeFs();
@@ -532,12 +545,14 @@ describe('applyPullActions — merge result is surfaced, not swallowed', () => {
       VAULT,
     );
 
-    expect(res.conflictedPaths).toEqual(['New.md']);
+    expect(res.conflictedPaths).toEqual(['Dir/New.md']);
     expect(g.git.mergeFileOurs).not.toHaveBeenCalled();
-    const w = fs.writes.find((x) => x.abs === '/vault/New.md');
+    const w = fs.writes.find((x) => x.abs === '/vault/Dir/New.md');
     expect(w?.text).toBe('docmost body\n');
-    expect(lastLog.mock.calls.map((c) => c[0]).join('\n')).toMatch(
-      /add\/add.*New\.md/,
+    const copy = fs.writes.find((x) => x.abs === '/vault/Dir/New ~git-2.md');
+    expect(copy?.text).toBe('git body\n');
+    expect(lastWarn.mock.calls.map((c) => c[0]).join('\n')).toMatch(
+      /add\/add.*Dir\/New\.md -> Dir\/New ~git-2\.md/,
     );
   });
 

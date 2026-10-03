@@ -194,11 +194,42 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(await git(root, "log", "--all", "--format=%H", "-S", "alpha DOC")).not.toBe("");
   });
 
-  it("an add/add conflict keeps the Docmost page and never writes git's body over it", async () => {
+  it("Docmost renames a page and edits block 3 while git edits block 1 at the old path: both edits land, Docmost's title and path stay", async () => {
+    if (!available) return;
+    const { root, page, client, cycle, humanEdit } = await setup(
+      "alpha\n\nmiddle\n\nomega",
+    );
+
+    // A long block-3 edit, so git does not pair the old and new file as a rename.
+    const omegaDoc = `omega ${"DOC ".repeat(80).trim()}`;
+    page.title = "Renamed";
+    page.text = `alpha\n\nmiddle\n\n${omegaDoc}`;
+    page.updatedAt = T1;
+    await humanEdit("alpha", "alpha GIT");
+    client.importPageMarkdown.mockImplementation(
+      async (_pageId: string, markdown: string, base: string | null) => {
+        page.text = merge3(base, markdown, page.text!);
+        return {};
+      },
+    );
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(page.text).toBe(`alpha GIT\n\nmiddle\n\n${omegaDoc}`);
+    expect(client.renamePage).not.toHaveBeenCalled();
+    expect(client.movePage).not.toHaveBeenCalled();
+    expect(await git(root, "ls-tree", "--name-only", "main")).toBe("Renamed.md");
+    const onMain = await git(root, "show", "main:Renamed.md");
+    expect(onMain).toContain("alpha GIT");
+    expect(onMain).toContain(omegaDoc);
+  });
+
+  it("an add/add conflict keeps the Docmost page and git's version as a new page", async () => {
     if (!available) return;
     const { root, pages, client, cycle } = await setup("C1");
 
-    // Docmost creates "New" while a git user adds a different New.md.
+    // Docmost creates "New" while a git user adds a different New.md (carrying
+    // the id of another page, which must not travel with git's copy).
     pages.push({
       id: N,
       slugId: "n",
@@ -207,7 +238,11 @@ describe("runCycle — the push never echoes the pull's export", () => {
       updatedAt: T1,
       text: "docmost text",
     });
-    await writeFile(join(root, "New.md"), "git text\n", "utf8");
+    await writeFile(
+      join(root, "New.md"),
+      `---\ngitmost_id: ${A}\n---\n\ngit text\n`,
+      "utf8",
+    );
     await git(root, "add", "New.md");
     await git(root, "commit", "-m", "human add");
     const res = await cycle();
@@ -215,8 +250,52 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(res.pull.conflict).toBe(true);
     expect(res.push.failures).toBe(0);
     expect(client.importPageMarkdown).not.toHaveBeenCalled();
-    expect(await git(root, "show", "main:New.md")).toContain("docmost text");
-    // git's version stays in the vault history.
-    expect(await git(root, "log", "--all", "--format=%H", "-S", "git text")).not.toBe("");
+    const onMain = await git(root, "show", "main:New.md");
+    expect(onMain).toContain("docmost text");
+    expect(onMain).toContain(`gitmost_id: ${N}`);
+    // git's version became its own page, created from the disambiguated file.
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(client.createPage).toHaveBeenCalledWith(
+      "New ~git",
+      "git text",
+      "space-1",
+      undefined,
+    );
+    const copy = await git(root, "show", "main:New ~git.md");
+    expect(copy).toContain("git text");
+    expect(copy).not.toContain(A);
   });
+
+  it.each([
+    ["drops the final newline", (t: string) => t.replace(/\n+$/, "")],
+    ["adds trailing blank lines", (t: string) => `${t}\n\n`],
+  ])(
+    "a git commit that %s does not revert Docmost's last-block edit in a conflict",
+    async (_name, retail) => {
+      if (!available) return;
+      const { root, page, client, cycle } = await setup(
+        "alpha\n\nmiddle\n\nomega",
+      );
+
+      // Docmost edits blocks 1 and 3; git edits block 1 and changes the file's tail.
+      page.text = "alpha DOC\n\nmiddle\n\nomega DOC";
+      page.updatedAt = T1;
+      const file = join(root, "Page.md");
+      const before = await readFile(file, "utf8");
+      await writeFile(file, retail(before.replace("alpha", "alpha GIT")), "utf8");
+      await git(root, "commit", "-am", "human edit");
+      client.importPageMarkdown.mockImplementation(
+        async (_pageId: string, markdown: string, base: string | null) => {
+          page.text = merge3(base, markdown, page.text!);
+          return {};
+        },
+      );
+      const res = await cycle();
+
+      expect(res.pull.conflict).toBe(true);
+      expect(res.push.failures).toBe(0);
+      expect(await git(root, "show", "main:Page.md")).toContain("omega DOC");
+      expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega DOC");
+    },
+  );
 });

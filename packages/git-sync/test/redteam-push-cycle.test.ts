@@ -52,6 +52,7 @@ function makePushGit(opts: {
     }),
     diffNameStatus: vi.fn(async () => opts.changes),
     showFileAtRef: vi.fn(async () => null),
+    grepFilesAtRef: vi.fn(async () => [] as string[]),
     updateRef: vi.fn(async (ref: string, target: string) => {
       calls.updateRef.push({ ref, target });
     }),

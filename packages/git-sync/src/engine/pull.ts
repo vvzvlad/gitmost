@@ -48,6 +48,8 @@ import {
   type DeletionDecision,
 } from "./reconcile.js";
 import { stabilizePageBody } from "./stabilize.js";
+import { findPageFileAtRef } from "./push.js";
+import { disambiguate } from "./sanitize.js";
 
 // Engine-only mirror branch (SPEC §5): the engine writes here, humans never do.
 const DOCMOST_BRANCH = "docmost";
@@ -322,6 +324,9 @@ export interface ApplyPullActionsDeps {
     | "commitMerge"
     | "showStage"
     | "mergeFileOurs"
+    | "grepFilesAtRef"
+    | "showFileAtRef"
+    | "listTrackedFiles"
   >;
   /** Write a file by ABSOLUTE path (mkdir of the parent is done internally). */
   writeFile: (absPath: string, text: string) => Promise<void>;
@@ -334,6 +339,8 @@ export interface ApplyPullActionsDeps {
    * falls back to `console.log` so existing callers stay green.
    */
   log?: (line: string) => void;
+  /** Injected WARN-level logger; falls back to `log`. */
+  warn?: (line: string) => void;
 }
 
 /** Outcome counters from `applyPullActions` (for the summary + tests). */
@@ -383,6 +390,7 @@ export async function applyPullActions(
   // One channel, mirroring the push side: route every cycle diagnostic through
   // the injected logger; fall back to `console.log` when none is supplied.
   const log = deps.log ?? ((line: string) => console.log(line));
+  const warn = deps.warn ?? log;
 
   // Emit the SPEC §8 suppression warnings (preserved from the original `main`).
   const decision = actions.deletionDecision;
@@ -541,8 +549,8 @@ export async function applyPullActions(
   //     would make the push (diffed from the `docmost` tip) revert Docmost's
   //     edits in blocks git never touched. The docmost-side text of the
   //     conflicting hunks stays on the `docmost` branch and in page history.
-  //     add/add (no common ancestor) keeps the Docmost side — see below. No
-  //     markers ever reach `main`.
+  //     add/add (no common ancestor) keeps the Docmost side and git's version
+  //     as a new sibling file — see below. No markers ever reach `main`.
   await git.checkout(DEFAULT_BRANCH);
   const merge = await git.merge(DOCMOST_BRANCH);
   let conflictedPaths: string[] = [];
@@ -551,6 +559,9 @@ export async function applyPullActions(
     const unmerged = await git.listUnmergedPaths();
     const genuine: string[] = [];
     const addAdd: string[] = [];
+    const movedMerged: string[] = [];
+    // Paths taken in the merge result (lazily listed on the first add/add).
+    let taken: Set<string> | null = null;
     for (const rel of unmerged) {
       const ours = await git.showStage(2, rel); // main side
       const theirs = await git.showStage(3, rel); // docmost side
@@ -570,19 +581,74 @@ export async function applyPullActions(
         const base = await git.showStage(1, rel);
         let resolved: string | null;
         if (base !== null && ours !== null && theirs !== null) {
-          // Content conflict: per hunk, git wins only the conflicting hunks.
-          resolved = await git.mergeFileOurs(base, ours, theirs);
+          // Content conflict: per hunk, git wins only the conflicting hunks. The
+          // engine writes exactly one trailing newline; a git side that drops it
+          // or adds blank lines would otherwise "change" the last line and win
+          // that hunk over a Docmost edit of the last block.
+          resolved = await git.mergeFileOurs(
+            normalizeTrailingWhitespace(base),
+            normalizeTrailingWhitespace(ours),
+            normalizeTrailingWhitespace(theirs),
+          );
         } else if (ours !== null && theirs !== null) {
           // add/add: with no common ancestor nothing tells which blocks git
           // changed, and OURS would push git's whole body over the page, reverting
-          // its Docmost content. Keep the Docmost side; git's version stays in
-          // main's history (the merge commit's first parent).
-          addAdd.push(rel);
+          // its Docmost content. Keep the Docmost side at the path and keep git's
+          // version as a NEW file at a disambiguated sibling path, its gitmost_id
+          // stripped so the push creates it as a new page.
           resolved = theirs;
+          if (taken === null) taken = new Set(await git.listTrackedFiles());
+          const slash = rel.lastIndexOf("/");
+          const dir = slash >= 0 ? rel.slice(0, slash + 1) : "";
+          const stem = rel.slice(dir.length).replace(/\.md$/, "");
+          let copy = `${dir}${disambiguate(stem, "git")}.md`;
+          for (let n = 2; taken.has(copy); n++) {
+            copy = `${dir}${disambiguate(stem, `git-${n}`)}.md`;
+          }
+          taken.add(copy);
+          await deps.writeFile(
+            relToAbs(vaultRoot, copy),
+            normalizeTrailingWhitespace(parsePageFile(ours).body),
+          );
+          addAdd.push(`${rel} -> ${copy}`);
         } else {
           // modify/delete: keep the remaining content. delete/delete: nothing to
           // write; commitMerge's `git add -A` stages the deletion.
           resolved = ours ?? theirs;
+          // git edited a page file that Docmost moved/renamed (git's rename
+          // detection missed the pair, so the docmost side reads as a delete):
+          // merge git's edit per hunk into the page's NEW file and drop the old
+          // path. Keeping git's copy at the old path would leave two files with
+          // one id on main, and the push would write its stale body over the
+          // page's Docmost edits.
+          const pageId =
+            base !== null && ours !== null ? parsePageFile(ours).id : null;
+          const movedTo =
+            pageId !== null
+              ? await findPageFileAtRef(git, DOCMOST_BRANCH, pageId)
+              : null;
+          const docmostText =
+            movedTo !== null && movedTo !== rel && !unmerged.includes(movedTo)
+              ? await git.showFileAtRef(DOCMOST_BRANCH, movedTo)
+              : null;
+          if (
+            base !== null &&
+            ours !== null &&
+            movedTo !== null &&
+            docmostText !== null
+          ) {
+            await deps.writeFile(
+              relToAbs(vaultRoot, movedTo),
+              await git.mergeFileOurs(
+                normalizeTrailingWhitespace(base),
+                normalizeTrailingWhitespace(ours),
+                normalizeTrailingWhitespace(docmostText),
+              ),
+            );
+            await deps.rm(relToAbs(vaultRoot, rel));
+            movedMerged.push(`${rel} -> ${movedTo}`);
+            resolved = null;
+          }
         }
         if (resolved !== null) {
           await deps.writeFile(relToAbs(vaultRoot, rel), resolved);
@@ -614,11 +680,17 @@ export async function applyPullActions(
           `'docmost' branch and recoverable via page history.`,
       );
       if (addAdd.length > 0) {
+        warn(
+          `pull: add/add conflict(s) kept the DOCMOST version at the path (no ` +
+            `common ancestor to tell which blocks git changed); the git version ` +
+            `was kept as a new file (created as a new page by the push): ` +
+            `${addAdd.join(", ")}.`,
+        );
+      }
+      if (movedMerged.length > 0) {
         log(
-          `pull: add/add conflict(s) kept the DOCMOST version (no common ` +
-            `ancestor to tell which blocks git changed): ${addAdd.join(", ")}. ` +
-            `The git version is in main's history (first parent of the merge ` +
-            `commit), not on main.`,
+          `pull: git edits of page(s) Docmost moved/renamed were merged per hunk ` +
+            `into the page's new file: ${movedMerged.join(", ")}.`,
         );
       }
     } else {

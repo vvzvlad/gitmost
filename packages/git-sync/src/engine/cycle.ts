@@ -289,6 +289,7 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
         mkdir: (absDir) => safeFs.mkdir(absDir),
         rm: (absPath) => safeFs.rm(absPath),
         log,
+        warn,
       },
       pullActions,
       vaultRoot,

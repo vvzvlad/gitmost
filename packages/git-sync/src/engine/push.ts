@@ -1166,6 +1166,24 @@ export function isPageFile(path: string): boolean {
 }
 
 /**
+ * The vault path of page `pageId`'s file at `ref`, looked up by its
+ * `gitmost_id` frontmatter at ANY path, or null when no page file there carries
+ * that id.
+ */
+export async function findPageFileAtRef(
+  git: Pick<VaultGit, "grepFilesAtRef" | "showFileAtRef">,
+  ref: string,
+  pageId: string,
+): Promise<string | null> {
+  for (const path of await git.grepFilesAtRef(ref, pageId)) {
+    if (!isPageFile(path)) continue;
+    const text = await git.showFileAtRef(ref, path);
+    if (text !== null && parsePageFile(text).id === pageId) return path;
+  }
+  return null;
+}
+
+/**
  * Git conflict-marker scan + strip (SPEC §9 — conflict markers must NEVER reach
  * Docmost). A body is treated as conflicted only when it carries BOTH a begin
  * (`<<<<<<<`) and an end (`>>>>>>>`) marker line, so a legitimate Markdown setext
@@ -1457,6 +1475,7 @@ export interface PushDeps {
     | "mergeBase"
     | "revParse"
     | "diffNameStatus"
+    | "grepFilesAtRef"
     | "showFileAtRef"
     | "updateRef"
     | "fastForwardBranch"
@@ -1649,6 +1668,16 @@ export async function runPush(
   }
 
   const actions = computePushActions({ changes, metaAt, currentPageIds });
+  // An ADDED file carrying the id of a page whose file exists at the base under
+  // ANOTHER path (e.g. git kept its edited copy at the old path while Docmost
+  // moved the page): its 3-way base is that file, never a no-base 2-way write
+  // over the live page. The page is not moved: a move needs that base file to be
+  // gone from `main`, which the D-side ghost-move detection already handles.
+  for (const u of actions.updates) {
+    if (u.basePath !== undefined || metaAt(u.path, "prev") !== null) continue;
+    const at = await findPageFileAtRef(git, base.sha, u.pageId);
+    if (at !== null && at !== u.path) u.basePath = at;
+  }
   const planned = {
     creates: actions.creates.length,
     updates: actions.updates.length,

@@ -78,14 +78,15 @@ export interface GitSyncRunStatus {
 
 /**
  * Health of one space's git-sync, as reported by GET /api/git-sync/status. Kept
- * in memory by the orchestrator (one entry per space that ran a cycle since the
- * process started; recomputed by every cycle, so a restart just starts empty).
+ * in memory by the orchestrator (one entry per space that ran a cycle, or was
+ * skipped because its lock was held, since the process started; a restart just
+ * starts empty).
  */
 export interface GitSyncSpaceStatus {
   spaceId: string;
-  /** ISO time the last cycle (ok or failed) finished. */
-  lastRunAt: string;
-  lastResult: 'ok' | 'failed';
+  /** ISO time the last cycle (ok or failed) finished (null: none yet). */
+  lastRunAt: string | null;
+  lastResult: 'ok' | 'failed' | null;
   /** Why the last cycle failed (null when it succeeded). */
   lastError: string | null;
   /** ISO time of the last successful cycle (null: none since process start). */
@@ -99,6 +100,15 @@ export interface GitSyncSpaceStatus {
     pageId: string | null;
     reason: string;
   } | null;
+  /** ISO time a cycle or push was last skipped (null: none since process start). */
+  lastSkippedAt: string | null;
+  /** Why: the space's lock was held by another holder. */
+  lastSkipReason: 'lock-held' | null;
+  /**
+   * Since when this process has found the lock held, across consecutive skips
+   * (null once a cycle runs).
+   */
+  lockHeldSince: string | null;
 }
 
 /**
@@ -280,6 +290,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         this.driveCycle(spaceId, workspaceId, serviceUserId, signal),
       );
       if ('skipped' in result && !('spaceId' in result)) {
+        if (result.skipped === 'lock-held') {
+          this.recordLockHeldSkip(spaceId, workspaceId);
+        }
         return { spaceId, ran: false, skipped: result.skipped };
       }
       this.recordCycleSuccess(spaceId, workspaceId, result);
@@ -331,6 +344,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
               reason: clip(first.error),
             }
           : null,
+        lastSkippedAt: prev?.lastSkippedAt ?? null,
+        lastSkipReason: prev?.lastSkipReason ?? null,
+        lockHeldSince: null,
       },
     });
     if (prev && prev.consecutiveFailures > 0) {
@@ -369,6 +385,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         consecutiveFailures,
         pushFailures: 0,
         firstPushFailure: null,
+        lastSkippedAt: prev?.lastSkippedAt ?? null,
+        lastSkipReason: prev?.lastSkipReason ?? null,
+        lockHeldSince: null,
       },
     });
     if (consecutiveFailures === 1) {
@@ -384,6 +403,32 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     }
     incGitSyncCycle('failed');
     this.publishFailingSpaces();
+  }
+
+  /**
+   * Record a cycle or push skipped because the space's lock is held (by another
+   * replica, or by a dead process until its lock expires), so the space shows in
+   * /status even before it ever ran in this process.
+   */
+  private recordLockHeldSkip(spaceId: string, workspaceId: string): void {
+    const prev = this.spaceHealth.get(spaceId)?.status;
+    const now = new Date().toISOString();
+    this.spaceHealth.set(spaceId, {
+      workspaceId,
+      status: {
+        spaceId,
+        lastRunAt: prev?.lastRunAt ?? null,
+        lastResult: prev?.lastResult ?? null,
+        lastError: prev?.lastError ?? null,
+        lastSuccessAt: prev?.lastSuccessAt ?? null,
+        consecutiveFailures: prev?.consecutiveFailures ?? 0,
+        pushFailures: prev?.pushFailures ?? 0,
+        firstPushFailure: prev?.firstPushFailure ?? null,
+        lastSkippedAt: now,
+        lastSkipReason: 'lock-held',
+        lockHeldSince: prev?.lockHeldSince ?? now,
+      },
+    });
   }
 
   /**
@@ -514,6 +559,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     // The lock was held (in-progress or another replica) — surface to the caller
     // so the HTTP handler can answer 503 and let git retry.
     if (typeof result === 'object' && result !== null && 'skipped' in result) {
+      if (result.skipped === 'lock-held') {
+        this.recordLockHeldSkip(spaceId, workspaceId);
+      }
       throw new GitSyncLockHeldError(spaceId);
     }
   }

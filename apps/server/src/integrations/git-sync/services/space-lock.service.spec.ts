@@ -322,6 +322,132 @@ describe('SpaceLockService', () => {
       }
     });
   });
+
+  // The lock's TTL against a redis that really expires keys (on the mocked
+  // clock), shared by several services as by several replicas/processes.
+  describe('short TTL renewed by the holder', () => {
+    function ttlRedis() {
+      const store = new Map<string, { value: string; expiresAt: number }>();
+      const live = (key: string) => {
+        const entry = store.get(key);
+        if (entry && entry.expiresAt <= Date.now()) store.delete(key);
+        return store.get(key);
+      };
+      return {
+        store,
+        set: jest.fn(
+          async (key: string, value: string, _px: string, ttl: number) => {
+            if (live(key)) return null;
+            store.set(key, { value, expiresAt: Date.now() + ttl });
+            return 'OK';
+          },
+        ),
+        eval: jest.fn(
+          async (lua: string, _n: number, key: string, owner: string, ttl?: string) => {
+            const entry = live(key);
+            if (!entry || entry.value !== owner) return 0;
+            if (lua.includes('pexpire')) {
+              entry.expiresAt = Date.now() + Number(ttl);
+            } else {
+              store.delete(key);
+            }
+            return 1;
+          },
+        ),
+      };
+    }
+    const serviceOn = (redis: ReturnType<typeof ttlRedis>) =>
+      new SpaceLockService({ getOrThrow: () => redis } as any);
+    const renewals = (redis: ReturnType<typeof ttlRedis>) =>
+      redis.eval.mock.calls.filter(([lua]) => String(lua).includes('pexpire'))
+        .length;
+
+    it('a holder that dies without releasing frees the space within 30 s', async () => {
+      jest.useFakeTimers();
+      try {
+        const redis = ttlRedis();
+        // The dead process took the lock and crashed: no renewal, no release.
+        await (serviceOn(redis) as any).acquire('space-1');
+        const survivor = serviceOn(redis);
+        const fn = jest.fn(async () => 'ran');
+
+        await expect(survivor.withSpaceLock('space-1', fn)).resolves.toEqual({
+          skipped: 'lock-held',
+        });
+        await jest.advanceTimersByTimeAsync(30_000);
+        await expect(survivor.withSpaceLock('space-1', fn)).resolves.toBe('ran');
+        expect(fn).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('a long-running holder keeps the lock past several TTLs thanks to renewal', async () => {
+      jest.useFakeTimers();
+      try {
+        const redis = ttlRedis();
+        const holder = serviceOn(redis);
+        const otherReplica = serviceOn(redis);
+        let finish!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        let signal!: AbortSignal;
+        const run = holder.withSpaceLock('space-1', async (s) => {
+          signal = s;
+          await gate;
+          return 'done';
+        });
+        await flushMicrotasks();
+
+        for (let i = 0; i < 4; i++) {
+          await jest.advanceTimersByTimeAsync(GIT_SYNC_LOCK_TTL_MS);
+          expect(await (otherReplica as any).acquire('space-1')).toBe(false);
+        }
+        expect(signal.aborted).toBe(false);
+
+        finish();
+        await expect(run).resolves.toBe('done');
+        expect(await (otherReplica as any).acquire('space-1')).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it.each(['returns', 'throws'])(
+      'renewal stops once the holder releases (fn %s)',
+      async (outcome) => {
+        jest.useFakeTimers();
+        try {
+          const redis = ttlRedis();
+          const holder = serviceOn(redis);
+          let finish!: () => void;
+          const gate = new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          const run = holder.withSpaceLock('space-1', async () => {
+            await gate;
+            if (outcome === 'throws') throw new Error('boom');
+            return 'done';
+          });
+          await flushMicrotasks();
+          await jest.advanceTimersByTimeAsync(GIT_SYNC_LOCK_TTL_MS);
+          expect(renewals(redis)).toBeGreaterThan(0);
+
+          finish();
+          await run.catch(() => undefined);
+          const afterRelease = renewals(redis);
+          await jest.advanceTimersByTimeAsync(5 * GIT_SYNC_LOCK_TTL_MS);
+
+          expect(renewals(redis)).toBe(afterRelease);
+          expect(jest.getTimerCount()).toBe(0);
+          expect(redis.store.has(GIT_SYNC_LOCK_PREFIX + 'space-1')).toBe(false);
+        } finally {
+          jest.useRealTimers();
+        }
+      },
+    );
+  });
 });
 
 // Silence the warn logger if a refresh/release path ever logs (defensive).

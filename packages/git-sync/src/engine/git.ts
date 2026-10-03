@@ -824,6 +824,35 @@ export class VaultGit {
   }
 
   /**
+   * Vault paths of the `*.md` files at `ref` whose content contains `text` (a
+   * fixed string; `git grep -l -z -F`). Empty when nothing matches. Used to find
+   * a page's file by its id at ANY path of a commit.
+   */
+  async grepFilesAtRef(ref: string, text: string): Promise<string[]> {
+    const r = await this.runRaw([
+      "grep",
+      "-l",
+      "-z",
+      "-F",
+      "-e",
+      text,
+      ref,
+      "--",
+      "*.md",
+    ]);
+    if (r.code === 1) return []; // no match
+    if (r.code !== 0) {
+      const detail = (r.stderr || r.stdout || "").trim();
+      throw new Error(`git grep at ${ref} failed: ${detail}`);
+    }
+    const prefix = `${ref}:`;
+    return r.stdout
+      .split("\0")
+      .filter((p) => p.length > 0)
+      .map((p) => (p.startsWith(prefix) ? p.slice(prefix.length) : p));
+  }
+
+  /**
    * Read ONE side of a conflicted file from the merge index (`git show :N:path`),
    * where the stage `N` is the standard 3-way merge slot:
    *   1 = merge BASE (common ancestor), 2 = OURS (the current branch = `main`),

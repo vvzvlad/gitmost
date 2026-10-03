@@ -448,6 +448,11 @@ describe('GitSyncOrchestrator', () => {
       // We must never write to the working tree concurrently with a cycle.
       expect(runReceivePack).not.toHaveBeenCalled();
       expect(runCycleMock).not.toHaveBeenCalled();
+      // The refused push shows in the space's status.
+      const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+      expect(status.lastSkipReason).toBe('lock-held');
+      expect(status.lockHeldSince).toEqual(expect.any(String));
+      expect(status.lastRunAt).toBeNull();
     }, 15_000);
 
     it('swallows a post-push cycle error (the push is durable; poll retries)', async () => {
@@ -725,6 +730,9 @@ describe('GitSyncOrchestrator', () => {
         consecutiveFailures: 3,
         pushFailures: 0,
         firstPushFailure: null,
+        lastSkippedAt: null,
+        lastSkipReason: null,
+        lockHeldSince: null,
       });
       // Metrics: three failed cycles, one failing space.
       expect(incCycle.mock.calls).toEqual([['failed'], ['failed'], ['failed']]);
@@ -855,13 +863,10 @@ describe('GitSyncOrchestrator', () => {
       );
     });
 
-    it('scopes getSpaceStatuses to the workspace and skips non-runs (lock held)', async () => {
+    it('scopes getSpaceStatuses to the workspace', async () => {
       const built = build();
       await built.orchestrator.runOnce('space-1', 'ws-1');
       await built.orchestrator.runOnce('space-2', 'ws-2');
-      // A skipped cycle (lock held elsewhere) is not a run: nothing recorded.
-      built.redis.set.mockResolvedValueOnce(null);
-      await built.orchestrator.runOnce('space-3', 'ws-1');
 
       expect(
         built.orchestrator.getSpaceStatuses('ws-1').map((s) => s.spaceId),
@@ -870,6 +875,47 @@ describe('GitSyncOrchestrator', () => {
         built.orchestrator.getSpaceStatuses('ws-2').map((s) => s.spaceId),
       ).toEqual(['space-2']);
       expect(built.orchestrator.getSpaceStatuses('ws-other')).toEqual([]);
+    });
+
+    it('shows a lock-held skip in the status, since when it is held, until a cycle runs', async () => {
+      jest.useFakeTimers();
+      try {
+        const built = build();
+        // The lock is held (e.g. by a process that died): no cycle has run yet.
+        jest.setSystemTime(new Date('2026-10-03T10:00:00.000Z'));
+        built.redis.set.mockResolvedValueOnce(null);
+        await built.orchestrator.runOnce('space-1', 'ws-1');
+        jest.setSystemTime(new Date('2026-10-03T10:00:10.000Z'));
+        built.redis.set.mockResolvedValueOnce(null);
+        await built.orchestrator.runOnce('space-1', 'ws-1');
+
+        expect(built.orchestrator.getSpaceStatuses('ws-1')).toEqual([
+          {
+            spaceId: 'space-1',
+            lastRunAt: null,
+            lastResult: null,
+            lastError: null,
+            lastSuccessAt: null,
+            consecutiveFailures: 0,
+            pushFailures: 0,
+            firstPushFailure: null,
+            lastSkippedAt: '2026-10-03T10:00:10.000Z',
+            lastSkipReason: 'lock-held',
+            lockHeldSince: '2026-10-03T10:00:00.000Z',
+          },
+        ]);
+
+        // The lock is free again: the cycle runs and the held-since mark clears.
+        jest.setSystemTime(new Date('2026-10-03T10:00:30.000Z'));
+        await built.orchestrator.runOnce('space-1', 'ws-1');
+        const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+        expect(status.lastResult).toBe('ok');
+        expect(status.lastRunAt).toBe('2026-10-03T10:00:30.000Z');
+        expect(status.lockHeldSince).toBeNull();
+        expect(status.lastSkippedAt).toBe('2026-10-03T10:00:10.000Z');
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('records the post-push cycle outcome of ingestExternalPush', async () => {
