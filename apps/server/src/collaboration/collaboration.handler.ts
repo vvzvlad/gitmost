@@ -421,8 +421,10 @@ export class CollaborationHandler {
               // No base: the 2-way merge makes the live doc EQUAL the target, so
               // an empty target would delete every live block. Nothing proves
               // git cleared this page — refuse, leaving the live doc untouched.
+              // A live doc with NO blocks (a fresh page shell) is empty too.
               if (
                 targetEmpty &&
+                liveFrag.length > 0 &&
                 !isEmptyParagraphDoc(TiptapTransformer.fromYdoc(doc, 'default'))
               ) {
                 return true;

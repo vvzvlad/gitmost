@@ -18,17 +18,19 @@ jest.mock('../git-sync.loader', () => ({
   })),
 }));
 // The real registry is a disabled no-op under jest (no METRICS_PORT); spy on the
-// two git-sync helpers so the orchestrator's metric calls are observable.
+// git-sync helpers so the orchestrator's metric calls are observable.
 jest.mock('../../metrics/metrics.registry', () => ({
   ...jest.requireActual('../../metrics/metrics.registry'),
   incGitSyncCycle: jest.fn(),
   setGitSyncFailingSpaces: jest.fn(),
+  setGitSyncPushFailingSpaces: jest.fn(),
 }));
 
 import { Logger } from '@nestjs/common';
 import {
   incGitSyncCycle,
   setGitSyncFailingSpaces,
+  setGitSyncPushFailingSpaces,
 } from '../../metrics/metrics.registry';
 import {
   Kysely,
@@ -785,6 +787,72 @@ describe('GitSyncOrchestrator', () => {
         pageId: null,
         reason: 'Parent page not found',
       });
+    });
+
+    it('counts spaces whose last cycle had per-page push failures in their own gauge', async () => {
+      const built = build();
+      const setPushFailing = setGitSyncPushFailingSpaces as unknown as AnyMock;
+      runCycleMock.mockResolvedValueOnce({
+        ...OK_CYCLE,
+        push: { mode: 'apply', failures: 1 },
+      });
+
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      expect(setPushFailing).toHaveBeenLastCalledWith(1);
+      // The cycle itself succeeded: not a failing space.
+      expect(setFailing).toHaveBeenLastCalledWith(0);
+
+      await built.orchestrator.runOnce('space-1', 'ws-1'); // clean push
+      expect(setPushFailing).toHaveBeenLastCalledWith(0);
+    });
+
+    it('forgets a failing space once its sync is switched off (event path)', async () => {
+      const built = build();
+      spies();
+      runCycleMock.mockRejectedValueOnce(new Error('boom'));
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      expect(setFailing).toHaveBeenLastCalledWith(1);
+      const firstKeys = runCycleMock.mock.calls[0][0].exportKeys;
+
+      const gate = jest
+        .spyOn(built.orchestrator as any, 'isSpaceGitSyncEnabled')
+        .mockResolvedValue(false);
+      const res = await built.orchestrator.runOnce('space-1', 'ws-1');
+
+      expect(res.skipped).toBe('space-not-enabled');
+      expect(built.orchestrator.getSpaceStatuses('ws-1')).toEqual([]);
+      expect(setFailing).toHaveBeenLastCalledWith(0);
+      // Re-enabled later: a fresh export-key map (full pass).
+      gate.mockResolvedValue(true);
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      expect(runCycleMock.mock.calls[1][0].exportKeys).not.toBe(firstKeys);
+    });
+
+    it('the poll prunes spaces that are no longer enabled', async () => {
+      const built = build();
+      spies();
+      const enabledSpaces = jest
+        .spyOn(built.orchestrator as any, 'enabledSpaces')
+        .mockResolvedValue([
+          { spaceId: 'space-1', workspaceId: 'ws-1' },
+          { spaceId: 'space-2', workspaceId: 'ws-1' },
+        ]);
+      runCycleMock.mockRejectedValue(new Error('boom'));
+      await (built.orchestrator as any).pollTick();
+      expect(setFailing).toHaveBeenLastCalledWith(2);
+
+      enabledSpaces.mockResolvedValue([
+        { spaceId: 'space-2', workspaceId: 'ws-1' },
+      ]);
+      await (built.orchestrator as any).pollTick();
+
+      expect(
+        built.orchestrator.getSpaceStatuses('ws-1').map((s) => s.spaceId),
+      ).toEqual(['space-2']);
+      expect(setFailing).toHaveBeenLastCalledWith(1);
+      expect((built.orchestrator as any).exportKeysBySpace.has('space-1')).toBe(
+        false,
+      );
     });
 
     it('scopes getSpaceStatuses to the workspace and skips non-runs (lock held)', async () => {

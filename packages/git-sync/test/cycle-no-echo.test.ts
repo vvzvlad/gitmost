@@ -164,4 +164,59 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(client.importPageMarkdown).toHaveBeenCalledTimes(1);
     expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega DOCMOST more");
   });
+
+  it("a pull conflict resolves per hunk: git wins block 1, Docmost's block 3 edit survives on main and in the live doc", async () => {
+    if (!available) return;
+    const { root, page, client, cycle, humanEdit } = await setup(
+      "alpha\n\nmiddle\n\nomega",
+    );
+
+    // Docmost edits blocks 1 and 3; git edits block 1 only -> a real conflict.
+    page.text = "alpha DOC\n\nmiddle\n\nomega DOC";
+    page.updatedAt = T1;
+    await humanEdit("alpha", "alpha GIT");
+    client.importPageMarkdown.mockImplementation(
+      async (_pageId: string, markdown: string, base: string | null) => {
+        page.text = merge3(base, markdown, page.text!);
+        return {};
+      },
+    );
+    const res = await cycle();
+
+    expect(res.pull.conflict).toBe(true);
+    expect(res.push.failures).toBe(0);
+    expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega DOC");
+    const onMain = await git(root, "show", "main:Page.md");
+    expect(onMain).toContain("alpha GIT");
+    expect(onMain).toContain("omega DOC");
+    expect(onMain).not.toContain("alpha DOC");
+    // Docmost's losing block-1 text stays in the vault history.
+    expect(await git(root, "log", "--all", "--format=%H", "-S", "alpha DOC")).not.toBe("");
+  });
+
+  it("an add/add conflict keeps the Docmost page and never writes git's body over it", async () => {
+    if (!available) return;
+    const { root, pages, client, cycle } = await setup("C1");
+
+    // Docmost creates "New" while a git user adds a different New.md.
+    pages.push({
+      id: N,
+      slugId: "n",
+      title: "New",
+      parentPageId: null,
+      updatedAt: T1,
+      text: "docmost text",
+    });
+    await writeFile(join(root, "New.md"), "git text\n", "utf8");
+    await git(root, "add", "New.md");
+    await git(root, "commit", "-m", "human add");
+    const res = await cycle();
+
+    expect(res.pull.conflict).toBe(true);
+    expect(res.push.failures).toBe(0);
+    expect(client.importPageMarkdown).not.toHaveBeenCalled();
+    expect(await git(root, "show", "main:New.md")).toContain("docmost text");
+    // git's version stays in the vault history.
+    expect(await git(root, "log", "--all", "--format=%H", "-S", "git text")).not.toBe("");
+  });
 });

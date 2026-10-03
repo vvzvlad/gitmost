@@ -285,6 +285,23 @@ describe('CollaborationHandler.gitSyncWriteBody (owner-routed body write)', () =
     expect(texts(editor.getXmlFragment('default'))).toEqual(['alpha', 'beta']);
   });
 
+  it('applies an empty body without a base to a fresh page shell with no blocks', async () => {
+    // A page created by pageService.create has no ydoc yet: its live fragment
+    // holds NO blocks (fromYdoc -> {type:'doc', content: []}). That is an empty
+    // page, so the no-base empty-body refusal must not fire.
+    const { hocuspocus, shared } = fakeHocuspocus([]);
+    const handler = new CollaborationHandler();
+
+    await expect(
+      handler.getHandlers(hocuspocus).gitSyncWriteBody('page.x', {
+        prosemirrorJson: pmDoc(''),
+        userId: 'svc-user',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(texts(shared.getXmlFragment('default'))).toEqual(['']);
+  });
+
   it('flags the store as an intentional clear ONLY for an empty body with a non-empty base', async () => {
     const contextOf = async (payload: any) => {
       const { hocuspocus } = fakeHocuspocus([{ text: 'alpha', id: 'p1' }]);

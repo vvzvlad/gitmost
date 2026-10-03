@@ -90,11 +90,15 @@ export const METRIC_AI_EXTERNAL_MCP_CONNECT_FAILURES_TOTAL =
 
 // git-sync health. Every reconcile cycle (poll, manual trigger, post-push)
 // increments the counter labelled by its outcome — a fixed 2-value `result` set
-// (ok|failed); the gauge holds how many spaces are CURRENTLY failing (last cycle
-// failed). Deliberately no per-space label (unbounded cardinality): the per-space
-// detail lives in GET /api/git-sync/status. Same "do not rename" contract.
+// (ok|failed); one gauge holds how many spaces are CURRENTLY failing (last cycle
+// failed), the other how many spaces' last (completed) cycle had per-page push
+// failures. Deliberately no per-space label (unbounded cardinality): the
+// per-space detail lives in GET /api/git-sync/status. Same "do not rename"
+// contract.
 export const METRIC_GIT_SYNC_CYCLES_TOTAL = 'git_sync_cycles_total';
 export const METRIC_GIT_SYNC_FAILING_SPACES = 'git_sync_failing_spaces';
+export const METRIC_GIT_SYNC_PUSH_FAILING_SPACES =
+  'git_sync_push_failing_spaces';
 
 // Histogram buckets (seconds). Chosen to give useful p50/p95/p99 resolution
 // for typical web/DB latencies without exploding series cardinality.

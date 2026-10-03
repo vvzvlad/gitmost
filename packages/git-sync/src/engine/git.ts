@@ -19,7 +19,9 @@
  *   - "nothing to commit" is treated as a graceful no-op, not an error.
  */
 import { execFile } from "node:child_process";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -839,6 +841,46 @@ export class VaultGit {
     const r = await this.runRaw(["show", `:${stage}:${path}`]);
     if (r.code !== 0) return null;
     return r.stdout;
+  }
+
+  /**
+   * Three-way merge of one file's texts (`git merge-file -p --ours`): a hunk only
+   * one side changed is taken from that side, and only the hunks BOTH sides
+   * changed resolve to `ours`. The pull uses it to resolve a conflicted
+   * docmost -> main merge per hunk (SPEC §9), so git wins only where it actually
+   * conflicts and Docmost's other changes in the same file survive. The texts go
+   * through a private temp dir (merge-file reads files) removed afterwards.
+   */
+  async mergeFileOurs(
+    base: string,
+    ours: string,
+    theirs: string,
+  ): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "git-sync-merge-"));
+    try {
+      const oursPath = join(dir, "ours");
+      const basePath = join(dir, "base");
+      const theirsPath = join(dir, "theirs");
+      await writeFile(oursPath, ours, "utf8");
+      await writeFile(basePath, base, "utf8");
+      await writeFile(theirsPath, theirs, "utf8");
+      const r = await this.runRaw([
+        "merge-file",
+        "-p",
+        "--ours",
+        oursPath,
+        basePath,
+        theirsPath,
+      ]);
+      if (r.code !== 0) {
+        throw new Error(
+          `git merge-file failed (exit ${r.code}): ${(r.stderr || r.stdout).trim()}`,
+        );
+      }
+      return r.stdout;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   /**

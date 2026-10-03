@@ -369,6 +369,19 @@ describe('GitmostDataSourceService', () => {
       expect(res.updatedAt).toBe('2026-06-20T11:00:00.000Z');
     });
 
+    it('guard #2 treats block-less page content as an empty doc: an empty body is not written', async () => {
+      const { service, mocks } = build();
+      mocks.pageRepo.findById.mockResolvedValue({
+        id: 'p1',
+        updatedAt: new Date('2026-06-20T11:00:00.000Z'),
+        content: { type: 'doc', content: [] },
+      });
+
+      await service.bind(CTX).importPageMarkdown('p1', '');
+
+      expect(mocks.collabGateway.writePageBody).not.toHaveBeenCalled();
+    });
+
     it('a non-empty body over NULL page content is still written', async () => {
       const { service, mocks } = build();
       mocks.pageRepo.findById.mockResolvedValue({
@@ -593,6 +606,58 @@ describe('GitmostDataSourceService', () => {
         data: { id: 'new-id' },
         updatedAt: '2026-06-20T12:00:00.000Z',
       });
+    });
+
+    it('folder-note scenario: an EMPTY folder note is created without a body write, and its child lands under it', async () => {
+      // git: Folder/Folder.md (empty) + Folder/Child.md. The empty folder note
+      // must not reach the collab write (on a fresh shell an empty no-base write
+      // was refused), or the create fails and the child falls back to root.
+      const { service, mocks } = build();
+      const FOLDER_ID = '22222222-2222-4222-8222-222222222222';
+      mocks.pageService.create
+        .mockResolvedValueOnce({ id: FOLDER_ID })
+        .mockResolvedValueOnce({ id: 'child-id' });
+      mocks.pageRepo.findById.mockImplementation(async (id: string) =>
+        id === FOLDER_ID
+          ? {
+              id: FOLDER_ID,
+              spaceId: 'space-1',
+              deletedAt: null,
+              updatedAt: new Date('2026-06-20T12:00:00.000Z'),
+            }
+          : { id, updatedAt: new Date('2026-06-20T12:00:00.000Z') },
+      );
+      // The pre-fix server refused an empty body over a fresh shell.
+      mocks.collabGateway.writePageBody.mockImplementation(
+        async (_name: string, payload: any) => {
+          const blocks = payload.prosemirrorJson.content;
+          if (blocks.length === 1 && !blocks[0].content) {
+            throw new Error('git-sync write refused: empty body');
+          }
+        },
+      );
+
+      const folder = await service
+        .bind(CTX)
+        .createPage('Folder', '', 'space-1');
+      const child = await service
+        .bind(CTX)
+        .createPage('Child', 'child body', 'space-1', folder.data.id);
+
+      expect(folder.data.id).toBe(FOLDER_ID);
+      expect(child.data.id).toBe('child-id');
+      expect(mocks.pageService.create).toHaveBeenNthCalledWith(
+        2,
+        'svc-user',
+        'ws-1',
+        { spaceId: 'space-1', title: 'Child', parentPageId: FOLDER_ID },
+        { actor: 'git-sync', aiChatId: null },
+      );
+      // Only the child's body was written.
+      expect(mocks.collabGateway.writePageBody).toHaveBeenCalledTimes(1);
+      expect(mocks.collabGateway.writePageBody.mock.calls[0][0]).toBe(
+        'page.child-id',
+      );
     });
 
     it('returns updatedAt:undefined when the fresh page row is missing after create', async () => {

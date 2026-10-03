@@ -372,12 +372,15 @@ export class GitmostDataSourceService {
             }
           })()
         : currentPage.content;
-    // A page whose content is NULL (never edited) compares as an EMPTY doc, so an
-    // empty incoming body is a no-op here instead of reaching the collab merge.
+    // A page whose content is NULL or has no blocks (a never-edited shell)
+    // compares as an EMPTY doc, so an empty incoming body is a no-op here
+    // instead of reaching the collab merge.
     if (
       docsCanonicallyEqual(
         doc,
-        currentContent || (await markdownToProseMirror('')),
+        currentContent?.content?.length
+          ? currentContent
+          : await markdownToProseMirror(''),
       )
     ) {
       return {
@@ -457,10 +460,14 @@ export class GitmostDataSourceService {
     );
 
     // The shell is created without body; push the markdown body through collab.
+    // An empty body (e.g. a folder note with no text) needs no write: the fresh
+    // shell already is the empty page.
     const { parseDocmostMarkdown, markdownToProseMirror } = await loadGitSync();
     const { body } = parseDocmostMarkdown(content);
-    const doc = await markdownToProseMirror(body);
-    await this.writeBody(page.id, doc, ctx.userId);
+    if (body.trim().length > 0) {
+      const doc = await markdownToProseMirror(body);
+      await this.writeBody(page.id, doc, ctx.userId);
+    }
 
     const fresh = await this.pageRepo.findById(page.id);
     return {

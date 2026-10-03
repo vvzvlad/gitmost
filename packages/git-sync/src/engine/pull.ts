@@ -321,6 +321,7 @@ export interface ApplyPullActionsDeps {
     | "listUnmergedPaths"
     | "commitMerge"
     | "showStage"
+    | "mergeFileOurs"
   >;
   /** Write a file by ABSOLUTE path (mkdir of the parent is done internally). */
   writeFile: (absPath: string, text: string) => Promise<void>;
@@ -346,9 +347,9 @@ export interface ApplyResult {
   committed: boolean;
   merge: { ok: boolean; conflict: boolean; output: string };
   /**
-   * Vault-relative paths of the page(s) that had a GENUINE same-block conflict in
-   * the docmost -> main merge and were AUTO-RESOLVED to the git/main side (git
-   * wins, SPEC §9) — committed CLEAN, never with raw conflict markers. Empty on a
+   * Vault-relative paths of the page(s) that had a GENUINE conflict in the
+   * docmost -> main merge and were AUTO-RESOLVED (conflicting hunks to the
+   * git/main side, SPEC §9) — committed CLEAN, never with raw conflict markers. Empty on a
    * clean merge AND when the only conflicts were spurious trailing-whitespace
    * differences (those are normalized, not reported). Surfaced for logging /
    * /status visibility; the docmost-side content stays recoverable via the
@@ -534,11 +535,14 @@ export async function applyPullActions(
   //     `normalizeTrailingWhitespace`d they are IDENTICAL, so this is no real
   //     conflict at all: write the normalized form. Content stays in sync; git
   //     and the page never diverge.
-  //   - GENUINE same-block conflict: resolve to OURS (the `main`/git side), so git
-  //     wins the published branch — mirroring the live-doc 3-way "git wins" rule.
-  //     The docmost-side content is preserved on the `docmost` branch and remains
-  //     recoverable via page history; the next push carries git's body to Docmost,
-  //     so both sides converge. No markers ever reach `main`.
+  //   - GENUINE content conflict: resolve PER HUNK — only the hunks BOTH sides
+  //     changed take OURS (the `main`/git side, mirroring the live-doc 3-way "git
+  //     wins" rule); every hunk only Docmost changed is kept. Writing OURS whole
+  //     would make the push (diffed from the `docmost` tip) revert Docmost's
+  //     edits in blocks git never touched. The docmost-side text of the
+  //     conflicting hunks stays on the `docmost` branch and in page history.
+  //     add/add (no common ancestor) keeps the Docmost side — see below. No
+  //     markers ever reach `main`.
   await git.checkout(DEFAULT_BRANCH);
   const merge = await git.merge(DOCMOST_BRANCH);
   let conflictedPaths: string[] = [];
@@ -546,6 +550,7 @@ export async function applyPullActions(
   if (merge.conflict) {
     const unmerged = await git.listUnmergedPaths();
     const genuine: string[] = [];
+    const addAdd: string[] = [];
     for (const rel of unmerged) {
       const ours = await git.showStage(2, rel); // main side
       const theirs = await git.showStage(3, rel); // docmost side
@@ -561,13 +566,24 @@ export async function applyPullActions(
           normalizeTrailingWhitespace(theirs),
         );
       } else {
-        // GENUINE conflict: resolve to the non-null side (OURS preferred so git
-        // wins the published branch; THEIRS kept when OURS is absent — e.g. a
-        // modify/delete conflict — to avoid dropping the remaining content). If
-        // BOTH are null (delete/delete) leave it; commitMerge's `git add -A`
-        // stages the deletion.
         genuine.push(rel);
-        const resolved = ours ?? theirs;
+        const base = await git.showStage(1, rel);
+        let resolved: string | null;
+        if (base !== null && ours !== null && theirs !== null) {
+          // Content conflict: per hunk, git wins only the conflicting hunks.
+          resolved = await git.mergeFileOurs(base, ours, theirs);
+        } else if (ours !== null && theirs !== null) {
+          // add/add: with no common ancestor nothing tells which blocks git
+          // changed, and OURS would push git's whole body over the page, reverting
+          // its Docmost content. Keep the Docmost side; git's version stays in
+          // main's history (the merge commit's first parent).
+          addAdd.push(rel);
+          resolved = theirs;
+        } else {
+          // modify/delete: keep the remaining content. delete/delete: nothing to
+          // write; commitMerge's `git add -A` stages the deletion.
+          resolved = ours ?? theirs;
+        }
         if (resolved !== null) {
           await deps.writeFile(relToAbs(vaultRoot, rel), resolved);
         }
@@ -576,7 +592,7 @@ export async function applyPullActions(
     conflictedPaths = genuine;
     await git.commitMerge(
       genuine.length > 0
-        ? `docmost: sync, ${genuine.length} page(s) auto-resolved (git wins, SPEC §9)`
+        ? `docmost: sync, ${genuine.length} page(s) auto-resolved (conflicting hunks to git, SPEC §9)`
         : `docmost: sync (trailing-whitespace conflicts normalized, SPEC §9)`,
       {
         authorName: BOT_AUTHOR_NAME,
@@ -592,11 +608,19 @@ export async function applyPullActions(
     if (genuine.length > 0) {
       log(
         `pull: merge of docmost -> main had ${genuine.length} GENUINE conflict(s) ` +
-          `auto-resolved to the git/main side (git wins, SPEC §9): ` +
-          `${genuine.join(", ")}. NO conflict markers were written to main; the ` +
-          `docmost-side content is on the 'docmost' branch and recoverable via ` +
-          `page history, and the next push reconciles Docmost to the git body.`,
+          `auto-resolved per hunk — only the conflicting hunks take the git/main ` +
+          `side (git wins, SPEC §9): ${genuine.join(", ")}. NO conflict markers ` +
+          `were written to main; the docmost-side text of those hunks is on the ` +
+          `'docmost' branch and recoverable via page history.`,
       );
+      if (addAdd.length > 0) {
+        log(
+          `pull: add/add conflict(s) kept the DOCMOST version (no common ` +
+            `ancestor to tell which blocks git changed): ${addAdd.join(", ")}. ` +
+            `The git version is in main's history (first parent of the merge ` +
+            `commit), not on main.`,
+        );
+      }
     } else {
       log(
         `pull: merge of docmost -> main conflicted ONLY on trailing/empty-line ` +

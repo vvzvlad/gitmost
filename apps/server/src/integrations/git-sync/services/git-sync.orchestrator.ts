@@ -22,6 +22,7 @@ import { EnvironmentService } from '../../environment/environment.service';
 import {
   incGitSyncCycle,
   setGitSyncFailingSpaces,
+  setGitSyncPushFailingSpaces,
 } from '../../metrics/metrics.registry';
 import { GitmostDataSourceService } from './gitmost-datasource.service';
 import { VaultRegistryService } from './vault-registry.service';
@@ -264,6 +265,8 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     // and export that space's whole history, violating the module's opt-in
     // contract (orchestrator docstring §79-86). STRICT: anything but 'true' skips.
     if (!(await this.isSpaceGitSyncEnabled(spaceId))) {
+      // A space whose sync was switched off must stop reporting its last health.
+      this.forgetSpaces([spaceId]);
       return { spaceId, ran: false, skipped: 'space-not-enabled' };
     }
 
@@ -383,13 +386,32 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     this.publishFailingSpaces();
   }
 
-  /** Push the number of currently failing spaces to the gauge. */
+  /**
+   * Push the number of currently failing spaces, and of spaces whose last
+   * (completed) cycle had per-page push failures, to the gauges.
+   */
   private publishFailingSpaces(): void {
     let failing = 0;
+    let pushFailing = 0;
     for (const { status } of this.spaceHealth.values()) {
       if (status.consecutiveFailures > 0) failing++;
+      if (status.pushFailures > 0) pushFailing++;
     }
     setGitSyncFailingSpaces(failing);
+    setGitSyncPushFailingSpaces(pushFailing);
+  }
+
+  /**
+   * Drop the health entry and export keys of spaces whose sync is no longer
+   * enabled (switched off, or the space deleted), so /status and the gauges
+   * stop reporting them; re-enabling starts with a full pass.
+   */
+  private forgetSpaces(spaceIds: Iterable<string>): void {
+    for (const spaceId of spaceIds) {
+      this.spaceHealth.delete(spaceId);
+      this.exportKeysBySpace.delete(spaceId);
+    }
+    this.publishFailingSpaces();
   }
 
   /**
@@ -745,6 +767,13 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         );
         return;
       }
+      // Forget spaces that are no longer enabled (the poll never runs them again).
+      const enabled = new Set(spaces.map((s) => s.spaceId));
+      this.forgetSpaces(
+        [...this.spaceHealth.keys(), ...this.exportKeysBySpace.keys()].filter(
+          (spaceId) => !enabled.has(spaceId),
+        ),
+      );
       for (const { spaceId, workspaceId } of spaces) {
         // runOnce never throws; it records each cycle's outcome in the space's
         // health (served by /status, counted in the metrics) and logs the

@@ -35,6 +35,7 @@ import {
   METRIC_AI_EXTERNAL_MCP_CONNECT_FAILURES_TOTAL,
   METRIC_GIT_SYNC_CYCLES_TOTAL,
   METRIC_GIT_SYNC_FAILING_SPACES,
+  METRIC_GIT_SYNC_PUSH_FAILING_SPACES,
   sizeBucket,
 } from './metrics.constants';
 
@@ -90,6 +91,7 @@ let externalMcpConnectFailuresCounter: Counter<'level'> | null = null;
 // git-sync — cycles by bounded result (ok|failed) + currently failing spaces.
 let gitSyncCyclesCounter: Counter<'result'> | null = null;
 let gitSyncFailingSpacesGauge: Gauge | null = null;
+let gitSyncPushFailingSpacesGauge: Gauge | null = null;
 
 // #402 — read-on-scrape source for collab_docs_open. The gauge is NEVER
 // inc/dec'd (that drifts under crashes/handoffs); instead its collect() callback
@@ -274,6 +276,12 @@ function init(): void {
     help: 'Number of git-sync spaces whose last reconcile cycle failed',
     registers: [registry],
   });
+
+  gitSyncPushFailingSpacesGauge = new Gauge({
+    name: METRIC_GIT_SYNC_PUSH_FAILING_SPACES,
+    help: 'Number of git-sync spaces whose last reconcile cycle had per-page push failures',
+    registers: [registry],
+  });
 }
 
 // Runs once when this module is first imported. Safe to call again (idempotent).
@@ -410,6 +418,11 @@ export function incGitSyncCycle(result: GitSyncCycleResult): void {
 /** git-sync — set the number of spaces whose last cycle failed. */
 export function setGitSyncFailingSpaces(count: number): void {
   gitSyncFailingSpacesGauge?.set(count);
+}
+
+/** git-sync — set the number of spaces whose last cycle had per-page push failures. */
+export function setGitSyncPushFailingSpaces(count: number): void {
+  gitSyncPushFailingSpacesGauge?.set(count);
 }
 
 /**
