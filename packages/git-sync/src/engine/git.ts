@@ -853,6 +853,8 @@ export class VaultGit {
    */
   async commitAddingPath(ref: string, path: string): Promise<string | null> {
     const sha = await this.run([
+      // Titles may keep `[`/`]`; match the path literally, not as a glob.
+      "--literal-pathspecs",
       "log",
       "-1",
       "--format=%H",
