@@ -6,6 +6,7 @@ import {
   isEmptyParagraphDoc,
   prosemirrorNodeToYElement,
   tiptapExtensions,
+  inEditorShape,
 } from './collaboration.util';
 import { pageContentHash } from './content-hash.util';
 import {
@@ -356,16 +357,20 @@ export class CollaborationHandler {
         // Build the incoming (and base) Yjs docs BEFORE opening the connection /
         // touching the live doc. If a transform throws (a malformed/unsupported
         // doc) we must NOT have mutated the live body — otherwise a conversion
-        // failure could leave the page empty (crash-safe conversion).
+        // failure could leave the page empty (crash-safe conversion). Both are
+        // in the shape the editor leaves an opened doc in (trailing paragraph,
+        // block ids), so opening the page later is not an edit; the base gets
+        // the same trailing paragraph as the stored doc it stands for (the
+        // block merge ignores ids).
         const targetDoc = TiptapTransformer.toYdoc(
-          prosemirrorJson,
+          inEditorShape(prosemirrorJson),
           'default',
           tiptapExtensions,
         );
         const baseDoc =
           baseProsemirrorJson != null
             ? TiptapTransformer.toYdoc(
-                baseProsemirrorJson,
+                inEditorShape(baseProsemirrorJson),
                 'default',
                 tiptapExtensions,
               )

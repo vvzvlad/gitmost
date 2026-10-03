@@ -810,6 +810,116 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(Object.keys(await mainFiles())).toEqual(["Mine.md"]);
   });
 
+  it("a create cut off before its id write-back converges to ONE page with git's content", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const S = "019f2800-0000-7000-8000-0000000000c8";
+
+    // git pushed New.md; the push created page "New" in Docmost and the process
+    // died before the body write and the id write-back: an empty page git-sync
+    // made, and git's file still without a gitmost_id.
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "New.md"), "brand new content\n", "utf8");
+    });
+    pages.push({
+      id: S,
+      slugId: "s",
+      title: "New",
+      parentPageId: null,
+      updatedAt: T1,
+      text: null,
+      lastUpdatedSource: "git-sync",
+    });
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(pages.find((p) => p.id === S)?.text).toBe("brand new content");
+    const files = await mainFiles();
+    expect(Object.keys(files).sort()).toEqual(["New.md", "Page.md"]);
+    expect(files["New.md"]).toContain(`gitmost_id: ${S}`);
+    expect(files["New.md"]).toContain("brand new content");
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["New.md", "Page.md"]);
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(pages).toHaveLength(2);
+  });
+
+  it("a git-written page stored with the editor's trailing paragraph exports to git's bytes: idle cycles change nothing", async () => {
+    if (!available) return;
+    const { root, pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const L = "019f2800-0000-7000-8000-0000000000ca";
+    const T2 = "2026-10-03T00:00:00.000Z";
+
+    // git adds a page ending in a list; the push creates it in Docmost, which
+    // stores it the way the editor leaves it: the trailing empty paragraph
+    // after the list, every paragraph with its block id.
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "List.md"), "- one\n- two\n", "utf8");
+    });
+    client.createPage.mockResolvedValueOnce({ data: { id: L } });
+    await cycle();
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    const item = (t: string) => ({
+      type: "listItem",
+      content: [{ type: "paragraph", attrs: { id: `id-${t}` }, content: [{ type: "text", text: t }] }],
+    });
+    pages.push({
+      id: L,
+      slugId: "l",
+      title: "List",
+      parentPageId: null,
+      updatedAt: T1,
+      text: null,
+      lastUpdatedSource: "git-sync",
+      content: {
+        type: "doc",
+        content: [
+          { type: "bulletList", content: [item("one"), item("two")] },
+          { type: "paragraph", attrs: { id: "id-trailing" } },
+        ],
+      },
+    });
+    const written = await mainFiles();
+    expect(written["List.md"]).toContain(`gitmost_id: ${L}`);
+
+    // The first export of the stored page is git's file as it stands.
+    await cycle();
+    expect(await mainFiles()).toEqual(written);
+    const heads = await git(root, "rev-parse", "main", "docmost");
+
+    // Idle cycles, one re-exporting the page after a store touched it.
+    pages[1].updatedAt = T2;
+    await cycle();
+    await cycle();
+
+    expect(await git(root, "rev-parse", "main", "docmost")).toBe(heads);
+    expect(await mainFiles()).toEqual(written);
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(client.importPageMarkdown).not.toHaveBeenCalled();
+    expect(client.renamePage).not.toHaveBeenCalled();
+    expect(client.movePage).not.toHaveBeenCalled();
+    expect(client.deletePage).not.toHaveBeenCalled();
+  });
+
+  it("an empty page a user made at git's new path is not taken over: git's file becomes its own page", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const S = "019f2800-0000-7000-8000-0000000000c9";
+
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "New.md"), "brand new content\n", "utf8");
+    });
+    pages.push({ id: S, slugId: "s", title: "New", parentPageId: null, updatedAt: T1, text: null });
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).toHaveBeenCalledWith("New ~git", "brand new content", "space-1", undefined);
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["New ~git.md", "New.md", "Page.md"]);
+  });
+
   it("an export cut off before its commit is not committed on main as user work", async () => {
     if (!available) return;
     const { root, page, cycle } = await setup("alpha\n\nmiddle\n\nomega");

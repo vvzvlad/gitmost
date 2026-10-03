@@ -96,7 +96,8 @@ function build(opts: BuildOptions = {}): Built {
     // The read-advertisement wrapper pins HEAD under the lock then serves; the
     // mock just runs the serve callback so the read path still hits backend.run.
     serveReadAdvertisement: jest.fn(
-      async (_spaceId: string, serve: () => Promise<void>) => serve(),
+      async (_spaceId: string, _workspaceId: string, serve: () => Promise<void>) =>
+        serve(),
     ),
   };
   const backend = { run: jest.fn(async () => undefined) };
@@ -259,6 +260,10 @@ describe('GitHttpService.handle', () => {
     expect(built.orchestrator.serveReadAdvertisement).toHaveBeenCalledTimes(1);
     expect(built.orchestrator.serveReadAdvertisement.mock.calls[0][0]).toBe(
       'space-1',
+    );
+    // The workspace rides along so a lock-held fetch shows in /status.
+    expect(built.orchestrator.serveReadAdvertisement.mock.calls[0][1]).toBe(
+      'ws-1',
     );
     // The wrapper still streams the backend (the mock runs the serve callback).
     expect(built.backend.run).toHaveBeenCalledTimes(1);
@@ -519,6 +524,26 @@ describe('GitHttpService.handle', () => {
     expect(raw.statusCode).toBe(200); // untouched default from the fake
     expect(raw.end).toHaveBeenCalledTimes(1);
     expect(raw.end).toHaveBeenCalledWith('git-sync busy, retry');
+  });
+
+  it('a push that fails before its receive-pack wrote anything -> 500, socket ended', async () => {
+    const built = build({ abilityCan: true });
+    // The vault recovery that runs before the receive-pack threw.
+    built.orchestrator.ingestExternalPush.mockRejectedValue(
+      new Error('git status failed'),
+    );
+    const { reply } = fakeReply();
+    const req = fakeRequest({
+      url: '/git/space-1.git/git-receive-pack',
+      method: 'POST',
+      authorization: basic('dev@example.com', 'pw'),
+    });
+
+    await built.service.handle(req, reply);
+
+    const raw = reply.raw as any;
+    expect(raw.statusCode).toBe(500);
+    expect(raw.end).toHaveBeenCalledTimes(1);
   });
 
   it('an unresolvable workspace -> 401 (credentials cannot be validated without one)', async () => {

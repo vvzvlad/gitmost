@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializePageFile } from "@docmost/prosemirror-markdown";
-import { runCycle } from "../src/engine/cycle";
+import { recoverVault, runCycle } from "../src/engine/cycle";
 import { VaultGit } from "../src/engine/git";
 import {
   execFileAsync,
@@ -189,5 +189,75 @@ describe("runCycle — dirty working tree left by an interrupted cycle", () => {
     expect(await vault.currentBranch()).toBe("main");
     await pushFromClone(dir, "Accepted.md");
     expect(existsSync(join(dir, "Accepted.md"))).toBe(true);
+  });
+
+  // The /git push path runs recoverVault under the lock BEFORE the receive-pack
+  // (orchestrator.ingestExternalPush), so a crash's leftovers no longer make
+  // receive.denyCurrentBranch=updateInstead refuse the push.
+  describe("recoverVault before an external push", () => {
+    /** A clone of the vault with one new commit, not pushed yet. */
+    async function cloneWithCommit(dir: string, file: string): Promise<string> {
+      const clone = await tempDir("docmost-clone-");
+      await git(clone, "clone", "--quiet", dir, ".");
+      await writeFile(join(clone, file), "pushed from a clone\n", "utf8");
+      await git(clone, "add", "-A");
+      await git(clone, "commit", "--quiet", "-m", `add ${file}`);
+      return clone;
+    }
+
+    it("an interrupted pull's leftovers on `main` are discarded: the push is accepted", async () => {
+      if (!available) return;
+      const { dir, vault } = await syncedVault([page()]);
+      const clone = await cloneWithCommit(dir, "Pushed.md");
+
+      // A pull cut off while writing `main` (its marker still set).
+      await git(dir, "update-ref", "refs/docmost/pulling", "HEAD");
+      await writeFile(
+        join(dir, "Page.md"),
+        serializePageFile(PAGE_ID, "half-merged"),
+        "utf8",
+      );
+      await writeFile(join(dir, "Page ~git.md"), "half-written copy\n", "utf8");
+      await expect(
+        git(clone, "push", "--quiet", "origin", "HEAD:main"),
+      ).rejects.toThrow(/unstaged changes|denyCurrentBranch|rejected/);
+
+      const warn = vi.fn();
+      expect(
+        await recoverVault({ spaceId: "space-1", vault, log: () => undefined, warn }),
+      ).toBe(true);
+      await git(clone, "push", "--quiet", "origin", "HEAD:main");
+
+      expect(await readFile(join(dir, "Pushed.md"), "utf8")).toBe(
+        "pushed from a clone\n",
+      );
+      expect(await git(dir, "status", "--porcelain")).toBe("");
+      expect(existsSync(join(dir, "Page ~git.md"))).toBe(false);
+      expect(await git(dir, "show", "main:Page.md")).toContain("original body");
+      expect(warn.mock.calls[0][0]).toContain("discarded");
+    });
+
+    it("an interrupted push's id write-backs are committed: a clone up to date with `main` pushes", async () => {
+      if (!available) return;
+      const { dir, vault } = await syncedVault([page()]);
+      const clone = await cloneWithCommit(dir, "Pushed.md");
+
+      // A push cut off between an id write-back and its commit (no marker).
+      await writeFile(join(dir, "New.md"), serializePageFile(NEW_ID, "new body"), "utf8");
+
+      expect(
+        await recoverVault({ spaceId: "space-1", vault, log: () => undefined }),
+      ).toBe(true);
+      // `main` gained the write-back commit, so the clone first takes it, as for
+      // any commit it does not have yet; then the push lands.
+      await git(clone, "pull", "--quiet", "--rebase", "origin", "main");
+      await git(clone, "push", "--quiet", "origin", "HEAD:main");
+
+      expect(await readFile(join(dir, "Pushed.md"), "utf8")).toBe(
+        "pushed from a clone\n",
+      );
+      expect(await git(dir, "show", "main:New.md")).toContain(NEW_ID);
+      expect(await git(dir, "status", "--porcelain")).toBe("");
+    });
   });
 });

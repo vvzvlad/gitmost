@@ -78,6 +78,10 @@ export interface FakePage {
   updatedAt: string;
   /** The page body: one paragraph per "\n\n"-separated chunk; `null` = no content. */
   text: string | null;
+  /** The raw ProseMirror content, when set: returned instead of `text`'s paragraphs. */
+  content?: unknown;
+  /** Who made the page's last write (`'git-sync'` for git-sync's own). */
+  lastUpdatedSource?: string;
 }
 
 /**
@@ -119,7 +123,8 @@ export function makeClient(pages: FakePage[], createdIds: string[] = []) {
         parentPageId: p.parentPageId,
         spaceId: "space-1",
         updatedAt: p.updatedAt,
-        content: doc(p.text),
+        content: p.content !== undefined ? p.content : doc(p.text),
+        lastUpdatedSource: p.lastUpdatedSource ?? "user",
       };
     }),
     importPageMarkdown: vi.fn(async () => ({})),

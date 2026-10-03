@@ -399,8 +399,10 @@ export class GitHttpService implements OnModuleDestroy {
         // the client times out (review #5). Mirror the push branch: catch, answer
         // 500 if nothing was written yet, and always end the raw socket.
         try {
-          await this.orchestrator.serveReadAdvertisement(spaceId, () =>
-            this.backend.run(backendRequest, rawReq, rawRes),
+          await this.orchestrator.serveReadAdvertisement(
+            spaceId,
+            workspaceId,
+            () => this.backend.run(backendRequest, rawReq, rawRes),
           );
         } catch (err) {
           this.logger.error(
@@ -448,13 +450,18 @@ export class GitHttpService implements OnModuleDestroy {
         return;
       }
       // Any other error: the receive-pack closure handles its own response, so
-      // we only log here and make sure the socket is closed.
+      // we only log here and make sure the socket is closed. An error before the
+      // receive-pack (the vault recovery) has written nothing yet: answer 500.
       this.logger.error(
         `git-http: push ingestion error for space ${spaceId}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
       try {
+        if (!rawRes.headersSent) {
+          rawRes.statusCode = 500;
+          rawRes.setHeader('Content-Type', 'text/plain');
+        }
         if (!rawRes.writableEnded) rawRes.end();
       } catch {
         /* ignore */

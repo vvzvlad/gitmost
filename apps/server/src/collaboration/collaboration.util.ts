@@ -39,6 +39,7 @@ import {
   Spoiler,
   Indent,
   UniqueID,
+  UNIQUE_ID_TYPES,
   Columns,
   Column,
   Status,
@@ -83,7 +84,7 @@ export const tiptapExtensions = [
   Code,
   Heading,
   UniqueID.configure({
-    types: ['heading', 'paragraph', 'transclusionSource'],
+    types: UNIQUE_ID_TYPES,
   }),
   Comment,
   TextAlign.configure({ types: ['heading', 'paragraph'] }),
@@ -152,6 +153,28 @@ export function htmlToJson(html: string) {
     console.warn('failed to add unique ids to doc', error);
     return pmJson;
   }
+}
+
+/**
+ * `pmJson` in the shape the editor leaves a document in once it is opened, so
+ * storing it is what opening it would store: it ends with the TrailingNode
+ * extension's node (an empty paragraph) unless its last block is one that
+ * extension accepts last, and every block type the UniqueID extension covers
+ * carries an id. Both rules are read from `tiptapExtensions`. A body stored in
+ * another shape is reshaped by the first browser that opens the page, a write
+ * recorded as that viewer's edit.
+ */
+export function inEditorShape(pmJson: any) {
+  const trailing = (tiptapExtensions as any[]).find(
+    (ext) => ext.name === 'trailingNode',
+  )?.options as { node: string; notAfter: string[] } | undefined;
+  const content: any[] = pmJson?.content ?? [];
+  const last = content[content.length - 1];
+  const withTrailing =
+    trailing && (!last || !trailing.notAfter.includes(last.type))
+      ? { ...pmJson, content: [...content, { type: trailing.node }] }
+      : pmJson;
+  return addUniqueIdsToDoc(withTrailing, tiptapExtensions);
 }
 
 /**

@@ -109,6 +109,8 @@ export interface GitSyncSpaceStatus {
    * (null once a cycle runs).
    */
   lockHeldSince: string | null;
+  /** ISO time the cycle running on this process started (null: none running). */
+  runningSince: string | null;
 }
 
 /**
@@ -347,6 +349,7 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         lastSkippedAt: prev?.lastSkippedAt ?? null,
         lastSkipReason: prev?.lastSkipReason ?? null,
         lockHeldSince: null,
+        runningSince: null,
       },
     });
     if (prev && prev.consecutiveFailures > 0) {
@@ -388,6 +391,7 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         lastSkippedAt: prev?.lastSkippedAt ?? null,
         lastSkipReason: prev?.lastSkipReason ?? null,
         lockHeldSince: null,
+        runningSince: null,
       },
     });
     if (consecutiveFailures === 1) {
@@ -406,9 +410,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Record a cycle or push skipped because the space's lock is held (by another
-   * replica, or by a dead process until its lock expires), so the space shows in
-   * /status even before it ever ran in this process.
+   * Record a cycle, push or fetch skipped because the space's lock is held (by
+   * another replica, or by a dead process until its lock expires), so the space
+   * shows in /status even before it ever ran in this process.
    */
   private recordLockHeldSkip(spaceId: string, workspaceId: string): void {
     const prev = this.spaceHealth.get(spaceId)?.status;
@@ -427,6 +431,33 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         lastSkippedAt: now,
         lastSkipReason: 'lock-held',
         lockHeldSince: prev?.lockHeldSince ?? now,
+        runningSince: prev?.runningSince ?? null,
+      },
+    });
+  }
+
+  /**
+   * Record that a cycle started on this process, so the space shows in /status
+   * while it runs (a recovery cycle after a restart can take a while); the
+   * cycle's success/failure record clears it.
+   */
+  private recordCycleStart(spaceId: string, workspaceId: string): void {
+    const prev = this.spaceHealth.get(spaceId)?.status;
+    this.spaceHealth.set(spaceId, {
+      workspaceId,
+      status: {
+        spaceId,
+        lastRunAt: prev?.lastRunAt ?? null,
+        lastResult: prev?.lastResult ?? null,
+        lastError: prev?.lastError ?? null,
+        lastSuccessAt: prev?.lastSuccessAt ?? null,
+        consecutiveFailures: prev?.consecutiveFailures ?? 0,
+        pushFailures: prev?.pushFailures ?? 0,
+        firstPushFailure: prev?.firstPushFailure ?? null,
+        lastSkippedAt: prev?.lastSkippedAt ?? null,
+        lastSkipReason: prev?.lastSkipReason ?? null,
+        lockHeldSince: null,
+        runningSince: new Date().toISOString(),
       },
     });
   }
@@ -503,6 +534,15 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     const result = await this.spaceLock.withSpaceLock(
       spaceId,
       async (signal) => {
+      // 0) Repair what an interrupted cycle left in the vault first: receive-pack
+      // (receive.denyCurrentBranch=updateInstead) rejects a push into a dirty
+      // `main` ("Working directory has unstaged changes").
+      const { recoverVault } = await loadGitSync();
+      const vault = await this.vaultRegistry.getVault(spaceId);
+      if (await recoverVault({ spaceId, vault, ...this.engineLog(spaceId) })) {
+        this.exportKeysFor(spaceId).clear();
+      }
+
       // 1) Stream the receive-pack to the client (durable commits land on main).
       // Pass the lost-lock signal so the receive-pack child is killed if the lock
       // lapses mid-write (no concurrent working-tree writer across replicas).
@@ -585,6 +625,7 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
    */
   async serveReadAdvertisement(
     spaceId: string,
+    workspaceId: string,
     serve: () => Promise<void>,
   ): Promise<void> {
     if (!this.environmentService.isGitSyncEnabled()) {
@@ -615,6 +656,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     // Lock contended for the whole budget (in-progress / another replica): serve
     // anyway. `serve` (backend.run) never ran inside the lock in this case.
     if (typeof result === 'object' && result !== null && 'skipped' in result) {
+      if (result.skipped === 'lock-held') {
+        this.recordLockHeldSkip(spaceId, workspaceId);
+      }
       await serve();
     }
   }
@@ -632,6 +676,7 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     serviceUserId: string,
     signal?: AbortSignal,
   ): Promise<GitSyncRunStatus> {
+    this.recordCycleStart(spaceId, workspaceId);
     const { runCycle } = await loadGitSync();
     const settings = await this.buildSettings(spaceId);
     const vault = await this.vaultRegistry.getVault(spaceId);
@@ -683,9 +728,7 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
       // delete cap: deletes are soft (Trash, reversible), so a blocking limit
       // only got in the way of legitimate deletes; engine correctness (covered by
       // the reconcile/layout tests) is what prevents phantom deletions.
-      log: (line: string) => this.logger.log(`git-sync[${spaceId}] ${line}`),
-      // Preflight self-heals an operator must notice (the line names the space).
-      warn: (line: string) => this.logger.warn(`git-sync: ${line}`),
+      ...this.engineLog(spaceId),
       // This space's export-key map: the pull skips pages unchanged since their
       // last successful export (the engine rebuilds/clears it).
       exportKeys: this.exportKeysFor(spaceId),
@@ -704,6 +747,21 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     }
 
     return { spaceId, ...result };
+  }
+
+  /**
+   * The engine's log channels for one space: `log` for the cycle's progress,
+   * `warn` for the preflight self-heals an operator must notice (the line names
+   * the space).
+   */
+  private engineLog(spaceId: string): {
+    log: (line: string) => void;
+    warn: (line: string) => void;
+  } {
+    return {
+      log: (line: string) => this.logger.log(`git-sync[${spaceId}] ${line}`),
+      warn: (line: string) => this.logger.warn(`git-sync: ${line}`),
+    };
   }
 
   /** The (lazily created) export-key map of one space. */

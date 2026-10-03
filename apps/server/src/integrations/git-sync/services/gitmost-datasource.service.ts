@@ -12,6 +12,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { PageService } from '../../../core/page/services/page.service';
 import { CollaborationGateway } from '../../../collaboration/collaboration.gateway';
+import { inEditorShape } from '../../../collaboration/collaboration.util';
 import { AuthProvenanceData } from '../../../common/decorators/auth-provenance.decorator';
 
 /**
@@ -239,6 +240,7 @@ export class GitmostDataSourceService {
     spaceId: string;
     updatedAt: string;
     content: unknown;
+    lastUpdatedSource: string | null;
   }> {
     const page = await this.pageRepo.findById(pageId, { includeContent: true });
     if (!page) {
@@ -253,6 +255,7 @@ export class GitmostDataSourceService {
       spaceId: page.spaceId,
       updatedAt: new Date(page.updatedAt).toISOString(),
       content: page.content,
+      lastUpdatedSource: page.lastUpdatedSource ?? null,
     };
   }
 
@@ -374,10 +377,11 @@ export class GitmostDataSourceService {
         : currentPage.content;
     // A page whose content is NULL or has no blocks (a never-edited shell)
     // compares as an EMPTY doc, so an empty incoming body is a no-op here
-    // instead of reaching the collab merge.
+    // instead of reaching the collab merge. The incoming doc is compared in the
+    // shape the write would store it (its trailing paragraph included).
     if (
       docsCanonicallyEqual(
-        doc,
+        inEditorShape(doc),
         currentContent?.content?.length
           ? currentContent
           : await markdownToProseMirror(''),
@@ -459,15 +463,14 @@ export class GitmostDataSourceService {
       GIT_SYNC_PROVENANCE,
     );
 
-    // The shell is created without body; push the markdown body through collab.
-    // An empty body (e.g. a folder note with no text) needs no write: the fresh
-    // shell already is the empty page.
+    // The shell is created without body; push the markdown body through collab,
+    // an empty one too: the write stores the doc in the shape the editor leaves
+    // it in, so opening the page is not an edit (a bare shell would get its
+    // paragraph and block id from the first viewer).
     const { parseDocmostMarkdown, markdownToProseMirror } = await loadGitSync();
     const { body } = parseDocmostMarkdown(content);
-    if (body.trim().length > 0) {
-      const doc = await markdownToProseMirror(body);
-      await this.writeBody(page.id, doc, ctx.userId);
-    }
+    const doc = await markdownToProseMirror(body);
+    await this.writeBody(page.id, doc, ctx.userId);
 
     const fresh = await this.pageRepo.findById(page.id);
     return {

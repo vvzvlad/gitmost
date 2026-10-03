@@ -227,6 +227,8 @@ describe('applyPullActions — happy path (write + commit + merge)', () => {
       'checkout:main',
       'merge',
     ]);
+    // No per-cycle boilerplate line (it filled the log every poll).
+    expect(lastLog.mock.calls.flat().join('\n')).not.toContain('DEFERRED');
   });
 });
 

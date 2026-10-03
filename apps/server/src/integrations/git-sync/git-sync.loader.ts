@@ -4,6 +4,7 @@ import type {
   VaultGit as VaultGitClass,
   vaultGitEnv as vaultGitEnvFn,
   runCycle as runCycleFn,
+  recoverVault as recoverVaultFn,
   parseDocmostMarkdown as parseDocmostMarkdownFn,
   markdownToProseMirror as markdownToProseMirrorFn,
   sanitizeTitle as sanitizeTitleFn,
@@ -20,6 +21,7 @@ interface GitSyncModule {
   VaultGit: typeof VaultGitClass;
   vaultGitEnv: typeof vaultGitEnvFn;
   runCycle: typeof runCycleFn;
+  recoverVault: typeof recoverVaultFn;
   parseDocmostMarkdown: typeof parseDocmostMarkdownFn;
   markdownToProseMirror: typeof markdownToProseMirrorFn;
   sanitizeTitle: typeof sanitizeTitleFn;

@@ -1,7 +1,7 @@
 import { EditorProvider } from "@tiptap/react";
 import { useMemo } from "react";
 import { mainExtensions } from "@/features/editor/extensions/extensions";
-import { UniqueID } from "@docmost/editor-ext";
+import { UniqueID, UNIQUE_ID_TYPES } from "@docmost/editor-ext";
 
 type Props = {
   content: unknown;
@@ -22,7 +22,7 @@ export default function PageEmbedContent({ content }: Props) {
     return [
       ...filtered,
       UniqueID.configure({
-        types: ["heading", "paragraph", "transclusionSource"],
+        types: UNIQUE_ID_TYPES,
         updateDocument: false,
       }),
     ];

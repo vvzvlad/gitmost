@@ -599,6 +599,7 @@ export async function applyPullActions(
   if (merge.conflict) {
     const genuine: string[] = [];
     const addAdd: string[] = [];
+    const adopted: string[] = [];
     let normalized = 0;
     // Paths taken in the merge result (lazily listed on the first add/add).
     let taken: Set<string> | null = null;
@@ -637,22 +638,33 @@ export async function applyPullActions(
           // alignment) is not a conflict.
           if (merged.conflicts > 0) genuine.push(rel);
         } else if (ours !== null && theirs !== null) {
-          // add/add, or two different pages at one path: nothing tells which
-          // blocks git changed, and OURS would push git's whole body over the
-          // page. Keep the Docmost side at the path and keep git's version as a
-          // NEW file at a disambiguated sibling path, its gitmost_id stripped so
-          // the push creates it as a new page.
-          genuine.push(rel);
-          resolved = theirs;
-          if (taken === null) taken = new Set(await git.listTrackedFiles());
-          const copy = freeGitSibling(rel, taken);
-          await writeVaultFile(
-            deps,
-            vaultRoot,
-            copy,
-            normalizeTrailingWhitespace(parsePageFile(ours).body),
-          );
-          addAdd.push(`${rel} -> ${copy}`);
+          const adoptId = await unfinishedCreateId(client, ident, ours, theirs);
+          if (adoptId !== null) {
+            // git-sync's own create of git's new file, cut off before its id
+            // write-back: ONE page — git's content under that page's id; the
+            // push then writes the body into the empty page.
+            resolved = normalizeTrailingWhitespace(
+              serializePageFile(adoptId, parsePageFile(ours).body),
+            );
+            adopted.push(rel);
+          } else {
+            // add/add, or two different pages at one path: nothing tells which
+            // blocks git changed, and OURS would push git's whole body over the
+            // page. Keep the Docmost side at the path and keep git's version as
+            // a NEW file at a disambiguated sibling path, its gitmost_id
+            // stripped so the push creates it as a new page.
+            genuine.push(rel);
+            resolved = theirs;
+            if (taken === null) taken = new Set(await git.listTrackedFiles());
+            const copy = freeGitSibling(rel, taken);
+            await writeVaultFile(
+              deps,
+              vaultRoot,
+              copy,
+              normalizeTrailingWhitespace(parsePageFile(ours).body),
+            );
+            addAdd.push(`${rel} -> ${copy}`);
+          }
         } else {
           // modify/delete: keep the remaining content. delete/delete: nothing to
           // write; commitMerge's `git add -A` stages the deletion.
@@ -682,6 +694,13 @@ export async function applyPullActions(
     // that were auto-resolved (git won); a merge that conflicted ONLY on trailing
     // whitespace is reported as clean so /status does not cry wolf.
     mergeResult = { ok: true, conflict: genuine.length > 0, output: merge.output };
+    if (adopted.length > 0) {
+      warn(
+        `pull: git's new file(s) took over the empty page git-sync had created ` +
+          `for them before an interruption cut off the id write-back (one ` +
+          `page each, no copy): ${adopted.join(", ")}.`,
+      );
+    }
     if (genuine.length > 0) {
       log(
         `pull: merge of docmost -> main had ${genuine.length} GENUINE conflict(s) ` +
@@ -727,7 +746,6 @@ export async function applyPullActions(
         `hunk: ${relocated.join(", ")}.`,
     );
   }
-  log("pull: git push to remote is DEFERRED in this increment (SPEC §7).");
 
   return {
     written,
@@ -760,6 +778,27 @@ interface MergeIdentity {
   base: Map<string, string>;
   /** Page id -> its file path at the `docmost` tip. */
   doc: Map<string, string>;
+}
+
+/**
+ * The id of the Docmost page at an add/add path when that page is git-sync's
+ * own unfinished create of git's new file there: git's file has no
+ * gitmost_id, and the page is new since the merge base, still empty, and last
+ * written by git-sync (a create cut off before its body write and its id
+ * write-back). `null` otherwise.
+ */
+async function unfinishedCreateId(
+  client: Pick<GitSyncClient, "getPageJson">,
+  ident: MergeIdentity | null,
+  ours: string,
+  theirs: string,
+): Promise<string | null> {
+  if (parsePageFile(ours).id !== null) return null;
+  const page = parsePageFile(theirs);
+  if (page.id === null || page.body.trim().length > 0) return null;
+  if (ident === null || ident.base.has(page.id)) return null;
+  const live = await client.getPageJson(page.id);
+  return live.lastUpdatedSource === "git-sync" ? page.id : null;
 }
 
 /** Page id -> file path of every page file at `ref` (first file wins). */

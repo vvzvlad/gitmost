@@ -78,7 +78,9 @@ export interface GitSyncClient {
    * One page WITH its ProseMirror body content. `applyPullActions` reads
    * `id`, `slugId`, `title`, `parentPageId`, `spaceId` (for the file meta) and
    * `content` (to stabilize/serialize). `updatedAt` is carried for the
-   * poll-suppression loop-guard.
+   * poll-suppression loop-guard. `lastUpdatedSource` (`'git-sync'` when
+   * git-sync made the last write) tells the pull's add/add rule a create of
+   * git-sync's own that died before its id write-back.
    */
   getPageJson(pageId: string): Promise<{
     id: string;
@@ -88,6 +90,7 @@ export interface GitSyncClient {
     spaceId: string;
     updatedAt: string;
     content: unknown;
+    lastUpdatedSource?: string | null;
   }>;
 
   // --- writes (push) --------------------------------------------------------

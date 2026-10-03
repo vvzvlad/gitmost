@@ -7,6 +7,7 @@
 // we can assert convergence on real text.
 jest.mock('./collaboration.util', () => ({
   tiptapExtensions: [],
+  inEditorShape: (json: any) => json,
   getPageId: (name: string) => name.replace(/^page\./, ''),
   prosemirrorNodeToYElement: jest.fn(),
   // Same rule as the real helper: exactly one paragraph with no content.

@@ -6,6 +6,7 @@
 jest.mock('../../../collaboration/collaboration.util', () => ({
   tiptapExtensions: [],
   getPageId: (name: string) => name.replace(/^page\./, ''),
+  inEditorShape: jest.fn((json: any) => json),
 }));
 // writeBody now builds the replacement Yjs state eagerly (before clearing the
 // live doc), so TiptapTransformer.toYdoc runs in these unit tests. Real Tiptap
@@ -66,6 +67,7 @@ import { GitmostDataSourceService } from './gitmost-datasource.service';
 // test can swap the runtime bridge (e.g. a smarter `docsCanonicallyEqual`) via
 // `mockResolvedValueOnce` without perturbing the default used by every other test.
 import { loadGitSync } from '../git-sync.loader';
+import { inEditorShape } from '../../../collaboration/collaboration.util';
 
 // Focused unit/contract test for the native GitSyncClient adapter.
 // No DB, no real collab server: the repos/services/gateway are mocked and we
@@ -265,6 +267,7 @@ describe('GitmostDataSourceService', () => {
         spaceId: 'space-1',
         updatedAt,
         content: { type: 'doc', content: [] },
+        lastUpdatedSource: 'git-sync',
       });
 
       const res = await service.bind(CTX).getPageJson('p1');
@@ -279,6 +282,7 @@ describe('GitmostDataSourceService', () => {
         spaceId: 'space-1',
         updatedAt: '2026-06-20T10:00:00.000Z',
         content: { type: 'doc', content: [] },
+        lastUpdatedSource: 'git-sync',
       });
     });
 
@@ -378,6 +382,32 @@ describe('GitmostDataSourceService', () => {
       });
 
       await service.bind(CTX).importPageMarkdown('p1', '');
+
+      expect(mocks.collabGateway.writePageBody).not.toHaveBeenCalled();
+    });
+
+    it('guard #2 compares the incoming body in the shape a write stores it: a page holding it with its trailing paragraph is not written', async () => {
+      const { service, mocks } = build();
+      const list = { type: 'bulletList', content: [] };
+      mocks.pageRepo.findById.mockResolvedValue({
+        id: 'p1',
+        updatedAt: new Date('2026-06-20T11:00:00.000Z'),
+        content: { type: 'doc', content: [list, { type: 'paragraph' }] },
+      });
+      (loadGitSync as jest.Mock).mockResolvedValueOnce({
+        parseDocmostMarkdown: (md: string) => ({ meta: {}, body: md }),
+        markdownToProseMirror: async () => ({ type: 'doc', content: [list] }),
+        sanitizeTitle: (title: string) => title,
+        docsCanonicallyEqual: (a: unknown, b: unknown) =>
+          JSON.stringify(a) === JSON.stringify(b),
+      });
+      // Stand-in for the real shaping: the editor's trailing paragraph.
+      (inEditorShape as jest.Mock).mockImplementationOnce((json: any) => ({
+        ...json,
+        content: [...json.content, { type: 'paragraph' }],
+      }));
+
+      await service.bind(CTX).importPageMarkdown('p1', '- item');
 
       expect(mocks.collabGateway.writePageBody).not.toHaveBeenCalled();
     });
@@ -608,10 +638,10 @@ describe('GitmostDataSourceService', () => {
       });
     });
 
-    it('folder-note scenario: an EMPTY folder note is created without a body write, and its child lands under it', async () => {
-      // git: Folder/Folder.md (empty) + Folder/Child.md. The empty folder note
-      // must not reach the collab write (on a fresh shell an empty no-base write
-      // was refused), or the create fails and the child falls back to root.
+    it('folder-note scenario: an EMPTY folder note gets its (empty) body write, and its child lands under it', async () => {
+      // git: Folder/Folder.md (empty) + Folder/Child.md. The empty folder note's
+      // body is written too (the write stores the editor's shape, so opening the
+      // page is not an edit); a fresh shell accepts an empty no-base write.
       const { service, mocks } = build();
       const FOLDER_ID = '22222222-2222-4222-8222-222222222222';
       mocks.pageService.create
@@ -627,16 +657,6 @@ describe('GitmostDataSourceService', () => {
             }
           : { id, updatedAt: new Date('2026-06-20T12:00:00.000Z') },
       );
-      // The pre-fix server refused an empty body over a fresh shell.
-      mocks.collabGateway.writePageBody.mockImplementation(
-        async (_name: string, payload: any) => {
-          const blocks = payload.prosemirrorJson.content;
-          if (blocks.length === 1 && !blocks[0].content) {
-            throw new Error('git-sync write refused: empty body');
-          }
-        },
-      );
-
       const folder = await service
         .bind(CTX)
         .createPage('Folder', '', 'space-1');
@@ -653,11 +673,10 @@ describe('GitmostDataSourceService', () => {
         { spaceId: 'space-1', title: 'Child', parentPageId: FOLDER_ID },
         { actor: 'git-sync', aiChatId: null },
       );
-      // Only the child's body was written.
-      expect(mocks.collabGateway.writePageBody).toHaveBeenCalledTimes(1);
-      expect(mocks.collabGateway.writePageBody.mock.calls[0][0]).toBe(
-        'page.child-id',
-      );
+      // Both bodies were written, the folder's empty one first.
+      expect(
+        mocks.collabGateway.writePageBody.mock.calls.map((c: any[]) => c[0]),
+      ).toEqual([`page.${FOLDER_ID}`, 'page.child-id']);
     });
 
     it('returns updatedAt:undefined when the fresh page row is missing after create', async () => {

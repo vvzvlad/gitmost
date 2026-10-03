@@ -126,39 +126,25 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
   }
 }
 
-async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
-  const { spaceId, client, vault, settings, fs, log, signal, exportKeys } = deps;
+/** IO for `recoverVault`. */
+export interface RecoverVaultDeps {
+  spaceId: string;
+  vault: VaultGit;
+  log: (line: string) => void;
+  /** Channel for the self-heals an operator must notice; defaults to `log`. */
+  warn?: (line: string) => void;
+}
+
+/**
+ * Repair what an interrupted cycle left in the vault (the cycle preflight,
+ * steps 1-2b): a missing repo or `main`, stale git locks, a half-done merge
+ * and a dirty working tree. Run before every cycle, and before an external
+ * push's receive-pack, which `receive.denyCurrentBranch=updateInstead` refuses
+ * on a dirty tree. Returns true when it had to repair anything.
+ */
+export async function recoverVault(deps: RecoverVaultDeps): Promise<boolean> {
+  const { spaceId, vault, log } = deps;
   const warn = deps.warn ?? log;
-  const vaultRoot = settings.vaultPath;
-  const abs = (relPath: string) => `${vaultRoot}/${relPath}`;
-
-  // SYMLINK GUARD (defense-in-depth, see ./path-guard.ts). Wrap the injected
-  // read/write/mkdir primitives so EVERY engine file access is screened: a path
-  // that is — or traverses — a symlink, or whose realpath escapes the vault, is
-  // refused. `rm` is deliberately NOT wrapped: removing a path only deletes the
-  // link itself (force, non-recursive), never the target, and we WANT to be able
-  // to clean up a stray pushed symlink. A refusal THROWS; the pull/push loops
-  // already isolate per-file errors (skip + log), so a single poisoned entry is
-  // skipped while the rest of the space keeps syncing.
-  const guard = (p: string) => assertVaultPathSafe(fs, vaultRoot, p);
-  const safeFs = {
-    readFile: async (p: string): Promise<string> => {
-      await guard(p);
-      return fs.readFile(p);
-    },
-    writeFile: async (p: string, text: string): Promise<void> => {
-      await guard(p);
-      return fs.writeFile(p, text);
-    },
-    mkdir: async (p: string): Promise<void> => {
-      await guard(p);
-      return fs.mkdir(p);
-    },
-    rm: (p: string): Promise<void> => fs.rm(p),
-  };
-
-  // Set by every preflight self-heal below; any recovery invalidates the
-  // export keys (the vault may no longer hold what they describe).
   let recovered = false;
 
   // 1. The engine state store is git: make sure the repo + branches exist
@@ -255,9 +241,44 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
 
   if (pulling) await vault.deleteRef(PULL_REF);
 
-  // Any self-heal above means the vault may not hold what the recorded export
-  // keys describe: forget them so this cycle re-exports every live page.
-  if (recovered) exportKeys?.clear();
+  return recovered;
+}
+
+async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
+  const { spaceId, client, vault, settings, fs, log, signal, exportKeys } = deps;
+  const warn = deps.warn ?? log;
+  const vaultRoot = settings.vaultPath;
+  const abs = (relPath: string) => `${vaultRoot}/${relPath}`;
+
+  // SYMLINK GUARD (defense-in-depth, see ./path-guard.ts). Wrap the injected
+  // read/write/mkdir primitives so EVERY engine file access is screened: a path
+  // that is — or traverses — a symlink, or whose realpath escapes the vault, is
+  // refused. `rm` is deliberately NOT wrapped: removing a path only deletes the
+  // link itself (force, non-recursive), never the target, and we WANT to be able
+  // to clean up a stray pushed symlink. A refusal THROWS; the pull/push loops
+  // already isolate per-file errors (skip + log), so a single poisoned entry is
+  // skipped while the rest of the space keeps syncing.
+  const guard = (p: string) => assertVaultPathSafe(fs, vaultRoot, p);
+  const safeFs = {
+    readFile: async (p: string): Promise<string> => {
+      await guard(p);
+      return fs.readFile(p);
+    },
+    writeFile: async (p: string, text: string): Promise<void> => {
+      await guard(p);
+      return fs.writeFile(p, text);
+    },
+    mkdir: async (p: string): Promise<void> => {
+      await guard(p);
+      return fs.mkdir(p);
+    },
+    rm: (p: string): Promise<void> => fs.rm(p),
+  };
+
+  // 1–2b. Repair whatever an interrupted cycle left behind (recoverVault).
+  // Any self-heal means the vault may not hold what the recorded export keys
+  // describe: forget them so this cycle re-exports every live page.
+  if (await recoverVault({ spaceId, vault, log, warn })) exportKeys?.clear();
 
   try {
     // 3. Pull writes happen on `docmost`; be on it BEFORE applying (see docstring).
