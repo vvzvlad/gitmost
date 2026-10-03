@@ -846,6 +846,38 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(pages).toHaveLength(2);
   });
 
+  it("a create cut off after its body write, before its id write-back, converges to ONE page", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const S = "019f2800-0000-7000-8000-0000000000cb";
+
+    // As above, but the process died after the push had written the body.
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "New.md"), "brand new content\n", "utf8");
+    });
+    pages.push({
+      id: S,
+      slugId: "s",
+      title: "New",
+      parentPageId: null,
+      updatedAt: T1,
+      text: "brand new content",
+      lastUpdatedSource: "git-sync",
+    });
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).not.toHaveBeenCalled();
+    const files = await mainFiles();
+    expect(Object.keys(files).sort()).toEqual(["New.md", "Page.md"]);
+    expect(files["New.md"]).toContain(`gitmost_id: ${S}`);
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["New.md", "Page.md"]);
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(pages).toHaveLength(2);
+  });
+
   it("a git-written page stored with the editor's trailing paragraph exports to git's bytes: idle cycles change nothing", async () => {
     if (!available) return;
     const { root, pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");

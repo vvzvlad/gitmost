@@ -642,7 +642,7 @@ export async function applyPullActions(
           if (adoptId !== null) {
             // git-sync's own create of git's new file, cut off before its id
             // write-back: ONE page — git's content under that page's id; the
-            // push then writes the body into the empty page.
+            // push then writes git's body into that page.
             resolved = normalizeTrailingWhitespace(
               serializePageFile(adoptId, parsePageFile(ours).body),
             );
@@ -696,7 +696,7 @@ export async function applyPullActions(
     mergeResult = { ok: true, conflict: genuine.length > 0, output: merge.output };
     if (adopted.length > 0) {
       warn(
-        `pull: git's new file(s) took over the empty page git-sync had created ` +
+        `pull: git's new file(s) took over the page git-sync had created ` +
           `for them before an interruption cut off the id write-back (one ` +
           `page each, no copy): ${adopted.join(", ")}.`,
       );
@@ -783,9 +783,9 @@ interface MergeIdentity {
 /**
  * The id of the Docmost page at an add/add path when that page is git-sync's
  * own unfinished create of git's new file there: git's file has no
- * gitmost_id, and the page is new since the merge base, still empty, and last
- * written by git-sync (a create cut off before its body write and its id
- * write-back). `null` otherwise.
+ * gitmost_id, and the page is new since the merge base and last written by
+ * git-sync (a create cut off before its id write-back, with or without its
+ * body written). `null` otherwise.
  */
 async function unfinishedCreateId(
   client: Pick<GitSyncClient, "getPageJson">,
@@ -795,7 +795,7 @@ async function unfinishedCreateId(
 ): Promise<string | null> {
   if (parsePageFile(ours).id !== null) return null;
   const page = parsePageFile(theirs);
-  if (page.id === null || page.body.trim().length > 0) return null;
+  if (page.id === null) return null;
   if (ident === null || ident.base.has(page.id)) return null;
   const live = await client.getPageJson(page.id);
   return live.lastUpdatedSource === "git-sync" ? page.id : null;
