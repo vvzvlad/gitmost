@@ -49,7 +49,7 @@ import {
 } from "./reconcile.js";
 import { stabilizePageBody } from "./stabilize.js";
 import { isPageFile } from "./push.js";
-import { disambiguate } from "./sanitize.js";
+import { gitCopyStem } from "./sanitize.js";
 
 // Engine-only mirror branch (SPEC §5): the engine writes here, humans never do.
 const DOCMOST_BRANCH = "docmost";
@@ -821,9 +821,9 @@ function freeGitSibling(rel: string, taken: Set<string>): string {
   const slash = rel.lastIndexOf("/");
   const dir = slash >= 0 ? rel.slice(0, slash + 1) : "";
   const stem = rel.slice(dir.length).replace(/\.md$/, "");
-  let out = `${dir}${disambiguate(stem, "git")}.md`;
+  let out = `${dir}${gitCopyStem(stem, 1)}.md`;
   for (let n = 2; taken.has(out); n++) {
-    out = `${dir}${disambiguate(stem, `git-${n}`)}.md`;
+    out = `${dir}${gitCopyStem(stem, n)}.md`;
   }
   taken.add(out);
   return out;

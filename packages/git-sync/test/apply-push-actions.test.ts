@@ -678,10 +678,12 @@ describe('applyPushActions — move whose client call throws (SPEC §12 isolatio
         kind: 'move',
         pageId: 'p-mv',
         path: 'Parent/Doc.md',
+        oldPath: 'Doc.md',
         error: 'move boom',
       },
     ]);
-    // A failure means the refs are NOT advanced — a re-run retries cleanly (§12).
+    // A failure means the applier advances no ref; runPush records per page
+    // what reached Docmost (both paths of the failed move stay out).
     expect(res.lastPushedAdvanced).toBe(false);
     expect(updateRefCalls).toEqual([]);
     expect(ffCalls).toEqual([]);

@@ -48,6 +48,7 @@ function makePushGit(opts: {
     revParse: vi.fn(async (ref: string) => {
       if (ref === DOCMOST_BRANCH) return 'doc-sha';
       if (ref === 'main') return 'main-sha';
+      if (ref === 'doc-sha^{tree}') return 'doc-tree';
       return null;
     }),
     diffNameStatus: vi.fn(async () => opts.changes),
@@ -58,6 +59,13 @@ function makePushGit(opts: {
     }),
     fastForwardBranch: vi.fn(async () => ({ ok: true })),
     listTrackedFiles: vi.fn(async () => [] as string[]),
+    // The per-page record of a push with failures: with every changed page
+    // failed, `main` minus the failed paths is the `docmost` tree, so nothing
+    // is recorded.
+    isAncestor: vi.fn(async () => true),
+    treeWithPathsFrom: vi.fn(async () => 'doc-tree'),
+    commitTree: vi.fn(async () => 'record-sha'),
+    deleteRef: vi.fn(async () => {}),
   };
   return { git, calls };
 }

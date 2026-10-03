@@ -33,8 +33,14 @@ import {
 } from "@docmost/prosemirror-markdown";
 import type { GitSyncClient } from "./client.types.js";
 import type { DiffEntry } from "./git.js";
-import { VaultGit, DEFAULT_BRANCH } from "./git.js";
+import {
+  VaultGit,
+  DEFAULT_BRANCH,
+  BOT_AUTHOR_NAME,
+  BOT_AUTHOR_EMAIL,
+} from "./git.js";
 import { bodyHash } from "./loop-guard.js";
+import { isGitCopyPath } from "./sanitize.js";
 import { type Settings } from "./settings.js";
 
 // Re-export so callers/tests can import the diff row shape from either module.
@@ -67,6 +73,8 @@ export interface UpdateAction {
 /** A page to soft-delete in Docmost (Trash, SPEC §8). */
 export interface DeleteAction {
   pageId: string;
+  /** Vault-relative path of the deleted file. */
+  path: string;
 }
 
 /** A renamed/moved page (same pageId, new path). Resolution DEFERRED. */
@@ -454,7 +462,7 @@ export function computePushActions(input: PushActionsInput): PushActions {
             reason: "pageId still present in the tree (moved) — not a deletion",
           });
         } else if (pageId) {
-          actions.deletes.push({ pageId });
+          actions.deletes.push({ pageId, path: change.path });
         } else {
           // Untracked-file guard (SPEC §8): a file with no recoverable pageId was
           // never a Docmost page — do NOT translate its removal into a delete.
@@ -506,8 +514,18 @@ export function computePushActions(input: PushActionsInput): PushActions {
 
 // --- thin apply (create/update/delete), fakes-only in this increment ---------
 
-/** The marker the push direction advances after a successful push (SPEC §5/§6). */
+/**
+ * The marker the push direction advances with the `docmost` mirror (SPEC §5/§6):
+ * the commit `docmost` was last moved to by a push — `main` after a clean push,
+ * the per-page record after a push with failures (`recordPushedPages`).
+ */
 export const LAST_PUSHED_REF = "refs/docmost/last-pushed";
+
+/**
+ * Names a per-page record (`recordPushedPages`) from before `docmost` moves to
+ * it until `main` has it, so `recoverVault` finishes a record a crash cut off.
+ */
+export const RECORD_REF = "refs/docmost/recording";
 
 /**
  * The mirror branch fast-forwarded after a clean push (SPEC §5/§6 step 3). It
@@ -572,8 +590,8 @@ export interface ApplyPushDeps {
    * conflict markers (SPEC §9). When TRUE, the marker lines are stripped and both
    * sides' content is pushed (the legacy `stripConflictMarkers` behavior). When
    * FALSE/undefined (the SAFE DEFAULT), the conflicted page is NOT pushed: it is
-   * recorded as a per-page FAILURE (so the refs are not advanced and the page is
-   * retried) and the user resolves the git conflict first.
+   * recorded as a per-page FAILURE (so its paths stay out of the advanced base
+   * and the page is retried) and the user resolves the git conflict first.
    */
   autoMergeConflicts?: boolean;
 }
@@ -581,9 +599,9 @@ export interface ApplyPushDeps {
 /**
  * Reason recorded on a per-page push FAILURE when a page is skipped because its
  * body still carries unresolved git conflict markers and `autoMergeConflicts` is
- * off (the SAFE default). Recorded as a failure (not a soft skip) on purpose: it
- * HOLDS the refs so the conflict commit is never marked as pushed and the page is
- * retried until the human resolves the conflict in git (SPEC §9).
+ * off (the SAFE default). Recorded as a failure (not a soft skip) on purpose: the
+ * page is never marked as pushed and is retried until the human resolves the
+ * conflict in git (SPEC §9).
  */
 export const CONFLICT_MARKERS_FAILURE_REASON =
   "unresolved conflict markers — resolve in git first";
@@ -613,15 +631,18 @@ export interface PushedPageRecord {
 
 /**
  * One page whose operation FAILED during apply (SPEC §12 resumability). The bad
- * page is isolated — recorded here — and the rest of the batch still runs; the
- * refs are NOT advanced when there is any failure, so a re-run retries cleanly.
+ * page is isolated — recorded here — and the rest of the batch still runs. Its
+ * paths stay at their `docmost` version in the advanced base
+ * (`recordPushedPages`), so the next push retries this page alone.
  */
 export interface PushFailure {
   kind: "update" | "create" | "delete" | "move" | "rename";
   /** The pageId for update/delete/move/rename; absent for a never-id'd create. */
   pageId?: string;
-  /** The vault-relative path for create/update/move/rename; absent for delete. */
-  path?: string;
+  /** The page file's vault-relative path (the new path of a move/rename). */
+  path: string;
+  /** The page's path before a move/rename (or a rename-derived update). */
+  oldPath?: string;
   /** The error message captured from the thrown error. */
   error: string;
 }
@@ -665,7 +686,8 @@ export interface ApplyPushResult {
   pushed: PushedPageRecord[];
   /**
    * Pages whose operation threw — isolated and recorded, the batch continued
-   * (SPEC §12). Non-empty here means the refs were NOT advanced.
+   * (SPEC §12). Non-empty here means the applier advanced no ref: `runPush`
+   * records per page what reached Docmost (`recordPushedPages`).
    */
   failures: PushFailure[];
   /**
@@ -714,11 +736,13 @@ export interface ApplyPushResult {
  *
  * FAIL-SAFE / per-page isolation (SPEC §12 resumability). Each page's operation
  * is wrapped in its own try/catch: a single failing page is recorded in
- * `failures[]` (with its kind + pageId/path + error) and the batch CONTINUES —
- * one bad page must never block the rest. Crucially, the refs are advanced ONLY
- * when `failures.length === 0`: a PARTIAL push must NOT advance
- * `refs/docmost/last-pushed` or the `docmost` mirror, so a re-run retries the
- * whole batch cleanly (the already-applied pages are idempotent re-applies).
+ * `failures[]` (with its kind + pageId/path(s) + error) and the batch CONTINUES —
+ * one bad page must never block the rest. This applier advances the refs only
+ * when `failures.length === 0`. A re-applied page is NOT a harmless no-op — the
+ * pull moves the merge base every cycle, so a page re-sent from an old base
+ * reverts Docmost edits made since and duplicates created pages — so after a
+ * PARTIAL push `runPush` records per page what reached Docmost
+ * (`recordPushedPages`) and only the failed pages are retried.
  *
  * LOOP-CLOSE (SPEC §6 step 3 / §10). After a fully-successful push, when a
  * `pushedCommit` is supplied:
@@ -728,7 +752,7 @@ export interface ApplyPushResult {
  *     what Docmost now contains and the NEXT pull diffs EMPTY for these pages
  *     (it does not re-pull our own write). The ff is REFUSED (not forced) if
  *     `docmost` is not an ancestor of the pushed commit; the result is surfaced
- *     in `docmostFastForward`. On ANY failure, NEITHER ref is advanced.
+ *     in `docmostFastForward`. On ANY failure this applier advances NEITHER ref.
  *
  * LOOP-GUARD DATA (SPEC §10). For every page successfully updated/created the
  * result carries a `pushed` record `{ pageId, updatedAt?, bodyHash }` — the body
@@ -774,6 +798,7 @@ export async function applyPushActions(
           kind: "update",
           pageId: u.pageId,
           path: u.path,
+          ...(u.basePath !== undefined ? { oldPath: u.basePath } : {}),
           error: CONFLICT_MARKERS_FAILURE_REASON,
         });
         continue;
@@ -829,6 +854,7 @@ export async function applyPushActions(
         kind: "update",
         pageId: u.pageId,
         path: u.path,
+        ...(u.basePath !== undefined ? { oldPath: u.basePath } : {}),
         error: errMessage(err),
       });
     }
@@ -990,6 +1016,7 @@ export async function applyPushActions(
       failures.push({
         kind: "delete",
         pageId: d.pageId,
+        path: d.path,
         error: errMessage(err),
       });
     }
@@ -1039,6 +1066,7 @@ export async function applyPushActions(
           kind: "move",
           pageId: rm.pageId,
           path: rm.newPath,
+          oldPath: rm.oldPath,
           error: errMessage(err),
         });
       }
@@ -1085,22 +1113,22 @@ export async function applyPushActions(
       } catch (err: unknown) {
         // Isolate the failed page: the op that ACTUALLY threw is recorded so a
         // re-run can retry. A move that threw before its rename leaves `rename`
-        // for the next run (idempotent re-apply); refs are NOT advanced (below).
+        // for the next run; both paths stay out of the advanced base.
         failures.push({
           kind: failingKind,
           pageId: c.pageId,
           path: c.newPath,
+          oldPath: c.oldPath,
           error: errMessage(err),
         });
       }
     }
   }
 
-  // 5. Advance the refs ONLY on a CLEAN push (no failures) AND when a pushed
-  //    commit is supplied. A partial push must advance NEITHER ref, so a re-run
-  //    retries the whole batch (SPEC §12). The loop-close (SPEC §6 step 3 / §10):
-  //    advance `refs/docmost/last-pushed` AND fast-forward the `docmost` mirror,
-  //    so Docmost's new content is mirrored and the next pull diffs empty.
+  // 5. On a CLEAN push (no failures) with a pushed commit, close the loop (SPEC
+  //    §6 step 3 / §10): advance `refs/docmost/last-pushed` AND fast-forward the
+  //    `docmost` mirror, so Docmost's new content is mirrored and the next pull
+  //    diffs empty. A partial push is recorded per page by `runPush`.
   let lastPushedAdvanced = false;
   let docmostFastForward: { ok: boolean; reason?: string } | null = null;
   if (pushedCommit && failures.length === 0) {
@@ -1530,6 +1558,10 @@ export interface PushDeps {
     | "fastForwardBranch"
     | "listTrackedFiles"
     | "commitAddingPath"
+    | "isAncestor"
+    | "treeWithPathsFrom"
+    | "commitTree"
+    | "deleteRef"
   >;
   /** Build a real client — called ONLY on the apply path, never on dry-run. */
   makeClient: (settings: Settings) => ApplyPushDeps["client"];
@@ -1595,8 +1627,13 @@ export interface PushRunResult {
  *      then (a) if any pageIds were written back (creates), commit them on `main`
  *      with the `local` trailer and RE-advance `refs/docmost/last-pushed` to the
  *      new commit so the recorded pageIds are persisted in what Docmost mirrors;
- *      (b) ESCALATE a divergent-`docmost` ff refusal (SPEC §5) with a prominent
- *      WARNING and the `divergentDocmost` result flag. Then log a one-line summary.
+ *      (b) after a push with failures, record per page what reached Docmost
+ *      (`recordPushedPages`); (c) ESCALATE a divergent-`docmost` refusal (SPEC
+ *      §5) with a prominent WARNING and the `divergentDocmost` result flag. Then
+ *      log a one-line summary.
+ *
+ * Refuses (throws) before any Docmost write when the plan would create more
+ * than `MAX_GIT_COPY_CREATES` `~git` copy pages (see there).
  */
 export async function runPush(
   deps: PushDeps,
@@ -1808,6 +1845,23 @@ export async function runPush(
     return { mode: "dry-run", base, pushedCommit, planned };
   }
 
+  // GROWTH BREAKER (invariants #1/#10). A `~git` file is git's side of a page
+  // the pull could not merge, kept as a new page. A burst of them in one cycle
+  // is a loop duplicating pages, not editing: fail the space loudly instead.
+  const gitCopies = actions.creates.filter((c) => isGitCopyPath(c.path));
+  if (gitCopies.length > MAX_GIT_COPY_CREATES) {
+    throw new Error(
+      `push refused: it would create ${gitCopies.length} '~git' copy pages in ` +
+        `one cycle (limit ${MAX_GIT_COPY_CREATES}) — git's side of that many ` +
+        `pages could not be merged, which points at pages being duplicated ` +
+        `every cycle. Nothing was pushed to Docmost. Delete or merge the '~git' ` +
+        `files on main (${gitCopies
+          .slice(0, 3)
+          .map((c) => c.path)
+          .join(", ")}${gitCopies.length > 3 ? ", …" : ""}).`,
+    );
+  }
+
   // 7. Apply path: build the REAL client and execute. This is the ONLY write path.
   const client = deps.makeClient(settings);
   const applied = await applyPushActions(
@@ -1851,8 +1905,8 @@ export async function runPush(
     if (recorded) {
       const newCommit = await git.revParse(DEFAULT_BRANCH);
       // Only re-advance when the original push was CLEAN (last-pushed was already
-      // advanced by the applier); a partial push left the refs untouched and a
-      // re-run retries the whole batch, so we must not move them either.
+      // advanced by the applier); a partial push is recorded per page in 7b,
+      // after this commit.
       if (newCommit && applied.lastPushedAdvanced) {
         await git.updateRef(LAST_PUSHED_REF, newCommit);
         const ff = await git.fastForwardBranch(DOCMOST_BRANCH, newCommit);
@@ -1873,20 +1927,39 @@ export async function runPush(
     }
   }
 
-  // 7b. ESCALATE a divergent-`docmost` fast-forward refusal (SPEC §5 invariant
-  //     broken). The applier already refused to clobber a divergent mirror; make
-  //     it LOUD (not silent) so the operator notices, and fold it into the exit.
-  if (applied.docmostFastForward && !applied.docmostFastForward.ok) {
+  // 7b. A push with failures: advance the base over every page that reached
+  //     Docmost, so only the failed pages stay in the next push's diff.
+  const pageRecord =
+    applied.failures.length > 0
+      ? await recordPushedPages(git, applied.failures)
+      : null;
+  if (pageRecord?.ok) {
+    log(
+      `push: ${applied.failures.length} failure(s) — recorded what reached ` +
+        `Docmost on '${DOCMOST_BRANCH}'; the failed page(s) are retried next cycle.`,
+    );
+  }
+
+  // 7c. ESCALATE a divergent-`docmost` refusal (SPEC §5 invariant broken). The
+  //     applier and the record refuse to clobber a divergent mirror; make it
+  //     LOUD (not silent) so the operator notices, and fold it into the exit.
+  const refused =
+    applied.docmostFastForward && !applied.docmostFastForward.ok
+      ? applied.docmostFastForward
+      : pageRecord && !pageRecord.ok
+        ? pageRecord
+        : null;
+  if (refused) {
     divergentDocmost = true;
     log(
       `push: WARNING — the 'docmost' mirror branch DIVERGED and was NOT ` +
-        `fast-forwarded (${applied.docmostFastForward.reason ?? "not-fast-forward"}). ` +
+        `advanced (${refused.reason ?? "not-fast-forward"}). ` +
         `The §5 invariant ('docmost' mirrors what Docmost contains) is broken: ` +
         `reconcile 'docmost' against the live Docmost tree before the next cycle.`,
     );
   }
 
-  // 7c. One-line summary (mirrors pull.ts's summary line).
+  // 7d. One-line summary (mirrors pull.ts's summary line).
   log(
     `push complete: ${applied.created} created, ${applied.updated} updated, ` +
       `${applied.deleted} deleted, ${applied.moved} moved, ${applied.renamed} ` +
@@ -1904,6 +1977,94 @@ export async function runPush(
     divergentDocmost,
     failures: applied.failures,
   };
+}
+
+/**
+ * The most `~git` copy pages (`isGitCopyPath`) one push may create. More means
+ * the pull kept git's side of that many pages as new files in one cycle — a
+ * duplication loop, not an edit — so `runPush` refuses the whole push instead.
+ */
+export const MAX_GIT_COPY_CREATES = 20;
+
+/** The git surface of `recordPushedPages` / `finishPushRecord`. */
+type RecordGit = Pick<
+  VaultGit,
+  | "revParse"
+  | "isAncestor"
+  | "treeWithPathsFrom"
+  | "commitTree"
+  | "updateRef"
+  | "fastForwardBranch"
+  | "deleteRef"
+>;
+
+/**
+ * After a push with per-page `failures`, advance the base over every page that
+ * DID reach Docmost: commit on `docmost` (a child of its tip) the tree of `main`
+ * with only the failed operations' paths kept at their `docmost` version, then
+ * merge that record into `main` keeping `main`'s tree (`-s ours`). The merge
+ * base then covers every pushed page, and the failed ones stay in the next
+ * push's diff, retried on their own. `RECORD_REF` names the record until `main`
+ * has it, so a crash in between is finished by `recoverVault`.
+ *
+ * Returns null when nothing reached Docmost (no record, no new commits), else
+ * the `docmost` advance result — refused, like the clean push's fast-forward,
+ * when `docmost` is not an ancestor of `main`.
+ */
+async function recordPushedPages(
+  git: RecordGit,
+  failures: PushFailure[],
+): Promise<{ ok: boolean; reason?: string } | null> {
+  const tip = await git.revParse(DOCMOST_BRANCH);
+  const main = await git.revParse(DEFAULT_BRANCH);
+  if (tip === null || main === null) {
+    return { ok: false, reason: `'${DOCMOST_BRANCH}' or '${DEFAULT_BRANCH}' is missing` };
+  }
+  if (!(await git.isAncestor(tip, main))) {
+    return { ok: false, reason: "not-fast-forward" };
+  }
+  const failedPaths = failures.flatMap((f) =>
+    f.oldPath !== undefined ? [f.path, f.oldPath] : [f.path],
+  );
+  const tree = await git.treeWithPathsFrom(main, tip, failedPaths);
+  if (tree === (await git.revParse(`${tip}^{tree}`))) return null;
+  const record = await git.commitTree(
+    tree,
+    [tip],
+    `docmost: record pushed pages (${failures.length} failed, kept back)`,
+    { authorName: BOT_AUTHOR_NAME, authorEmail: BOT_AUTHOR_EMAIL },
+  );
+  await git.updateRef(RECORD_REF, record);
+  return finishPushRecord(git, record);
+}
+
+/**
+ * Finish a per-page record (`recordPushedPages`): move `docmost` and
+ * `refs/docmost/last-pushed` to it, merge it into `main` with `main`'s own tree
+ * (no working-tree change), then drop `RECORD_REF`. Every step is skipped when
+ * already done, so `recoverVault` re-runs it after a crash. `HEAD` must not be
+ * on `docmost`.
+ */
+export async function finishPushRecord(
+  git: RecordGit,
+  record: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const ff = await git.fastForwardBranch(DOCMOST_BRANCH, record);
+  if (ff.ok) {
+    await git.updateRef(LAST_PUSHED_REF, record);
+    const main = await git.revParse(DEFAULT_BRANCH);
+    if (main !== null && !(await git.isAncestor(record, main))) {
+      const merged = await git.commitTree(
+        `${main}^{tree}`,
+        [main, record],
+        `Merge the pushed pages record into ${DEFAULT_BRANCH}`,
+        { authorName: BOT_AUTHOR_NAME, authorEmail: BOT_AUTHOR_EMAIL },
+      );
+      await git.updateRef(`refs/heads/${DEFAULT_BRANCH}`, merged, main);
+    }
+  }
+  await git.deleteRef(RECORD_REF);
+  return ff;
 }
 
 /** Synthetic native meta from the live working tree (`current` side). */

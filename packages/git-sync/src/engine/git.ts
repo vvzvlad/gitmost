@@ -760,9 +760,81 @@ export class VaultGit {
    * Point `ref` at `target` (`git update-ref <ref> <target>`). Used to advance
    * `refs/docmost/last-pushed` to the just-pushed `main` commit after a push
    * (SPEC §6 step 3 / §5). `target` may be a SHA or any commit-ish git accepts.
+   * With `expected`, the update fails unless `ref` still points there.
    */
-  async updateRef(ref: string, target: string): Promise<void> {
-    await this.run(["update-ref", ref, target]);
+  async updateRef(ref: string, target: string, expected?: string): Promise<void> {
+    await this.run(["update-ref", ref, target, ...(expected ? [expected] : [])]);
+  }
+
+  /** True when commit `a` is an ancestor of (or equal to) commit `b`. */
+  async isAncestor(a: string, b: string): Promise<boolean> {
+    return (await this.runRaw(["merge-base", "--is-ancestor", a, b])).code === 0;
+  }
+
+  /**
+   * The tree of `ref` with each of `paths` as it is at `fromRef` instead (left
+   * out where `fromRef` has no such path), built in a private index so neither
+   * the working tree nor the real index is touched. Returns the tree id.
+   */
+  async treeWithPathsFrom(
+    ref: string,
+    fromRef: string,
+    paths: string[],
+  ): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "git-sync-index-"));
+    const env = { GIT_INDEX_FILE: join(dir, "index") };
+    try {
+      await this.run(["read-tree", ref], { env });
+      for (const path of paths) {
+        const entry = await this.run([
+          "--literal-pathspecs",
+          "ls-tree",
+          "-z",
+          fromRef,
+          "--",
+          path,
+        ]);
+        const m = entry.match(/^(\d+) blob ([0-9a-f]+)\t/);
+        await this.run(
+          m
+            ? ["update-index", "--add", "--cacheinfo", `${m[1]},${m[2]},${path}`]
+            : ["update-index", "--force-remove", "--", path],
+          { env },
+        );
+      }
+      return await this.run(["write-tree"], { env });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Create a commit of `tree` (any tree-ish) with `parents`, without touching
+   * a branch, the index or the working tree. Returns the commit id.
+   */
+  async commitTree(
+    tree: string,
+    parents: string[],
+    message: string,
+    opts: CommitOptions,
+  ): Promise<string> {
+    return this.run(
+      [
+        "commit-tree",
+        tree,
+        ...parents.flatMap((p) => ["-p", p]),
+        "-m",
+        buildCommitMessage(message, opts.trailers),
+      ],
+      {
+        env: {
+          GIT_AUTHOR_NAME: opts.authorName,
+          GIT_AUTHOR_EMAIL: opts.authorEmail,
+          GIT_COMMITTER_NAME: opts.authorName,
+          GIT_COMMITTER_EMAIL: opts.authorEmail,
+        },
+      },
+    );
   }
 
   /** Delete `ref` (`git update-ref -d`); a missing ref is a no-op. */

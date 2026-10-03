@@ -9,7 +9,9 @@ import {
 import {
   runPush,
   commitLocalWorkingTree,
+  finishPushRecord,
   DOCMOST_BRANCH,
+  RECORD_REF,
   type PushFailure,
 } from "./push.js";
 import { assertVaultPathSafe, type PathGuardIo } from "./path-guard.js";
@@ -137,8 +139,8 @@ export interface RecoverVaultDeps {
 
 /**
  * Repair what an interrupted cycle left in the vault (the cycle preflight,
- * steps 1-2b): a missing repo or `main`, stale git locks, a half-done merge
- * and a dirty working tree. Run before every cycle, and before an external
+ * steps 1-2c): a missing repo or `main`, stale git locks, a half-done merge,
+ * a dirty working tree and a half-done per-page push record. Run before every cycle, and before an external
  * push's receive-pack, which `receive.denyCurrentBranch=updateInstead` refuses
  * on a dirty tree. Returns true when it had to repair anything.
  */
@@ -241,6 +243,24 @@ export async function recoverVault(deps: RecoverVaultDeps): Promise<boolean> {
 
   if (pulling) await vault.deleteRef(PULL_REF);
 
+  // 2c. FINISH a per-page push record cut off between moving `docmost` and
+  //     merging the record into `main` (push.ts `recordPushedPages`). Left
+  //     half done, the next pull would merge against the older base: pages
+  //     already pushed would be re-sent over newer Docmost edits and created
+  //     pages kept a second time as `~git` copies.
+  const record = await vault.readRef(RECORD_REF);
+  if (record !== null) {
+    const done = await finishPushRecord(vault, record);
+    recovered = true;
+    warn(
+      `space ${spaceId}: finished recording the pages a cut-off push had ` +
+        `applied (${record.slice(0, 8)})` +
+        (done.ok
+          ? "."
+          : ` — '${DOCMOST_BRANCH}' was NOT advanced (${done.reason ?? "not-fast-forward"}).`),
+    );
+  }
+
   return recovered;
 }
 
@@ -275,7 +295,7 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
     rm: (p: string): Promise<void> => fs.rm(p),
   };
 
-  // 1–2b. Repair whatever an interrupted cycle left behind (recoverVault).
+  // 1–2c. Repair whatever an interrupted cycle left behind (recoverVault).
   // Any self-heal means the vault may not hold what the recorded export keys
   // describe: forget them so this cycle re-exports every live page.
   if (await recoverVault({ spaceId, vault, log, warn })) exportKeys?.clear();
