@@ -78,6 +78,8 @@ describe("runCycle — a push with failures advances the base per page", () => {
       }
     };
     const calls: string[][] = [];
+    /** The cycle's warn lines, per cycle. */
+    const warnings: string[] = [];
     let nextId = 0x100;
     const client = {
       listSpaceTree: async () => ({
@@ -175,6 +177,7 @@ describe("runCycle — a push with failures advances the base per page", () => {
     const exportKeys = new Map<string, string>();
     const cycle = (v: VaultGit = vault) => {
       calls.length = 0;
+      warnings.length = 0;
       return runCycle({
         spaceId: "space-1",
         client: client as any,
@@ -182,7 +185,7 @@ describe("runCycle — a push with failures advances the base per page", () => {
         settings: makeSettings(root),
         fs: nodeFs,
         log: () => undefined,
-        warn: () => undefined,
+        warn: (line: string) => warnings.push(line),
         exportKeys,
       });
     };
@@ -216,6 +219,7 @@ describe("runCycle — a push with failures advances the base per page", () => {
       failing,
       failOnce,
       calls,
+      warnings,
       cycle,
       human,
       edit,
@@ -253,6 +257,10 @@ describe("runCycle — a push with failures advances the base per page", () => {
     for (let i = 0; i < 4; i++) {
       const res = await h.cycle();
       expect(res.push?.failures).toBe(1);
+      // The log names the failed page and the reason.
+      expect(h.warnings).toEqual([
+        `space space-1: push update of Bad.md failed: injected failure for ${BAD}`,
+      ]);
       perCycle.push(h.calls.map((c) => [...c]));
       if (i === 2) settled = await h.heads();
     }

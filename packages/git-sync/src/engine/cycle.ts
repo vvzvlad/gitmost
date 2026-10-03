@@ -25,6 +25,9 @@ import { assertVaultPathSafe, type PathGuardIo } from "./path-guard.js";
  */
 const PULL_REF = "refs/docmost/pulling";
 
+/** The most per-page push failures one cycle names in the log. */
+const LOGGED_PUSH_FAILURES = 20;
+
 /**
  * Absolute-path filesystem primitives the cycle needs. Injected (not imported)
  * so the engine stays IO-free and unit-testable. `mkdir` is recursive; `rm` is
@@ -381,6 +384,19 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
     signal?.throwIfAborted();
 
     const pushResult = await runPush(pushDeps, { dryRun: false });
+
+    // Name each failed page and its reason (the status carries only the first
+    // one), capped so a mass failure cannot flood the log.
+    const failures = pushResult.failures ?? [];
+    for (const f of failures.slice(0, LOGGED_PUSH_FAILURES)) {
+      warn(`space ${spaceId}: push ${f.kind} of ${f.path} failed: ${f.error}`);
+    }
+    if (failures.length > LOGGED_PUSH_FAILURES) {
+      warn(
+        `space ${spaceId}: … and ${failures.length - LOGGED_PUSH_FAILURES} ` +
+          `more push failure(s)`,
+      );
+    }
 
     // Record the export keys only NOW that the pull's `docmost` commit, the
     // merge and the push all completed. Rebuilt from the live tree, so a page
