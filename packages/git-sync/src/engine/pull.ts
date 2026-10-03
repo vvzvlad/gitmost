@@ -329,8 +329,10 @@ export interface ApplyPullActionsDeps {
     | "listTrackedFiles"
     | "mergeBase"
     | "revParse"
+    | "isMergeInProgress"
+    | "diffNameStatus"
   >;
-  /** Write a file by ABSOLUTE path (mkdir of the parent is done internally). */
+  /** Write a file by ABSOLUTE path; its parent directory must exist. */
   writeFile: (absPath: string, text: string) => Promise<void>;
   /** Recursive mkdir of an ABSOLUTE directory path. */
   mkdir: (absDir: string) => Promise<void>;
@@ -612,10 +614,7 @@ export async function applyPullActions(
         // SPURIOUS: identical once trailing/empty-line normalization is applied.
         // Commit the canonical (normalized) form — no conflict, no markers.
         normalized++;
-        await deps.writeFile(
-          relToAbs(vaultRoot, rel),
-          normalizeTrailingWhitespace(theirs),
-        );
+        await writeVaultFile(deps, vaultRoot, rel, normalizeTrailingWhitespace(theirs));
       } else {
         const base = await git.showStage(1, rel);
         let resolved: string | null;
@@ -647,8 +646,10 @@ export async function applyPullActions(
           resolved = theirs;
           if (taken === null) taken = new Set(await git.listTrackedFiles());
           const copy = freeGitSibling(rel, taken);
-          await deps.writeFile(
-            relToAbs(vaultRoot, copy),
+          await writeVaultFile(
+            deps,
+            vaultRoot,
+            copy,
             normalizeTrailingWhitespace(parsePageFile(ours).body),
           );
           addAdd.push(`${rel} -> ${copy}`);
@@ -659,7 +660,7 @@ export async function applyPullActions(
           resolved = ours ?? theirs;
         }
         if (resolved !== null) {
-          await deps.writeFile(relToAbs(vaultRoot, rel), resolved);
+          await writeVaultFile(deps, vaultRoot, rel, resolved);
         }
       }
     }
@@ -706,10 +707,13 @@ export async function applyPullActions(
     }
   } else if (!merge.ok) {
     log(`pull: merge of docmost -> main failed: ${merge.output}`);
-  } else if (relocated.length > 0) {
-    await git.stageAll();
-    await git.commit(
-      `docmost: sync, ${relocated.length} page(s) kept at git's path`,
+  } else if (await git.isMergeInProgress()) {
+    // A clean non-fast-forward merge stops before committing (VaultGit.merge):
+    // commit it, with the relocations above, as one merge commit.
+    await git.commitMerge(
+      relocated.length > 0
+        ? `docmost: sync, ${relocated.length} page(s) kept at git's path`
+        : `Merge branch '${DOCMOST_BRANCH}'`,
       {
         authorName: BOT_AUTHOR_NAME,
         authorEmail: BOT_AUTHOR_EMAIL,
@@ -735,6 +739,18 @@ export async function applyPullActions(
     merge: mergeResult,
     conflictedPaths,
   };
+}
+
+/** Write a vault file by relative path, creating its parent directory first. */
+async function writeVaultFile(
+  deps: Pick<ApplyPullActionsDeps, "mkdir" | "writeFile">,
+  vaultRoot: string,
+  rel: string,
+  text: string,
+): Promise<void> {
+  const abs = relToAbs(vaultRoot, rel);
+  await deps.mkdir(dirname(abs));
+  await deps.writeFile(abs, text);
 }
 
 /** Page identity around one pull merge: the merge base and id -> path maps. */
@@ -843,9 +859,14 @@ async function alignToDocmostLayout(
       aside.push({ from: m.to, to: freeGitSibling(m.to, taken), text: occupant });
     }
   }
-  for (const m of moves) await deps.rm(relToAbs(vaultRoot, m.from));
+  // Every target is written before any source goes.
+  const written = new Set<string>();
   for (const m of [...moves, ...aside]) {
-    await deps.writeFile(relToAbs(vaultRoot, m.to), m.text);
+    await writeVaultFile(deps, vaultRoot, m.to, m.text);
+    written.add(m.to);
+  }
+  for (const m of moves) {
+    if (!written.has(m.from)) await deps.rm(relToAbs(vaultRoot, m.from));
   }
   await git.stageAll();
   await git.commit(
@@ -878,8 +899,11 @@ async function alignToDocmostLayout(
  * and its Docmost-side file goes. A path-based merge alone would leave the page
  * in two files (Docmost's edits at Docmost's path, git's at its own). If Docmost
  * put another page at git's path, that page keeps it and git's file of the page
- * moves to a free `~git` sibling. Returns "docmost path -> kept path" per page
- * and marks every path it settled.
+ * moves to a free `~git` sibling. When git both moved and copied the page (two
+ * files with its id, neither at its merge-base path), the page is the file git
+ * paired with that path as a rename (else the first by path); the copies lose
+ * the gitmost_id so the push creates them as new pages. Returns
+ * "docmost path -> kept path" per page and marks every path it settled.
  */
 async function relocateGitMovedPages(
   deps: ApplyPullActionsDeps,
@@ -896,20 +920,34 @@ async function relocateGitMovedPages(
   }
   const out: string[] = [];
   let taken: Set<string> | null = null;
+  // git's renames on `main` since the merge base: old path -> new path.
+  let renames: Map<string, string> | null = null;
   for (const [id, paths] of pathsById) {
-    // Two files with one id on `main` are a copy: the push makes it a new page.
-    if (paths.length !== 1) continue;
-    const gitPath = paths[0];
     const basePath = ident.base.get(id);
     const docPath = ident.doc.get(id);
-    if (
-      basePath === undefined ||
-      docPath === undefined ||
-      gitPath === basePath ||
-      gitPath === docPath
-    ) {
-      continue;
+    if (basePath === undefined || docPath === undefined) continue;
+    let gitPath = paths[0];
+    let copies: string[] = [];
+    if (paths.length > 1) {
+      // A file still at the page's own path is the page; the push makes the
+      // other files new pages.
+      if (paths.includes(basePath) || paths.includes(docPath)) continue;
+      if (renames === null) {
+        renames = new Map();
+        for (const c of await git.diffNameStatus(ident.mb, oursSha)) {
+          if (c.status === "R" && c.oldPath !== undefined) {
+            renames.set(c.oldPath, c.path);
+          }
+        }
+      }
+      const paired = renames.get(basePath);
+      gitPath =
+        paired !== undefined && paths.includes(paired)
+          ? paired
+          : [...paths].sort()[0];
+      copies = paths.filter((p) => p !== gitPath && !unmerged.has(p));
     }
+    if (gitPath === basePath || gitPath === docPath) continue;
     const gitText = await git.showFileAtRef(oursSha, gitPath);
     const baseText = await git.showFileAtRef(ident.mb, basePath);
     const docText = await git.showFileAtRef(DOCMOST_BRANCH, docPath);
@@ -922,14 +960,19 @@ async function relocateGitMovedPages(
       continue;
     }
     // Docmost left the page alone: the merge already carried git's move.
-    if (docPath === basePath && docText === baseText && !unmerged.has(gitPath)) {
+    if (
+      docPath === basePath &&
+      docText === baseText &&
+      !unmerged.has(gitPath) &&
+      copies.length === 0
+    ) {
       continue;
     }
     let target = gitPath;
     if (unmerged.has(gitPath)) {
       const theirsAt = await git.showFileAtRef(DOCMOST_BRANCH, gitPath);
       if (theirsAt !== null && parsePageFile(theirsAt).id !== id) {
-        await deps.writeFile(relToAbs(vaultRoot, gitPath), theirsAt);
+        await writeVaultFile(deps, vaultRoot, gitPath, theirsAt);
         settled.add(gitPath);
         if (taken === null) {
           taken = new Set([
@@ -940,8 +983,10 @@ async function relocateGitMovedPages(
         target = freeGitSibling(gitPath, taken);
       }
     }
-    await deps.writeFile(
-      relToAbs(vaultRoot, target),
+    await writeVaultFile(
+      deps,
+      vaultRoot,
+      target,
       docText === baseText
         ? gitText
         : (
@@ -956,12 +1001,26 @@ async function relocateGitMovedPages(
     // The page's Docmost-side file goes; a file git put at that path stays.
     const gitAtDocPath = await git.showFileAtRef(oursSha, docPath);
     if (gitAtDocPath !== null && parsePageFile(gitAtDocPath).id !== id) {
-      await deps.writeFile(relToAbs(vaultRoot, docPath), gitAtDocPath);
+      await writeVaultFile(deps, vaultRoot, docPath, gitAtDocPath);
     } else {
       await deps.rm(relToAbs(vaultRoot, docPath));
     }
     settled.add(docPath);
-    out.push(`${docPath} -> ${target}`);
+    for (const copy of copies) {
+      const text = await git.showFileAtRef(oursSha, copy);
+      if (text === null) continue;
+      await writeVaultFile(
+        deps,
+        vaultRoot,
+        copy,
+        normalizeTrailingWhitespace(parsePageFile(text).body),
+      );
+      settled.add(copy);
+    }
+    out.push(
+      `${docPath} -> ${target}` +
+        (copies.length > 0 ? ` (copies made new pages: ${copies.join(", ")})` : ""),
+    );
   }
   return out;
 }

@@ -1667,8 +1667,10 @@ export async function runPush(
   // editor's "Make a copy" duplicates the frontmatter). The id's file in the base
   // commit stays the page; every other one is a copy and becomes a NEW page —
   // never an update of the original (a rename removes the old path, a copy keeps
-  // both). When no candidate is the id's base file, the first by path is the
-  // page. Only ids carried by a changed file can have gained a copy.
+  // both). When no candidate is at the id's base path, the page is the file git
+  // paired with that path as a rename, else the first by path; its update is
+  // always 3-way against the id's base file. Only ids carried by a changed file
+  // can have gained a copy.
   const changedIds = new Set<string>();
   for (const change of changes) {
     const pid =
@@ -1678,6 +1680,8 @@ export async function runPush(
     if (pid) changedIds.add(pid);
   }
   const copyPaths = new Set<string>();
+  // The page file chosen for a duplicated id -> the id's base path.
+  const pageBasePath = new Map<string, string>();
   if (changedIds.size > 0) {
     const pathsById = new Map<string, string[]>();
     for (const { path, id } of await git.pageIdsAtRef(DEFAULT_BRANCH)) {
@@ -1692,13 +1696,29 @@ export async function runPush(
         if (meta?.pageId === id) files.push(path);
       }
       if (files.length < 2) continue;
-      let page = files[0];
+      let page: string | undefined;
       for (const path of files) {
         const prev = await readMetaPrev(deps, base.sha, path, settings.docmostSpaceId);
         if (prev?.pageId === id) {
           page = path;
           break;
         }
+      }
+      if (page === undefined) {
+        // The id's base file left its path (deleted, renamed, or reused by
+        // another page): that diff row's pre-image carries the id.
+        const left = changes.find(
+          (c) =>
+            c.status !== "A" &&
+            metaAt(c.oldPath ?? c.path, "prev")?.pageId === id,
+        );
+        const basePath = left ? (left.oldPath ?? left.path) : undefined;
+        const renamed = changes.find(
+          (c) =>
+            c.status === "R" && c.oldPath === basePath && files.includes(c.path),
+        );
+        page = renamed?.path ?? files[0];
+        if (basePath !== undefined) pageBasePath.set(page, basePath);
       }
       for (const path of files) if (path !== page) copyPaths.add(path);
     }
@@ -1716,6 +1736,9 @@ export async function runPush(
     currentPageIds,
     copyPaths,
   });
+  for (const u of actions.updates) {
+    if (u.basePath === undefined) u.basePath = pageBasePath.get(u.path);
+  }
   const planned = {
     creates: actions.creates.length,
     updates: actions.updates.length,

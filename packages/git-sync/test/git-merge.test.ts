@@ -104,6 +104,12 @@ describe('VaultGit.merge — 3-way merge integration (temp repo)', () => {
     const res = await git.merge('docmost');
     expect(res.ok).toBe(true);
     expect(res.conflict).toBe(false);
+    // A non-FF merge stops before committing; the caller completes it.
+    expect(await git.isMergeInProgress()).toBe(true);
+    await git.commitMerge('merge', {
+      authorName: 'Bot',
+      authorEmail: 'bot@local',
+    });
 
     // A real (non-FF) merge: HEAD has TWO parents.
     expect(await headParentCount(vault)).toBe(2);

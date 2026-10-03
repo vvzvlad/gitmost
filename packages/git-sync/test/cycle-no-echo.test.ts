@@ -25,6 +25,7 @@ const N1 = "019f2800-0000-7000-8000-0000000000c1";
 const N2 = "019f2800-0000-7000-8000-0000000000c2";
 const Q = "019f2800-0000-7000-8000-0000000000c3";
 const C = "019f2800-0000-7000-8000-0000000000c4";
+const P = "019f2800-0000-7000-8000-0000000000c5";
 const T0 = "2026-10-01T00:00:00.000Z";
 const T1 = "2026-10-02T00:00:00.000Z";
 
@@ -69,13 +70,13 @@ describe("runCycle — the push never echoes the pull's export", () => {
     const vault = new VaultGit(root);
     const client = makeClient(pages);
     const exportKeys = new Map<string, string>();
-    const cycle = () =>
+    const cycle = (fs = nodeFs, v = vault) =>
       runCycle({
         spaceId: "space-1",
         client: client as any,
-        vault,
+        vault: v,
         settings: makeSettings(root),
-        fs: nodeFs,
+        fs,
         log: () => undefined,
         warn: () => undefined,
         exportKeys,
@@ -558,5 +559,201 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(client.createPage).toHaveBeenCalledTimes(1);
     expect(client.importPageMarkdown).not.toHaveBeenCalled();
     expect(client.deletePage).not.toHaveBeenCalled();
+  });
+
+  it.each([["edited in Docmost", "omega DOC"], ["untouched in Docmost", "omega"]])(
+    "a git rename plus an editor copy of the renamed file, page %s: the renamed file stays the page, the copy becomes a new page",
+    async (_name, omega) => {
+      if (!available) return;
+      const { page, pages, client, cycle, humanCommit, mainFiles } = await setup(
+        "alpha\n\nmiddle\n\nomega",
+      );
+      client.renamePage.mockImplementation(async (id: string, title: string) => {
+        if (id === A) page.title = title;
+        return {};
+      });
+      client.createPage.mockImplementation(async (title: string, content: string) => {
+        pages.push({ id: C, slugId: "c", title, parentPageId: null, updatedAt: T1, text: content });
+        return { data: { id: C } };
+      });
+
+      page.text = `alpha\n\nmiddle\n\n${omega}`;
+      page.updatedAt = T1;
+      // Obsidian names a copy "<name> 1.md", which sorts before "<name>.md".
+      await humanCommit(async (root) => {
+        const text = await readFile(join(root, "Page.md"), "utf8");
+        await rm(join(root, "Page.md"));
+        const renamed = text.replace("alpha", "alpha GIT");
+        await writeFile(join(root, "Meeting.md"), renamed, "utf8");
+        await writeFile(join(root, "Meeting 1.md"), renamed.replace("middle", "middle NEXT"), "utf8");
+      });
+      const res = await cycle();
+
+      expect(res.push.failures).toBe(0);
+      expect(client.renamePage).toHaveBeenCalledWith(A, "Meeting");
+      expect(page.text).toBe(`alpha GIT\n\nmiddle\n\n${omega}`);
+      for (const [, , base] of client.importPageMarkdown.mock.calls) {
+        expect(base).not.toBeNull();
+      }
+      expect(client.createPage).toHaveBeenCalledTimes(1);
+      expect(client.createPage).toHaveBeenCalledWith(
+        "Meeting 1",
+        "alpha GIT\n\nmiddle NEXT\n\nomega",
+        "space-1",
+        undefined,
+      );
+      const main = await mainFiles();
+      expect(Object.keys(main).sort()).toEqual(["Meeting 1.md", "Meeting.md"]);
+      expect(main["Meeting.md"]).toContain(`gitmost_id: ${A}`);
+      expect(main["Meeting 1.md"]).toContain(`gitmost_id: ${C}`);
+
+      await cycle();
+      expect(Object.keys(await mainFiles()).sort()).toEqual(["Meeting 1.md", "Meeting.md"]);
+      expect(client.createPage).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // A path alignment can target a directory `main` does not have yet.
+  const parentAndChild = (): FakePage[] => [
+    { id: P, slugId: "p", title: "P", parentPageId: null, updatedAt: T0, text: "pa\n\npb" },
+    { id: C, slugId: "c", title: "Child", parentPageId: P, updatedAt: T0, text: "ca\n\ncb" },
+  ];
+
+  it("Docmost gives a page its first child while git edits the page: both edits survive", async () => {
+    if (!available) return;
+    const { pages, cycle, humanCommit, mainFiles } = await setupPages([
+      { id: P, slugId: "p", title: "P", parentPageId: null, updatedAt: T0, text: "pa\n\npb" },
+    ]);
+
+    pages.push({ id: C, slugId: "c", title: "Child", parentPageId: P, updatedAt: T1, text: "child" });
+    pages[0].text = "pa\n\npb DOC";
+    pages[0].updatedAt = T1;
+    await humanCommit(async (root) => {
+      const file = join(root, "P.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("pa", "pa GIT"), "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages[0].text).toBe("pa GIT\n\npb DOC");
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["P/Child.md", "P/P.md"]);
+  });
+
+  it("Docmost renames a folder page while git edits a child in it: both edits survive", async () => {
+    if (!available) return;
+    const { pages, cycle, humanCommit, mainFiles } = await setupPages(parentAndChild());
+
+    pages[0].title = "R";
+    pages[0].updatedAt = T1;
+    pages[1].text = "ca\n\ncb DOC";
+    pages[1].updatedAt = T1;
+    await humanCommit(async (root) => {
+      const file = join(root, "P", "Child.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("ca", "ca GIT"), "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages[1].text).toBe("ca GIT\n\ncb DOC");
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/R.md"]);
+  });
+
+  it("an alignment cut off between its file writes and its commit is redone, never committed as user work", async () => {
+    if (!available) return;
+    const { root, pages, client, cycle, humanCommit, mainFiles } = await setupPages(
+      parentAndChild(),
+    );
+
+    pages[0].title = "R";
+    pages[0].updatedAt = T1;
+    await humanCommit(async (root) => {
+      const file = join(root, "P", "Child.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("ca", "ca GIT"), "utf8");
+    });
+    // The pull exports R/R.md on `docmost` first; the alignment's write of it
+    // on `main` (the second) fails after R/Child.md was already written.
+    let writesOfRR = 0;
+    const failing = {
+      ...nodeFs,
+      writeFile: async (abs: string, text: string) => {
+        if (abs.endsWith("/R/R.md") && ++writesOfRR === 2) {
+          throw new Error("disk full");
+        }
+        return nodeFs.writeFile(abs, text);
+      },
+    };
+    await expect(cycle(failing)).rejects.toThrow("disk full");
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages[1].text).toBe("ca GIT\n\ncb");
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/R.md"]);
+    expect(await git(root, "log", "--format=%s", "main")).not.toContain(
+      "working-tree changes",
+    );
+  });
+
+  it("a pull cut off while keeping a page at git's path after a clean merge is redone, never left half-applied", async () => {
+    if (!available) return;
+    const { page, client, cycle, humanCommit, mainFiles } = await setup(
+      "alpha\n\nmiddle\n\nomega",
+    );
+    client.renamePage.mockImplementation(async (id: string, title: string) => {
+      if (id === A) page.title = title;
+      return {};
+    });
+
+    // Both sides rename the page (a clean path-based merge); git also edits it.
+    page.title = "New";
+    page.text = "alpha\n\nmiddle\n\nomega DOC";
+    page.updatedAt = T1;
+    await humanCommit(async (root) => {
+      const text = await readFile(join(root, "Page.md"), "utf8");
+      await rm(join(root, "Page.md"));
+      await writeFile(join(root, "Mine.md"), text.replace("alpha", "alpha GIT"), "utf8");
+    });
+    const failing = {
+      ...nodeFs,
+      writeFile: async (abs: string, text: string) => {
+        if (abs.endsWith("/Mine.md")) throw new Error("disk full");
+        return nodeFs.writeFile(abs, text);
+      },
+    };
+    await expect(cycle(failing)).rejects.toThrow("disk full");
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.renamePage).toHaveBeenCalledWith(A, "Mine");
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega DOC");
+    expect(Object.keys(await mainFiles())).toEqual(["Mine.md"]);
+  });
+
+  it("an export cut off before its commit is not committed on main as user work", async () => {
+    if (!available) return;
+    const { root, page, cycle } = await setup("alpha\n\nmiddle\n\nomega");
+
+    // The export's commit on `docmost` fails; the cycle then returns to `main`
+    // with the exported file still uncommitted.
+    page.text = "alpha DOC1\n\nmiddle\n\nomega";
+    page.updatedAt = T1;
+    const flaky = new VaultGit(root);
+    flaky.commit = async () => {
+      throw new Error("disk full");
+    };
+    await expect(cycle(nodeFs, flaky)).rejects.toThrow("disk full");
+
+    page.text = "alpha DOC2\n\nmiddle\n\nomega";
+    page.updatedAt = "2026-10-03T00:00:00.000Z";
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(page.text).toBe("alpha DOC2\n\nmiddle\n\nomega");
+    expect(await git(root, "log", "--format=%s", "main")).not.toContain(
+      "working-tree changes",
+    );
   });
 });

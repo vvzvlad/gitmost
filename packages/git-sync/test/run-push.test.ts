@@ -313,6 +313,44 @@ describe('runPush — --apply is the ONLY write path', () => {
     expect(client.importPageMarkdown).toHaveBeenCalledWith('p-9', 'body', null);
     expect(res.applied?.updated).toBe(1);
   });
+
+  it("a page whose base path another page took, with a copy of its file: the page's update is 3-way against its base file", async () => {
+    // p-a left Page.md (now p-x's file) for two files carrying its id.
+    const { git } = makeGit({
+      changes: [
+        { status: 'M', path: 'Page.md' },
+        { status: 'D', path: 'X.md' },
+        { status: 'A', path: 'Meeting.md' },
+        { status: 'A', path: 'Meeting 1.md' },
+      ],
+      prevTree: {
+        'Page.md': fileFor('p-a', 'base body'),
+        'X.md': fileFor('p-x', 'x body'),
+      },
+    });
+    git.pageIdsAtRef = vi.fn(async () => [
+      { path: 'Meeting 1.md', id: 'p-a' },
+      { path: 'Meeting.md', id: 'p-a' },
+      { path: 'Page.md', id: 'p-x' },
+    ]);
+    const fs = makeFs({
+      'Page.md': fileFor('p-x', 'x body'),
+      'Meeting.md': fileFor('p-a', 'git body'),
+      'Meeting 1.md': fileFor('p-a', 'copy body'),
+    });
+    git.listTrackedFiles = vi.fn(async () => Object.keys(fs.store));
+    const client = makeClientFake();
+    const { deps } = makeDeps(git, fs, client);
+
+    await runPush(deps, { dryRun: false });
+
+    const pageWrites = client.importPageMarkdown.mock.calls.filter(
+      ([id]) => id === 'p-a',
+    );
+    expect(pageWrites).toHaveLength(1);
+    expect(pageWrites[0][2]).toBe('base body');
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('runPush — merge-in-progress aborts (SPEC §9/§12)', () => {

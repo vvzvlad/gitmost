@@ -514,11 +514,16 @@ export class VaultGit {
    * ANOTHER page's file (a path reused after a rename), merging one page's
    * edits into the other. The default `ort` strategy always detects exact
    * renames, even with `-X no-renames`.
+   *
+   * A non-fast-forward merge stops BEFORE committing (`--no-commit`); the caller
+   * completes it with `commitMerge`, so the merge and the engine writes that
+   * finish it land on `main` as ONE commit, never a merge commit without them.
    */
   async merge(fromBranch: string): Promise<MergeResult> {
     const r = await this.runRaw([
       "merge",
       "--no-edit",
+      "--no-commit",
       "-s",
       "resolve",
       fromBranch,
@@ -758,6 +763,12 @@ export class VaultGit {
    */
   async updateRef(ref: string, target: string): Promise<void> {
     await this.run(["update-ref", ref, target]);
+  }
+
+  /** Delete `ref` (`git update-ref -d`); a missing ref is a no-op. */
+  async deleteRef(ref: string): Promise<void> {
+    if ((await this.revParse(ref)) === null) return;
+    await this.run(["update-ref", "-d", ref]);
   }
 
   /**

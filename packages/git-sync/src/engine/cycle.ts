@@ -1,7 +1,11 @@
 import { VaultGit, DEFAULT_BRANCH } from "./git.js";
 import { GitSyncClient } from "./client.types.js";
 import { Settings } from "./settings.js";
-import { readExisting, computePullActions, applyPullActions } from "./pull.js";
+import {
+  readExisting,
+  computePullActions,
+  applyPullActions,
+} from "./pull.js";
 import {
   runPush,
   commitLocalWorkingTree,
@@ -9,6 +13,14 @@ import {
   type PushFailure,
 } from "./push.js";
 import { assertVaultPathSafe, type PathGuardIo } from "./path-guard.js";
+
+/**
+ * Set for the whole pull (`applyPullActions`). Everything the pull leaves
+ * uncommitted on `main` is engine work derived from committed `main` and from
+ * Docmost, so the next cycle DISCARDS it and redoes the pull (preflight 2b)
+ * instead of committing it as user work.
+ */
+const PULL_REF = "refs/docmost/pulling";
 
 /**
  * Absolute-path filesystem primitives the cycle needs. Injected (not imported)
@@ -206,9 +218,22 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
   //         nowhere else), exactly like push step 3 does;
   //       - on `docmost`: DISCARD it — that branch is regenerated from the DB by
   //         the pull below, so nothing is lost.
+  //     EXCEPT on `main` left by an interrupted PULL (PULL_REF set): the pull
+  //     only writes content derived from committed `main` and from Docmost (an
+  //     alignment, a merge and its resolution), so it is discarded and the pull
+  //     redoes it — committing it as user work would record a half-done
+  //     operation (pages deleted, duplicated or merged into the wrong file).
+  const pulling = (await vault.readRef(PULL_REF)) !== null;
   if (await vault.isWorkingTreeDirty()) {
     const branch = await vault.currentBranch();
-    if (branch === DEFAULT_BRANCH) {
+    if (branch === DEFAULT_BRANCH && pulling) {
+      await vault.discardWorkingTreeChanges();
+      recovered = true;
+      warn(
+        `space ${spaceId}: '${DEFAULT_BRANCH}' had uncommitted pull writes ` +
+          `left by an interrupted cycle — discarded them; the pull redoes them.`,
+      );
+    } else if (branch === DEFAULT_BRANCH) {
       await commitLocalWorkingTree(vault);
       recovered = true;
       warn(
@@ -226,6 +251,8 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
       );
     }
   }
+
+  if (pulling) await vault.deleteRef(PULL_REF);
 
   // Any self-heal above means the vault may not hold what the recorded export
   // keys describe: forget them so this cycle re-exports every live page.
@@ -281,6 +308,7 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
     // Bail before the first destructive write phase if the lock was lost.
     signal?.throwIfAborted();
 
+    await vault.updateRef(PULL_REF, "HEAD");
     const pullResult = await applyPullActions(
       {
         client,
@@ -294,6 +322,7 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
       pullActions,
       vaultRoot,
     );
+    await vault.deleteRef(PULL_REF);
 
     // 5. PUSH ------------------------------------------------------------------
     const pushDeps = {

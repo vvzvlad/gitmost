@@ -380,6 +380,7 @@ describe('applyPullActions (pull.ts) — failedPageIds keyed per-pageId', () => 
       merge: vi.fn(async () => ({ ok: true, conflict: false, output: '' })),
       mergeBase: vi.fn(async () => null),
       revParse: vi.fn(async () => null),
+      isMergeInProgress: vi.fn(async () => false),
     };
   }
   function makeFs(failWriteFor: Set<string>) {

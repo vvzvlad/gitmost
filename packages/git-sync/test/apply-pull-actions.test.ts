@@ -98,6 +98,7 @@ function makeGit(
     pageIdsAtRef: vi.fn(async () => [] as { path: string; id: string }[]),
     mergeBase: vi.fn(async () => null),
     revParse: vi.fn(async () => null),
+    isMergeInProgress: vi.fn(async () => false),
     showFileAtRef: vi.fn(async () => null),
     commitMerge: vi.fn(async (subject: string) => {
       order.push(`commitMerge:${subject}`);
