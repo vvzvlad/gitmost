@@ -65,12 +65,22 @@ export const DEFAULT_BRANCH = "main";
  * push anyway. The hook runs before that checkout and refuses such a push; the
  * receive-pack runs under the space lock, so nothing moves `main` between the
  * hook and the ref update.
+ *
+ * It also refuses any push to the engine's own refs (the `docmost` mirror and
+ * `refs/docmost/*`): an edit pushed there never reaches Docmost and is merged
+ * into `main` as if Docmost had made it.
  */
 export const PUSH_GUARD_HOOK = `#!/bin/sh
-# Installed by git-sync: refuse a push to ${DEFAULT_BRANCH} whose old value is not
-# its current tip, before receive-pack touches the working tree.
+# Installed by git-sync: refuse a push to the engine's own refs, and a push to
+# ${DEFAULT_BRANCH} whose old value is not its current tip, before receive-pack
+# touches the working tree.
 tip=$(git rev-parse --verify --quiet refs/heads/${DEFAULT_BRANCH})
 while read -r old new ref; do
+  case "$ref" in
+    refs/heads/docmost|refs/docmost/*)
+      echo "'$ref' is managed by git-sync and cannot be pushed." >&2
+      exit 1 ;;
+  esac
   if [ "$ref" = refs/heads/${DEFAULT_BRANCH} ] && [ "$old" != "$tip" ]; then
     echo "'${DEFAULT_BRANCH}' changed on the server since your last fetch: pull, then push again." >&2
     exit 1

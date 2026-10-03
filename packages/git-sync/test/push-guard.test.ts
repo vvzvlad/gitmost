@@ -88,6 +88,26 @@ describe("PUSH_GUARD_HOOK — a push racing a cycle", () => {
     expect(await exists(join(srv, "C.md"))).toBe(false);
   });
 
+  it("refuses a push to the engine's own refs: they do not move", async () => {
+    if (!available) return;
+    const { srv, cli } = await setup();
+    const before = await git(srv, "for-each-ref", "refs/heads/docmost", "refs/docmost");
+
+    for (const ref of ["refs/heads/docmost", "refs/docmost/recording"]) {
+      await expect(
+        execFileAsync("git", ["push", "origin", `HEAD:${ref}`], { cwd: cli }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          `'${ref}' is managed by git-sync and cannot be pushed.`,
+        ),
+      });
+    }
+
+    expect(
+      await git(srv, "for-each-ref", "refs/heads/docmost", "refs/docmost"),
+    ).toBe(before);
+  });
+
   it("lets a push from an up-to-date clone through", async () => {
     if (!available) return;
     const { srv, cli } = await setup();
