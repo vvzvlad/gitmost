@@ -16,9 +16,10 @@ import * as Y from "yjs";
  *
  *  - `y-indexeddb` — a fake persistence whose "synced" event we fire by hand, so
  *    "the local ydoc is hydrated (with / without content)" is a state we control.
- *  - `@hocuspocus/provider` — a fake provider whose status/sync callbacks we fire
- *    by hand, so "the remote never answers", "the remote drops" and "the remote
- *    syncs" are states we control. WebSocketStatus keeps the real string values.
+ *  - `@hocuspocus/provider` — a fake socket whose status callback and a fake
+ *    provider whose sync callback we fire by hand, so "the remote never answers",
+ *    "the remote drops" and "the remote syncs" are states we control.
+ *    WebSocketStatus keeps the real string values.
  *
  * The editability assertions are made at the YJS level, not the UI level: a
  * simulated USER edit (a real `keydown` Enter dispatched on the ProseMirror DOM,
@@ -44,6 +45,7 @@ import * as Y from "yjs";
 const hoisted = vi.hoisted(() => ({
   providers: [] as any[],
   persistences: [] as any[],
+  sockets: [] as any[],
   localFirst: true,
   idStampAttempts: 0,
 }));
@@ -103,7 +105,19 @@ vi.mock("@hocuspocus/provider", async () => {
     connect = vi.fn();
     disconnect = vi.fn();
     destroy = vi.fn();
-    constructor(_opts: unknown) {}
+    private opts: any;
+    constructor(opts: any) {
+      this.opts = opts;
+      hoisted.sockets.push(this);
+    }
+    /**
+     * test driver: the socket status changed. Fired through the SOCKET's own
+     * `onStatus` config (#707) — it reaches the editor whether or not the
+     * provider has attached yet.
+     */
+    emitStatus(status: string) {
+      this.opts.onStatus?.({ status });
+    }
   }
 
   class HocuspocusProvider {
@@ -133,10 +147,6 @@ vi.mock("@hocuspocus/provider", async () => {
     off(event: string, cb: (...a: any[]) => void) {
       const list = (this.listeners.get(event) ?? []).filter((h) => h !== cb);
       this.listeners.set(event, list);
-    }
-    /** test driver: the socket status changed */
-    emitStatus(status: string) {
-      this.opts.onStatus?.({ status });
     }
     /**
      * test driver: the remote room synced (or un-synced).
@@ -252,7 +262,10 @@ vi.mock("react-i18next", async (importOriginal) => {
 import PageEditor from "./page-editor";
 import { queryClient } from "@/main.tsx";
 import { bodyLocalOnlyAtom } from "@/features/editor/atoms/editor-atoms";
-import { pageEditorAtom } from "@/features/editor/atoms/editor-atoms";
+import {
+  pageEditorAtom,
+  yjsConnectionStatusAtom,
+} from "@/features/editor/atoms/editor-atoms";
 import {
   resetPageYdocRegistryForTests,
   pageYdocDbName,
@@ -304,6 +317,9 @@ function lastPersistence() {
 }
 function lastProvider() {
   return hoisted.providers[hoisted.providers.length - 1];
+}
+function lastSocket() {
+  return hoisted.sockets[hoisted.sockets.length - 1];
 }
 
 interface WrapOpts {
@@ -390,6 +406,7 @@ function makeStore() {
 beforeEach(() => {
   hoisted.providers.length = 0;
   hoisted.persistences.length = 0;
+  hoisted.sockets.length = 0;
   hoisted.localFirst = true;
   hoisted.idStampAttempts = 0;
   resetPageYdocRegistryForTests();
@@ -480,8 +497,9 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     expect(getEditor(store).isEditable).toBe(false);
 
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
 
@@ -536,8 +554,9 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     // The synced emit: page-editor's onSynced runs first, then the stamper's
     // callback — all synchronously, in this one emit.
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
 
@@ -566,8 +585,9 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     expect(container.querySelector(".editor-container")).toBeNull();
 
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
     await waitFor(() => {
@@ -587,8 +607,8 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     });
 
     // The socket gives up (this is also what the 7500ms timeout does).
-    const provider = lastProvider();
-    act(() => provider.emitStatus("disconnected"));
+    const socket = lastSocket();
+    act(() => socket.emitStatus("disconnected"));
 
     const editor = getEditor(store);
     await waitFor(() => expect(editor.isEditable).toBe(false));
@@ -616,14 +636,15 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     seedYdoc(persistence.doc, "Local body text");
     act(() => persistence.emitSynced());
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
     await waitFor(() => expect(getEditor(store).isEditable).toBe(true));
 
     act(() => {
-      provider.emitStatus("disconnected");
+      socket.emitStatus("disconnected");
       provider.emitSynced(false);
     });
 
@@ -673,9 +694,10 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     act(() => persistenceB.emitSynced());
     expect(container.querySelector(".editor-container")).toBeNull();
     const providerB = lastProvider();
+    const socketB = lastSocket();
     expect(providerB.document).toBe(persistenceB.doc);
     act(() => {
-      providerB.emitStatus("connected");
+      socketB.emitStatus("connected");
       providerB.emitSynced(true);
     });
     await waitFor(() => {
@@ -709,8 +731,9 @@ describe("#564 flag OFF: behavior identical to today", () => {
     ).not.toBeNull();
 
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
 
@@ -733,7 +756,7 @@ describe("#564 flag OFF: behavior identical to today", () => {
     const persistence = lastPersistence();
     seedYdoc(persistence.doc, "Local body text");
     act(() => persistence.emitSynced());
-    act(() => lastProvider().emitStatus("disconnected"));
+    act(() => lastSocket().emitStatus("disconnected"));
 
     expect(store.get(bodyLocalOnlyAtom).isOffline).toBe(false);
     expect(
@@ -828,10 +851,11 @@ describe("#641 offline banner hysteresis (sticky latch + navigator.onLine)", () 
     const store = makeStore();
     await mountLiveLocal(store);
     const provider = lastProvider();
+    const socket = lastSocket();
 
     // The socket drops (or the 7500ms fallback fires): the page-wide offline
     // banner is published.
-    act(() => provider.emitStatus("disconnected"));
+    act(() => socket.emitStatus("disconnected"));
     await waitFor(() =>
       expect(store.get(bodyLocalOnlyAtom).isOffline).toBe(true),
     );
@@ -839,7 +863,7 @@ describe("#641 offline banner hysteresis (sticky latch + navigator.onLine)", () 
     // A single retry BLIP — Hocuspocus re-attempts forever and emits Connecting on
     // every attempt. The banner must STAY offline (the sticky latch), never flip
     // back to the quiet "connecting" badge and flicker the page-wide banner.
-    act(() => provider.emitStatus("connecting"));
+    act(() => socket.emitStatus("connecting"));
     expect(store.get(bodyLocalOnlyAtom).isOffline).toBe(true);
     expect(
       document.querySelector('[data-testid="body-connecting-badge"]'),
@@ -847,7 +871,7 @@ describe("#641 offline banner hysteresis (sticky latch + navigator.onLine)", () 
 
     // ONLY a real remote sync (isRemoteConfirmed) clears it.
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
     await waitFor(() =>
@@ -973,8 +997,9 @@ describe("Ф7 body states: skeleton vs static vs live (parts 3 + 7)", () => {
     seedYdoc(persistence.doc, "Body text");
     act(() => persistence.emitSynced());
     const provider = lastProvider();
+    const socket = lastSocket();
     act(() => {
-      provider.emitStatus("connected");
+      socket.emitStatus("connected");
       provider.emitSynced(true);
     });
     await waitFor(() =>
@@ -1005,5 +1030,102 @@ describe("Ф7 body states: skeleton vs static vs live (parts 3 + 7)", () => {
     await expect(
       (provider.configuration.token as () => Promise<string>)(),
     ).resolves.toBe("test-token");
+  });
+});
+
+// #707 — the remote provider attaches to the socket only AFTER the local copy
+// has loaded, so step1 carries the local state vector and the server answers
+// with the diff instead of the whole document. Asserted on the observable
+// property: when `attach()` is (and is not) called on the provider.
+describe("#707 attach after the local copy loads", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("a — with local persistence, attach() waits for its synced and runs right after", async () => {
+    const store = makeStore();
+    renderEditor(store, PAGE_A);
+    const provider = lastProvider();
+    const persistence = lastPersistence();
+
+    await act(async () => {});
+    expect(provider.attach).not.toHaveBeenCalled();
+
+    act(() => persistence.emitSynced());
+    expect(provider.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("b — without persistence (local === null), attach() runs immediately and the body swaps to live after the provider syncs", async () => {
+    // A tombstoned page opens a remote-only ydoc (no local persistence).
+    addTombstones([pageYdocDbName(SCOPE, PAGE_A)]);
+    const store = makeStore();
+    const { container } = renderEditor(store, PAGE_A);
+    expect(hoisted.persistences.length).toBe(0);
+
+    const provider = lastProvider();
+    expect(provider.attach).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".editor-container")).toBeNull();
+    expect(container.textContent).toContain("Server seeded copy");
+
+    act(() => {
+      lastSocket().emitStatus("connected");
+      provider.emitSynced(true);
+    });
+    await waitFor(() => {
+      expect(container.querySelector(".editor-container")).not.toBeNull();
+    });
+  });
+
+  it("c — persistence that never sends synced: attach() at exactly 1000 ms, console.error, body swaps to live after the provider syncs", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = makeStore();
+    const { container } = renderEditor(store, PAGE_A);
+    const provider = lastProvider();
+    expect(hoisted.persistences.length).toBe(1);
+
+    act(() => vi.advanceTimersByTime(999));
+    expect(provider.attach).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(provider.attach).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("local ydoc did not sync"),
+      expect.objectContaining({ pageId: PAGE_A, elapsedMs: expect.any(Number) }),
+    );
+
+    vi.useRealTimers();
+    act(() => {
+      lastSocket().emitStatus("connected");
+      provider.emitSynced(true);
+    });
+    await waitFor(() => {
+      expect(container.querySelector(".editor-container")).not.toBeNull();
+    });
+  });
+
+  it("d — unmount before the deadline: attach() is never called", () => {
+    vi.useFakeTimers();
+    const store = makeStore();
+    const { unmount } = renderEditor(store, PAGE_A);
+    const provider = lastProvider();
+
+    act(() => vi.advanceTimersByTime(500));
+    unmount();
+    act(() => vi.advanceTimersByTime(5000));
+
+    expect(provider.attach).not.toHaveBeenCalled();
+  });
+
+  it("e — a socket status event emitted before attach() reaches yjsConnectionStatusAtom", () => {
+    const store = makeStore();
+    renderEditor(store, PAGE_A);
+    expect(lastProvider().attach).not.toHaveBeenCalled();
+
+    act(() => lastSocket().emitStatus("connected"));
+
+    expect(lastProvider().attach).not.toHaveBeenCalled();
+    expect(store.get(yjsConnectionStatusAtom)).toBe("connected");
   });
 });

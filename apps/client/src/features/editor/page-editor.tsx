@@ -137,6 +137,10 @@ import {
   reportEditorTx,
 } from "@/lib/telemetry/vitals";
 
+// #707 — the longest the remote provider waits for the local ydoc's "synced"
+// before attaching to the socket without it.
+const LOCAL_ATTACH_DEADLINE_MS = 1000;
+
 interface PageEditorProps {
   pageId: string;
   editable: boolean;
@@ -263,6 +267,7 @@ export default function PageEditor({
     // switch / unmount) a late event from the destroyed providers must never
     // write sync state that now belongs to a DIFFERENT page.
     let disposed = false;
+    let localAttachDeadline: ReturnType<typeof setTimeout> | undefined;
     if (!providersRef.current) {
       // #640, invariant 1 — the DB name is SCOPE-NAMESPACED, the collab ROOM name
       // is NOT. The room name must stay `page.<pageId>` or the server resolves the
@@ -292,8 +297,16 @@ export default function PageEditor({
         // actually created — a remote-only ydoc leaves nothing on disk.
         rememberYdocDbName(dbName);
       }
+      const onStatusHandler = (event: onStatusParameters) => {
+        if (disposed) return;
+        setYjsConnectionStatus(event.status);
+      };
+      // #707 — status is subscribed on the SOCKET, not the provider: the provider
+      // only wires its own onStatus inside attach(), so socket status events that
+      // land before the (now deferred) attach would otherwise be lost.
       const socket = new HocuspocusProviderWebsocket({
         url: collaborationURL,
+        onStatus: onStatusHandler,
       });
       const onLocalSyncedHandler = () => {
         if (disposed) return;
@@ -302,10 +315,10 @@ export default function PageEditor({
         // the actual body fragment: an empty ydoc must NOT trigger the early swap
         // (it would blank the body until the network answers — guard 1).
         setYdocNonEmpty(isYdocBodyNonEmpty(ydoc));
-      };
-      const onStatusHandler = (event: onStatusParameters) => {
-        if (disposed) return;
-        setYjsConnectionStatus(event.status);
+        // #707 — attach only now, so step1 carries the local copy's state vector
+        // and the server answers with the diff instead of the whole document.
+        clearTimeout(localAttachDeadline);
+        remote.attach();
       };
       const onSyncedHandler = (event: onSyncedParameters) => {
         if (disposed) return;
@@ -430,12 +443,32 @@ export default function PageEditor({
             })
           )?.token,
         onAuthenticationFailed: onAuthenticationFailedHandler,
-        onStatus: onStatusHandler,
         onSynced: onSyncedHandler,
         onStateless: onStatelessHandler,
       });
 
       local?.on("synced", onLocalSyncedHandler);
+      if (local) {
+        // #707 — a hung or failed IndexedDB never emits "synced", so the attach
+        // waits at most LOCAL_ATTACH_DEADLINE_MS; past it the local copy counts
+        // as empty and we attach as before (full exchange).
+        const localOpenedAt = Date.now();
+        localAttachDeadline = setTimeout(() => {
+          if (disposed) return;
+          console.error(
+            `[page-editor] local ydoc did not sync within ${LOCAL_ATTACH_DEADLINE_MS}ms; attaching without it`,
+            { pageId, elapsedMs: Date.now() - localOpenedAt },
+          );
+          setIsLocalSynced(true);
+          setYdocNonEmpty(false);
+          remote.attach();
+        }, LOCAL_ATTACH_DEADLINE_MS);
+      } else {
+        // #707 — no local persistence: the local side is ready and empty, so
+        // attach right away.
+        setIsLocalSynced(true);
+        remote.attach();
+      }
       providersRef.current = { socket, local, remote, ydoc, dbName };
       // #564 guard 3 / #640 part 7 — hand the LIVE persistence to the global
       // 403/404 subscriber (installed at app level in main.tsx, because the
@@ -462,6 +495,7 @@ export default function PageEditor({
     // Only destroy on final unmount
     return () => {
       disposed = true;
+      clearTimeout(localAttachDeadline);
       setCollabProvider(null);
       setActiveProviders(null);
       const dbName = providersRef.current?.dbName;
@@ -510,14 +544,6 @@ export default function PageEditor({
     providersReady,
     resetIdle,
   ]);
-
-  // Attach the remote provider once it's ready (and again after a pageId swap
-  // recreates it) to make sure the connection gets properly established. This
-  // used to run in the render body — a side effect during render (#343, PART 7).
-  // `attach()` is idempotent, so re-running it on these deps is safe.
-  useEffect(() => {
-    providersRef.current?.remote.attach();
-  }, [providersReady, pageId]);
 
   // `pageId` is a dependency on purpose: the providers are recreated per pageId,
   // so without it a page switch that does not remount would leave the extensions
