@@ -1,5 +1,6 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
+import type { EditorView } from '@tiptap/pm/view';
 
 import { attach, detach, getController } from './controller';
 import { pinOffsetWatcher } from './offset';
@@ -10,6 +11,7 @@ export const TableHeaderPin = Extension.create({
   name: 'tableHeaderPin',
 
   addProseMirrorPlugins() {
+    let editorView: EditorView | null = null;
     let editorRoot: HTMLElement | null = null;
     let domObserver: MutationObserver | null = null;
     const tracked = new Set<HTMLElement>();
@@ -29,7 +31,7 @@ export const TableHeaderPin = Extension.create({
       }
       for (const w of current) {
         if (!tracked.has(w)) {
-          attach(w);
+          attach(w, editorView);
           tracked.add(w);
         }
       }
@@ -44,8 +46,9 @@ export const TableHeaderPin = Extension.create({
       new Plugin({
         key: tableHeaderPinKey,
 
-        view(editorView) {
-          editorRoot = editorView.dom as HTMLElement;
+        view(view) {
+          editorView = view;
+          editorRoot = view.dom as HTMLElement;
 
           schedule();
 
@@ -78,6 +81,7 @@ export const TableHeaderPin = Extension.create({
               for (const w of tracked) detach(w);
               tracked.clear();
               editorRoot = null;
+              editorView = null;
             },
           };
         },

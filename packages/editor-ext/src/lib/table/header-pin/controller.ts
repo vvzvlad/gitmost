@@ -1,5 +1,7 @@
 // Per-table header-pin controller: native sticky when table fits its wrapper, transform fallback when it doesn't.
 
+import type { EditorView } from '@tiptap/pm/view';
+
 import { computePinTop, pinOffsetWatcher } from './offset';
 import { OscillationLatch } from './oscillation-latch';
 
@@ -54,19 +56,98 @@ function isLayoutInert(rect: DOMRectReadOnly): boolean {
   return rect.width === 0 && rect.height === 0;
 }
 
+// ProseMirror's DOMObserver (`view.domObserver`) is internal API, absent from
+// prosemirror-view's typings. stop()/start() is what ProseMirror itself
+// brackets its own DOM writes with, so that it never observes them.
+type DomObserver = { stop(): void; start(): void };
+
+// Runs `write` with the DOMObserver of every given editor stopped. The
+// controllers write only presentation (classes, a custom property) on elements
+// inside the editor DOM. TableView ignores those mutations, but when the
+// observer records them DOMObserver.flush() reads the DOM selection before it
+// gets that far, which forces a synchronous layout of the whole document.
+function writeUnobserved(
+  views: Iterable<EditorView | undefined>,
+  write: () => void,
+) {
+  const observers = new Set<DomObserver>();
+  for (const view of views) {
+    const observer: DomObserver | undefined = (view as any)?.domObserver;
+    if (observer) observers.add(observer);
+  }
+  for (const observer of observers) observer.stop();
+  try {
+    write();
+  } finally {
+    for (const observer of observers) observer.start();
+  }
+}
+
 const fallbackControllers = new Set<TablePinController>();
 let fallbackScrollListener: (() => void) | null = null;
-let fallbackRafPending = false;
+
+// All controllers share ONE animation frame, run in two phases: every geometry
+// read first, then every write. Interleaving them (one table's class write,
+// then the next table's rect read) forces a layout per table.
+const pendingEvaluations = new Set<TablePinController>();
+let pendingScroll = false;
+let framePending = false;
+let frameHandle: number | null = null;
+
+function scheduleFrame() {
+  // The pending flag is raised BEFORE scheduling and lowered inside the frame,
+  // so the bookkeeping stays correct even if the callback runs synchronously
+  // (the returned handle would otherwise be assigned after the frame already
+  // cleared it).
+  if (framePending) return;
+  framePending = true;
+  frameHandle = requestAnimationFrame(runFrame);
+}
+
+function cancelFrameIfIdle() {
+  if (!framePending || pendingEvaluations.size > 0 || pendingScroll) return;
+  if (frameHandle !== null) cancelAnimationFrame(frameHandle);
+  framePending = false;
+  frameHandle = null;
+}
+
+function runFrame() {
+  framePending = false;
+  frameHandle = null;
+  const evaluations = [...pendingEvaluations];
+  pendingEvaluations.clear();
+  const scrolled = pendingScroll;
+  pendingScroll = false;
+
+  const measured = new Set(evaluations);
+  if (scrolled) for (const ctrl of fallbackControllers) measured.add(ctrl);
+  if (measured.size === 0) return;
+
+  // Read phase. The mode writes below only toggle overflow, sticky and the
+  // header row's transform, none of which moves the table or resizes its
+  // header row, so these measurements still hold once they have run.
+  const pinTop = computePinTop();
+  for (const ctrl of measured) ctrl.measureFallbackOffset(pinTop);
+
+  // Write phase.
+  writeUnobserved(
+    Array.from(measured, (ctrl) => ctrl.view),
+    () => {
+      for (const ctrl of evaluations) ctrl.runPendingEvaluation();
+      // After the evaluations, so a table that has just left fallback does not
+      // get an offset back; one that has just entered it was measured above.
+      if (scrolled) {
+        for (const ctrl of fallbackControllers) ctrl.updateFallbackOffset();
+      }
+    },
+  );
+}
 
 function ensureFallbackListener() {
   if (fallbackScrollListener) return;
   fallbackScrollListener = () => {
-    if (fallbackRafPending) return;
-    fallbackRafPending = true;
-    requestAnimationFrame(() => {
-      fallbackRafPending = false;
-      for (const ctrl of fallbackControllers) ctrl.updateFallbackOffset();
-    });
+    pendingScroll = true;
+    scheduleFrame();
   };
   document.addEventListener('scroll', fallbackScrollListener, {
     passive: true,
@@ -80,18 +161,23 @@ function maybeTeardownFallbackListener() {
     capture: true,
   });
   fallbackScrollListener = null;
-  fallbackRafPending = false;
+  pendingScroll = false;
 }
 
 export class TablePinController {
   private wrapper: HTMLElement;
   private table: HTMLTableElement;
+  // The editor whose DOM holds the wrapper: its DOMObserver is stopped around
+  // this controller's writes. Undefined for a controller built without one.
+  readonly view: EditorView | undefined;
   private fitsObserver?: IntersectionObserver;
   private mode: PinMode = 'off';
   private cachedHeaderRow: HTMLTableRowElement | null = null;
   private pendingEntry: IntersectionObserverEntry | null = null;
-  private evaluateRafPending = false;
-  private evaluateRaf: number | null = null;
+  // Set by the frame's read phase for the transform fallback: the offset in
+  // px, null when the header row must not be translated, undefined when the
+  // table had no row to measure (nothing is written then).
+  private fallbackOffset: number | null | undefined = undefined;
   // Fit-detection oscillation fail-safe. Shares its implementation with the
   // pin-offset republish latch (see oscillation-latch.ts) so the two read the
   // same; only the constants and the latch's effect differ.
@@ -110,9 +196,14 @@ export class TablePinController {
   private pinOffsetHeld = false;
   private destroyed = false;
 
-  constructor(wrapper: HTMLElement, table: HTMLTableElement) {
+  constructor(
+    wrapper: HTMLElement,
+    table: HTMLTableElement,
+    view?: EditorView,
+  ) {
     this.wrapper = wrapper;
     this.table = table;
+    this.view = view;
     this.fitsObserver = new IntersectionObserver(
       (entries) => {
         // Never write style synchronously from inside this callback: `apply()`
@@ -120,26 +211,23 @@ export class TablePinController {
         // root. WebKit re-evaluates intersections after style writes made in
         // the callback (Blink defers to the next frame), so a synchronous
         // evaluate/apply can drive the observer in a tight loop. Coalescing
-        // into a single rAF breaks that synchronous coupling.
+        // into the shared rAF breaks that synchronous coupling.
         const entry = entries[entries.length - 1];
         if (!entry) return;
         this.pendingEntry = entry;
-        // The pending flag is raised BEFORE scheduling and lowered inside the
-        // frame, so the bookkeeping stays correct even if the callback runs
-        // synchronously (the returned handle would otherwise be assigned after
-        // the frame already cleared it).
-        if (this.evaluateRafPending) return;
-        this.evaluateRafPending = true;
-        this.evaluateRaf = requestAnimationFrame(() => {
-          this.evaluateRafPending = false;
-          const pending = this.pendingEntry;
-          this.pendingEntry = null;
-          if (pending) this.evaluateFit(pending);
-        });
+        pendingEvaluations.add(this);
+        scheduleFrame();
       },
       { root: this.wrapper, threshold: 1 },
     );
     this.fitsObserver.observe(this.table);
+  }
+
+  // Write phase of the shared frame: apply the last intersection entry.
+  runPendingEvaluation() {
+    const pending = this.pendingEntry;
+    this.pendingEntry = null;
+    if (pending) this.evaluateFit(pending);
   }
 
   private getHeaderRow(): HTMLTableRowElement | null {
@@ -258,7 +346,8 @@ export class TablePinController {
       cls.remove(WRAPPER_NO_OVERFLOW);
       fallbackControllers.add(this);
       ensureFallbackListener();
-      // Avoid one stale-frame paint under translateY.
+      // Avoid one stale-frame paint under translateY: write the offset this
+      // frame's read phase measured (a mode change only happens in the frame).
       this.updateFallbackOffset();
     }
   }
@@ -272,6 +361,24 @@ export class TablePinController {
     else pinOffsetWatcher.release();
   }
 
+  // Read phase of the shared frame. `pinTop` is measured once per frame.
+  measureFallbackOffset(pinTop: number) {
+    const tableRect = this.table.getBoundingClientRect();
+    const headerRow = this.getHeaderRow();
+    if (!headerRow) {
+      this.fallbackOffset = undefined;
+      return;
+    }
+    const rowHeight = headerRow.getBoundingClientRect().height;
+
+    const active = tableRect.top < pinTop && tableRect.bottom > pinTop + rowHeight;
+
+    this.fallbackOffset = active
+      ? Math.min(pinTop - tableRect.top, tableRect.height - rowHeight)
+      : null;
+  }
+
+  // Write phase of the shared frame: apply what measureFallbackOffset() read.
   updateFallbackOffset() {
     // A latched controller is by definition in fallback mode, so it is in
     // fallbackControllers and this runs on every scroll frame — the only tick
@@ -280,17 +387,9 @@ export class TablePinController {
     // latched, one timestamp comparison when it is.
     if (this.latch.latched) this.rearmLatchAfterCooldown();
 
-    const pinTop = computePinTop();
-    const tableRect = this.table.getBoundingClientRect();
-    const headerRow = this.getHeaderRow();
-    if (!headerRow) return;
-    const rowHeight = headerRow.getBoundingClientRect().height;
-
-    const active = tableRect.top < pinTop && tableRect.bottom > pinTop + rowHeight;
-
-    if (active) {
-      const offset = Math.min(pinTop - tableRect.top, tableRect.height - rowHeight);
-      this.wrapper.style.setProperty(PIN_OFFSET_VAR, `${offset}px`);
+    if (this.fallbackOffset === undefined) return;
+    if (this.fallbackOffset !== null) {
+      this.wrapper.style.setProperty(PIN_OFFSET_VAR, `${this.fallbackOffset}px`);
     } else {
       this.wrapper.style.removeProperty(PIN_OFFSET_VAR);
     }
@@ -311,8 +410,12 @@ export class TablePinController {
       // Bypass apply()'s latch gate and flip accounting: a table that must not
       // be pinned must always be un-pinned, latched or not. Otherwise a header
       // row deleted after the latch would keep `tableHeaderPinned` and the
-      // translateY fallback on a plain data row forever.
-      this.setMode('off');
+      // translateY fallback on a plain data row forever. Checked against 'off'
+      // first so an unpinned table does not stop and restart the editor's
+      // observer on every doc change.
+      if (this.mode !== 'off') {
+        writeUnobserved([this.view], () => this.setMode('off'));
+      }
       // Going ineligible already breaks the feedback cycle — the wrapper is not
       // pinned and `tableWrapperNoOverflow` is gone — so the latch has nothing
       // left to protect against. Drop it here, otherwise a table that becomes
@@ -340,11 +443,7 @@ export class TablePinController {
     // next acquire/release cycle).
     if (this.destroyed) return;
     this.destroyed = true;
-    if (this.evaluateRafPending && this.evaluateRaf !== null) {
-      cancelAnimationFrame(this.evaluateRaf);
-    }
-    this.evaluateRafPending = false;
-    this.evaluateRaf = null;
+    pendingEvaluations.delete(this);
     this.pendingEntry = null;
     this.fitsObserver?.disconnect();
     this.fitsObserver = undefined;
@@ -352,18 +451,24 @@ export class TablePinController {
     // setMode('off') releases the pin-offset reference; the extra call covers
     // the case where the mode was already 'off' (setMode early-returns then) and
     // is a no-op when the reference was already released.
+    // Not wrapped in writeUnobserved(): EditorView.destroy() stops the observer
+    // before it destroys plugin views, and a start() here would revive it on a
+    // dead view.
     this.setMode('off');
     this.holdPinOffset(false);
+    // Last, so that leaving fallback above has already dropped a scroll pass
+    // that has no table left to serve.
+    cancelFrameIfIdle();
   }
 }
 
 const controllers = new WeakMap<HTMLElement, TablePinController>();
 
-export function attach(wrapper: HTMLElement) {
+export function attach(wrapper: HTMLElement, view: EditorView) {
   if (controllers.has(wrapper)) return;
   const table = wrapper.querySelector(':scope > table') as HTMLTableElement | null;
   if (!table) return;
-  controllers.set(wrapper, new TablePinController(wrapper, table));
+  controllers.set(wrapper, new TablePinController(wrapper, table, view));
 }
 
 export function detach(wrapper: HTMLElement) {
