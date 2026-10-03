@@ -140,6 +140,10 @@ export class VaultRegistryService {
       await execFileAsync('git', ['config', key, value], opts);
     }
 
+    // The pre-receive hook that keeps a push racing a cycle from overwriting
+    // the working tree under updateInstead (see PUSH_GUARD_HOOK).
+    await vault.installPushGuard();
+
     return path;
   }
 }

@@ -34,6 +34,7 @@ const mockVaultGit = jest
   .mockImplementation((path: string) => ({
     path,
     ensureRepo: jest.fn().mockResolvedValue(undefined),
+    installPushGuard: jest.fn().mockResolvedValue(undefined),
   }));
 
 jest.mock('../git-sync.loader', () => ({
@@ -124,9 +125,10 @@ describe('VaultRegistryService', () => {
       const path = await service.ensureServable('space-1');
       expect(path).toBe('/vaults/space-1');
 
-      // ensureRepo ran first on the cached vault.
+      // ensureRepo ran first on the cached vault, and the push guard is installed.
       const vault = await service.getVault('space-1');
       expect((vault as any).ensureRepo).toHaveBeenCalledTimes(1);
+      expect((vault as any).installPushGuard).toHaveBeenCalledTimes(1);
 
       // Collect every `git config <key> <value>` write.
       expect(configWrites()).toEqual([

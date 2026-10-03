@@ -19,7 +19,15 @@
  *   - "nothing to commit" is treated as a graceful no-op, not an error.
  */
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -45,6 +53,31 @@ export const BOT_AUTHOR_EMAIL = "docmost-sync@local";
 
 /** Default branch the vault repo is initialized on. */
 export const DEFAULT_BRANCH = "main";
+
+/**
+ * The vault's `pre-receive` hook. `receive.denyCurrentBranch=updateInstead`
+ * checks a pushed commit out into the working tree BEFORE it compare-and-swaps
+ * `main` against the old value the client read from the ref advertisement, and
+ * that advertisement is served without the space lock. When a cycle moves
+ * `main` in between, the ref update fails but the working tree already holds the
+ * pushed commit; the next cycle's dirty-tree recovery then commits it as local
+ * work, reverting what had moved `main` (Docmost edits) and landing the rejected
+ * push anyway. The hook runs before that checkout and refuses such a push; the
+ * receive-pack runs under the space lock, so nothing moves `main` between the
+ * hook and the ref update.
+ */
+export const PUSH_GUARD_HOOK = `#!/bin/sh
+# Installed by git-sync: refuse a push to ${DEFAULT_BRANCH} whose old value is not
+# its current tip, before receive-pack touches the working tree.
+tip=$(git rev-parse --verify --quiet refs/heads/${DEFAULT_BRANCH})
+while read -r old new ref; do
+  if [ "$ref" = refs/heads/${DEFAULT_BRANCH} ] && [ "$old" != "$tip" ]; then
+    echo "'${DEFAULT_BRANCH}' changed on the server since your last fetch: pull, then push again." >&2
+    exit 1
+  fi
+done
+exit 0
+`;
 
 /**
  * One row of `git diff --name-status` (SPEC §6 "FS -> Docmost"). `status` is the
@@ -442,6 +475,22 @@ export class VaultGit {
       }),
     );
     return removed;
+  }
+
+  /**
+   * Install PUSH_GUARD_HOOK as the vault's `pre-receive` hook. Written only when
+   * it differs, through a rename, so a concurrent receive-pack never runs a
+   * half-written hook.
+   */
+  async installPushGuard(): Promise<void> {
+    const hooks = `${this.vaultPath}/.git/hooks`;
+    const path = `${hooks}/pre-receive`;
+    const current = await readFile(path, "utf8").catch(() => null);
+    if (current === PUSH_GUARD_HOOK) return;
+    await mkdir(hooks, { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, PUSH_GUARD_HOOK, { mode: 0o755 });
+    await rename(tmp, path);
   }
 
   /**
