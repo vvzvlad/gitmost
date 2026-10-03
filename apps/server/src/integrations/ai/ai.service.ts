@@ -25,6 +25,9 @@ import { SecretBoxService } from '../crypto/secret-box';
 import { AiDriver } from './ai.types';
 import { createHash } from 'node:crypto';
 
+// Values per embeddings request: TEI's default max client batch size.
+const EMBED_BATCH_SIZE = 32;
+
 /**
  * A resolved embedding provider for #530 semantic search. `model` is the AI SDK
  * embedding model; `queryPrefix`/`docPrefix` are prepended to a query / a stored
@@ -539,11 +542,12 @@ export class AiService {
   }
 
   /**
-   * Embed values with an EXPLICIT model, bounded by `timeoutMs` (default: the
-   * batch-indexing timeout). Shared core of embedTexts / embedQuery: a slow/hung
-   * embeddings endpoint must fail loudly instead of blocking forever. The single
-   * signal caps the WHOLE call, including the SDK's internal retries/backoff
-   * (embedMany defaults to maxRetries: 2).
+   * Embed values with an EXPLICIT model. Shared core of embedTexts / embedQuery.
+   * Values are sent in requests of at most EMBED_BATCH_SIZE: TEI rejects larger
+   * ones (422 "batch size > 32", or 413 for a giant page), which made every page
+   * over 32 chunks fail to index. Each request is bounded by `timeoutMs`
+   * (default: the batch-indexing timeout), so a slow/hung embeddings endpoint
+   * fails loudly instead of blocking forever.
    */
   async embedWithModel(
     model: EmbeddingModel,
@@ -551,7 +555,37 @@ export class AiService {
     texts: string[],
     timeoutMs: number = AiService.embeddingTimeoutMs(),
   ): Promise<number[][]> {
-    if (texts.length === 0) return [];
+    const embeddings: number[][] = [];
+    const batches = Math.ceil(texts.length / EMBED_BATCH_SIZE);
+    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+      const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
+      const position =
+        `batch ${i / EMBED_BATCH_SIZE + 1}/${batches}, ` +
+        `${batch.length} of ${texts.length} value(s)`;
+      embeddings.push(
+        ...(await this.embedBatch(
+          model,
+          workspaceId,
+          batch,
+          timeoutMs,
+          position,
+        )),
+      );
+    }
+    return embeddings;
+  }
+
+  /**
+   * One embeddings request. The signal caps the whole request, including the
+   * SDK's internal retries/backoff (embedMany defaults to maxRetries: 2).
+   */
+  private async embedBatch(
+    model: EmbeddingModel,
+    workspaceId: string,
+    texts: string[],
+    timeoutMs: number,
+    position: string,
+  ): Promise<number[][]> {
     const signal = AbortSignal.timeout(timeoutMs);
     try {
       const { embeddings } = await embedMany({
@@ -576,7 +610,7 @@ export class AiService {
       if (signal.aborted && abortLike) {
         throw new Error(
           `Embedding request timed out after ${timeoutMs}ms ` +
-            `(workspace ${workspaceId}, ${texts.length} value(s)). ` +
+            `(workspace ${workspaceId}, ${position}). ` +
             `Increase the embedding timeout or check the embeddings endpoint.`,
         );
       }
@@ -585,8 +619,9 @@ export class AiService {
   }
 
   /**
-   * Per-embedding-call timeout in ms. Configurable via AI_EMBEDDING_TIMEOUT_MS;
-   * falls back to 120000 (2 min) when unset or invalid.
+   * Timeout per embeddings request (at most EMBED_BATCH_SIZE values) in ms.
+   * Configurable via AI_EMBEDDING_TIMEOUT_MS; falls back to 120000 (2 min) when
+   * unset or invalid.
    */
   private static embeddingTimeoutMs(): number {
     const raw = Number(process.env.AI_EMBEDDING_TIMEOUT_MS);
