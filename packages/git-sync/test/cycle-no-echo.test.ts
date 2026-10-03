@@ -70,13 +70,14 @@ describe("runCycle — the push never echoes the pull's export", () => {
     const vault = new VaultGit(root);
     const client = makeClient(pages);
     const exportKeys = new Map<string, string>();
-    const cycle = (fs = nodeFs, v = vault) =>
+    const cycle = (fs = nodeFs, v = vault, signal?: AbortSignal) =>
       runCycle({
         spaceId: "space-1",
         client: client as any,
         vault: v,
         settings: makeSettings(root),
         fs,
+        signal,
         log: () => undefined,
         warn: () => undefined,
         exportKeys,
@@ -658,6 +659,83 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/R.md"]);
   });
 
+  it("git adds a child to a folder page Docmost renamed meanwhile: the child is created under the renamed page", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setupPages(parentAndChild());
+    const NEW = "019f2800-0000-7000-8000-0000000000c6";
+    client.createPage.mockImplementation(
+      async (title: string, text: string, _space: string, parentPageId?: string) => {
+        pages.push({ id: NEW, slugId: "n", title, parentPageId: parentPageId ?? null, updatedAt: T1, text });
+        return { data: { id: NEW } };
+      },
+    );
+
+    pages[0].title = "R";
+    pages[0].updatedAt = T1;
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "P", "New.md"), "brand new child\n", "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).toHaveBeenCalledWith("New", "brand new child", "space-1", P);
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/New.md", "R/R.md"]);
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/New.md", "R/R.md"]);
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(pages.find((p) => p.id === NEW)?.parentPageId).toBe(P);
+  });
+
+  it("git moves a page into a folder page Docmost renamed meanwhile: the page moves under the renamed page", async () => {
+    if (!available) return;
+    const X = "019f2800-0000-7000-8000-0000000000c7";
+    const { pages, client, cycle, humanCommit, mainFiles } = await setupPages([
+      ...parentAndChild(),
+      { id: X, slugId: "x", title: "X", parentPageId: null, updatedAt: T0, text: "xa" },
+    ]);
+    client.movePage.mockImplementation(async (id: string, parentPageId: string | null) => {
+      const p = pages.find((x) => x.id === id);
+      if (p) p.parentPageId = parentPageId ?? null;
+      return {};
+    });
+
+    pages[0].title = "R";
+    pages[0].updatedAt = T1;
+    await humanCommit(async (root) => {
+      const text = await readFile(join(root, "X.md"), "utf8");
+      await rm(join(root, "X.md"));
+      await writeFile(join(root, "P", "X.md"), text, "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.movePage).toHaveBeenCalledWith(X, P);
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/R.md", "R/X.md"]);
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["R/Child.md", "R/R.md", "R/X.md"]);
+    expect(pages.find((p) => p.id === X)?.parentPageId).toBe(P);
+    expect(client.movePage).toHaveBeenCalledTimes(1);
+  });
+
+  it("git adds a child to a folder, then deletes the folder page: the child is not placed under the page this push deletes", async () => {
+    if (!available) return;
+    const { client, cycle, humanCommit } = await setupPages(parentAndChild());
+
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "P", "New.md"), "brand new child\n", "utf8");
+    });
+    await humanCommit(async (root) => {
+      await rm(join(root, "P", "P.md"));
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.deletePage).toHaveBeenCalledWith(P);
+    expect(client.createPage).toHaveBeenCalledWith("New", "brand new child", "space-1", undefined);
+  });
+
   it("an alignment cut off between its file writes and its commit is redone, never committed as user work", async () => {
     if (!available) return;
     const { root, pages, client, cycle, humanCommit, mainFiles } = await setupPages(
@@ -756,4 +834,39 @@ describe("runCycle — the push never echoes the pull's export", () => {
       "working-tree changes",
     );
   });
+
+  it.each([
+    ["pinHeadToMain", (root: string) => new VaultGit(root).pinHeadToMain()],
+    ["a bare symref move", (root: string) => git(root, "symbolic-ref", "HEAD", "refs/heads/main")],
+  ])(
+    "a cycle stopped at its first checkpoint, then HEAD moved to main by %s: the git commit reaches Docmost and stays on main",
+    async (_name, moveHead) => {
+      if (!available) return;
+      const { root, page, client, cycle, humanEdit, mainFiles } = await setup(
+        "alpha\n\nmiddle\n\nomega",
+      );
+      await humanEdit("alpha", "alpha GIT");
+
+      // The lock is lost while the tree is fetched: the cycle stops at its first
+      // checkpoint, on `docmost`, and does not return to `main`.
+      const ac = new AbortController();
+      const list = client.listSpaceTree.getMockImplementation()!;
+      client.listSpaceTree.mockImplementationOnce(async () => {
+        ac.abort();
+        return list();
+      });
+      await expect(cycle(undefined, undefined, ac.signal)).rejects.toThrow();
+      expect(await git(root, "symbolic-ref", "--short", "HEAD")).toBe("docmost");
+      await moveHead(root);
+
+      const res = await cycle();
+
+      expect(res.push.failures).toBe(0);
+      expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega");
+      expect((await mainFiles())["Page.md"]).toContain("alpha GIT");
+      expect(await git(root, "log", "--format=%s", "main")).not.toContain(
+        "working-tree changes",
+      );
+    },
+  );
 });

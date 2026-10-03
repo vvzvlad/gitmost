@@ -554,8 +554,13 @@ export interface ApplyPushDeps {
    * the `docmost` mirror after a clean push. `showFileAtRef` reads a file's text
    * at `baseRef` (the 3-way merge base of an update, and the PREVIOUS parent
    * folder's `.md` / meta for the move/rename classifier, SPEC §5 path-as-truth).
+   * `commitAddingPath` finds where git created or moved a file whose folder
+   * note is gone (its parent, see `formerFolderPageId`).
    */
-  git: Pick<VaultGit, "updateRef" | "fastForwardBranch" | "showFileAtRef">;
+  git: Pick<
+    VaultGit,
+    "updateRef" | "fastForwardBranch" | "showFileAtRef" | "commitAddingPath"
+  >;
   /**
    * The commit the push diff was computed from (runPush: merge-base of `docmost`
    * and `main` — what Docmost already holds). Every pre-image read comes from it,
@@ -847,8 +852,26 @@ export async function applyPushActions(
   // adopting one of them would silently overwrite an arbitrary, possibly-unrelated
   // sibling (red-team #6). Such keys are recorded here and EXCLUDED from adoption.
   const ambiguousAdoptKeys = new Set<string>();
+  // The pages a parent found in history may name (`formerFolderPageId`): live,
+  // and not deleted by this push (a child placed under one would be trashed
+  // with it). Listed once, on first need.
+  let liveParentIds: Set<string> | null = null;
+  const liveParents = (pages: { id: string }[]): Set<string> => {
+    const ids = new Set(pages.map((n) => n.id));
+    for (const d of actions.deletes) ids.delete(d.pageId);
+    return ids;
+  };
+  const getLiveParentIds = async (): Promise<Set<string>> => {
+    if (liveParentIds === null) {
+      liveParentIds = liveParents(
+        (await client.listSpaceTree(deps.spaceId)).pages,
+      );
+    }
+    return liveParentIds;
+  };
   if (actions.creates.length > 0) {
     const live = await client.listSpaceTree(deps.spaceId);
+    liveParentIds = liveParents(live.pages);
     // Only trust a COMPLETE tree for retry-adopt: a truncated tree could miss an
     // already-created page and let us create a DUPLICATE (the very thing adopt
     // prevents). The native client always returns complete:true (reads the DB);
@@ -902,6 +925,7 @@ export async function applyPushActions(
       const parentPageId =
         (parentFile !== null ? createdIdByPath.get(parentFile) : undefined) ??
         (await resolveParentPageIdViaTree(deps, c.path, "current")) ??
+        (await formerFolderPageId(deps, c.path, getLiveParentIds)) ??
         undefined;
       // Retry-adopt (#1 idempotency): a prior cycle already created this page in
       // Docmost but failed to persist the pageId back to the file, so it was
@@ -994,7 +1018,8 @@ export async function applyPushActions(
       try {
         parentTable.set(
           `${rm.newPath}|current`,
-          await resolveParentPageIdViaTree(deps, rm.newPath, "current"),
+          (await resolveParentPageIdViaTree(deps, rm.newPath, "current")) ??
+            (await formerFolderPageId(deps, rm.newPath, getLiveParentIds)),
         );
         parentTable.set(
           `${rm.oldPath}|prev`,
@@ -1369,6 +1394,34 @@ async function resolveParentPageIdViaTree(
 }
 
 /**
+ * The parent of a file git created or moved into a folder whose folder note is
+ * gone from the working tree: the page that held that folder note when git put
+ * the file at `path`. Docmost renamed or moved that folder page meanwhile and
+ * the pull moved its note away, so the path alone no longer names it. `null`
+ * when the note is still there, the folder had no note then, or that page is
+ * not in `liveIds()`.
+ */
+async function formerFolderPageId(
+  deps: Pick<ApplyPushDeps, "readFile" | "git">,
+  path: string,
+  liveIds: () => Promise<Set<string>>,
+): Promise<string | null> {
+  const parentFile = parentFolderFile(path);
+  if (parentFile === null) return null;
+  try {
+    await deps.readFile(parentFile);
+    return null;
+  } catch {
+    // The folder note is gone: read it where git added the file.
+  }
+  const added = await deps.git.commitAddingPath(DEFAULT_BRANCH, path);
+  if (added === null) return null;
+  const text = await deps.git.showFileAtRef(added, parentFile);
+  const id = text === null ? null : parsePageFile(text).id;
+  return id !== null && (await liveIds()).has(id) ? id : null;
+}
+
+/**
  * Resolve the synthetic native meta at a side for the rename/move classifier (the
  * title — derived from the path — comes from here). Mirrors
  * `resolveParentPageIdViaTree`'s IO sides: `current` reads the working tree,
@@ -1476,6 +1529,7 @@ export interface PushDeps {
     | "updateRef"
     | "fastForwardBranch"
     | "listTrackedFiles"
+    | "commitAddingPath"
   >;
   /** Build a real client — called ONLY on the apply path, never on dry-run. */
   makeClient: (settings: Settings) => ApplyPushDeps["client"];

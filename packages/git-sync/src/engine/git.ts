@@ -848,6 +848,24 @@ export class VaultGit {
   }
 
   /**
+   * The newest commit reachable from `ref` that added `path` (a rename counts as
+   * an add of its new path), or `null` when none did.
+   */
+  async commitAddingPath(ref: string, path: string): Promise<string | null> {
+    const sha = await this.run([
+      "log",
+      "-1",
+      "--format=%H",
+      "--no-renames",
+      "--diff-filter=A",
+      ref,
+      "--",
+      path,
+    ]);
+    return sha.length > 0 ? sha : null;
+  }
+
+  /**
    * The `gitmost_id` of every `*.md` file at `ref` that has one, in ONE
    * `git grep` (no per-file reads): the value of the file's FIRST line starting
    * with `gitmost_id:`. For an engine-written file that is its frontmatter id; a
@@ -953,20 +971,25 @@ export class VaultGit {
   }
 
   /**
-   * Pin the repo's symbolic `HEAD` to `main` WITHOUT touching the working tree or
-   * index (`git symbolic-ref HEAD refs/heads/main`). The smart-HTTP host advertises
-   * whatever `HEAD` resolves to as the clone's default branch, so a clone that
-   * races a cycle mid-pull (when the engine has transiently checked out the
-   * read-only `docmost` mirror) would otherwise default to `docmost`. Pinning HEAD
-   * back to the canonical writable branch makes the advertised symref deterministic.
+   * Put `HEAD` back on `main`. The smart-HTTP host advertises whatever `HEAD`
+   * resolves to as the clone's default branch, so a clone after a cycle cut off
+   * mid-pull (left on the read-only `docmost` mirror) would otherwise default to
+   * `docmost`. Pinning HEAD back to the canonical writable branch makes the
+   * advertised symref deterministic.
    *
-   * symbolic-ref only rewrites `.git/HEAD`; it does NOT move the working tree, so
-   * it must only ever run when the working tree is ALREADY on `main` (between
-   * cycles / under the per-space lock with no cycle in flight) — otherwise HEAD and
-   * the index would desync. Callers serialize this with the engine via the lock.
+   * Off `main` this is a real checkout, so the index and working tree follow
+   * HEAD; a bare symref move would leave `docmost`'s tree in the index, which the
+   * next cycle would commit on `main` as user work. A dirty tree is left alone
+   * for the next cycle's recovery. Callers serialize this with the engine via the
+   * lock.
+   *
+   * Returns `false` when it skipped (HEAD stays off `main`).
    */
-  async pinHeadToMain(): Promise<void> {
-    await this.run(["symbolic-ref", "HEAD", `refs/heads/${DEFAULT_BRANCH}`]);
+  async pinHeadToMain(): Promise<boolean> {
+    if ((await this.currentBranch()) === DEFAULT_BRANCH) return true;
+    if (await this.isWorkingTreeDirty()) return false;
+    await this.checkout(DEFAULT_BRANCH);
+    return true;
   }
 }
 

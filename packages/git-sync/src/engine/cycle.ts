@@ -15,10 +15,11 @@ import {
 import { assertVaultPathSafe, type PathGuardIo } from "./path-guard.js";
 
 /**
- * Set for the whole pull (`applyPullActions`). Everything the pull leaves
- * uncommitted on `main` is engine work derived from committed `main` and from
- * Docmost, so the next cycle DISCARDS it and redoes the pull (preflight 2b)
- * instead of committing it as user work.
+ * Set for the whole pull, from before it checks out `docmost` until
+ * `applyPullActions` returns on `main`. Everything the pull leaves uncommitted
+ * on `main` is engine work derived from committed `main` and from Docmost, so
+ * the next cycle DISCARDS it and redoes the pull (preflight 2b) instead of
+ * committing it as user work.
  */
 const PULL_REF = "refs/docmost/pulling";
 
@@ -260,6 +261,7 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
 
   try {
     // 3. Pull writes happen on `docmost`; be on it BEFORE applying (see docstring).
+    await vault.updateRef(PULL_REF, "HEAD");
     await vault.ensureBranch("docmost", "main");
     await vault.checkout("docmost");
 
@@ -308,7 +310,6 @@ async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
     // Bail before the first destructive write phase if the lock was lost.
     signal?.throwIfAborted();
 
-    await vault.updateRef(PULL_REF, "HEAD");
     const pullResult = await applyPullActions(
       {
         client,

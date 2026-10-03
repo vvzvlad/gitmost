@@ -145,7 +145,7 @@ function build(opts: BuildOptions = {}): Built {
     ensureBranch: jest.fn(async () => undefined),
     checkout: jest.fn(async () => undefined),
     listTrackedFiles: jest.fn(async () => []),
-    pinHeadToMain: jest.fn(async () => undefined),
+    pinHeadToMain: jest.fn(async () => true),
     ...(vaultOverrides as Record<string, AnyMock>),
   };
   const vaultRegistry = {
@@ -522,6 +522,36 @@ describe('GitSyncOrchestrator', () => {
       const pinOrder = built.vault.pinHeadToMain.mock.invocationCallOrder[0];
       const serveOrder = serve.mock.invocationCallOrder[0];
       expect(pinOrder).toBeLessThan(serveOrder);
+    });
+
+    it('warns, naming the space, when the pin is skipped (HEAD off main, dirty tree)', async () => {
+      const built = build({
+        vaultOverrides: { pinHeadToMain: jest.fn(async () => false) },
+      });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const serve = jest.fn(async () => undefined);
+
+      await built.orchestrator.serveReadAdvertisement('space-7', serve);
+
+      expect(serve).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/space-7.*not pinned/),
+      );
+    });
+
+    it('does not warn when HEAD is pinned', async () => {
+      const built = build();
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      await built.orchestrator.serveReadAdvertisement('space-7', jest.fn(async () => undefined));
+
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('not pinned'),
+      );
     });
 
     it('serves WITHOUT a pin/lock when git-sync is globally disabled', async () => {

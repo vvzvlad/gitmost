@@ -279,6 +279,7 @@ describe('applyPushActions (push.ts) — move prefetch isolation', () => {
       fastForwardBranch: vi.fn(async () => ({ ok: true })),
       // The OLD-side parent/meta reads resolve to null (absent at the base).
       showFileAtRef: vi.fn(async () => null),
+      commitAddingPath: vi.fn(async () => null),
     };
     // The update file exists and is readable; the move's NEW-path tree reads
     // throw (simulating an unreadable/missing parent folder file at `current`).

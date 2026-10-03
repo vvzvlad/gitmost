@@ -595,7 +595,13 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
       spaceId,
       async () => {
         const vault = await this.vaultRegistry.getVault(spaceId);
-        await vault.pinHeadToMain();
+        if (!(await vault.pinHeadToMain())) {
+          this.logger.warn(
+            `git-sync: space ${spaceId}: HEAD is off 'main' with uncommitted ` +
+              `changes left by an interrupted cycle — not pinned; a clone may ` +
+              `default to 'docmost' until the next cycle recovers the vault.`,
+          );
+        }
         await serve();
       },
       {
