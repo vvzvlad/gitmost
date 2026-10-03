@@ -921,6 +921,7 @@ export async function applyPushActions(
   // child can resolve its freshly-created parent's id without depending on the
   // on-disk write-back being observable yet (red-team #12).
   const createdIdByPath = new Map<string, string>();
+  const createPaths = new Set(actions.creates.map((x) => x.path));
   for (const c of orderedCreates) {
     try {
       const text = await deps.readFile(c.path);
@@ -948,6 +949,23 @@ export async function applyPushActions(
       // whose on-disk write-back may not be observable yet (red-team #12; creates
       // are ordered parent-before-child so the parent already ran).
       const parentFile = parentFolderFile(c.path);
+      // The parent is a create of this same batch that did not get a page (it
+      // failed or was refused): fail the child too instead of creating it at the
+      // root. Its path then stays out of the recorded base and both creates are
+      // retried in order next cycle — a root page would be recorded as nested
+      // and the next pull would move the file to the root for good.
+      if (
+        parentFile !== null &&
+        createPaths.has(parentFile) &&
+        !createdIdByPath.has(parentFile)
+      ) {
+        failures.push({
+          kind: "create",
+          path: c.path,
+          error: `parent page ${parentFile} was not created in this push`,
+        });
+        continue;
+      }
       const parentPageId =
         (parentFile !== null ? createdIdByPath.get(parentFile) : undefined) ??
         (await resolveParentPageIdViaTree(deps, c.path, "current")) ??

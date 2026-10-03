@@ -421,6 +421,8 @@ export class VaultGit {
       "refs/heads/main.lock",
       "refs/heads/docmost.lock",
       "refs/docmost/last-pushed.lock",
+      "refs/docmost/pulling.lock",
+      "refs/docmost/recording.lock",
     ];
     let removed = 0;
     await Promise.all(

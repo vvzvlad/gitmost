@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -124,14 +124,20 @@ describe("runCycle — a push with failures advances the base per page", () => {
         }
         return {};
       },
-      createPage: async (title: string, content: string) => {
-        const id = `019f2800-0000-7000-8000-000000000${(nextId++).toString(16)}`;
+      createPage: async (
+        title: string,
+        content: string,
+        _spaceId: string,
+        parentPageId?: string,
+      ) => {
         calls.push(["create", title]);
+        fail("create", title);
+        const id = `019f2800-0000-7000-8000-000000000${(nextId++).toString(16)}`;
         pages.push({
           id,
           slugId: `n${nextId}`,
           title,
-          parentPageId: null,
+          parentPageId: parentPageId ?? null,
           updatedAt: ts(),
           text: content.trim(),
         });
@@ -434,6 +440,30 @@ describe("runCycle — a push with failures advances the base per page", () => {
       ["Renamed", "bad GIT"],
     ]);
     expect((await h.mainFiles()).sort()).toEqual(["Page.md", "Renamed.md"]);
+  });
+
+  it("a child whose parent's create failed is not created at the root: both land nested on retry", async () => {
+    if (!available) return;
+    const h = await setup([{ id: P, title: "Page", text: "pa" }]);
+    await h.cycle();
+    h.failOnce.add("create:Parent");
+    await h.human(async (root) => {
+      await mkdir(join(root, "Parent"));
+      await writeFile(join(root, "Parent", "Parent.md"), "parent body\n", "utf8");
+      await writeFile(join(root, "Parent", "Child.md"), "child body\n", "utf8");
+    });
+
+    for (let i = 0; i < 3; i++) await h.cycle();
+
+    const parent = h.pages.find((p) => p.title === "Parent")!;
+    const child = h.pages.find((p) => p.title === "Child")!;
+    expect(child.parentPageId).toBe(parent.id);
+    expect(h.pages.map((p) => p.title).sort()).toEqual(["Child", "Page", "Parent"]);
+    expect((await h.mainFiles()).sort()).toEqual([
+      "Page.md",
+      "Parent/Child.md",
+      "Parent/Parent.md",
+    ]);
   });
 
   it("a push without failures fast-forwards 'docmost' to 'main' as before: no record, no merge", async () => {
