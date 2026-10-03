@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useLayoutEffect } from "react";
 import { render, act, waitFor, cleanup } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { Provider, createStore } from "jotai";
+import { Provider, createStore, getDefaultStore } from "jotai";
 import * as Y from "yjs";
 
 /**
@@ -102,6 +103,9 @@ vi.mock("@hocuspocus/provider", async () => {
   } as const;
 
   class HocuspocusProviderWebsocket {
+    // The real constructor connects right away and emits Connecting
+    // synchronously.
+    status = "connecting";
     connect = vi.fn();
     disconnect = vi.fn();
     destroy = vi.fn();
@@ -113,9 +117,11 @@ vi.mock("@hocuspocus/provider", async () => {
     /**
      * test driver: the socket status changed. Fired through the SOCKET's own
      * `onStatus` config (#707) — it reaches the editor whether or not the
-     * provider has attached yet.
+     * provider has attached yet. Like the real socket, `status` is updated
+     * before the event.
      */
     emitStatus(status: string) {
+      this.status = status;
       this.opts.onStatus?.({ status });
     }
   }
@@ -123,46 +129,69 @@ vi.mock("@hocuspocus/provider", async () => {
   class HocuspocusProvider {
     document: Y.Doc;
     awareness: any;
-    configuration: { token?: string };
+    configuration: { token?: any };
+    isSynced = false;
+    isAuthenticated = false;
+    authorizedScope: "read-write" | "readonly" | undefined = undefined;
     attach = vi.fn();
     detach = vi.fn();
     destroy = vi.fn();
     sendStateless = vi.fn();
-    listeners = new Map<string, ((...a: any[]) => void)[]>();
+    sendToken = vi.fn(async () => {});
+    // Real hocuspocus is an EventEmitter and extensions subscribe through it —
+    // @tiptap/extension-unique-id does `provider.on("synced", createIds)`.
+    callbacks: Record<string, ((...a: any[]) => void)[]> = {};
     private opts: any;
     constructor(opts: any) {
       this.opts = opts;
       this.document = opts.document;
       this.awareness = new Awareness(opts.document);
       this.configuration = { token: opts.token };
+      // Like the real provider, the `onSynced` CONFIGURATION callback is
+      // registered in the constructor — the first "synced" listener.
+      if (opts.onSynced) this.on("synced", opts.onSynced);
       hoisted.providers.push(this);
     }
-    // Real hocuspocus is an EventEmitter and extensions subscribe through it —
-    // @tiptap/extension-unique-id does `provider.on("synced", createIds)`.
     on(event: string, cb: (...a: any[]) => void) {
-      const list = this.listeners.get(event) ?? [];
-      list.push(cb);
-      this.listeners.set(event, list);
+      (this.callbacks[event] ??= []).push(cb);
     }
     off(event: string, cb: (...a: any[]) => void) {
-      const list = (this.listeners.get(event) ?? []).filter((h) => h !== cb);
-      this.listeners.set(event, list);
+      this.callbacks[event] = (this.callbacks[event] ?? []).filter(
+        (h) => h !== cb,
+      );
     }
     /**
      * test driver: the remote room synced (or un-synced).
      *
      * The ORDER here is the real one and is load-bearing for #564 F3: hocuspocus
      * registers the `onSynced` CONFIGURATION callback as the first "synced"
-     * listener, so the page editor's handler runs BEFORE any listener an
-     * extension attached later (UniqueID's `createIds`) — all inside this single
-     * synchronous emit. If the write guard only opened on a React state update,
-     * `createIds` would run while it was still closed.
+     * listener, so the session's handler (and through it the page editor) runs
+     * BEFORE any listener an extension attached later (UniqueID's `createIds`)
+     * — all inside this single synchronous emit. If the write guard only opened
+     * on a React state update, `createIds` would run while it was still closed.
+     * Like the real `synced` setter, `isSynced` is set first and only `true`
+     * emits.
      */
     emitSynced(state: boolean) {
-      this.opts.onSynced?.({ state });
+      this.isSynced = state;
       if (state) {
-        [...(this.listeners.get("synced") ?? [])].forEach((cb) => cb());
+        [...(this.callbacks.synced ?? [])].forEach((cb) => cb({ state }));
       }
+    }
+    /** test driver: the server authorized the document with this scope. */
+    authenticate(scope: "read-write" | "readonly") {
+      this.isAuthenticated = true;
+      this.authorizedScope = scope;
+    }
+    /**
+     * test driver: the provider closed — a server CLOSE message (code 1000,
+     * the socket stays open) or the socket itself closing (its real code). Like
+     * the real provider, it resets the sync/auth state, then calls `onClose`.
+     */
+    emitClose(event: { code: number; reason: string }) {
+      this.isAuthenticated = false;
+      this.isSynced = false;
+      this.opts.onClose?.({ event });
     }
   }
 
@@ -181,16 +210,28 @@ vi.mock("@hocuspocus/provider", async () => {
 // `provider.on("synced", createIds)`, and `createIds` synchronously
 // `view.dispatch`es the id-assigning transaction and then IMMEDIATELY
 // unsubscribes. It gets exactly ONE shot, inside the provider's synced emit
-// (#564 F3). The real UniqueID cannot be used here because it is not in the
-// trimmed extension list; this reproduces its timing exactly.
+// (#564 F3). The stamper reproduces that timing exactly and lets the #564 tests
+// count id-stamp attempts and inject a visible edit, which the real extension
+// cannot do.
+//
+// #709 — the REAL UniqueID (the local override in @docmost/editor-ext) is in
+// the trimmed list too: the warm-session tests assert on what it does on an
+// already synced provider (ids right away, no "synced" listener). Its
+// not-yet-synced path — subscribe, then unsubscribe on destroy — is covered in
+// packages/editor-ext/src/lib/unique-id/unique-id.test.ts. Like the override,
+// the stamper unsubscribes when its editor is destroyed.
 vi.mock("@/features/editor/extensions/extensions", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { StarterKit } = await import("@tiptap/starter-kit");
   const { Extension } = await import("@tiptap/core");
+  const { UniqueID } = await import("@docmost/editor-ext");
 
   const SyncedIdStamper = (provider: any) =>
-    Extension.create({
+    Extension.create<unknown, { unsubscribe: (() => void) | null }>({
       name: "testSyncedIdStamper",
+      addStorage() {
+        return { unsubscribe: null };
+      },
       onCreate() {
         const { editor } = this;
         const createIds = () => {
@@ -202,12 +243,19 @@ vi.mock("@/features/editor/extensions/extensions", async (importOriginal) => {
           provider.off("synced", createIds);
         };
         provider.on("synced", createIds);
+        this.storage.unsubscribe = () => provider.off("synced", createIds);
+      },
+      onDestroy() {
+        this.storage.unsubscribe?.();
       },
     });
 
   return {
     ...actual,
-    mainExtensions: [StarterKit.configure({ undoRedo: false } as never)],
+    mainExtensions: [
+      StarterKit.configure({ undoRedo: false } as never),
+      UniqueID.configure({ types: ["paragraph", "heading"] }),
+    ],
     collabExtensions: (provider: any, user: any) => [
       ...(actual.collabExtensions as any)(provider, user),
       SyncedIdStamper(provider),
@@ -251,6 +299,13 @@ vi.mock("@/features/auth/queries/auth-query.tsx", () => ({
   }),
 }));
 
+// #709 — the session's token callback reads the collab token from the query
+// cache and fetches it through `getCollabToken` when missing or expired.
+vi.mock("@/features/auth/services/auth-service", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getCollabToken: vi.fn(async () => ({ token: "test-token" })),
+}));
+
 vi.mock("react-i18next", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -269,6 +324,9 @@ import {
 import {
   resetPageYdocRegistryForTests,
   pageYdocDbName,
+  evictPageYdoc,
+  installYdocPurgeBroadcastListener,
+  purgePageYdocDatabases,
 } from "./page-ydoc-eviction";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
 import { scopeKeyAtom } from "@/features/page/tree/atoms/open-tree-nodes-atom";
@@ -284,6 +342,19 @@ import {
   clearSessionVerifiedForTests,
   recordSessionVerified,
 } from "@/features/user/session-verified";
+import {
+  acquirePageSession,
+  destroyAllPageSessions,
+  destroyPageSession,
+  MAX_PARKED_ENCODED_BYTES,
+  MAX_PARKED_SESSIONS,
+  PARKED_TTL_MS,
+  type PageSession,
+  peekWarmSession,
+  releasePageSession,
+} from "./page-session-cache";
+import { getCollabToken } from "@/features/auth/services/auth-service";
+import { FIVE_MINUTES } from "@/lib/constants.ts";
 import type { Editor } from "@tiptap/react";
 
 const PAGE_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -426,6 +497,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // #709 — the session cache is module-level: unmounting parks the sessions.
+  destroyAllPageSessions();
+  queryClient.removeQueries({ queryKey: ["collab-token"] });
+  // The #641 test fires a window `offline` event, which also pauses the query
+  // client's fetches (the session's token callback fetches through it).
+  onlineManager.setOnline(true);
   localStorage.clear();
   resetTombstonesForTests();
   resetReconciledForTests();
@@ -673,8 +750,9 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
       rerender(wrap(store, PAGE_B));
     });
 
-    // Page A's providers are gone, page B has its own (empty) ydoc.
-    expect(persistenceA.destroyed).toBe(true);
+    // #709 — page A's session is parked (not destroyed); page B has its own
+    // (empty) ydoc.
+    expect(persistenceA.destroyed).toBe(false);
     const persistenceB = lastPersistence();
     expect(persistenceB).not.toBe(persistenceA);
     expect(persistenceB.name).toBe(`page.${SCOPE}.${PAGE_B}`);
@@ -685,7 +763,7 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
     expect(container.querySelector(".editor-container")).toBeNull();
     expect(container.textContent).toContain("Server seeded copy");
 
-    // A late "synced" from page A's destroyed persistence must not swap page B.
+    // A late "synced" from page A's parked persistence must not swap page B.
     act(() => persistenceA.emitSynced());
     expect(container.querySelector(".editor-container")).toBeNull();
 
@@ -1105,17 +1183,19 @@ describe("#707 attach after the local copy loads", () => {
     });
   });
 
-  it("d — unmount before the deadline: attach() is never called", () => {
+  it("d (#709) — unmount before the deadline: the parked session still attaches at the deadline, in the background", () => {
     vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const store = makeStore();
     const { unmount } = renderEditor(store, PAGE_A);
     const provider = lastProvider();
 
     act(() => vi.advanceTimersByTime(500));
     unmount();
-    act(() => vi.advanceTimersByTime(5000));
-
     expect(provider.attach).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(500));
+    expect(provider.attach).toHaveBeenCalledTimes(1);
   });
 
   it("e — a socket status event emitted before attach() reaches yjsConnectionStatusAtom", () => {
@@ -1127,5 +1207,470 @@ describe("#707 attach after the local copy loads", () => {
 
     expect(lastProvider().attach).not.toHaveBeenCalled();
     expect(store.get(yjsConnectionStatusAtom)).toBe("connected");
+  });
+});
+
+// #709 — warm collab sessions. The session cache (page-session-cache) is
+// module-level and REAL here; only the I/O edges (y-indexeddb, the hocuspocus
+// socket/provider) are the fakes above. Y.Doc and awareness are real.
+describe("#709 warm collab sessions", () => {
+  const COLLAB_URL = "ws://localhost/collab";
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function acquire(pageId: string, scopeKey = SCOPE): PageSession {
+    return acquirePageSession({
+      dbName: pageYdocDbName(scopeKey, pageId),
+      pageId,
+      slugId: pageId,
+      scopeKey,
+      collaborationURL: COLLAB_URL,
+    });
+  }
+
+  /** Local copy loaded, socket connected, remote synced and authorized. */
+  function syncSession(s: PageSession, scope?: "read-write" | "readonly") {
+    (s.local as any)?.emitSynced();
+    (s.socket as any).emitStatus("connected");
+    if (scope) (s.remote as any).authenticate(scope);
+    (s.remote as any).emitSynced(true);
+  }
+
+  /** A parked WARM session of PAGE_A whose body is `text`. */
+  function parkWarm(text = "Warm body"): PageSession {
+    const s = acquire(PAGE_A);
+    seedYdoc(s.ydoc, text);
+    syncSession(s, "read-write");
+    releasePageSession(s);
+    expect(peekWarmSession(s.dbName)).toBe(s);
+    return s;
+  }
+
+  /** A JWT the client can decode (the signature is never checked). */
+  function jwt(exp: number): string {
+    const part = (o: object) =>
+      btoa(JSON.stringify(o))
+        .replace(/=+$/, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+    return `${part({ alg: "none" })}.${part({ exp })}.sig`;
+  }
+
+  it("a — 20 mount/unmount cycles of the editor on ONE session restore the awareness / synced / ydoc-destroy listener counts", () => {
+    const session = parkWarm();
+    const provider = session.remote as any;
+    const counts = () => [
+      provider.awareness._observers.get("update")?.size ?? 0,
+      provider.callbacks.synced.length,
+      (session.ydoc as any)._observers.get("destroy")?.size ?? 0,
+    ];
+    const baseline = counts();
+
+    vi.useFakeTimers();
+    let lastEditor: Editor | null = null;
+    for (let i = 0; i < 20; i++) {
+      const store = makeStore();
+      const { unmount } = renderEditor(store, PAGE_A);
+      // tiptap emits "create" (UniqueID's onCreate) on a 0 ms timer.
+      act(() => vi.advanceTimersByTime(1));
+      lastEditor = getEditor(store);
+      unmount();
+      // @tiptap/react destroys the editor on a timer after the unmount.
+      act(() => vi.advanceTimersByTime(10));
+    }
+
+    // Every mount reused the one session, and every editor is gone.
+    expect(hoisted.providers.length).toBe(1);
+    expect(lastEditor!.isDestroyed).toBe(true);
+    expect(counts()).toEqual(baseline);
+
+    // A later "synced" emit does not reach the destroyed editor.
+    const stateBefore = lastEditor!.state;
+    expect(() => provider.emitSynced(true)).not.toThrow();
+    expect(lastEditor!.state).toBe(stateBefore);
+    // 20 full editor mounts: well past the default 5 s under a loaded full run.
+  }, 30_000);
+
+  it("b — mounting on a synced session gives nodes without an id an id, live from the first render", async () => {
+    const session = parkWarm();
+    const paragraph = () =>
+      session.ydoc.getXmlFragment("default").get(0) as Y.XmlElement;
+    expect(paragraph().getAttribute("id")).toBeUndefined();
+
+    const store = makeStore();
+    const { container } = renderEditor(store, PAGE_A);
+    expect(container.querySelector(".editor-container")).not.toBeNull();
+    expect(container.textContent).not.toContain("Server seeded copy");
+
+    await waitFor(() =>
+      expect(paragraph().getAttribute("id")).toEqual(expect.any(String)),
+    );
+    expect(hoisted.providers.length).toBe(1);
+    await waitFor(() => expect(getEditor(store).isEditable).toBe(true));
+  });
+
+  describe("c — budget", () => {
+    it("past MAX_PARKED_SESSIONS the longest-parked session is evicted, never the active one", async () => {
+      const active = acquire("page-active");
+      const parked = Array.from({ length: MAX_PARKED_SESSIONS + 1 }, (_, i) => {
+        const s = acquire(`page-${i}`);
+        releasePageSession(s);
+        return s;
+      });
+      await Promise.resolve();
+
+      expect(parked[0].alive).toBe(false);
+      expect(parked.slice(1).every((s) => s.alive)).toBe(true);
+      expect(active.alive).toBe(true);
+    });
+
+    it("past MAX_PARKED_ENCODED_BYTES the longest-parked session is evicted, never the active one", async () => {
+      // Three such docs exceed the byte budget, two do not.
+      const chunk = "x".repeat(Math.ceil(MAX_PARKED_ENCODED_BYTES / 2.5));
+      const active = acquire("page-active");
+      active.ydoc.getText("t").insert(0, chunk + chunk + chunk);
+      const parked = ["page-1", "page-2", "page-3"].map((id) => {
+        const s = acquire(id);
+        s.ydoc.getText("t").insert(0, chunk);
+        releasePageSession(s);
+        return s;
+      });
+      await Promise.resolve();
+
+      expect(parked.map((s) => s.alive)).toEqual([false, true, true]);
+      expect(active.alive).toBe(true);
+    });
+
+    it("release never evicts synchronously: the session the next page takes in the same flush survives", async () => {
+      const parked = Array.from({ length: MAX_PARKED_SESSIONS }, (_, i) => {
+        const s = acquire(`page-${i}`);
+        syncSession(s, "read-write");
+        releasePageSession(s);
+        return s;
+      });
+      await Promise.resolve();
+      expect(parked.every((s) => s.alive)).toBe(true);
+
+      // The leaving page parks a sixth session, and in the same flush the next
+      // page takes the longest-parked one.
+      releasePageSession(acquire("page-leaving"));
+      expect(parked[0].alive).toBe(true);
+      expect(acquire("page-0")).toBe(parked[0]);
+      await Promise.resolve();
+
+      expect(parked.every((s) => s.alive)).toBe(true);
+      expect(parked[0].holder).toBe("active");
+    });
+  });
+
+  it("d — a parked session is destroyed PARKED_TTL_MS after parking; acquire before that clears the timer", () => {
+    vi.useFakeTimers();
+    const expiring = acquire(PAGE_A);
+    (expiring.local as any).emitSynced();
+    releasePageSession(expiring);
+    vi.advanceTimersByTime(PARKED_TTL_MS - 1);
+    expect(expiring.alive).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(expiring.alive).toBe(false);
+    expect(expiring.socket.destroy).toHaveBeenCalled();
+
+    const kept = acquire(PAGE_B);
+    syncSession(kept, "read-write");
+    releasePageSession(kept);
+    vi.advanceTimersByTime(PARKED_TTL_MS - 1000);
+    expect(acquire(PAGE_B)).toBe(kept);
+    vi.advanceTimersByTime(PARKED_TTL_MS);
+    expect(kept.alive).toBe(true);
+  });
+
+  describe("e — a parked NON-warm session is destroyed on acquire and replaced", () => {
+    const variants: [string, (provider: any) => void][] = [
+      ["not synced", (p) => p.authenticate("read-write")],
+      ["not authenticated", (p) => p.emitSynced(true)],
+      [
+        "read-only",
+        (p) => {
+          p.emitSynced(true);
+          p.authenticate("readonly");
+        },
+      ],
+    ];
+
+    it.each(variants)("%s — a new session is returned", (_label, makeNonWarm) => {
+      const s = acquire(PAGE_A);
+      syncSession(s);
+      (s.remote as any).isSynced = false;
+      releasePageSession(s);
+      makeNonWarm(s.remote);
+      expect(peekWarmSession(s.dbName)).toBeNull();
+
+      const next = acquire(PAGE_A);
+      expect(next).not.toBe(s);
+      expect(s.alive).toBe(false);
+      expect(s.socket.destroy).toHaveBeenCalled();
+      expect(next.alive).toBe(true);
+    });
+
+    it("the body takes the cold path: the static copy, a new provider", async () => {
+      const s = acquire(PAGE_A);
+      seedYdoc(s.ydoc, "Parked body");
+      syncSession(s);
+      releasePageSession(s);
+
+      const store = makeStore();
+      const { container } = renderEditor(store, PAGE_A);
+      expect(s.alive).toBe(false);
+      expect(lastProvider()).not.toBe(s.remote);
+      expect(container.querySelector(".editor-container")).toBeNull();
+      expect(container.textContent).toContain("Server seeded copy");
+    });
+  });
+
+  it.each([true, false])(
+    "f — evicted between peek and acquire: the editor rebinds, and a write into the destroyed session is rejected (local-first %s)",
+    async (localFirst) => {
+      hoisted.localFirst = localFirst;
+      const warm = parkWarm();
+
+      // Runs after PageEditor's render peeked (and bound) the warm session,
+      // before its acquire effect.
+      function EvictAfterRender() {
+        useLayoutEffect(() => {
+          destroyPageSession(warm.dbName);
+          const dom = document.querySelector(
+            ".editor-container .ProseMirror",
+          ) as unknown as { editor: Editor };
+          const editor = dom.editor;
+          editor.view.dispatch(editor.state.tr.insertText("stale write", 1));
+          expect(editor.state.doc.textContent).not.toContain("stale write");
+        }, []);
+        return null;
+      }
+
+      const store = makeStore();
+      const { container } = render(
+        <>
+          {wrap(store, PAGE_A)}
+          <EvictAfterRender />
+        </>,
+      );
+
+      expect(warm.alive).toBe(false);
+      expect(warm.ydoc.getXmlFragment("default").toString()).not.toContain(
+        "stale write",
+      );
+      // Rebound to the new (cold) session: its own provider, the static copy.
+      expect(hoisted.providers.length).toBe(2);
+      expect(lastProvider()).not.toBe(warm.remote);
+      await waitFor(() =>
+        expect(container.querySelector(".editor-container")).toBeNull(),
+      );
+      expect(container.textContent).toContain("Server seeded copy");
+    },
+  );
+
+  it("g — a 403/404 on a parked page destroys its socket and deletes its database; releasing the dead session is a no-op", async () => {
+    // evictPageYdoc resolves the scope from the default store.
+    getDefaultStore().set(currentUserAtom, {
+      user: { id: "u-1", name: "Tester", settings: {} },
+      workspace: { id: "w-1" },
+    } as never);
+    const s = acquire(PAGE_A);
+    syncSession(s, "read-write");
+    releasePageSession(s);
+    const persistence = s.local as any;
+
+    await evictPageYdoc(PAGE_A);
+
+    expect(s.alive).toBe(false);
+    expect(s.socket.destroy).toHaveBeenCalled();
+    expect(persistence.clearData).toHaveBeenCalled();
+    expect(peekWarmSession(s.dbName)).toBeNull();
+
+    releasePageSession(s);
+    expect(s.alive).toBe(false);
+    expect(acquire(PAGE_A)).not.toBe(s);
+  });
+
+  describe("h — purge, scope, cross-tab broadcast", () => {
+    it("a purge in this tab destroys every session", async () => {
+      const active = acquire(PAGE_A);
+      const parked = acquire(PAGE_B);
+      releasePageSession(parked);
+
+      await purgePageYdocDatabases();
+
+      expect(active.alive).toBe(false);
+      expect(parked.alive).toBe(false);
+      expect(active.socket.destroy).toHaveBeenCalled();
+      expect(parked.socket.destroy).toHaveBeenCalled();
+    });
+
+    it("a session of scope A is never handed out for scope B", () => {
+      const s = parkWarm();
+      const otherScope = "w-1:u-2";
+      expect(peekWarmSession(pageYdocDbName(otherScope, PAGE_A))).toBeNull();
+      const other = acquire(PAGE_A, otherScope);
+      expect(other).not.toBe(s);
+      expect(s.alive).toBe(true);
+    });
+
+    it("a purge broadcast from another tab closes the IndexedDB handles but does not destroy the active session", () => {
+      const channels: { onmessage: ((e: any) => void) | null }[] = [];
+      // Swapped by hand: vi.unstubAllGlobals() would also drop the
+      // localStorage stub vitest.setup installs.
+      const original = globalThis.BroadcastChannel;
+      (globalThis as any).BroadcastChannel = class {
+        onmessage: ((e: any) => void) | null = null;
+        constructor() {
+          channels.push(this);
+        }
+        postMessage() {}
+        close() {}
+      };
+      try {
+        const s = acquire(PAGE_A);
+        installYdocPurgeBroadcastListener();
+        channels[0].onmessage?.({ data: { type: "purge" } });
+
+        expect((s.local as any).destroyed).toBe(true);
+        expect(s.alive).toBe(true);
+        expect(s.socket.destroy).not.toHaveBeenCalled();
+      } finally {
+        (globalThis as any).BroadcastChannel = original;
+      }
+    });
+  });
+
+  describe("j — connection status", () => {
+    function setVisibility(state: "visible" | "hidden") {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => state,
+      });
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+
+    afterEach(() => {
+      delete (document as unknown as { visibilityState?: string })
+        .visibilityState;
+    });
+
+    it("a parked session's socket event does not change yjsConnectionStatusAtom", async () => {
+      const store = makeStore();
+      const { rerender } = renderEditor(store, PAGE_A);
+      const socketA = lastSocket();
+      await act(async () => {
+        rerender(wrap(store, PAGE_B));
+      });
+      const socketB = lastSocket();
+      expect(socketB).not.toBe(socketA);
+
+      act(() => socketB.emitStatus("connected"));
+      expect(store.get(yjsConnectionStatusAtom)).toBe("connected");
+      act(() => socketA.emitStatus("disconnected"));
+      expect(store.get(yjsConnectionStatusAtom)).toBe("connected");
+    });
+
+    it("the bound session's socket is disconnected while idle + hidden and reconnected when the tab is visible again", () => {
+      vi.useFakeTimers();
+      const store = makeStore();
+      renderEditor(store, PAGE_A);
+      const socket = lastSocket();
+      act(() => {
+        lastPersistence().emitSynced();
+        socket.emitStatus("connected");
+        lastProvider().emitSynced(true);
+      });
+
+      setVisibility("hidden");
+      act(() => vi.advanceTimersByTime(FIVE_MINUTES));
+      expect(socket.disconnect).toHaveBeenCalledTimes(1);
+
+      act(() => socket.emitStatus("disconnected"));
+      expect(socket.connect).not.toHaveBeenCalled();
+      setVisibility("visible");
+      expect(socket.connect).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("k — permission re-check on a warm return", () => {
+    it("a warm acquire calls remote.sendToken(); a cold one does not", () => {
+      const s = acquire(PAGE_A);
+      expect(s.remote.sendToken).not.toHaveBeenCalled();
+      syncSession(s, "read-write");
+      releasePageSession(s);
+
+      expect(acquire(PAGE_A)).toBe(s);
+      expect(s.remote.sendToken).toHaveBeenCalledTimes(1);
+    });
+
+    it("a server CLOSE 'Unauthorized' (code 1000) invalidates the page queries; destroys a parked session, not the active one", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const open = (pageId: string) =>
+        acquirePageSession({
+          dbName: pageYdocDbName(SCOPE, pageId),
+          pageId,
+          slugId: `slug-${pageId}`,
+          scopeKey: SCOPE,
+          collaborationURL: COLLAB_URL,
+        });
+      const parked = open(PAGE_A);
+      syncSession(parked, "read-write");
+      releasePageSession(parked);
+      const active = open(PAGE_B);
+      syncSession(active, "read-write");
+
+      (parked.remote as any).emitClose({ code: 1000, reason: "Unauthorized" });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["pages", PAGE_A] });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ["pages", `slug-${PAGE_A}`],
+      });
+      expect(parked.alive).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Unauthorized"),
+        { pageId: PAGE_A },
+      );
+
+      (active.remote as any).emitClose({ code: 1000, reason: "Unauthorized" });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["pages", PAGE_B] });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ["pages", `slug-${PAGE_B}`],
+      });
+      expect(active.alive).toBe(true);
+    });
+
+    it("a socket closed with { code: 4401, reason: 'Unauthorized' } does not take that path", () => {
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const s = acquire(PAGE_A);
+      syncSession(s, "read-write");
+      releasePageSession(s);
+
+      (s.remote as any).emitClose({ code: 4401, reason: "Unauthorized" });
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(s.alive).toBe(true);
+    });
+
+    it("the token callback fetches a new token when the cached one's exp has passed", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const fresh = jwt(now + 3600);
+      vi.mocked(getCollabToken).mockClear();
+      vi.mocked(getCollabToken).mockResolvedValueOnce({ token: fresh } as never);
+      queryClient.setQueryData(["collab-token"], { token: jwt(now - 60) });
+      const s = acquire(PAGE_A);
+      const token = s.remote.configuration.token as () => Promise<string>;
+
+      await expect(token()).resolves.toBe(fresh);
+      expect(getCollabToken).toHaveBeenCalledTimes(1);
+      // A still-valid cached token is used as is.
+      await expect(token()).resolves.toBe(fresh);
+      expect(getCollabToken).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -1,5 +1,10 @@
-import { Extension, onAuthenticatePayload } from '@hocuspocus/server';
 import {
+  Extension,
+  onAuthenticatePayload,
+  onTokenSyncPayload,
+} from '@hocuspocus/server';
+import {
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -59,7 +64,52 @@ export class AuthenticationExtension implements Extension {
     }
   }
 
-  private async doAuthenticate(data: onAuthenticatePayload) {
+  // #709 — re-check access on an already-authenticated connection. A warm
+  // (parked) client session never reconnects, so on a warm return the client
+  // re-sends its token and hocuspocus routes it here. The same authorization
+  // runs on a COPY of the payload with a fresh connectionConfig: the payload's
+  // connectionConfig object is shared with the live connection and must not be
+  // mutated. A throw makes hocuspocus close this document on the connection
+  // with reason "Unauthorized" (the socket stays open). Returns undefined, so
+  // the connection context is left untouched.
+  async onTokenSync(data: onTokenSyncPayload) {
+    const pageId = getPageId(data.documentName);
+    const userId = data.context?.user?.id;
+    const connectionConfig = { readOnly: false };
+
+    try {
+      await this.doAuthenticate({ ...data, connectionConfig });
+    } catch (err) {
+      if (err instanceof HttpException) {
+        this.logger.warn(
+          `Access re-check denied user ${userId} on page ${pageId}: ${err.message}`,
+        );
+        throw err;
+      }
+      // Infrastructure failure (DB etc.): the connection is already
+      // authenticated, and a throw would turn this blip into a false revocation.
+      this.logger.error(
+        { err, userId, pageId },
+        'Access re-check failed; keeping the document open',
+      );
+      return undefined;
+    }
+
+    if (connectionConfig.readOnly !== data.connection.readOnly) {
+      this.logger.warn(
+        `Access re-check changed user ${userId} on page ${pageId} from readOnly=${data.connection.readOnly} to readOnly=${connectionConfig.readOnly}; closing the document`,
+      );
+      throw new UnauthorizedException();
+    }
+
+    return undefined;
+  }
+
+  private async doAuthenticate(data: {
+    documentName: string;
+    token: string;
+    connectionConfig: { readOnly: boolean };
+  }) {
     const { documentName, token } = data;
     const pageId = getPageId(documentName);
 

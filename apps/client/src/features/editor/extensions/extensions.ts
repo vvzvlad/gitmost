@@ -15,10 +15,13 @@ import SlashCommand, {
 import renderItems from "@/features/editor/components/slash-menu/render-items";
 import getSuggestionItems from "@/features/editor/components/slash-menu/menu-items";
 import { Collaboration, isChangeOrigin } from "@tiptap/extension-collaboration";
-import { ySyncPluginKey } from "@tiptap/y-tiptap";
+import { yCursorPlugin, ySyncPluginKey } from "@tiptap/y-tiptap";
 import type { Plugin } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
-import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
+import {
+  CollaborationCaret,
+  type CollaborationCaretOptions,
+} from "@tiptap/extension-collaboration-caret";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
   Comment,
@@ -552,12 +555,61 @@ const CollaborationWithoutRerenderOnReconfigure = Collaboration.extend({
   },
 });
 
+const awarenessStatesToArray = (states: Map<number, Record<string, any>>) =>
+  Array.from(states.entries()).map(([key, value]) => ({
+    clientId: key,
+    ...value.user,
+  }));
+
+// #709 — local override of @tiptap/extension-collaboration-caret 3.20.4, whose
+// plugin adds an awareness "update" listener and never removes it; the
+// listener's closure holds the extension context and, through it, the editor.
+// With warm collab sessions the provider (and its awareness) outlives the
+// editor, so every mount would leak one. The user is still set once, as in
+// 3.20.4 (not in the plugin view, as 3.31 does — that view is re-created ~10
+// times per page open); the listener is kept in storage and removed in
+// onDestroy. Remove this override when tiptap is upgraded to >= 3.31.
+const CollaborationCaretWithListenerCleanup = CollaborationCaret.extend<
+  CollaborationCaretOptions,
+  {
+    users: { clientId: number; [key: string]: any }[];
+    awarenessUpdateListener: (() => void) | null;
+  }
+>({
+  addStorage() {
+    return {
+      ...this.parent?.(),
+      awarenessUpdateListener: null,
+    };
+  },
+  addProseMirrorPlugins() {
+    const awareness = this.options.provider.awareness;
+    awareness.setLocalStateField("user", this.options.user);
+    this.storage.users = awarenessStatesToArray(awareness.states);
+    const awarenessUpdateListener = () => {
+      this.storage.users = awarenessStatesToArray(awareness.states);
+    };
+    awareness.on("update", awarenessUpdateListener);
+    this.storage.awarenessUpdateListener = awarenessUpdateListener;
+    return [
+      yCursorPlugin(awareness, {
+        cursorBuilder: this.options.render,
+        selectionBuilder: this.options.selectionRender,
+      }),
+    ];
+  },
+  onDestroy() {
+    const listener = this.storage.awarenessUpdateListener;
+    if (listener) this.options.provider.awareness.off("update", listener);
+  },
+});
+
 export const collabExtensions: CollabExtensions = (provider, user) => [
   CollaborationWithoutRerenderOnReconfigure.configure({
     document: provider.document,
     provider,
   }),
-  CollaborationCaret.configure({
+  CollaborationCaretWithListenerCleanup.configure({
     provider,
     user: {
       name: user.name,

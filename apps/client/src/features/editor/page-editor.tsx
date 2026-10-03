@@ -7,16 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { IndexeddbPersistence } from "y-indexeddb";
-import * as Y from "yjs";
-import {
-  HocuspocusProvider,
-  onStatusParameters,
-  WebSocketStatus,
-  HocuspocusProviderWebsocket,
-  onSyncedParameters,
-  onStatelessParameters,
-} from "@hocuspocus/provider";
+import { WebSocketStatus } from "@hocuspocus/provider";
 import {
   Editor,
   EditorContent,
@@ -40,14 +31,7 @@ import {
   pageEditorAtom,
   yjsConnectionStatusAtom,
 } from "@/features/editor/atoms/editor-atoms";
-import { notifications } from "@mantine/notifications";
 import { Skeleton } from "@mantine/core";
-import { getCollabToken } from "@/features/auth/services/auth-service";
-import {
-  VERSION_SAVED_MESSAGE_TYPE,
-  type VersionSavedMessage,
-  saveVersionPending,
-} from "@/features/page-history/version-messages";
 import { asideStateAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom";
 import {
   activeCommentIdAtom,
@@ -76,8 +60,6 @@ import { useCollabToken } from "@/features/auth/queries/auth-query.tsx";
 import SearchAndReplaceDialog from "@/features/editor/components/search-and-replace/search-and-replace-dialog.tsx";
 import { useDocumentVisibility } from "@mantine/hooks";
 import { useIdle } from "@/hooks/use-idle.ts";
-import { queryClient } from "@/main.tsx";
-import { IPage } from "@/features/page/types/page.types.ts";
 import { useParams } from "react-router-dom";
 import { extractPageSlugId, platformModifierKey } from "@/lib";
 import {
@@ -88,7 +70,6 @@ import {
 } from "@/features/editor/gitmost/gitmost-recording.ts";
 import { FIVE_MINUTES } from "@/lib/constants.ts";
 import { PageEditMode } from "@/features/user/types/user.types.ts";
-import { jwtDecode } from "jwt-decode";
 import { openSearchSpotlight } from "@/features/search/constants.ts";
 import { useEditorScroll } from "./hooks/use-editor-scroll";
 import { usePageContentCache } from "./hooks/use-page-content-cache";
@@ -109,23 +90,15 @@ import {
   isCollabSynced,
   shouldSwapToLive,
 } from "@/features/editor/editor-sync-state";
+import { createBodyWriteGuard } from "@/features/editor/local-first-body";
+import { pageYdocDbName } from "@/features/editor/page-ydoc-eviction";
+import { getReconciledAt } from "@/features/editor/page-ydoc-reconciled";
 import {
-  createBodyWriteGuard,
-  isYdocBodyNonEmpty,
-} from "@/features/editor/local-first-body";
-import {
-  pageYdocDbName,
-  pageYdocRoomName,
-  registerPageYdoc,
-  rememberYdocDbName,
-  unregisterPageYdoc,
-} from "@/features/editor/page-ydoc-eviction";
-import { canOpenLocalYdoc } from "@/features/editor/page-ydoc-tombstones";
-import {
-  getReconciledAt,
-  markReconciled,
-} from "@/features/editor/page-ydoc-reconciled";
-import { isSessionExpired } from "@/features/user/session-verified";
+  acquirePageSession,
+  type PageSession,
+  peekWarmSession,
+  releasePageSession,
+} from "@/features/editor/page-session-cache";
 import { scopeKeyAtom } from "@/features/page/tree/atoms/open-tree-nodes-atom";
 import { isLocalFirstEnabled } from "@/lib/config.ts";
 import {
@@ -137,9 +110,38 @@ import {
   reportEditorTx,
 } from "@/lib/telemetry/vitals";
 
-// #707 — the longest the remote provider waits for the local ydoc's "synced"
-// before attaching to the socket without it.
-const LOCAL_ATTACH_DEADLINE_MS = 1000;
+// #709 — the ONE rule deriving the body's sync flags from a collab session,
+// applied in three places: the initial state of a mount (from the peeked
+// session), the reset block on a page / session change, and the session
+// listener. There is no warm / default split in the component: a warm session
+// yields synced, confirmed and live on its own. `isRemoteConfirmed` stays
+// sticky (`wasRemoteConfirmed`), as before.
+function flagsFromSession(
+  s: PageSession,
+  localFirst: boolean,
+  wasRemoteConfirmed: boolean,
+) {
+  const isLocalSynced = s.localSynced;
+  const ydocNonEmpty = s.ydocNonEmpty;
+  const isRemoteSynced = s.remote.isSynced;
+  const yjsConnectionStatus = s.socket.status;
+  return {
+    isLocalSynced,
+    ydocNonEmpty,
+    isRemoteSynced,
+    yjsConnectionStatus,
+    isRemoteConfirmed: wasRemoteConfirmed || isRemoteSynced,
+    swapToLive: shouldSwapToLive({
+      localFirst,
+      isLocalSynced,
+      ydocNonEmpty,
+      collabSynced: isCollabSynced(
+        yjsConnectionStatus,
+        isLocalSynced && isRemoteSynced,
+      ),
+    }),
+  };
+}
 
 interface PageEditorProps {
   pageId: string;
@@ -182,33 +184,57 @@ export default function PageEditor({
   const [, setActiveCommentId] = useAtom(activeCommentIdAtom);
   const [showCommentPopup, setShowCommentPopup] = useAtom(showCommentPopupAtom);
   const [showReadOnlyCommentPopup] = useAtom(showReadOnlyCommentPopupAtom);
-  const [isLocalSynced, setIsLocalSynced] = useState(false);
-  const [isRemoteSynced, setIsRemoteSynced] = useState(false);
-  // #564 — the local ydoc actually holds body content (y-indexeddb emits
-  // "synced" for an EMPTY doc too, so the event alone proves nothing).
-  const [ydocNonEmpty, setYdocNonEmpty] = useState(false);
-  // #564 — the remote room confirmed a sync at least once for THIS page. Sticky
-  // (a later disconnect does not revoke it, matching today's post-sync offline
-  // editing), reset on page switch. This — NOT the static->live swap — is what
-  // makes the body editable.
-  const [isRemoteConfirmed, setIsRemoteConfirmed] = useState(false);
-  // Mirror for the Yjs write guard, which is read from a ProseMirror plugin and
-  // must see the CURRENT value without recreating the editor.
-  const isRemoteConfirmedRef = useRef(false);
   // Read the flag once per mount: a mid-session flip must not move the editor
   // between two different state machines.
   const localFirst = useMemo(() => isLocalFirstEnabled(), []);
-  // Ф7 (#643), part 7 — the DURABLE reconciliation mark (Ф4's reconciledAt),
-  // keyed by the scoped ydoc DB name, read once per (scope, page). Deliberately
-  // NOT the session-scoped `isRemoteConfirmed` (which is `useState(false)`, never
-  // persisted → forever false offline): keying the new skeleton decision on the
-  // session flag would cement a gate that a future offline-editing phase must
-  // rip out. A reconciliation that happens DURING this session is covered by
-  // `isRemoteConfirmed` in `bodyReconciled` below.
   const bodyDbName = useMemo(
     () => pageYdocDbName(ydocScopeKey, pageId),
     [ydocScopeKey, pageId],
   );
+  // #709 — the collab session this editor is bound to, owned by the
+  // page-session cache. Seeded in render from a WARM session, so the editor —
+  // created in render, before any effect — is bound to it from the first frame;
+  // the acquire effect below rebinds when the cache hands out another one. Only
+  // the session of the CURRENT page counts: a page switch without a remount
+  // must never bind the previous page's session (#564).
+  const [boundSession, setBoundSession] = useState(() =>
+    peekWarmSession(bodyDbName),
+  );
+  const activeSession =
+    boundSession?.dbName === bodyDbName ? boundSession : null;
+  const [mountSessionFlags] = useState(() =>
+    activeSession ? flagsFromSession(activeSession, localFirst, false) : null,
+  );
+  const [isLocalSynced, setIsLocalSynced] = useState(
+    mountSessionFlags?.isLocalSynced ?? false,
+  );
+  const [isRemoteSynced, setIsRemoteSynced] = useState(
+    mountSessionFlags?.isRemoteSynced ?? false,
+  );
+  // #564 — the local ydoc actually holds body content (y-indexeddb emits
+  // "synced" for an EMPTY doc too, so the event alone proves nothing).
+  const [ydocNonEmpty, setYdocNonEmpty] = useState(
+    mountSessionFlags?.ydocNonEmpty ?? false,
+  );
+  // #564 — the remote room confirmed a sync at least once for THIS page. Sticky
+  // (a later disconnect does not revoke it, matching today's post-sync offline
+  // editing), reset on page switch. This — NOT the static->live swap — is what
+  // makes the body editable.
+  const [isRemoteConfirmed, setIsRemoteConfirmed] = useState(
+    mountSessionFlags?.isRemoteConfirmed ?? false,
+  );
+  // Mirror for the Yjs write guard, which is read from a ProseMirror plugin and
+  // must see the CURRENT value without recreating the editor.
+  const isRemoteConfirmedRef = useRef(
+    mountSessionFlags?.isRemoteConfirmed ?? false,
+  );
+  // Ф7 (#643), part 7 — the DURABLE reconciliation mark (Ф4's reconciledAt),
+  // keyed by the scoped ydoc DB name, read once per (scope, page). Deliberately
+  // NOT the session-scoped `isRemoteConfirmed` (which starts false, never
+  // persisted → forever false offline): keying the new skeleton decision on the
+  // session flag would cement a gate that a future offline-editing phase must
+  // rip out. A reconciliation that happens DURING this session is covered by
+  // `isRemoteConfirmed` in `bodyReconciled` below.
   const durablyReconciled = useMemo(
     () => (localFirst ? getReconciledAt(bodyDbName) !== undefined : false),
     [localFirst, bodyDbName],
@@ -219,14 +245,9 @@ export default function PageEditor({
     yjsConnectionStatusAtom,
   );
   const menuContainerRef = useRef(null);
-  const { data: collabQuery, refetch: refetchCollabToken } = useCollabToken();
-  // Always holds the latest collab token. The provider effect below runs once
-  // per pageId, so a handler created inside it would otherwise close over a
-  // stale `collabQuery`. Reading the ref gives the current token instead.
-  const collabTokenRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    collabTokenRef.current = collabQuery?.token;
-  }, [collabQuery?.token]);
+  // Keeps the collab-token query observed and fetched; the session's token
+  // callback reads it from the query cache (#709).
+  useCollabToken();
   const { isIdle, resetIdle } = useIdle(FIVE_MINUTES, { initialState: false });
   const documentState = useDocumentVisibility();
   const { pageSlug } = useParams();
@@ -238,276 +259,25 @@ export default function PageEditor({
     [isComponentMounted],
   );
   const { handleScrollTo } = useEditorScroll({ canScroll });
-  // Providers only created once per pageId
-  const providersRef = useRef<{
-    // #640 — remote-only when the page is tombstoned / scope unresolved / session
-    // expired: the local persistence is then not constructed at all.
-    local: IndexeddbPersistence | null;
-    remote: HocuspocusProvider;
-    socket: HocuspocusProviderWebsocket;
-    ydoc: Y.Doc;
-    dbName: string;
-  } | null>(null);
-  // #564 — the ACTIVE providers, tagged with the pageId they belong to, held in
-  // STATE (not just the ref) so the extensions memo below can never bind the
-  // editor to a provider from a different page. On a pageId change React renders
-  // BEFORE the provider effect re-runs, so a memo reading `providersRef` would
-  // rebuild the collab extensions against the PREVIOUS page's ydoc — and, since
-  // the memo would not recompute again once the new providers landed, the editor
-  // would stay bound to it for the rest of the page's life.
-  const [activeProviders, setActiveProviders] = useState<{
-    pageId: string;
-    remote: HocuspocusProvider;
-  } | null>(null);
-  const providersReady =
-    activeProviders !== null && activeProviders.pageId === pageId;
-
+  // #709 — take this page's collab session from the cache (warm → reused,
+  // otherwise created; the session factory there carries the #707 attach
+  // logic) and hand it back on unmount / page switch, which PARKS it.
   useEffect(() => {
-    // Guards every provider callback below: after this effect is cleaned up (page
-    // switch / unmount) a late event from the destroyed providers must never
-    // write sync state that now belongs to a DIFFERENT page.
-    let disposed = false;
-    let localAttachDeadline: ReturnType<typeof setTimeout> | undefined;
-    if (!providersRef.current) {
-      // #640, invariant 1 — the DB name is SCOPE-NAMESPACED, the collab ROOM name
-      // is NOT. The room name must stay `page.<pageId>` or the server resolves the
-      // wrong id and every collab connection breaks (see page-ydoc-eviction).
-      const dbName = pageYdocDbName(ydocScopeKey, pageId);
-      const roomName = pageYdocRoomName(pageId);
-      // #640 — open LOCAL persistence only when it is safe to lean on local
-      // content. Fail-closed on all three:
-      //  - anon scope (not yet resolved): a signed-out/first-frame state must not
-      //    write a body under `anon:anon` (invariant 2);
-      //  - session expired past OFFLINE_GRACE (30d, part 6): refuse local body;
-      //  - the page is TOMBSTONED (access revoked, part 5): y-indexeddb creates
-      //    the DB on construction, so gating here — not at paint — is what keeps a
-      //    revoked page from resurrecting an (empty) database every visit. Checked
-      //    under BOTH aliases so a slugId-only tombstone still blocks.
-      const scopeResolved = !ydocScopeKey.split(":").includes("anon");
-      const openLocal =
-        scopeResolved &&
-        !isSessionExpired() &&
-        canOpenLocalYdoc(dbName) &&
-        canOpenLocalYdoc(pageYdocDbName(ydocScopeKey, slugId ?? pageId));
-      const ydoc = new Y.Doc();
-      const local = openLocal ? new IndexeddbPersistence(dbName, ydoc) : null;
-      if (openLocal) {
-        // Record the scoped DB name so the cross-user purge can delete it by name
-        // on browsers without `indexedDB.databases()` (Firefox). Only when a DB is
-        // actually created — a remote-only ydoc leaves nothing on disk.
-        rememberYdocDbName(dbName);
-      }
-      const onStatusHandler = (event: onStatusParameters) => {
-        if (disposed) return;
-        setYjsConnectionStatus(event.status);
-      };
-      // #707 — status is subscribed on the SOCKET, not the provider: the provider
-      // only wires its own onStatus inside attach(), so socket status events that
-      // land before the (now deferred) attach would otherwise be lost.
-      const socket = new HocuspocusProviderWebsocket({
-        url: collaborationURL,
-        onStatus: onStatusHandler,
-      });
-      const onLocalSyncedHandler = () => {
-        if (disposed) return;
-        setIsLocalSynced(true);
-        // y-indexeddb emits "synced" even when the stored doc is EMPTY, so probe
-        // the actual body fragment: an empty ydoc must NOT trigger the early swap
-        // (it would blank the body until the network answers — guard 1).
-        setYdocNonEmpty(isYdocBodyNonEmpty(ydoc));
-        // #707 — attach only now, so step1 carries the local copy's state vector
-        // and the server answers with the diff instead of the whole document.
-        clearTimeout(localAttachDeadline);
-        remote.attach();
-      };
-      const onSyncedHandler = (event: onSyncedParameters) => {
-        if (disposed) return;
-        setIsRemoteSynced(event.state);
-        // #564, guard 2 — THIS event IS the remote confirmation, so the write
-        // guard must open SYNCHRONOUSLY here, inside the same emit.
-        //
-        // Load-bearing: extensions dispatch from `provider.on("synced")` and then
-        // immediately unsubscribe. @tiptap/extension-unique-id is the canonical
-        // one — its `createIds` runs in this very emit, does a single
-        // `view.dispatch(tr)` and calls `provider.off("synced", ...)` right after.
-        // If the guard were still closed at that instant (React state only lands
-        // after a re-render), that transaction would be REJECTED and the
-        // extension would already be gone — leaving every node without a
-        // `data-id` for the life of the editor, which silently breaks comment
-        // anchors, transclusions and the TOC. A later empty flush transaction
-        // cannot repair it: UniqueID's appendTransaction requires `docChanged`.
-        //
-        // The React state below drives the UI and is intentionally async; the ref
-        // is what the ProseMirror plugin reads.
-        if (event.state) {
-          isRemoteConfirmedRef.current = true;
-          setIsRemoteConfirmed(true);
-          // #640 R1 — durable "this ydoc reconciled with the server at least
-          // once" mark, keyed by the scoped DB name. Introduced now, no consumers
-          // yet; Ф7 (offline editing) reads THIS instead of the session-scoped
-          // isRemoteConfirmed. See page-ydoc-reconciled for the forward-compat
-          // purge/quarantine rule.
-          markReconciled(dbName);
-        }
-      };
-      const onStatelessHandler = ({ payload }: onStatelessParameters) => {
-        if (disposed) return;
-        try {
-          const message = JSON.parse(payload);
-          // #370 — a version was saved somewhere; live-refresh the history panel
-          // on every client. Only the client that pressed Save (tracked by the
-          // module-level flag) shows the confirmation toast.
-          if (message?.type === VERSION_SAVED_MESSAGE_TYPE) {
-            const versionMsg = message as VersionSavedMessage;
-            queryClient.invalidateQueries({
-              queryKey: ["page-history-list"],
-            });
-            if (saveVersionPending.current) {
-              saveVersionPending.current = false;
-              notifications.show({
-                message: versionMsg.alreadySaved
-                  ? t("Already saved as the latest version")
-                  : t("Version saved"),
-              });
-            }
-            return;
-          }
-          if (message?.type !== "page.updated" || !message.updatedAt) return;
-          const pageData = queryClient.getQueryData<IPage>(["pages", slugId]);
-          if (pageData) {
-            queryClient.setQueryData(["pages", slugId], {
-              ...pageData,
-              updatedAt: message.updatedAt,
-              ...(message.lastUpdatedBy && {
-                lastUpdatedBy: message.lastUpdatedBy,
-              }),
-            });
-          }
-        } catch {
-          // ignore unrelated stateless messages
-        }
-      };
-      const onAuthenticationFailedHandler = () => {
-        // Late auth failure after teardown: the socket below is already
-        // destroyed, so reconnecting it would resurrect a dead provider (and,
-        // after a page switch, connect to the WRONG page's room).
-        if (disposed) return;
-        // Read the latest token via the ref (the closure-captured `collabQuery`
-        // may be stale). Guard the decode: a missing or unparseable token must
-        // not throw "Invalid token specified" and should trigger a refresh so
-        // the editor reconnects even when the initial token fetch failed.
-        const token = collabTokenRef.current;
-        let needsRefresh = true; // no/unparseable token -> fetch a fresh one and reconnect
-        if (token) {
-          try {
-            // A token that decodes but lacks a numeric `exp` must be treated as
-            // expired (`Date.now()/1000 >= undefined` is `false`, which would
-            // otherwise skip the reconnect), so refresh on any missing/non-number exp.
-            const exp = jwtDecode<{ exp?: number }>(token).exp;
-            needsRefresh = typeof exp !== "number" || Date.now() / 1000 >= exp;
-          } catch {
-            needsRefresh = true;
-          }
-        }
-        if (!needsRefresh) return;
-        refetchCollabToken().then((result) => {
-          if (disposed || !result.data?.token) return;
-          socket.disconnect();
-          setTimeout(() => {
-            if (disposed) return;
-            remote.configuration.token = result.data.token;
-            socket.connect();
-          }, 100);
-        });
-      };
-      const remote = new HocuspocusProvider({
-        websocketProvider: socket,
-        // #640, invariant 1 — the un-namespaced ROOM name (`page.<pageId>`), never
-        // the scoped DB name, so the server resolves the pageId via split('.')[1]
-        // and every authenticated collab connection succeeds (#626 regression fix).
-        name: roomName,
-        document: ydoc,
-        // Ф7 (#643) — a LAZY token callback, not a by-value token. Hocuspocus
-        // accepts a (possibly async) function and awaits it before authenticating.
-        // At t0 the collab-token query may not have resolved yet; passing an empty
-        // token by value makes the server reject the socket → onAuthenticationFailed
-        // → a 100ms reconnect, growing the read-only window on the very path Ф7
-        // speeds up (and widening the #218 radius). The callback instead WAITS for
-        // the token: it prefers the always-current ref, else ensures the query.
-        token: async () =>
-          collabTokenRef.current ??
-          (
-            await queryClient.ensureQueryData({
-              queryKey: ["collab-token"],
-              queryFn: () => getCollabToken(),
-            })
-          )?.token,
-        onAuthenticationFailed: onAuthenticationFailedHandler,
-        onSynced: onSyncedHandler,
-        onStateless: onStatelessHandler,
-      });
-
-      local?.on("synced", onLocalSyncedHandler);
-      if (local) {
-        // #707 — a hung or failed IndexedDB never emits "synced", so the attach
-        // waits at most LOCAL_ATTACH_DEADLINE_MS; past it the local copy counts
-        // as empty and we attach as before (full exchange).
-        const localOpenedAt = Date.now();
-        localAttachDeadline = setTimeout(() => {
-          if (disposed) return;
-          console.error(
-            `[page-editor] local ydoc did not sync within ${LOCAL_ATTACH_DEADLINE_MS}ms; attaching without it`,
-            { pageId, elapsedMs: Date.now() - localOpenedAt },
-          );
-          setIsLocalSynced(true);
-          setYdocNonEmpty(false);
-          remote.attach();
-        }, LOCAL_ATTACH_DEADLINE_MS);
-      } else {
-        // #707 — no local persistence: the local side is ready and empty, so
-        // attach right away.
-        setIsLocalSynced(true);
-        remote.attach();
-      }
-      providersRef.current = { socket, local, remote, ydoc, dbName };
-      // #564 guard 3 / #640 part 7 — hand the LIVE persistence to the global
-      // 403/404 subscriber (installed at app level in main.tsx, because the
-      // revoked-page case never mounts this component at all), keyed by both
-      // aliases a page query can use. Registered whenever a local persistence was
-      // actually opened, regardless of the flag: deleting revoked content is not
-      // gated on the local-first experiment. This only makes eviction of a page
-      // open RIGHT NOW cheaper/synchronous — the subscriber resolves pages this
-      // session never opened from the persisted #563 meta cache on its own.
-      if (local) {
-        registerPageYdoc({
-          dbName,
-          persistence: local,
-          keys: [pageId, slugId],
-        });
-      }
-      // #370 — publish the provider so the header menu can emit save-version.
-      setCollabProvider(remote);
-      setActiveProviders({ pageId, remote });
-    } else {
-      setCollabProvider(providersRef.current.remote);
-      setActiveProviders({ pageId, remote: providersRef.current.remote });
-    }
-    // Only destroy on final unmount
+    const s = acquirePageSession({
+      dbName: bodyDbName,
+      pageId,
+      slugId,
+      scopeKey: ydocScopeKey,
+      collaborationURL,
+    });
+    if (s !== boundSession) setBoundSession(s);
+    // #370 — publish the provider so the header menu can emit save-version.
+    setCollabProvider(s.remote);
     return () => {
-      disposed = true;
-      clearTimeout(localAttachDeadline);
       setCollabProvider(null);
-      setActiveProviders(null);
-      const dbName = providersRef.current?.dbName;
-      providersRef.current?.socket.destroy();
-      providersRef.current?.remote.destroy();
-      providersRef.current?.local?.destroy();
-      providersRef.current = null;
-      // The persistence is gone; keep only the pageId/slugId -> db-name alias
-      // so a 403/404 landing AFTER unmount still deletes the IDB database.
-      if (dbName) unregisterPageYdoc(dbName);
+      releasePageSession(s);
     };
-  }, [pageId]);
+  }, [bodyDbName]);
 
   // Marks the socket as "disconnected BY US for being idle+hidden". Only such
   // a disconnect is ours to undo, and only once per transition — see
@@ -517,8 +287,8 @@ export default function PageEditor({
 
   // Only connect/disconnect on tab/idle, not destroy
   useEffect(() => {
-    if (!providersReady || !providersRef.current) return;
-    const socket = providersRef.current.socket;
+    if (!activeSession) return;
+    const socket = activeSession.socket;
 
     const action = decideSocketIdleAction({
       isIdle,
@@ -541,38 +311,40 @@ export default function PageEditor({
     isIdle,
     documentState,
     yjsConnectionStatus,
-    providersReady,
+    activeSession,
     resetIdle,
   ]);
 
-  // `pageId` is a dependency on purpose: the providers are recreated per pageId,
-  // so without it a page switch that does not remount would leave the extensions
-  // (and therefore the editor) bound to the DESTROYED provider / previous page's
-  // ydoc (#564).
+  // `pageId` is a dependency on purpose: the session belongs to one page, so
+  // without it a page switch that does not remount would leave the extensions
+  // (and therefore the editor) bound to the previous page's provider / ydoc
+  // (#564).
   const extensions = useMemo(() => {
-    if (
-      !activeProviders ||
-      activeProviders.pageId !== pageId ||
-      !currentUser?.user
-    ) {
+    if (!activeSession || !currentUser?.user) {
       return mainExtensions;
     }
 
-    const remoteProvider = activeProviders.remote;
+    const session = activeSession;
+    // #709 — the bound session is alive. NOT `holder === 'active'`: between the
+    // render and the acquire effect a warm session is still formally parked,
+    // and UniqueID legitimately writes ids in that window.
+    const sessionLive = () => session.alive;
 
     return [
       ...mainExtensions,
-      ...collabExtensions(remoteProvider, currentUser?.user),
+      ...collabExtensions(session.remote, currentUser?.user),
       // #564, guard 2 (Yjs-level half): while the body is live but the remote
       // room has not confirmed a sync, NO local doc mutation may reach the Y.Doc
       // — not a keystroke, not a plugin's appendTransaction. Both predicates are
-      // read live, so flipping them never recreates the editor.
+      // read live, so flipping them never recreates the editor. #709 — a write
+      // into a DESTROYED session (evicted between the render that bound it and
+      // the acquire effect) is rejected whatever the local-first flag.
       createBodyWriteGuard({
-        isActive: () => localFirst,
-        canWrite: () => isRemoteConfirmedRef.current,
+        isActive: () => localFirst || !sessionLive(),
+        canWrite: () => sessionLive() && isRemoteConfirmedRef.current,
       }),
     ];
-  }, [activeProviders, currentUser?.user, pageId, localFirst]);
+  }, [activeSession, currentUser?.user, pageId, localFirst]);
 
   // Stable editorProps for the static read-only copy. Its EditorProvider has
   // `deps=[]`, so TipTap compares options by reference on every render and calls
@@ -814,7 +586,11 @@ export default function PageEditor({
   const isSynced = isLocalSynced && isRemoteSynced;
 
   const hasConnectedOnceRef = useRef(false);
-  const [showStatic, setShowStatic] = useState(true);
+  // #709 — a warm session swaps on the very first render: the live editor is
+  // built straight from it and the static copy never mounts.
+  const [showStatic, setShowStatic] = useState(
+    !mountSessionFlags?.swapToLive,
+  );
   // #564 — the swap happened EARLY (from the local ydoc, before remote sync), so
   // the height reservation must be released on the live editor's first laid-out
   // frame rather than waiting for it to match the static copy's height (guard 6).
@@ -849,16 +625,27 @@ export default function PageEditor({
   // the new page straight to a live editor on the strength of the OLD page's
   // flags, i.e. paint the previous page's ydoc state. Reset during render, so it
   // lands BEFORE any effect of the new pageId runs (React's sanctioned
-  // "adjust state when a prop changes" pattern).
-  const [syncStatePageId, setSyncStatePageId] = useState(pageId);
-  if (syncStatePageId !== pageId) {
-    setSyncStatePageId(pageId);
-    setIsLocalSynced(false);
-    setIsRemoteSynced(false);
-    setYdocNonEmpty(false);
-    setIsRemoteConfirmed(false);
-    isRemoteConfirmedRef.current = false;
-    setShowStatic(true);
+  // "adjust state when a prop changes" pattern). #709 — also keyed by the
+  // session identity (the cache may hand out another session than the one bound
+  // in render); the flags come from the new session, the defaults without one.
+  const [syncStateKey, setSyncStateKey] = useState({
+    pageId,
+    session: activeSession,
+  });
+  if (
+    syncStateKey.pageId !== pageId ||
+    syncStateKey.session !== activeSession
+  ) {
+    setSyncStateKey({ pageId, session: activeSession });
+    const flags = activeSession
+      ? flagsFromSession(activeSession, localFirst, false)
+      : null;
+    setIsLocalSynced(flags?.isLocalSynced ?? false);
+    setIsRemoteSynced(flags?.isRemoteSynced ?? false);
+    setYdocNonEmpty(flags?.ydocNonEmpty ?? false);
+    setIsRemoteConfirmed(flags?.isRemoteConfirmed ?? false);
+    isRemoteConfirmedRef.current = flags?.isRemoteConfirmed ?? false;
+    setShowStatic(!flags?.swapToLive);
     setEarlySwap(false);
     setStickyOffline(false);
     hasConnectedOnceRef.current = false;
@@ -869,6 +656,37 @@ export default function PageEditor({
     // published from the effects below instead, which re-run on this very render
     // because the state reset above recomputes their inputs.
   }
+
+  // #709 — follow the bound session. Runs after the render that carried the
+  // reset block. Subscribe FIRST, then re-read everything at once, so an event
+  // landing between that render and the subscription is not lost; every
+  // notification re-reads everything again. The listener is called
+  // synchronously from the session's handlers — inside the provider's "synced"
+  // emit it opens the write guard (`isRemoteConfirmedRef`) before any
+  // extension's own "synced" listener runs. `yjsConnectionStatusAtom` is
+  // written only here, from the bound session: a parked socket never touches
+  // it. The static -> live swap on these flags stays with the collab-sync
+  // effect below (it captures the height reservation right before the swap).
+  useEffect(() => {
+    if (!activeSession) return;
+    const s = activeSession;
+    const apply = () => {
+      const flags = flagsFromSession(
+        s,
+        localFirst,
+        isRemoteConfirmedRef.current,
+      );
+      isRemoteConfirmedRef.current = flags.isRemoteConfirmed;
+      setIsLocalSynced(flags.isLocalSynced);
+      setYdocNonEmpty(flags.ydocNonEmpty);
+      setIsRemoteSynced(flags.isRemoteSynced);
+      setIsRemoteConfirmed(flags.isRemoteConfirmed);
+      setYjsConnectionStatus(flags.yjsConnectionStatus);
+    };
+    const unsubscribe = s.subscribe(apply);
+    apply();
+    return unsubscribe;
+  }, [activeSession]);
 
   // #639 — body-paint latency latch. Arm on mount / page switch (this also
   // starts the survivorship-bias timeout), then report `page_open_body_ms` from
@@ -1009,7 +827,8 @@ export default function PageEditor({
   // matters — it re-appends the trailing paragraph). It does NOT revive
   // @tiptap/extension-unique-id, whose appendTransaction is `docChanged`-gated —
   // that extension is instead handled at the source, by opening the guard
-  // synchronously inside the provider's "synced" emit (see onSyncedHandler).
+  // synchronously inside the provider's "synced" emit (the session listener
+  // above, notified from the cache's onSyncedHandler).
   useEffect(() => {
     if (!localFirst || !isRemoteConfirmed || !editor || editor.isDestroyed) {
       return;
@@ -1185,7 +1004,7 @@ export default function PageEditor({
                     !editorIsEditable &&
                     !bodyWriteBlocked &&
                     (editable || canComment) &&
-                    providersRef.current && (
+                    activeSession && (
                       <ReadonlyBubbleMenu editor={editor} />
                     )}
                   {showCommentPopup && (
