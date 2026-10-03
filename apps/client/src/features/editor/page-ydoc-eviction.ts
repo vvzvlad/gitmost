@@ -99,7 +99,7 @@ export function pageYdocRoomName(pageId: string): string {
 // Bounded (#564 F9): an unbounded map would grow for every page visited.
 const MAX_SESSION_ALIASES = 500;
 const ydocNameByQueryKey = new Map<string, string>();
-// Live persistences, by DB name. Cleared on unmount.
+// Live persistences, by DB name. Cleared when the page's session is destroyed.
 const livePersistences = new Map<string, IndexeddbPersistence>();
 
 const UUID_RE =
@@ -130,9 +130,27 @@ export function registerPageYdoc(opts: {
   }
 }
 
-/** Drop the live-persistence reference (the component is unmounting). */
+/** Drop the live-persistence reference (the page's session is destroyed). */
 export function unregisterPageYdoc(dbName: string): void {
   livePersistences.delete(dbName);
+}
+
+// #709 — the page-session cache (page-session-cache.ts) owns every page's
+// collab session (socket, provider, local persistence); eviction and purge
+// must destroy those BEFORE deleting the databases. This module cannot import
+// the cache — the cache imports `queryClient` from main.tsx, which imports this
+// module — so the cache registers its destroy functions here when it loads.
+// Until it has loaded no session exists, so there is nothing to destroy.
+interface PageSessionDestroyHooks {
+  destroyPageSession: (dbName: string) => void;
+  destroyAllPageSessions: () => void;
+}
+let pageSessionDestroyHooks: PageSessionDestroyHooks | null = null;
+
+export function registerPageSessionDestroyHooks(
+  hooks: PageSessionDestroyHooks,
+): void {
+  pageSessionDestroyHooks = hooks;
 }
 
 /** Test-only: forget every registration (including the install latch + queue). */
@@ -243,6 +261,10 @@ export async function evictPageYdoc(queryKeyId: string): Promise<boolean> {
   const persistence = livePersistences.get(dbName);
   livePersistences.delete(dbName);
   ydocNameByQueryKey.delete(queryKeyId);
+  // #709 — destroy the page's collab session before its database is deleted.
+  // An ACTIVE session goes too: page.tsx takes the editor down on the 403/404,
+  // and the editor's later release of the dead session is a no-op.
+  pageSessionDestroyHooks?.destroyPageSession(dbName);
 
   if (persistence) {
     try {
@@ -522,6 +544,9 @@ export function installYdocPurgeBroadcastListener(): void {
  * Never throws; a purge that could not even start is metered as a failure.
  */
 export async function purgePageYdocDatabases(): Promise<void> {
+  // #709 — destroy this tab's collab sessions before any database is deleted
+  // (at every call site the editor is either not mounted or a reload follows).
+  pageSessionDestroyHooks?.destroyAllPageSessions();
   if (typeof indexedDB === "undefined") return;
 
   try {
