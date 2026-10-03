@@ -35,23 +35,28 @@
         }
 
         &:hover .actions {
-            opacity: 1;
-            pointer-events: auto;
+            display: inline-flex;
         }
     }
 
+    /* Removed from layout at rest (not just made transparent) so an idle row
+       does not reserve the icons' width and its title can use the full row. */
     .actions {
-        display: inline-flex;
+        display: none;
         flex-shrink: 0;
         align-items: center;
         margin-left: 4px;
-        opacity: 0;
-        pointer-events: none;
     }
 
     &:focus-within .actions {
-        opacity: 1;
-        pointer-events: auto;
+        display: inline-flex;
+    }
+
+    /* Keep the "⋮" menu's target laid out while its dropdown is open: the
+       pointer and focus leave the row for the portaled dropdown, and a
+       display:none anchor would make the dropdown lose its position. */
+    .actions:has([data-expanded]) {
+        display: inline-flex;
     }
 }
 
@@ -135,8 +140,7 @@
 }
 
 .node[data-selected="true"] .actions {
-    opacity: 1;
-    pointer-events: auto;
+    display: inline-flex;
 }
 
 .node[data-receiving-drop="make-child"] {
