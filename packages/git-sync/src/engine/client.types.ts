@@ -24,6 +24,12 @@ export interface GitSyncPageNodeLite {
   title?: string;
   parentPageId?: string | null;
   hasChildren?: boolean;
+  /**
+   * The page row's `updated_at` as an ISO string. Part of the pull's export key
+   * (with the node's relPath/title/slugId/parent): a live page whose key is
+   * unchanged since its last successful export is not re-read/re-converted.
+   */
+  updatedAt: string;
   /** `listSpaceTree` nodes carry extra fields (position, icon, …). */
   [key: string]: unknown;
 }

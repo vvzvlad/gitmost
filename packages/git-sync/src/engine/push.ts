@@ -1414,6 +1414,24 @@ export const LOCAL_AUTHOR_EMAIL = "local@local";
 export const LOCAL_SOURCE_TRAILER = "Docmost-Sync-Source: local";
 
 /**
+ * Stage EVERYTHING in the working tree (modified, deleted and untracked files)
+ * and commit it on the current branch as `local: working-tree changes` with the
+ * `local` identity + provenance trailer (SPEC §7.3). Returns `false` when there
+ * was nothing to commit. Shared by `runPush` step 3 and the cycle preflight's
+ * dirty-`main` recovery so both record pending `main` content identically.
+ */
+export async function commitLocalWorkingTree(
+  git: Pick<VaultGit, "stageAll" | "commit">,
+): Promise<boolean> {
+  await git.stageAll();
+  return git.commit("local: working-tree changes", {
+    authorName: LOCAL_AUTHOR_NAME,
+    authorEmail: LOCAL_AUTHOR_EMAIL,
+    trailers: [LOCAL_SOURCE_TRAILER],
+  });
+}
+
+/**
  * Injectable deps for `runPush` (mirrors `pull.ts`'s wiring; everything that
  * touches the outside world is here so tests pass fakes). `makeClient` is a
  * FACTORY, not a client — a dry-run must build NO client at all (it is never
@@ -1540,12 +1558,7 @@ export async function runPush(
   //    only way to diff `base..main`, acceptable §6.1 behavior) — so make that
   //    LOCAL git mutation VISIBLE, never silent: a created commit is local-only
   //    and nothing is sent to Docmost.
-  await git.stageAll();
-  const committedWorkingTree = await git.commit("local: working-tree changes", {
-    authorName: LOCAL_AUTHOR_NAME,
-    authorEmail: LOCAL_AUTHOR_EMAIL,
-    trailers: [LOCAL_SOURCE_TRAILER],
-  });
+  const committedWorkingTree = await commitLocalWorkingTree(git);
   if (committedWorkingTree) {
     const sha = await git.revParse(DEFAULT_BRANCH);
     log(

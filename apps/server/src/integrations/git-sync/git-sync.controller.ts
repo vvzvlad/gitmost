@@ -24,6 +24,7 @@ import { IsUUID } from 'class-validator';
 import {
   GitSyncOrchestrator,
   GitSyncRunStatus,
+  GitSyncSpaceStatus,
 } from './services/git-sync.orchestrator';
 
 /** Body for the manual one-shot trigger. */
@@ -40,7 +41,8 @@ class TriggerGitSyncDto {
  * (workspace Manage/Settings, mirroring WorkspaceController) so only workspace
  * admins can force a cycle. Mounted under the global `/api` prefix:
  *   - POST /api/git-sync/trigger { spaceId } — run one cycle now (await result),
- *   - GET  /api/git-sync/status — report whether sync is enabled + config.
+ *   - GET  /api/git-sync/status — report whether sync is enabled + config, and
+ *     the per-space health of this workspace's spaces.
  */
 @UseGuards(JwtAuthGuard)
 @Controller('git-sync')
@@ -94,6 +96,7 @@ export class GitSyncController {
     pollIntervalMs: number;
     debounceMs: number;
     serviceUserConfigured: boolean;
+    spaces: GitSyncSpaceStatus[];
   }> {
     this.assertAdmin(user, workspace);
     return {
@@ -104,6 +107,8 @@ export class GitSyncController {
       serviceUserConfigured: Boolean(
         this.environmentService.getGitSyncServiceUserId(),
       ),
+      // Scoped to the caller's workspace (from the request context).
+      spaces: this.orchestrator.getSpaceStatuses(workspace.id),
     };
   }
 }

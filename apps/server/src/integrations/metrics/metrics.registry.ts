@@ -33,6 +33,8 @@ import {
   METRIC_API_KEY_AUTH_DENIED_TOTAL,
   METRIC_AI_CHAT_BIND_SKIPPED_TOTAL,
   METRIC_AI_EXTERNAL_MCP_CONNECT_FAILURES_TOTAL,
+  METRIC_GIT_SYNC_CYCLES_TOTAL,
+  METRIC_GIT_SYNC_FAILING_SPACES,
   sizeBucket,
 } from './metrics.constants';
 
@@ -85,6 +87,9 @@ let apiKeyAuthDeniedCounter: Counter<'reason'> | null = null;
 let aiChatBindSkippedCounter: Counter<'reason'> | null = null;
 // #686 — external-MCP connect failures, by bounded ownership level (admin|personal).
 let externalMcpConnectFailuresCounter: Counter<'level'> | null = null;
+// git-sync — cycles by bounded result (ok|failed) + currently failing spaces.
+let gitSyncCyclesCounter: Counter<'result'> | null = null;
+let gitSyncFailingSpacesGauge: Gauge | null = null;
 
 // #402 — read-on-scrape source for collab_docs_open. The gauge is NEVER
 // inc/dec'd (that drifts under crashes/handoffs); instead its collect() callback
@@ -256,6 +261,19 @@ function init(): void {
     labelNames: ['level'],
     registers: [registry],
   });
+
+  gitSyncCyclesCounter = new Counter({
+    name: METRIC_GIT_SYNC_CYCLES_TOTAL,
+    help: 'Total git-sync reconcile cycles, by result (ok|failed)',
+    labelNames: ['result'],
+    registers: [registry],
+  });
+
+  gitSyncFailingSpacesGauge = new Gauge({
+    name: METRIC_GIT_SYNC_FAILING_SPACES,
+    help: 'Number of git-sync spaces whose last reconcile cycle failed',
+    registers: [registry],
+  });
 }
 
 // Runs once when this module is first imported. Safe to call again (idempotent).
@@ -377,6 +395,21 @@ export function incExternalMcpConnectFailure(
   level: ExternalMcpFailureLevel,
 ): void {
   externalMcpConnectFailuresCounter?.inc({ level });
+}
+
+/**
+ * git-sync — record ONE reconcile cycle by its outcome. `result` is a fixed
+ * 2-value set (never a spaceId or an error message) so cardinality stays bounded.
+ */
+export type GitSyncCycleResult = 'ok' | 'failed';
+
+export function incGitSyncCycle(result: GitSyncCycleResult): void {
+  gitSyncCyclesCounter?.inc({ result });
+}
+
+/** git-sync — set the number of spaces whose last cycle failed. */
+export function setGitSyncFailingSpaces(count: number): void {
+  gitSyncFailingSpacesGauge?.set(count);
 }
 
 /**

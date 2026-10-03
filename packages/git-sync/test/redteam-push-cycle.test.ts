@@ -347,6 +347,7 @@ function fakeVault(overrides: Record<string, any> = {}) {
     clearStaleGitLocks: rec('clearStaleGitLocks'),
     ensureMainBranch: rec('ensureMainBranch'),
     isMergeInProgress: vi.fn(async () => false),
+    isWorkingTreeDirty: vi.fn(async () => false),
     ensureBranch: rec('ensureBranch'),
     checkout: rec('checkout'),
     listTrackedFiles: vi.fn(async () => [] as string[]),

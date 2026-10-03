@@ -155,6 +155,7 @@ describe('GitmostDataSourceService', () => {
           title: 'Root',
           parentPageId: null,
           position: 'a0',
+          updatedAt: new Date('2026-10-01T10:00:00.000Z'),
         },
         {
           id: 'p2',
@@ -162,6 +163,7 @@ describe('GitmostDataSourceService', () => {
           title: 'Child',
           parentPageId: 'p1',
           position: 'a1',
+          updatedAt: new Date('2026-10-02T11:00:00.000Z'),
         },
       ]);
 
@@ -181,6 +183,8 @@ describe('GitmostDataSourceService', () => {
           parentPageId: null,
           hasChildren: true, // p2's parent is p1
           position: 'a0',
+          // ISO updatedAt from the same query feeds the pull's export key.
+          updatedAt: '2026-10-01T10:00:00.000Z',
         },
         {
           id: 'p2',
@@ -189,6 +193,7 @@ describe('GitmostDataSourceService', () => {
           parentPageId: 'p1',
           hasChildren: false,
           position: 'a1',
+          updatedAt: '2026-10-02T11:00:00.000Z',
         },
       ]);
     });
@@ -528,13 +533,17 @@ describe('GitmostDataSourceService', () => {
   });
 
   describe('createPage', () => {
+    // findById that knows a LIVE parent row in space-1 (PARENT_UUID) and returns
+    // the freshly created page for any other id (the post-create re-read).
+    const findByIdWithLiveParent = async (id: string) =>
+      id === PARENT_UUID
+        ? { id: PARENT_UUID, spaceId: 'space-1', deletedAt: null }
+        : { id: 'new-id', updatedAt: new Date('2026-06-20T12:00:00.000Z') };
+
     it('creates the shell with git-sync provenance, writes body, returns id', async () => {
       const { service, mocks } = build();
       mocks.pageService.create.mockResolvedValue({ id: 'new-id' });
-      mocks.pageRepo.findById.mockResolvedValue({
-        id: 'new-id',
-        updatedAt: new Date('2026-06-20T12:00:00.000Z'),
-      });
+      mocks.pageRepo.findById.mockImplementation(findByIdWithLiveParent);
 
       const res = await service
         .bind(CTX)
@@ -613,16 +622,13 @@ describe('GitmostDataSourceService', () => {
     it('leaves a VALID uuid parentPageId unchanged (only a malformed parent is coerced)', async () => {
       const { service, mocks } = build();
       mocks.pageService.create.mockResolvedValue({ id: 'new-id' });
-      mocks.pageRepo.findById.mockResolvedValue({
-        id: 'new-id',
-        updatedAt: new Date('2026-06-20T12:00:00.000Z'),
-      });
+      mocks.pageRepo.findById.mockImplementation(findByIdWithLiveParent);
 
       await service
         .bind(CTX)
         .createPage('Title', 'body md', 'space-1', PARENT_UUID);
 
-      // A real uuid passes the isValidUUID check and is forwarded untouched.
+      // A real uuid of a live parent in the space is forwarded untouched.
       expect(mocks.pageService.create).toHaveBeenCalledWith(
         'svc-user',
         'ws-1',
@@ -630,6 +636,53 @@ describe('GitmostDataSourceService', () => {
         { actor: 'git-sync', aiChatId: null },
       );
     });
+
+    // Well-formed variant of F1: a VALID uuid parent that is not a live page of
+    // the target space made pageService.create throw NotFound("Parent page not
+    // found") on every cycle — a per-page push failure that never cleared. The
+    // fix coerces it to root (with a WARN). NON-VACUITY: against the unfixed
+    // createPage, create would be called with parentPageId: PARENT_UUID.
+    it.each([
+      ['does not exist', undefined],
+      [
+        'is trashed',
+        { id: PARENT_UUID, spaceId: 'space-1', deletedAt: new Date() },
+      ],
+      [
+        'lives in another space',
+        { id: PARENT_UUID, spaceId: 'space-2', deletedAt: null },
+      ],
+    ])(
+      'coerces a valid-uuid parentPageId that %s to root, with a WARN',
+      async (_case, parentRow) => {
+        const { service, mocks } = build();
+        const warn = jest
+          .spyOn((service as any).logger, 'warn')
+          .mockImplementation(() => undefined);
+        mocks.pageService.create.mockResolvedValue({ id: 'new-id' });
+        mocks.pageRepo.findById.mockImplementation(async (id: string) =>
+          id === PARENT_UUID
+            ? parentRow
+            : { id: 'new-id', updatedAt: new Date('2026-06-20T12:00:00.000Z') },
+        );
+
+        const res = await service
+          .bind(CTX_SPACE)
+          .createPage('Title', 'body md', 'space-1', PARENT_UUID);
+
+        expect(mocks.pageRepo.findById).toHaveBeenCalledWith(PARENT_UUID);
+        expect(mocks.pageService.create).toHaveBeenCalledWith(
+          'svc-user',
+          'ws-1',
+          { spaceId: 'space-1', title: 'Title', parentPageId: undefined },
+          { actor: 'git-sync', aiChatId: null },
+        );
+        expect(res.data.id).toBe('new-id');
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(`parentPageId '${PARENT_UUID}'`),
+        );
+      },
+    );
   });
 
   describe('deletePage', () => {
@@ -798,6 +851,64 @@ describe('GitmostDataSourceService', () => {
       // Coerced to root: the malformed parent never reaches the uuid predicate.
       expect(dto.parentPageId).toBeNull();
       expect(typeof dto.position).toBe('string');
+    });
+
+    // Well-formed variant (same hole as createPage): pageService.movePage throws
+    // NotFound for a NEW parent that is missing / trashed / in another space, so
+    // the move failed every cycle forever. Coerced to root with a WARN instead.
+    it.each([
+      ['does not exist', undefined],
+      [
+        'is trashed',
+        { id: PARENT_UUID, spaceId: 'space-1', deletedAt: new Date() },
+      ],
+      [
+        'lives in another space',
+        { id: PARENT_UUID, spaceId: 'space-2', deletedAt: null },
+      ],
+    ])(
+      'coerces a valid-uuid destination parent that %s to root, with a WARN',
+      async (_case, parentRow) => {
+        const { service, mocks } = build([]);
+        const warn = jest
+          .spyOn((service as any).logger, 'warn')
+          .mockImplementation(() => undefined);
+        mocks.pageRepo.findById.mockImplementation(async (id: string) =>
+          id === PARENT_UUID
+            ? parentRow
+            : {
+                id: 'p1',
+                spaceId: 'space-1',
+                parentPageId: '22222222-2222-4222-8222-222222222222',
+              },
+        );
+
+        await service.bind(CTX_SPACE).movePage('p1', PARENT_UUID);
+
+        expect(mocks.pageService.movePage).toHaveBeenCalledTimes(1);
+        const [dto] = mocks.pageService.movePage.mock.calls[0];
+        expect(dto.parentPageId).toBeNull();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(`parentPageId '${PARENT_UUID}'`),
+        );
+      },
+    );
+
+    it('does not validate an UNCHANGED parent (movePage does not either; echo guard skips)', async () => {
+      const { service, mocks } = build([]);
+      // The page's current parent is PARENT_UUID and that row is gone: an echo
+      // move to the same parent must stay a no-op, not be re-rooted.
+      mocks.pageRepo.findById.mockImplementation(async (id: string) =>
+        id === 'p1'
+          ? { id: 'p1', spaceId: 'space-1', parentPageId: PARENT_UUID }
+          : undefined,
+      );
+
+      const res = await service.bind(CTX_SPACE).movePage('p1', PARENT_UUID);
+
+      expect(res).toEqual({ id: 'p1', skipped: 'no-op-move-echo' });
+      expect(mocks.pageService.movePage).not.toHaveBeenCalled();
+      expect(mocks.pageRepo.findById).not.toHaveBeenCalledWith(PARENT_UUID);
     });
   });
 

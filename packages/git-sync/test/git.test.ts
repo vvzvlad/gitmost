@@ -160,16 +160,17 @@ describe('VaultGit (integration; temp repo)', () => {
       execFileAsync('git', ['add', '-A'], { cwd: vault }),
     ).rejects.toThrow(/index\.lock/);
 
-    // The preflight clears it (stale by mtime, no live git process holds it).
-    await git.clearStaleGitLocks();
+    // The preflight clears it (stale by mtime, no live git process holds it)
+    // and reports the removal (the cycle treats it as a recovery).
+    await expect(git.clearStaleGitLocks()).resolves.toBe(1);
 
     // The lock is gone and git ops succeed again.
     await expect(
       execFileAsync('git', ['add', '-A'], { cwd: vault }),
     ).resolves.toBeDefined();
 
-    // Idempotent / safe when no lock exists.
-    await expect(git.clearStaleGitLocks()).resolves.toBeUndefined();
+    // Idempotent / safe when no lock exists: nothing removed.
+    await expect(git.clearStaleGitLocks()).resolves.toBe(0);
   });
 
   it('clearStaleGitLocks PRESERVES a fresh index.lock (a concurrent replica may hold it) (bug D3-N3 / F1)', async () => {
@@ -209,13 +210,13 @@ describe('VaultGit (integration; temp repo)', () => {
       execFileAsync('git', ['rev-parse', '--verify', 'main'], { cwd: vault }),
     ).rejects.toThrow();
 
-    // The preflight re-creates main (from docmost).
-    await git.ensureMainBranch();
+    // The preflight re-creates main (from docmost) and reports the recovery.
+    await expect(git.ensureMainBranch()).resolves.toBe(true);
     await expect(
       execFileAsync('git', ['rev-parse', '--verify', 'main'], { cwd: vault }),
     ).resolves.toBeDefined();
-    // Idempotent when main already exists.
-    await expect(git.ensureMainBranch()).resolves.toBeUndefined();
+    // Idempotent when main already exists (no recovery performed).
+    await expect(git.ensureMainBranch()).resolves.toBe(false);
   });
 
   it('ensureMainBranch restores a deleted main from HEAD when docmost is gone too (bug D3-N1)', async () => {
@@ -261,7 +262,7 @@ describe('VaultGit (integration; temp repo)', () => {
     const git = new VaultGit(vault);
 
     // Nothing to do (ensureRepo's fresh-init path owns this case); must not throw.
-    await expect(git.ensureMainBranch()).resolves.toBeUndefined();
+    await expect(git.ensureMainBranch()).resolves.toBe(false);
     expect(await git.branchExists('main')).toBe(false);
   });
 

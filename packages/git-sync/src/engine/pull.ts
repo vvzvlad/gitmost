@@ -142,8 +142,11 @@ export async function readExisting(
  * `existing` tracked files (from `readExisting`).
  */
 export interface PullActionsInput {
-  /** Live page nodes for the space (from `listSpaceTree`). */
-  pages: PageNode[];
+  /**
+   * Live page nodes for the space (from `listSpaceTree`). `updatedAt` feeds the
+   * export key; a node without it is never treated as unchanged.
+   */
+  pages: (PageNode & { updatedAt?: string })[];
   /** Whether the live tree fetch was COMPLETE (SPEC §8 suppression). */
   treeComplete: boolean;
   /** Parsed tracked files: `{ pageId, relPath }` (from `readExisting`). */
@@ -156,6 +159,38 @@ export interface PullActionsInput {
    * do not model ghosts).
    */
   deletableIds?: string[];
+  /**
+   * pageId -> export key recorded after that page's last SUCCESSFUL export
+   * (owned by the caller, see `RunCycleDeps.exportKeys`). A live page whose
+   * current key equals its recorded key AND whose file is tracked at its relPath
+   * is left out of `toWrite` (no `getPageJson`, no conversion). Omitted -> every
+   * live page is written (a full pass).
+   */
+  exportKeys?: ReadonlyMap<string, string>;
+}
+
+/**
+ * The export key of a live page: everything that decides the exported file —
+ * the body version (`updatedAt`), its location (`relPath`, which already folds
+ * in the ancestor names, the folder-note shape and sibling disambiguation) and
+ * the node's own tree fields. The file itself carries only `gitmost_id` + the
+ * body (`serializePageFile`). `null` when the node has no `updatedAt`: such a
+ * page can never be proven unchanged, so it is always exported.
+ */
+export function exportKeyOf(
+  node: PageNode & { updatedAt?: string },
+  relPath: string,
+): string | null {
+  if (typeof node.updatedAt !== "string" || node.updatedAt.length === 0) {
+    return null;
+  }
+  return JSON.stringify([
+    node.updatedAt,
+    relPath,
+    node.title ?? null,
+    node.slugId ?? null,
+    node.parentPageId ?? null,
+  ]);
 }
 
 /**
@@ -165,8 +200,16 @@ export interface PullActionsInput {
  * caller should actually remove (empty when `deletionDecision.apply` is false).
  */
 export interface PullActions {
-  /** Pages to (re)write at their relPath (add + update + move target). */
+  /**
+   * Pages to (re)write at their relPath (add + update + move target). Excludes
+   * live pages proven unchanged by `PullActionsInput.exportKeys`.
+   */
   toWrite: { pageId: string; relPath: string }[];
+  /**
+   * The CURRENT export key of every live page that has one (see `exportKeyOf`).
+   * The caller records these after the cycle commits the exports.
+   */
+  liveExportKeys: Map<string, string>;
   /** Moves: write new path, then remove old path (only on a successful write). */
   moved: MovedEntry[];
   /**
@@ -199,18 +242,19 @@ export interface PullActions {
  * thin `applyPullActions`.
  */
 export function computePullActions(input: PullActionsInput): PullActions {
-  const { pages, treeComplete, existing, deletableIds } = input;
+  const { pages, treeComplete, existing, deletableIds, exportKeys } = input;
   const layout = buildVaultLayout(pages);
 
   const live: LiveEntry[] = [];
+  const liveExportKeys = new Map<string, string>();
   for (const p of pages) {
     if (!p || !p.id) continue;
     const entry = layout.get(p.id);
     if (!entry) continue;
-    live.push({
-      pageId: p.id,
-      relPath: segmentsToRelPath(entry.segments, entry.stem),
-    });
+    const relPath = segmentsToRelPath(entry.segments, entry.stem);
+    live.push({ pageId: p.id, relPath });
+    const key = exportKeyOf(p, relPath);
+    if (key !== null) liveExportKeys.set(p.id, key);
   }
 
   // Plan reconciliation (pure). `plan.toDelete` is ABSENCE-based only;
@@ -233,8 +277,24 @@ export function computePullActions(input: PullActionsInput): PullActions {
     deleteCount: plan.toDelete.length,
   });
 
+  // Change detection: skip a live page whose export key is unchanged since its
+  // last successful export AND whose file is still tracked at that exact path
+  // (a deleted/moved/never-written file is re-exported even with a matching key).
+  const trackedAt = new Set(existing.map((e) => `${e.pageId}\u0000${e.relPath}`));
+  const toWrite = exportKeys
+    ? plan.toWrite.filter((w) => {
+        const key = liveExportKeys.get(w.pageId);
+        const unchanged =
+          key !== undefined &&
+          exportKeys.get(w.pageId) === key &&
+          trackedAt.has(`${w.pageId}\u0000${w.relPath}`);
+        return !unchanged;
+      })
+    : plan.toWrite;
+
   return {
-    toWrite: plan.toWrite,
+    toWrite,
+    liveExportKeys,
     moved: plan.moved,
     // Fold the suppression in: a suppressed cycle deletes nothing.
     toDelete: deletionDecision.apply ? plan.toDelete : [],
@@ -281,6 +341,8 @@ export interface ApplyResult {
   movedApplied: number;
   deleted: number;
   failed: number;
+  /** pageIds whose fetch/convert/write FAILED this pull (never recorded as exported). */
+  failedPageIds: string[];
   committed: boolean;
   merge: { ok: boolean; conflict: boolean; output: string };
   /**
@@ -552,6 +614,7 @@ export async function applyPullActions(
     movedApplied,
     deleted,
     failed,
+    failedPageIds: [...failedPageIds],
     committed,
     merge: mergeResult,
     conflictedPaths,

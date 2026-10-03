@@ -2,7 +2,12 @@ import { VaultGit, DEFAULT_BRANCH } from "./git.js";
 import { GitSyncClient } from "./client.types.js";
 import { Settings } from "./settings.js";
 import { readExisting, computePullActions, applyPullActions } from "./pull.js";
-import { runPush } from "./push.js";
+import {
+  runPush,
+  commitLocalWorkingTree,
+  DOCMOST_BRANCH,
+  type PushFailure,
+} from "./push.js";
 import { assertVaultPathSafe, type PathGuardIo } from "./path-guard.js";
 
 /**
@@ -33,6 +38,20 @@ export interface RunCycleDeps {
   fs: CycleFs;
   log: (line: string) => void;
   /**
+   * Warning channel for events an operator must notice (the preflight's
+   * dirty-working-tree recovery). Falls back to `log` when not supplied.
+   */
+  warn?: (line: string) => void;
+  /**
+   * The caller-owned export-key map of THIS space (pageId -> key of the page's
+   * last successful export, see `exportKeyOf`). The pull skips live pages whose
+   * key is unchanged. The cycle REBUILDS it only after the whole cycle succeeded
+   * (pull commit + merge + push), so it holds at most one entry per live page;
+   * it CLEARS it when the cycle throws or the preflight had to recover the vault,
+   * so the next cycle is a full pass. Omitted -> every cycle is a full pass.
+   */
+  exportKeys?: Map<string, string>;
+  /**
    * Optional cooperative-abort signal. The caller (orchestrator) wires this to
    * the per-space lock: if a heartbeat refresh cannot CONFIRM the lock is still
    * held (CAS-miss / Redis error), the signal is aborted and the cycle bails at
@@ -49,7 +68,8 @@ export interface RunCycleResult {
   /** Set when the cycle short-circuited without running pull/push. */
   skipped?: "merge-in-progress";
   pull?: { written: number; deleted: number; conflict: boolean };
-  push?: { mode: string; failures: number };
+  /** `firstFailure` is the first per-page push failure (absent when none). */
+  push?: { mode: string; failures: number; firstFailure?: PushFailure };
   /**
    * Forwarded from the push result: `true` when the push REFUSED to fast-forward
    * a divergent `docmost` mirror (the §5 invariant — `docmost` mirrors what
@@ -80,9 +100,22 @@ export interface RunCycleResult {
  * Lock POLICY lives in the caller; this owns only the mechanics. Deletes are
  * soft (Trash, reversible) and always logged, so there is no per-cycle
  * delete-cap — engine convergence is the guard against phantom deletions.
+ *
+ * Any throw clears `deps.exportKeys` (the next cycle is a full pass) and is
+ * re-thrown unchanged.
  */
 export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
-  const { spaceId, client, vault, settings, fs, log, signal } = deps;
+  try {
+    return await runCycleOnce(deps);
+  } catch (err) {
+    deps.exportKeys?.clear();
+    throw err;
+  }
+}
+
+async function runCycleOnce(deps: RunCycleDeps): Promise<RunCycleResult> {
+  const { spaceId, client, vault, settings, fs, log, signal, exportKeys } = deps;
+  const warn = deps.warn ?? log;
   const vaultRoot = settings.vaultPath;
   const abs = (relPath: string) => `${vaultRoot}/${relPath}`;
 
@@ -111,10 +144,14 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
     rm: (p: string): Promise<void> => fs.rm(p),
   };
 
+  // Set by every preflight self-heal below; any recovery invalidates the
+  // export keys (the vault may no longer hold what they describe).
+  let recovered = false;
+
   // 1. The engine state store is git: make sure the repo + branches exist
   //    before any tracked-file listing or diff.
   await vault.assertGitAvailable();
-  await vault.ensureRepo();
+  if (await vault.ensureRepo()) recovered = true;
 
   // 1b. CLEAR stale git lock files left by an interrupted git op (bug D3-N3). A
   //     hard crash / OOM-kill / abrupt container stop mid `git add`/`commit`/
@@ -124,13 +161,13 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
   //     threshold are removed (a fresh lock from a concurrent replica in the
   //     TTL-lapse window is preserved), before the merge check + any checkout/diff
   //     below.
-  await vault.clearStaleGitLocks();
+  if ((await vault.clearStaleGitLocks()) > 0) recovered = true;
 
   // 1c. RESTORE a missing `main` branch (bug D3-N1). Ref-store damage can leave an
   //     existing repo without `main`; the ensureBranch("docmost","main") + checkout
   //     below would then throw every cycle ("pathspec 'main' did not match"),
   //     wedging the space forever. Re-create it from `docmost`/HEAD before use.
-  await vault.ensureMainBranch();
+  if (await vault.ensureMainBranch()) recovered = true;
 
   // 2. RECOVER from a vault left mid-merge by a PRIOR cycle (SPEC §9 wedge fix).
   //    A leftover merge used to WEDGE THE WHOLE SPACE: this check returned
@@ -144,6 +181,7 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
   //    than re-wedging. A stray unmerged index that `merge --abort` can't clear
   //    (no MERGE_HEAD) is force-cleared with a hard reset to HEAD.
   if (await vault.isMergeInProgress()) {
+    recovered = true;
     log(
       `vault was left mid-merge by a prior cycle — aborting the stale merge and ` +
         `continuing so the space is not wedged (SPEC §9 recovery).`,
@@ -157,6 +195,41 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
       await vault.resetHardToHead();
     }
   }
+
+  // 2b. RECOVER a DIRTY working tree. The pull writes files on `docmost` and the
+  //     push writes pageId write-backs on `main` BEFORE committing them, so a
+  //     process killed in between (SIGKILL, redeploy) leaves uncommitted changes.
+  //     Left alone, every later `checkout docmost` fails ("local changes would be
+  //     overwritten") and every external push is rejected by
+  //     receive.denyCurrentBranch=updateInstead — the space is wedged forever.
+  //       - on `main`: COMMIT it (it can hold user or engine content that exists
+  //         nowhere else), exactly like push step 3 does;
+  //       - on `docmost`: DISCARD it — that branch is regenerated from the DB by
+  //         the pull below, so nothing is lost.
+  if (await vault.isWorkingTreeDirty()) {
+    const branch = await vault.currentBranch();
+    if (branch === DEFAULT_BRANCH) {
+      await commitLocalWorkingTree(vault);
+      recovered = true;
+      warn(
+        `space ${spaceId}: '${DEFAULT_BRANCH}' had uncommitted changes left by ` +
+          `an interrupted cycle — committed them as 'local: working-tree ` +
+          `changes' (nothing discarded).`,
+      );
+    } else if (branch === DOCMOST_BRANCH) {
+      await vault.discardWorkingTreeChanges();
+      recovered = true;
+      warn(
+        `space ${spaceId}: '${DOCMOST_BRANCH}' had uncommitted changes left by ` +
+          `an interrupted cycle — discarded them (reset --hard + clean); the ` +
+          `pull regenerates '${DOCMOST_BRANCH}' from Docmost.`,
+      );
+    }
+  }
+
+  // Any self-heal above means the vault may not hold what the recorded export
+  // keys describe: forget them so this cycle re-exports every live page.
+  if (recovered) exportKeys?.clear();
 
   try {
     // 3. Pull writes happen on `docmost`; be on it BEFORE applying (see docstring).
@@ -202,6 +275,7 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
       treeComplete: tree.complete,
       existing,
       deletableIds,
+      exportKeys,
     });
 
     // Bail before the first destructive write phase if the lock was lost.
@@ -236,6 +310,18 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
 
     const pushResult = await runPush(pushDeps, { dryRun: false });
 
+    // Record the export keys only NOW that the pull's `docmost` commit, the
+    // merge and the push all completed. Rebuilt from the live tree, so a page
+    // that left the tree loses its key; a page whose export failed gets none
+    // (it is re-exported next cycle).
+    if (exportKeys) {
+      const failed = new Set(pullResult.failedPageIds);
+      exportKeys.clear();
+      for (const [pageId, key] of pullActions.liveExportKeys) {
+        if (!failed.has(pageId)) exportKeys.set(pageId, key);
+      }
+    }
+
     return {
       ran: true,
       pull: {
@@ -246,6 +332,9 @@ export async function runCycle(deps: RunCycleDeps): Promise<RunCycleResult> {
       push: {
         mode: pushResult.mode,
         failures: pushResult.failures?.length ?? 0,
+        ...(pushResult.failures?.length
+          ? { firstFailure: pushResult.failures[0] }
+          : {}),
       },
       // Forward a divergent-`docmost` escalation so the caller can act on the §5
       // invariant breach without scraping logs (red-team #15).

@@ -14,7 +14,7 @@ type AnyMock = jest.Mock;
 
 interface Built {
   controller: GitSyncController;
-  orchestrator: { runOnce: AnyMock };
+  orchestrator: { runOnce: AnyMock; getSpaceStatuses: AnyMock };
   env: Record<string, AnyMock>;
   workspaceAbility: { createForUser: AnyMock };
   ability: { cannot: AnyMock };
@@ -28,6 +28,18 @@ function build(opts: { cannot?: boolean; spaceFound?: boolean } = {}): Built {
 
   const orchestrator = {
     runOnce: jest.fn(async () => ({ spaceId: 'space-1', ran: true })),
+    getSpaceStatuses: jest.fn((_workspaceId: string) => [
+      {
+        spaceId: 'space-1',
+        lastRunAt: '2026-10-03T00:00:00.000Z',
+        lastResult: 'failed',
+        lastError: 'boom',
+        lastSuccessAt: null,
+        consecutiveFailures: 2,
+        pushFailures: 0,
+        firstPushFailure: null,
+      },
+    ]),
   };
   const env: Record<string, AnyMock> = {
     isGitSyncEnabled: jest.fn(() => true),
@@ -121,18 +133,40 @@ describe('GitSyncController', () => {
       expect(env.isGitSyncEnabled).not.toHaveBeenCalled();
     });
 
-    it('admin: returns the env-derived status object', async () => {
-      const { controller } = build({ cannot: false });
+    it('admin: returns the env-derived status object + the per-space health of the context workspace', async () => {
+      const { controller, orchestrator } = build({ cannot: false });
 
       const res = await controller.status(USER, WORKSPACE);
 
+      // Per-space health is scoped to the workspace from the request context.
+      expect(orchestrator.getSpaceStatuses).toHaveBeenCalledWith('ctx-ws');
       expect(res).toEqual({
         enabled: true,
         dataDir: '/vaults',
         pollIntervalMs: 15000,
         debounceMs: 2000,
         serviceUserConfigured: true,
+        spaces: [
+          {
+            spaceId: 'space-1',
+            lastRunAt: '2026-10-03T00:00:00.000Z',
+            lastResult: 'failed',
+            lastError: 'boom',
+            lastSuccessAt: null,
+            consecutiveFailures: 2,
+            pushFailures: 0,
+            firstPushFailure: null,
+          },
+        ],
       });
+    });
+
+    it('non-admin never reads the per-space health', async () => {
+      const { controller, orchestrator } = build({ cannot: true });
+      await expect(controller.status(USER, WORKSPACE)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(orchestrator.getSpaceStatuses).not.toHaveBeenCalled();
     });
   });
 });

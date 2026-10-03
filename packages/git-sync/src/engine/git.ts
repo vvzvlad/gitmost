@@ -187,14 +187,19 @@ export class VaultGit {
    * with an initial (empty) commit so branches exist. Idempotent: safe to call
    * on every run. Sets a LOCAL bot identity for the vault repo if none is set
    * (so engine commits never fall back to a global/unset identity).
+   *
+   * Returns `true` when the vault was NOT a repo and had to be (re)initialized
+   * with `git init` (a fresh or wiped vault), `false` for an existing repo.
    */
-  async ensureRepo(): Promise<void> {
+  async ensureRepo(): Promise<boolean> {
     await mkdir(this.vaultPath, { recursive: true });
 
+    let initialized = false;
     if (!(await this.isRepo())) {
       // `git init -b main` sets the initial branch on modern git; we still
       // guard the branch name below for safety on older binaries.
       await this.run(["init", "-b", DEFAULT_BRANCH]);
+      initialized = true;
     }
 
     // Set a local identity for the vault repo if unset, so engine commits have
@@ -266,6 +271,7 @@ export class VaultGit {
         allowEmpty: true,
       });
     }
+    return initialized;
   }
 
   /** True if `cwd` is inside a git work-tree (the vault is initialized). */
@@ -315,17 +321,21 @@ export class VaultGit {
    * the `docmost` mirror branch if present (they track each other), else the
    * current `HEAD` commit. If the repo has no commit at all, ensureRepo's
    * fresh-init path owns it — nothing to do here.
+   *
+   * Returns `true` when `main` was missing and has been re-created.
    */
-  async ensureMainBranch(): Promise<void> {
-    if (await this.branchExists(DEFAULT_BRANCH)) return;
+  async ensureMainBranch(): Promise<boolean> {
+    if (await this.branchExists(DEFAULT_BRANCH)) return false;
     if (await this.branchExists("docmost")) {
       await this.run(["branch", DEFAULT_BRANCH, "docmost"]);
-      return;
+      return true;
     }
     const head = await this.runRaw(["rev-parse", "--verify", "--quiet", "HEAD"]);
     if (head.code === 0 && head.stdout.trim().length > 0) {
       await this.run(["branch", DEFAULT_BRANCH, head.stdout.trim()]);
+      return true;
     }
+    return false;
   }
 
   /** Name of the currently checked-out branch. */
@@ -382,9 +392,9 @@ export class VaultGit {
    * multi-replica TTL-lapse window — is PRESERVED, so we never delete a lock a
    * live git process is still using (which would corrupt the index/refs). Clear
    * them best-effort in the cycle preflight, alongside the mid-merge recovery.
-   * Missing files are a no-op.
+   * Missing files are a no-op. Returns the number of stale locks removed.
    */
-  async clearStaleGitLocks(): Promise<void> {
+  async clearStaleGitLocks(): Promise<number> {
     const gitDir = `${this.vaultPath}/.git`;
     const locks = [
       "index.lock",
@@ -397,6 +407,7 @@ export class VaultGit {
       "refs/heads/docmost.lock",
       "refs/docmost/last-pushed.lock",
     ];
+    let removed = 0;
     await Promise.all(
       locks.map(async (rel) => {
         const path = `${gitDir}/${rel}`;
@@ -405,13 +416,15 @@ export class VaultGit {
           // Only remove a lock old enough that no live git process can hold it.
           // A fresh lock (mtime within the staleness window) is left in place.
           if (Date.now() - stats.mtimeMs >= STALE_LOCK_MIN_AGE_MS) {
-            await rm(path, { force: true }).catch(() => undefined);
+            await rm(path, { force: true });
+            removed++;
           }
         } catch {
           // Missing lock (ENOENT) or unreadable — nothing to clear.
         }
       }),
     );
+    return removed;
   }
 
   /**
@@ -556,6 +569,27 @@ export class VaultGit {
    * entries). Best-effort recovery primitive (SPEC §9). */
   async resetHardToHead(): Promise<void> {
     await this.runRaw(["reset", "--hard", "HEAD"]);
+  }
+
+  /**
+   * True when the working tree or the index differs from HEAD — a modified,
+   * staged, deleted OR untracked (non-ignored) file. A process killed between an
+   * engine file write and its commit leaves exactly this state behind.
+   */
+  async isWorkingTreeDirty(): Promise<boolean> {
+    return (await this.run(["status", "--porcelain"])).length > 0;
+  }
+
+  /**
+   * Throw away every uncommitted change on the current branch: `reset --hard
+   * HEAD` (tracked files + index) and `clean -fd` (untracked files and
+   * directories; ignored files are kept). Unlike `resetHardToHead` this is NOT
+   * best-effort — a failure throws, so a recovery that did not happen is never
+   * reported as done.
+   */
+  async discardWorkingTreeChanges(): Promise<void> {
+    await this.run(["reset", "--hard", "HEAD"]);
+    await this.run(["clean", "-fd"]);
   }
 
   /**

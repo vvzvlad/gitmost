@@ -17,8 +17,19 @@ jest.mock('../git-sync.loader', () => ({
     runCycle: mockRunCycle,
   })),
 }));
+// The real registry is a disabled no-op under jest (no METRICS_PORT); spy on the
+// two git-sync helpers so the orchestrator's metric calls are observable.
+jest.mock('../../metrics/metrics.registry', () => ({
+  ...jest.requireActual('../../metrics/metrics.registry'),
+  incGitSyncCycle: jest.fn(),
+  setGitSyncFailingSpaces: jest.fn(),
+}));
 
 import { Logger } from '@nestjs/common';
+import {
+  incGitSyncCycle,
+  setGitSyncFailingSpaces,
+} from '../../metrics/metrics.registry';
 import {
   Kysely,
   DummyDriver,
@@ -661,6 +672,200 @@ describe('GitSyncOrchestrator', () => {
       expect(sql).toContain('"deletedAt" is null');
       // STRICT per-space opt-in: the raw jsonb flag predicate, verbatim.
       expect(sql).toContain(`settings->'gitSync'->>'enabled' = 'true'`);
+    });
+  });
+
+  // A failing space used to be invisible: pollTick dropped runOnce's status and
+  // /status reported only config, while runOnce logged an ERROR every 15 s.
+  describe('per-space health, transition logging and metrics', () => {
+    const incCycle = incGitSyncCycle as unknown as AnyMock;
+    const setFailing = setGitSyncFailingSpaces as unknown as AnyMock;
+
+    function spies() {
+      return {
+        error: jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined),
+        log: jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined),
+        debug: jest
+          .spyOn(Logger.prototype, 'debug')
+          .mockImplementation(() => undefined),
+      };
+    }
+
+    it('poll ticks record the outcome: ERROR once on healthy -> failing, not on every tick', async () => {
+      const built = build();
+      const { error, debug } = spies();
+      jest
+        .spyOn(built.orchestrator as any, 'enabledSpaces')
+        .mockResolvedValue([{ spaceId: 'space-1', workspaceId: 'ws-1' }]);
+      runCycleMock.mockRejectedValue(new Error('git checkout docmost failed'));
+
+      await (built.orchestrator as any).pollTick();
+      await (built.orchestrator as any).pollTick();
+      await (built.orchestrator as any).pollTick();
+
+      // One ERROR for the transition (with the space + reason), repeats at DEBUG.
+      const failingErrors = error.mock.calls.filter((c) =>
+        String(c[0]).includes('space-1'),
+      );
+      expect(failingErrors).toHaveLength(1);
+      expect(String(failingErrors[0][0])).toContain('git checkout docmost failed');
+      expect(debug).toHaveBeenCalledTimes(2);
+
+      const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+      expect(status).toEqual({
+        spaceId: 'space-1',
+        lastRunAt: expect.any(String),
+        lastResult: 'failed',
+        lastError: 'git checkout docmost failed',
+        lastSuccessAt: null,
+        consecutiveFailures: 3,
+        pushFailures: 0,
+        firstPushFailure: null,
+      });
+      // Metrics: three failed cycles, one failing space.
+      expect(incCycle.mock.calls).toEqual([['failed'], ['failed'], ['failed']]);
+      expect(setFailing).toHaveBeenLastCalledWith(1);
+    });
+
+    it('logs the recovery (INFO) once and resets the failure state', async () => {
+      const built = build();
+      const { log } = spies();
+      runCycleMock.mockRejectedValueOnce(new Error('boom'));
+      runCycleMock.mockRejectedValueOnce(new Error('boom'));
+
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      await built.orchestrator.runOnce('space-1', 'ws-1'); // succeeds
+      await built.orchestrator.runOnce('space-1', 'ws-1'); // still healthy
+
+      const recoveries = log.mock.calls.filter((c) =>
+        String(c[0]).includes('RECOVERED'),
+      );
+      expect(recoveries).toHaveLength(1);
+      expect(String(recoveries[0][0])).toContain('space-1');
+
+      const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+      expect(status.lastResult).toBe('ok');
+      expect(status.lastError).toBeNull();
+      expect(status.consecutiveFailures).toBe(0);
+      expect(status.lastSuccessAt).toBe(status.lastRunAt);
+      expect(incCycle.mock.calls).toEqual([
+        ['failed'],
+        ['failed'],
+        ['ok'],
+        ['ok'],
+      ]);
+      expect(setFailing).toHaveBeenLastCalledWith(0);
+    });
+
+    it('reports per-page push failures of the last cycle with the first failure path + reason', async () => {
+      const built = build();
+      runCycleMock.mockResolvedValue({
+        ...OK_CYCLE,
+        push: {
+          mode: 'apply',
+          failures: 2,
+          firstFailure: {
+            kind: 'create',
+            path: 'Folder/New.md',
+            error: 'Parent page not found',
+          },
+        },
+      });
+
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+
+      const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+      expect(status.lastResult).toBe('ok');
+      expect(status.pushFailures).toBe(2);
+      expect(status.firstPushFailure).toEqual({
+        path: 'Folder/New.md',
+        pageId: null,
+        reason: 'Parent page not found',
+      });
+    });
+
+    it('scopes getSpaceStatuses to the workspace and skips non-runs (lock held)', async () => {
+      const built = build();
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      await built.orchestrator.runOnce('space-2', 'ws-2');
+      // A skipped cycle (lock held elsewhere) is not a run: nothing recorded.
+      built.redis.set.mockResolvedValueOnce(null);
+      await built.orchestrator.runOnce('space-3', 'ws-1');
+
+      expect(
+        built.orchestrator.getSpaceStatuses('ws-1').map((s) => s.spaceId),
+      ).toEqual(['space-1']);
+      expect(
+        built.orchestrator.getSpaceStatuses('ws-2').map((s) => s.spaceId),
+      ).toEqual(['space-2']);
+      expect(built.orchestrator.getSpaceStatuses('ws-other')).toEqual([]);
+    });
+
+    it('records the post-push cycle outcome of ingestExternalPush', async () => {
+      const built = build();
+      spies();
+      runCycleMock.mockRejectedValueOnce(new Error('cycle boom'));
+
+      await built.orchestrator.ingestExternalPush('space-1', 'ws-1', async () => {
+        /* receive-pack */
+      });
+
+      const [status] = built.orchestrator.getSpaceStatuses('ws-1');
+      expect(status.lastResult).toBe('failed');
+      expect(status.lastError).toBe('cycle boom');
+      expect(incCycle).toHaveBeenCalledWith('failed');
+    });
+  });
+
+  // Change detection: the orchestrator OWNS one export-key map per space, hands
+  // the same map to every cycle of that space, and clears it on a failed cycle.
+  describe('export-key maps', () => {
+    it('passes the same per-space map to every cycle and a different one per space', async () => {
+      const built = build();
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      await built.orchestrator.runOnce('space-2', 'ws-1');
+
+      const maps = runCycleMock.mock.calls.map(([deps]) => deps.exportKeys);
+      expect(maps[0]).toBeInstanceOf(Map);
+      expect(maps[1]).toBe(maps[0]);
+      expect(maps[2]).not.toBe(maps[0]);
+    });
+
+    it('clears the space map when a cycle fails (next cycle is a full pass)', async () => {
+      const built = build();
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      // First cycle records a key (as the engine does after a successful export).
+      runCycleMock.mockImplementationOnce(async (deps) => {
+        deps.exportKeys.set('page-1', 'key-1');
+        return OK_CYCLE;
+      });
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      const map = runCycleMock.mock.calls[0][0].exportKeys as Map<string, string>;
+      expect(map.size).toBe(1);
+
+      runCycleMock.mockRejectedValueOnce(new Error('boom'));
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+
+      expect(map.size).toBe(0);
+    });
+
+    it('routes the engine warn channel to a WARN log', async () => {
+      const built = build();
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      await built.orchestrator.runOnce('space-1', 'ws-1');
+      const [deps] = runCycleMock.mock.calls[0];
+
+      deps.warn("space space-1: 'main' had uncommitted changes");
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("space space-1: 'main' had uncommitted changes"),
+      );
     });
   });
 });

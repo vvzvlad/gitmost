@@ -187,6 +187,8 @@ export class GitmostDataSourceService {
       parentPageId: row.parentPageId ?? null,
       hasChildren: parentIds.has(row.id),
       position: row.position,
+      // Read by the same query; feeds the pull's export key (change detection).
+      updatedAt: new Date(row.updatedAt).toISOString(),
     }));
 
     return { pages, complete: true };
@@ -427,6 +429,18 @@ export class GitmostDataSourceService {
       );
       parentPageId = undefined;
     }
+    // Same wedge, well-formed variant: a VALID uuid naming a page that does not
+    // exist, is trashed, or lives in another space makes pageService.create throw
+    // NotFound("Parent page not found") every cycle forever. Coerce it to root too.
+    if (
+      parentPageId &&
+      !(await this.isLiveParentInSpace(parentPageId, spaceId))
+    ) {
+      this.logger.warn(
+        `git-sync[${ctx.spaceId ?? '-'}] createPage: parentPageId '${parentPageId}' is not a live page in space ${spaceId} (missing, trashed or in another space) — coerced to root (self-heal; no wedge)`,
+      );
+      parentPageId = undefined;
+    }
 
     const page = await this.pageService.create(
       ctx.userId,
@@ -516,6 +530,21 @@ export class GitmostDataSourceService {
       );
       parentPageId = null;
     }
+    // Well-formed variant (mirror of createPage): pageService.movePage throws
+    // NotFound for a NEW parent that does not exist, is trashed, or lives in
+    // another space than the moved page — coerce it to root instead of wedging.
+    // An unchanged parent is not validated by movePage, so it is left alone here
+    // too (the echo guard below handles it).
+    if (
+      parentPageId &&
+      parentPageId !== (page.parentPageId ?? null) &&
+      !(await this.isLiveParentInSpace(parentPageId, page.spaceId))
+    ) {
+      this.logger.warn(
+        `git-sync[${ctx.spaceId ?? '-'}] movePage: parentPageId '${parentPageId}' is not a live page in space ${page.spaceId} (missing, trashed or in another space) — coerced to root (self-heal; no wedge)`,
+      );
+      parentPageId = null;
+    }
 
     // GS-MOVE-ECHO guard (review #6). A drag-move in Docmost echoes back through
     // git-sync as movePage(pageId, sameParent) WITHOUT a position. Recomputing a
@@ -541,6 +570,19 @@ export class GitmostDataSourceService {
       ctx.userId,
     );
     return { id: pageId };
+  }
+
+  /**
+   * True when `parentPageId` (a valid uuid) names a page that exists, is not
+   * trashed and lives in `spaceId` — exactly the conditions pageService.create /
+   * movePage enforce before throwing NotFound("Parent page not found").
+   */
+  private async isLiveParentInSpace(
+    parentPageId: string,
+    spaceId: string,
+  ): Promise<boolean> {
+    const parent = await this.pageRepo.findById(parentPageId);
+    return !!parent && !parent.deletedAt && parent.spaceId === spaceId;
   }
 
   /**

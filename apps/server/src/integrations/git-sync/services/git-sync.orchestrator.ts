@@ -16,9 +16,13 @@ import {
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
 import { sql } from 'kysely';
-import type { Settings } from '@docmost/git-sync';
+import type { PushFailure, Settings } from '@docmost/git-sync';
 import { loadGitSync } from '../git-sync.loader';
 import { EnvironmentService } from '../../environment/environment.service';
+import {
+  incGitSyncCycle,
+  setGitSyncFailingSpaces,
+} from '../../metrics/metrics.registry';
 import { GitmostDataSourceService } from './gitmost-datasource.service';
 import { VaultRegistryService } from './vault-registry.service';
 import { SpaceLockService } from './space-lock.service';
@@ -60,7 +64,7 @@ export interface GitSyncRunStatus {
     | 'space-not-enabled'
     | 'merge-in-progress';
   pull?: { written: number; deleted: number; conflict: boolean };
-  push?: { mode: string; failures: number };
+  push?: { mode: string; failures: number; firstFailure?: PushFailure };
   /**
    * True when the push REFUSED to fast-forward a divergent `docmost` mirror
    * (invariant §5 broken — `docmost` no longer mirrors what Docmost contains).
@@ -69,6 +73,44 @@ export interface GitSyncRunStatus {
    */
   divergentDocmost?: boolean;
   error?: string;
+}
+
+/**
+ * Health of one space's git-sync, as reported by GET /api/git-sync/status. Kept
+ * in memory by the orchestrator (one entry per space that ran a cycle since the
+ * process started; recomputed by every cycle, so a restart just starts empty).
+ */
+export interface GitSyncSpaceStatus {
+  spaceId: string;
+  /** ISO time the last cycle (ok or failed) finished. */
+  lastRunAt: string;
+  lastResult: 'ok' | 'failed';
+  /** Why the last cycle failed (null when it succeeded). */
+  lastError: string | null;
+  /** ISO time of the last successful cycle (null: none since process start). */
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+  /** Per-page push failures of the last cycle (0 when the cycle itself failed). */
+  pushFailures: number;
+  /** The first of those per-page failures: its page path (or id) and reason. */
+  firstPushFailure: {
+    path: string | null;
+    pageId: string | null;
+    reason: string;
+  } | null;
+}
+
+/**
+ * Size budget for the error strings kept per space in `GitSyncSpaceStatus`
+ * (git stderr can list every file of the vault): at most this many characters
+ * each, so the status map stays O(spaces), not O(vault size).
+ */
+const STATUS_ERROR_MAX_CHARS = 1000;
+
+function clip(text: string): string {
+  return text.length > STATUS_ERROR_MAX_CHARS
+    ? `${text.slice(0, STATUS_ERROR_MAX_CHARS)}…`
+    : text;
 }
 
 /**
@@ -90,6 +132,18 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(GitSyncOrchestrator.name);
   /** The registered poll-interval name, or null when none is registered. */
   private pollIntervalName: string | null = null;
+  /**
+   * Per-space export-key maps (pageId -> key of its last successful export),
+   * handed to the engine's `runCycle` so a poll re-exports only changed pages.
+   * Owned here, rebuilt/cleared by the engine; each holds at most one entry per
+   * live page of its space. Empty after a restart -> one full pass per space.
+   */
+  private readonly exportKeysBySpace = new Map<string, Map<string, string>>();
+  /** Per-space health (+ the workspace it belongs to, for /status scoping). */
+  private readonly spaceHealth = new Map<
+    string,
+    { workspaceId: string; status: GitSyncSpaceStatus }
+  >();
 
   constructor(
     private readonly environmentService: EnvironmentService,
@@ -225,12 +279,117 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
       if ('skipped' in result && !('spaceId' in result)) {
         return { spaceId, ran: false, skipped: result.skipped };
       }
+      this.recordCycleSuccess(spaceId, workspaceId, result);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`git-sync: cycle failed for space ${spaceId}: ${message}`);
+      // Logged at ERROR only on the healthy -> failing transition (see
+      // recordCycleFailure), not on every poll of a space that keeps failing.
+      this.recordCycleFailure(spaceId, workspaceId, err);
       return { spaceId, ran: false, error: message };
     }
+  }
+
+  /**
+   * Per-space health snapshot for GET /api/git-sync/status, limited to the
+   * spaces of `workspaceId` (an admin never sees another workspace's spaces).
+   */
+  getSpaceStatuses(workspaceId: string): GitSyncSpaceStatus[] {
+    const out: GitSyncSpaceStatus[] = [];
+    for (const entry of this.spaceHealth.values()) {
+      if (entry.workspaceId === workspaceId) out.push({ ...entry.status });
+    }
+    return out;
+  }
+
+  /** Record a completed cycle; logs (INFO) the failing -> healthy transition. */
+  private recordCycleSuccess(
+    spaceId: string,
+    workspaceId: string,
+    result: GitSyncRunStatus,
+  ): void {
+    const prev = this.spaceHealth.get(spaceId)?.status;
+    const now = new Date().toISOString();
+    const first = result.push?.firstFailure;
+    this.spaceHealth.set(spaceId, {
+      workspaceId,
+      status: {
+        spaceId,
+        lastRunAt: now,
+        lastResult: 'ok',
+        lastError: null,
+        lastSuccessAt: now,
+        consecutiveFailures: 0,
+        pushFailures: result.push?.failures ?? 0,
+        firstPushFailure: first
+          ? {
+              path: first.path ?? null,
+              pageId: first.pageId ?? null,
+              reason: clip(first.error),
+            }
+          : null,
+      },
+    });
+    if (prev && prev.consecutiveFailures > 0) {
+      this.logger.log(
+        `git-sync: space ${spaceId} RECOVERED — cycle succeeded after ` +
+          `${prev.consecutiveFailures} consecutive failed cycle(s)`,
+      );
+    }
+    incGitSyncCycle('ok');
+    this.publishFailingSpaces();
+  }
+
+  /**
+   * Record a failed cycle. ERROR (with the stack) only when the space goes from
+   * healthy to failing; repeats are DEBUG so a broken space does not flood the
+   * log every poll — its state stays visible in /status and the metrics. Also
+   * forgets the space's export keys so the next cycle is a full pass.
+   */
+  private recordCycleFailure(
+    spaceId: string,
+    workspaceId: string,
+    err: unknown,
+  ): void {
+    const prev = this.spaceHealth.get(spaceId)?.status;
+    const message = err instanceof Error ? err.message : String(err);
+    const consecutiveFailures = (prev?.consecutiveFailures ?? 0) + 1;
+    this.exportKeysBySpace.get(spaceId)?.clear();
+    this.spaceHealth.set(spaceId, {
+      workspaceId,
+      status: {
+        spaceId,
+        lastRunAt: new Date().toISOString(),
+        lastResult: 'failed',
+        lastError: clip(message),
+        lastSuccessAt: prev?.lastSuccessAt ?? null,
+        consecutiveFailures,
+        pushFailures: 0,
+        firstPushFailure: null,
+      },
+    });
+    if (consecutiveFailures === 1) {
+      this.logger.error(
+        `git-sync: space ${spaceId} is now FAILING — cycle failed: ${message}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+    } else {
+      this.logger.debug(
+        `git-sync: space ${spaceId} still failing ` +
+          `(${consecutiveFailures} consecutive cycles): ${message}`,
+      );
+    }
+    incGitSyncCycle('failed');
+    this.publishFailingSpaces();
+  }
+
+  /** Push the number of currently failing spaces to the gauge. */
+  private publishFailingSpaces(): void {
+    let failing = 0;
+    for (const { status } of this.spaceHealth.values()) {
+      if (status.consecutiveFailures > 0) failing++;
+    }
+    setGitSyncFailingSpaces(failing);
   }
 
   /**
@@ -293,8 +452,15 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         return;
       }
       try {
-        await this.driveCycle(spaceId, workspaceId, serviceUserId, signal);
+        const status = await this.driveCycle(
+          spaceId,
+          workspaceId,
+          serviceUserId,
+          signal,
+        );
+        this.recordCycleSuccess(spaceId, workspaceId, status);
       } catch (err) {
+        this.recordCycleFailure(spaceId, workspaceId, err);
         // Do NOT rethrow: the push succeeded and the commits are durable on main;
         // the poll-interval backstop retries the cycle. Log for visibility.
         this.logger.error(
@@ -442,6 +608,11 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
       // only got in the way of legitimate deletes; engine correctness (covered by
       // the reconcile/layout tests) is what prevents phantom deletions.
       log: (line: string) => this.logger.log(`git-sync[${spaceId}] ${line}`),
+      // Preflight self-heals an operator must notice (the line names the space).
+      warn: (line: string) => this.logger.warn(`git-sync: ${line}`),
+      // This space's export-key map: the pull skips pages unchanged since their
+      // last successful export (the engine rebuilds/clears it).
+      exportKeys: this.exportKeysFor(spaceId),
     });
 
     // §5 invariant breach: the push refused to fast-forward a divergent `docmost`
@@ -457,6 +628,16 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     }
 
     return { spaceId, ...result };
+  }
+
+  /** The (lazily created) export-key map of one space. */
+  private exportKeysFor(spaceId: string): Map<string, string> {
+    let keys = this.exportKeysBySpace.get(spaceId);
+    if (!keys) {
+      keys = new Map();
+      this.exportKeysBySpace.set(spaceId, keys);
+    }
+    return keys;
   }
 
   // --- poll-safety interval -------------------------------------
@@ -565,7 +746,9 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
         return;
       }
       for (const { spaceId, workspaceId } of spaces) {
-        // runOnce never throws; a per-space error is logged and returned in status.
+        // runOnce never throws; it records each cycle's outcome in the space's
+        // health (served by /status, counted in the metrics) and logs the
+        // healthy <-> failing transitions.
         await this.runOnce(spaceId, workspaceId);
       }
     } finally {

@@ -13,6 +13,8 @@ import {
   incDocUnload,
   incGetPageCacheHit,
   incGetPageCacheMiss,
+  incGitSyncCycle,
+  setGitSyncFailingSpaces,
   incMcpRyowDbrow,
   incMcpRyowExpired,
   incMcpRyowLive,
@@ -213,10 +215,40 @@ describe('metrics helpers are safe no-ops when METRICS_PORT is unset', () => {
       incMcpRyowLive();
       incMcpRyowDbrow('owner_unreachable');
       incMcpRyowExpired();
+      // git-sync health helpers.
+      incGitSyncCycle('ok');
+      incGitSyncCycle('failed');
+      setGitSyncFailingSpaces(3);
       // Registering a source must not create the gauge or invoke the fn.
       registerDocsOpenSource(() => {
         throw new Error('docsOpenSource must NOT be called when disabled');
       });
     }).not.toThrow();
+  });
+});
+
+describe('git-sync metrics on an ENABLED registry', () => {
+  it('exposes git_sync_cycles_total{result} and git_sync_failing_spaces with no per-space label', async () => {
+    const saved = process.env.METRICS_PORT;
+    process.env.METRICS_PORT = '9464';
+    try {
+      // A fresh module instance so the load-time METRICS_PORT gate sees it set.
+      let reg!: typeof import('./metrics.registry');
+      await jest.isolateModulesAsync(async () => {
+        reg = await import('./metrics.registry');
+      });
+      reg.incGitSyncCycle('ok');
+      reg.incGitSyncCycle('failed');
+      reg.incGitSyncCycle('failed');
+      reg.setGitSyncFailingSpaces(1);
+
+      const text = await reg.getMetricsRegistry()!.metrics();
+      expect(text).toContain('git_sync_cycles_total{result="ok"} 1');
+      expect(text).toContain('git_sync_cycles_total{result="failed"} 2');
+      expect(text).toMatch(/^git_sync_failing_spaces 1$/m);
+    } finally {
+      if (saved === undefined) delete process.env.METRICS_PORT;
+      else process.env.METRICS_PORT = saved;
+    }
   });
 });

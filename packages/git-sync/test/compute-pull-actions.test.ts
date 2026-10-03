@@ -193,3 +193,52 @@ describe('computePullActions — degenerate inputs', () => {
     expect(actions.toWrite).toEqual([{ pageId: 'p1', relPath: 'Valid.md' }]);
   });
 });
+
+describe('computePullActions — export-key change detection', () => {
+  const T0 = '2026-10-01T00:00:00.000Z';
+  const withTime = (p: PageNode, updatedAt: string | undefined) => ({
+    ...p,
+    updatedAt,
+  });
+
+  it('skips a page whose key is unchanged AND whose file is tracked at its relPath', () => {
+    const pages = [withTime(node('a', 'A'), T0), withTime(node('b', 'B'), T0)];
+    const first = computePullActions({ pages, treeComplete: true, existing: [] });
+    const actions = computePullActions({
+      pages,
+      treeComplete: true,
+      existing: [
+        { pageId: 'a', relPath: 'A.md' },
+        { pageId: 'b', relPath: 'B.md' },
+      ],
+      exportKeys: first.liveExportKeys,
+    });
+    expect(actions.toWrite).toEqual([]);
+    // The current keys are still reported so the caller can re-record them.
+    expect([...actions.liveExportKeys.keys()].sort()).toEqual(['a', 'b']);
+  });
+
+  it('re-exports a page with a matching key whose file is NOT tracked there (e.g. restored from trash)', () => {
+    const pages = [withTime(node('a', 'A'), T0)];
+    const first = computePullActions({ pages, treeComplete: true, existing: [] });
+    const actions = computePullActions({
+      pages,
+      treeComplete: true,
+      existing: [],
+      exportKeys: first.liveExportKeys,
+    });
+    expect(actions.toWrite).toEqual([{ pageId: 'a', relPath: 'A.md' }]);
+  });
+
+  it('never skips a page that carries no updatedAt (no key)', () => {
+    const pages = [withTime(node('a', 'A'), undefined)];
+    const actions = computePullActions({
+      pages,
+      treeComplete: true,
+      existing: [{ pageId: 'a', relPath: 'A.md' }],
+      exportKeys: new Map([['a', 'anything']]),
+    });
+    expect(actions.liveExportKeys.size).toBe(0);
+    expect(actions.toWrite).toEqual([{ pageId: 'a', relPath: 'A.md' }]);
+  });
+});
