@@ -31,7 +31,8 @@ const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 
 // A single page taking longer than this during a bulk reindex is logged at
-// WARN as an early "slow page" signal before the hard embedding timeout.
+// WARN as an early "slow page" signal. There is no per-page cap: each embeddings
+// request (at most 32 chunks) is bounded by AI_EMBEDDING_TIMEOUT_MS.
 const SLOW_PAGE_MS = 30_000;
 
 /**
@@ -714,10 +715,17 @@ export class EmbeddingIndexerService {
       buffer = '';
     };
 
+    let processed = 0;
     for (const block of doc.content as Array<{
       type?: string;
       attrs?: { level?: number };
     }>) {
+      // Hand the event loop back every 100 blocks: this loop is CPU-bound and
+      // its awaits resolve as microtasks, so on a giant page health checks, HTML
+      // and collab traffic would otherwise wait until the whole page is chunked.
+      if (++processed % 100 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       if (block?.type === 'heading') {
         // Flush the preceding body under the crumb in effect BEFORE this
         // heading, then update the heading stack.

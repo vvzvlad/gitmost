@@ -52,7 +52,12 @@ import {
   Code,
 } from '@docmost/editor-ext';
 import { convertProseMirrorToMarkdown } from '@docmost/prosemirror-markdown';
-import { generateText, getSchema, JSONContent } from '@tiptap/core';
+import {
+  getSchema,
+  getText,
+  getTextSerializersFromSchema,
+  JSONContent,
+} from '@tiptap/core';
 import { generateHTML, generateJSON } from '../common/helpers/prosemirror/html';
 // @tiptap/html library works best for generating prosemirror json state but not HTML
 // see: https://github.com/ueberdosis/tiptap/issues/5352
@@ -194,13 +199,31 @@ export function jsonToText(
   tiptapJson: any,
   options?: { deterministic?: boolean },
 ) {
+  // Same steps as tiptap's generateText(), minus its getSchema() on every call:
+  // building the schema costs ~3.5 ms, and the embedding chunker calls this once
+  // per block, so a 9000-block page blocked the event loop for ~33 s.
+  const schema = getTextSchema();
+  const contentNode = Node.fromJSON(schema, tiptapJson);
   if (options?.deterministic) {
-    return generateText(tiptapJson, tiptapExtensions, {
+    return getText(contentNode, {
       blockSeparator: '\n',
-      textSerializers: TEXT_READ_SERIALIZERS,
+      textSerializers: {
+        ...getTextSerializersFromSchema(schema),
+        ...TEXT_READ_SERIALIZERS,
+      },
     });
   }
-  return generateText(tiptapJson, tiptapExtensions);
+  return getText(contentNode, {
+    blockSeparator: '\n\n',
+    textSerializers: getTextSerializersFromSchema(schema),
+  });
+}
+
+let textSchema: Schema | null = null;
+
+function getTextSchema(): Schema {
+  textSchema ??= getSchema(tiptapExtensions);
+  return textSchema;
 }
 
 export function jsonToNode(tiptapJson: JSONContent) {
