@@ -365,19 +365,20 @@ describe('VaultGit (integration; temp repo)', () => {
     expect(storedBuf.toString('utf8')).toBe(content);
   });
 
-  it('ensureBranch creates the docmost branch from main', async () => {
+  it('ensureRepo starts the docmost branch; ensureBranch creates a branch from main', async () => {
     if (!available) return;
     const vault = await freshDir();
     const git = new VaultGit(vault);
     await git.ensureRepo();
 
-    expect(await git.branchExists('docmost')).toBe(false);
-    await git.ensureBranch('docmost', 'main');
     expect(await git.branchExists('docmost')).toBe(true);
+    expect(await git.branchExists('other')).toBe(false);
+    await git.ensureBranch('other', 'main');
+    expect(await git.branchExists('other')).toBe(true);
 
     // Idempotent.
-    await git.ensureBranch('docmost', 'main');
-    expect(await git.branchExists('docmost')).toBe(true);
+    await git.ensureBranch('other', 'main');
+    expect(await git.branchExists('other')).toBe(true);
   });
 
   it('commit writes a commit with the provenance trailer and the bot identity', async () => {

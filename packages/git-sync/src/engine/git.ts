@@ -315,6 +315,10 @@ export class VaultGit {
         authorEmail: BOT_AUTHOR_EMAIL,
         allowEmpty: true,
       });
+      // Start the `docmost` mirror here too: a vault made by a clone can take
+      // a push before the space's first cycle, and a mirror branched from
+      // that `main` would count the pushed files as already in Docmost.
+      await this.ensureBranch("docmost", DEFAULT_BRANCH);
     }
     return initialized;
   }

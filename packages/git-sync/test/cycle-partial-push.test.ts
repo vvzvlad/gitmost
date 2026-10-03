@@ -474,6 +474,23 @@ describe("runCycle — a push with failures advances the base per page", () => {
     ]);
   });
 
+  it("a push into a fresh vault before the space's first cycle reaches Docmost", async () => {
+    if (!available) return;
+    const h = await setup([{ id: P, title: "Page", text: "pa" }]);
+    // A clone made the vault (ensureServable -> ensureRepo) and the push landed
+    // before the space's first cycle.
+    await new VaultGit(h.root).ensureRepo();
+    await h.human(async (root) => {
+      await writeFile(join(root, "Fresh.md"), "fresh body\n", "utf8");
+    });
+
+    await h.cycle();
+
+    expect(h.calls.filter((c) => c[0] === "create")).toEqual([["create", "Fresh"]]);
+    expect(h.pages.map((p) => p.title).sort()).toEqual(["Fresh", "Page"]);
+    expect((await h.mainFiles()).sort()).toEqual(["Fresh.md", "Page.md"]);
+  });
+
   it("a push without failures fast-forwards 'docmost' to 'main' as before: no record, no merge", async () => {
     if (!available) return;
     const h = await setup([{ id: P, title: "Page", text: "alpha" }]);
