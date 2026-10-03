@@ -507,9 +507,22 @@ export class VaultGit {
    * markers are left in the worktree for manual resolution by a later increment,
    * and — critically — nothing is pushed to Docmost (we never write to Docmost
    * anyway).
+   *
+   * The merge is PATH-based (`-s resolve`, no rename detection): a page's
+   * identity is its `gitmost_id`, which the pull reconciles itself, while rename
+   * detection pairs files by content and can pair one page's old path with
+   * ANOTHER page's file (a path reused after a rename), merging one page's
+   * edits into the other. The default `ort` strategy always detects exact
+   * renames, even with `-X no-renames`.
    */
   async merge(fromBranch: string): Promise<MergeResult> {
-    const r = await this.runRaw(["merge", "--no-edit", fromBranch]);
+    const r = await this.runRaw([
+      "merge",
+      "--no-edit",
+      "-s",
+      "resolve",
+      fromBranch,
+    ]);
     const output = `${r.stdout}\n${r.stderr}`.trim();
     if (r.code === 0) {
       return { ok: true, conflict: false, output };
@@ -824,18 +837,19 @@ export class VaultGit {
   }
 
   /**
-   * Vault paths of the `*.md` files at `ref` whose content contains `text` (a
-   * fixed string; `git grep -l -z -F`). Empty when nothing matches. Used to find
-   * a page's file by its id at ANY path of a commit.
+   * The `gitmost_id` of every `*.md` file at `ref` that has one, in ONE
+   * `git grep` (no per-file reads): the value of the file's FIRST line starting
+   * with `gitmost_id:`. For an engine-written file that is its frontmatter id; a
+   * hand-written file can carry such a line in its body, so a caller confirms a
+   * hit with `parsePageFile` where identity is load-bearing.
    */
-  async grepFilesAtRef(ref: string, text: string): Promise<string[]> {
+  async pageIdsAtRef(ref: string): Promise<{ path: string; id: string }[]> {
     const r = await this.runRaw([
       "grep",
-      "-l",
       "-z",
-      "-F",
+      "-E",
       "-e",
-      text,
+      "^gitmost_id:",
       ref,
       "--",
       "*.md",
@@ -845,11 +859,21 @@ export class VaultGit {
       const detail = (r.stderr || r.stdout || "").trim();
       throw new Error(`git grep at ${ref} failed: ${detail}`);
     }
+    // One `<ref>:<path>\0<line>` record per matching line.
     const prefix = `${ref}:`;
-    return r.stdout
-      .split("\0")
-      .filter((p) => p.length > 0)
-      .map((p) => (p.startsWith(prefix) ? p.slice(prefix.length) : p));
+    const out: { path: string; id: string }[] = [];
+    const seen = new Set<string>();
+    for (const record of r.stdout.split("\n")) {
+      const nul = record.indexOf("\0");
+      if (nul < 0 || !record.startsWith(prefix)) continue;
+      const path = record.slice(prefix.length, nul);
+      const m = record.slice(nul + 1).match(/^gitmost_id:\s*(.+?)\s*$/);
+      const id = m ? m[1].replace(/^["']|["']$/g, "") : "";
+      if (seen.has(path) || id === "") continue;
+      seen.add(path);
+      out.push({ path, id });
+    }
+    return out;
   }
 
   /**
@@ -879,12 +903,13 @@ export class VaultGit {
    * docmost -> main merge per hunk (SPEC §9), so git wins only where it actually
    * conflicts and Docmost's other changes in the same file survive. The texts go
    * through a private temp dir (merge-file reads files) removed afterwards.
+   * `conflicts` counts the hunks both sides changed (0: a clean merge).
    */
   async mergeFileOurs(
     base: string,
     ours: string,
     theirs: string,
-  ): Promise<string> {
+  ): Promise<{ text: string; conflicts: number }> {
     const dir = await mkdtemp(join(tmpdir(), "git-sync-merge-"));
     try {
       const oursPath = join(dir, "ours");
@@ -893,20 +918,24 @@ export class VaultGit {
       await writeFile(oursPath, ours, "utf8");
       await writeFile(basePath, base, "utf8");
       await writeFile(theirsPath, theirs, "utf8");
-      const r = await this.runRaw([
-        "merge-file",
-        "-p",
-        "--ours",
-        oursPath,
-        basePath,
-        theirsPath,
-      ]);
+      const run = (favor: string[]) =>
+        this.runRaw(["merge-file", "-p", ...favor, oursPath, basePath, theirsPath]);
+      // Without a favor option the exit code is the number of conflicts
+      // (capped at 127); anything above that is an error.
+      const plain = await run([]);
+      if (plain.code < 0 || plain.code > 127) {
+        throw new Error(
+          `git merge-file failed (exit ${plain.code}): ${(plain.stderr || plain.stdout).trim()}`,
+        );
+      }
+      if (plain.code === 0) return { text: plain.stdout, conflicts: 0 };
+      const r = await run(["--ours"]);
       if (r.code !== 0) {
         throw new Error(
           `git merge-file failed (exit ${r.code}): ${(r.stderr || r.stdout).trim()}`,
         );
       }
-      return r.stdout;
+      return { text: r.stdout, conflicts: plain.code };
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

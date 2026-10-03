@@ -91,9 +91,7 @@ function makeGit(opts?: {
     showFileAtRef: vi.fn(async (_ref: string, path: string) =>
       path in prevTree ? prevTree[path] : null,
     ),
-    grepFilesAtRef: vi.fn(async (_ref: string, text: string) =>
-      Object.keys(prevTree).filter((p) => prevTree[p].includes(text)),
-    ),
+    pageIdsAtRef: vi.fn(async () => [] as { path: string; id: string }[]),
     updateRef: vi.fn(async (ref: string, target: string) => {
       calls.updateRef.push({ ref, target });
     }),
@@ -313,35 +311,6 @@ describe('runPush — --apply is the ONLY write path', () => {
 
     // The pushed content is the STRIPPED body (no gitmost_id frontmatter).
     expect(client.importPageMarkdown).toHaveBeenCalledWith('p-9', 'body', null);
-    expect(res.applied?.updated).toBe(1);
-  });
-
-  it("an added file carrying a known page's id takes that page's base-commit file as its 3-way base", async () => {
-    // Copy.md is new on main but carries p-9, whose file at the base commit is
-    // Page.md: the write must merge against Page.md, not overwrite the page.
-    const { git } = makeGit({
-      changes: [{ status: 'A', path: 'Copy.md' }],
-      prevTree: {
-        'Other.md': fileFor('p-1', 'other body'),
-        'Page.md': fileFor('p-9', 'base body'),
-      },
-    });
-    const fs = makeFs({
-      'Copy.md': fileFor('p-9', 'git body'),
-      'Page.md': fileFor('p-9', 'base body'),
-    });
-    const client = makeClientFake();
-    const { deps } = makeDeps(git, fs, client);
-
-    const res = await runPush(deps, { dryRun: false });
-
-    expect(client.importPageMarkdown).toHaveBeenCalledWith(
-      'p-9',
-      'git body',
-      'base body',
-    );
-    expect(client.renamePage).not.toHaveBeenCalled();
-    expect(client.movePage).not.toHaveBeenCalled();
     expect(res.applied?.updated).toBe(1);
   });
 });

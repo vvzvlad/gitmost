@@ -239,6 +239,11 @@ export interface PushActionsInput {
    * applies.
    */
   currentPageIds?: Set<string>;
+  /**
+   * Files that duplicate another file's gitmost_id (copies, see `runPush`): each
+   * is CREATED as a new page whatever its diff status or frontmatter id.
+   */
+  copyPaths?: Set<string>;
 }
 
 /**
@@ -290,6 +295,7 @@ function emitMoveWithBody(
  */
 export function computePushActions(input: PushActionsInput): PushActions {
   const { metaAt, currentPageIds } = input;
+  const copyPaths = input.copyPaths ?? new Set<string>();
   // PAGE-FILE FILTER (design §"Adoption"): only `.md` files OUTSIDE any dot-folder
   // are Docmost pages. `.obsidian/*`, attachments, and other non-page files are
   // committed to the vault (no `.gitignore`) and so appear in the diff, but they
@@ -327,7 +333,10 @@ export function computePushActions(input: PushActionsInput): PushActions {
     if (change.status === "D") {
       const pid = metaAt(change.path, "prev")?.pageId;
       if (pid) deletedPath.set(pid, change.path);
-    } else if (change.status === "A" || change.status === "M") {
+    } else if (
+      (change.status === "A" || change.status === "M") &&
+      !copyPaths.has(change.path)
+    ) {
       const pid = metaAt(change.path, "current")?.pageId;
       if (pid) survivingPath.set(pid, change.path);
     }
@@ -341,6 +350,11 @@ export function computePushActions(input: PushActionsInput): PushActions {
   }
 
   for (const change of changes) {
+    if (change.status !== "D" && copyPaths.has(change.path)) {
+      // A copy of another page's file: a new page of its own.
+      actions.creates.push({ path: change.path });
+      continue;
+    }
     switch (change.status) {
       case "A": {
         const meta = metaAt(change.path, "current");
@@ -1166,24 +1180,6 @@ export function isPageFile(path: string): boolean {
 }
 
 /**
- * The vault path of page `pageId`'s file at `ref`, looked up by its
- * `gitmost_id` frontmatter at ANY path, or null when no page file there carries
- * that id.
- */
-export async function findPageFileAtRef(
-  git: Pick<VaultGit, "grepFilesAtRef" | "showFileAtRef">,
-  ref: string,
-  pageId: string,
-): Promise<string | null> {
-  for (const path of await git.grepFilesAtRef(ref, pageId)) {
-    if (!isPageFile(path)) continue;
-    const text = await git.showFileAtRef(ref, path);
-    if (text !== null && parsePageFile(text).id === pageId) return path;
-  }
-  return null;
-}
-
-/**
  * Git conflict-marker scan + strip (SPEC §9 — conflict markers must NEVER reach
  * Docmost). A body is treated as conflicted only when it carries BOTH a begin
  * (`<<<<<<<`) and an end (`>>>>>>>`) marker line, so a legitimate Markdown setext
@@ -1475,7 +1471,7 @@ export interface PushDeps {
     | "mergeBase"
     | "revParse"
     | "diffNameStatus"
-    | "grepFilesAtRef"
+    | "pageIdsAtRef"
     | "showFileAtRef"
     | "updateRef"
     | "fastForwardBranch"
@@ -1667,17 +1663,59 @@ export async function runPush(
     }
   }
 
-  const actions = computePushActions({ changes, metaAt, currentPageIds });
-  // An ADDED file carrying the id of a page whose file exists at the base under
-  // ANOTHER path (e.g. git kept its edited copy at the old path while Docmost
-  // moved the page): its 3-way base is that file, never a no-base 2-way write
-  // over the live page. The page is not moved: a move needs that base file to be
-  // gone from `main`, which the D-side ghost-move detection already handles.
-  for (const u of actions.updates) {
-    if (u.basePath !== undefined || metaAt(u.path, "prev") !== null) continue;
-    const at = await findPageFileAtRef(git, base.sha, u.pageId);
-    if (at !== null && at !== u.path) u.basePath = at;
+  // COPIES: two files on `main` carrying the same gitmost_id (a `cp` or an
+  // editor's "Make a copy" duplicates the frontmatter). The id's file in the base
+  // commit stays the page; every other one is a copy and becomes a NEW page —
+  // never an update of the original (a rename removes the old path, a copy keeps
+  // both). When no candidate is the id's base file, the first by path is the
+  // page. Only ids carried by a changed file can have gained a copy.
+  const changedIds = new Set<string>();
+  for (const change of changes) {
+    const pid =
+      change.status !== "D" && isPageFile(change.path)
+        ? metaAt(change.path, "current")?.pageId
+        : undefined;
+    if (pid) changedIds.add(pid);
   }
+  const copyPaths = new Set<string>();
+  if (changedIds.size > 0) {
+    const pathsById = new Map<string, string[]>();
+    for (const { path, id } of await git.pageIdsAtRef(DEFAULT_BRANCH)) {
+      if (!changedIds.has(id) || !isPageFile(path)) continue;
+      pathsById.set(id, [...(pathsById.get(id) ?? []), path]);
+    }
+    for (const [id, paths] of pathsById) {
+      if (paths.length < 2) continue;
+      const files: string[] = [];
+      for (const path of paths.sort()) {
+        const meta = await readMetaCurrent(deps, path, settings.docmostSpaceId);
+        if (meta?.pageId === id) files.push(path);
+      }
+      if (files.length < 2) continue;
+      let page = files[0];
+      for (const path of files) {
+        const prev = await readMetaPrev(deps, base.sha, path, settings.docmostSpaceId);
+        if (prev?.pageId === id) {
+          page = path;
+          break;
+        }
+      }
+      for (const path of files) if (path !== page) copyPaths.add(path);
+    }
+  }
+  if (copyPaths.size > 0) {
+    log(
+      `push: ${copyPaths.size} file(s) duplicate another page's gitmost_id — ` +
+        `created as new pages: ${[...copyPaths].join(", ")}`,
+    );
+  }
+
+  const actions = computePushActions({
+    changes,
+    metaAt,
+    currentPageIds,
+    copyPaths,
+  });
   const planned = {
     creates: actions.creates.length,
     updates: actions.updates.length,

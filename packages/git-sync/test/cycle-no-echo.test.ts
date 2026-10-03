@@ -21,6 +21,10 @@ import {
 
 const A = "019f2800-0000-7000-8000-00000000000a";
 const N = "019f2800-0000-7000-8000-00000000000b";
+const N1 = "019f2800-0000-7000-8000-0000000000c1";
+const N2 = "019f2800-0000-7000-8000-0000000000c2";
+const Q = "019f2800-0000-7000-8000-0000000000c3";
+const C = "019f2800-0000-7000-8000-0000000000c4";
 const T0 = "2026-10-01T00:00:00.000Z";
 const T1 = "2026-10-02T00:00:00.000Z";
 
@@ -54,12 +58,15 @@ describe("runCycle — the push never echoes the pull's export", () => {
   });
 
   async function setup(text: string) {
+    return setupPages([
+      { id: A, slugId: "a", title: "Page", parentPageId: null, updatedAt: T0, text },
+    ]);
+  }
+
+  async function setupPages(pages: FakePage[]) {
     dir = await mkdtemp(join(tmpdir(), "docmost-no-echo-"));
     const root = dir;
     const vault = new VaultGit(root);
-    const pages: FakePage[] = [
-      { id: A, slugId: "a", title: "Page", parentPageId: null, updatedAt: T0, text },
-    ];
     const client = makeClient(pages);
     const exportKeys = new Map<string, string>();
     const cycle = () =>
@@ -85,7 +92,40 @@ describe("runCycle — the push never echoes the pull's export", () => {
       await writeFile(file, before.replace(from, to), "utf8");
       await git(root, "commit", "-am", "human edit");
     };
-    return { root, page: pages[0], pages, client, cycle, humanEdit };
+    /** Change the vault on `main` and commit everything, as a human. */
+    const humanCommit = async (change: (root: string) => Promise<void>) => {
+      await change(root);
+      await git(root, "add", "-A");
+      await git(root, "commit", "-m", "human change");
+    };
+    /** The `main` tree as path -> content. */
+    const mainFiles = async () => {
+      const out: Record<string, string> = {};
+      for (const f of (await git(root, "ls-tree", "-r", "--name-only", "main"))
+        .split("\n")
+        .filter(Boolean)) {
+        out[f] = await git(root, "show", `main:${f}`);
+      }
+      return out;
+    };
+    // The live page text follows each write through the block-level 3-way.
+    client.importPageMarkdown.mockImplementation(
+      async (pageId: string, markdown: string, base: string | null) => {
+        const p = pages.find((x) => x.id === pageId);
+        if (p) p.text = merge3(base, markdown, p.text ?? "");
+        return {};
+      },
+    );
+    return {
+      root,
+      page: pages[0],
+      pages,
+      client,
+      cycle,
+      humanEdit,
+      humanCommit,
+      mainFiles,
+    };
   }
 
   it("a Docmost edit exported in cycle 2 is not written back to Docmost", async () => {
@@ -298,4 +338,225 @@ describe("runCycle — the push never echoes the pull's export", () => {
       expect(page.text).toBe("alpha GIT\n\nmiddle\n\nomega DOC");
     },
   );
+
+  // Page identity is the gitmost_id, not the path: a path can hold a different
+  // page on each side of the pull merge.
+  const twoNotes = (one: string, two: string): FakePage[] => [
+    { id: N1, slugId: "a1", title: "Notes", parentPageId: null, updatedAt: T0, text: one },
+    { id: N2, slugId: "b2", title: "Notes", parentPageId: null, updatedAt: T0, text: two },
+  ];
+
+  it.each([
+    [
+      "conflicting",
+      "agenda one\n\nalpha\n\nbeta",
+      "agenda two\n\ngamma\n\ndelta",
+      ["agenda one", "agenda one GIT"],
+    ],
+    [
+      "cleanly merging",
+      "same body\n\nline two\n\nline three",
+      "same body\n\nline two\n\nline three",
+      ["line three", "line three GIT"],
+    ],
+  ])(
+    "a git edit of a page whose bare path Docmost gave to its same-title sibling stays with that page (%s bodies)",
+    async (_name, one, two, [from, to]) => {
+      if (!available) return;
+      const { pages, cycle, humanCommit, mainFiles } = await setupPages(
+        twoNotes(one, two),
+      );
+      expect(Object.keys(await mainFiles()).sort()).toEqual([
+        "Notes ~b2.md",
+        "Notes.md",
+      ]);
+
+      // Docmost retitles N1, so N2 takes the bare Notes.md; git edits Notes.md (N1).
+      pages[0].title = "Notes 2023";
+      pages[0].updatedAt = T1;
+      await humanCommit(async (root) => {
+        const file = join(root, "Notes.md");
+        const text = await readFile(file, "utf8");
+        await writeFile(file, text.replace(from, to), "utf8");
+      });
+      const res = await cycle();
+
+      // One page per path on both sides: a clean merge, no conflict.
+      expect(res.pull.conflict).toBe(false);
+      expect(res.push.failures).toBe(0);
+      expect(pages[0].text).toBe(one.replace(from, to));
+      expect(pages[1].text).toBe(two);
+      const main = await mainFiles();
+      expect(Object.keys(main).sort()).toEqual(["Notes 2023.md", "Notes.md"]);
+      expect(main["Notes 2023.md"]).toContain(`gitmost_id: ${N1}`);
+      expect(main["Notes 2023.md"]).toContain(to);
+      expect(main["Notes.md"]).toContain(`gitmost_id: ${N2}`);
+      expect(main["Notes.md"]).not.toContain(to);
+    },
+  );
+
+  it("Docmost removes a page and its same-title sibling takes the bare path while git edits the sibling: the removed page stays removed", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setupPages(
+      twoNotes("agenda one\n\nalpha\n\nbeta", "agenda two\n\ngamma\n\ndelta"),
+    );
+
+    pages.splice(0, 1); // N1 goes to the trash; N2 takes Notes.md
+    await humanCommit(async (root) => {
+      const file = join(root, "Notes ~b2.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("agenda two", "agenda two GIT"), "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages[0].text).toBe("agenda two GIT\n\ngamma\n\ndelta");
+    expect(client.importPageMarkdown).not.toHaveBeenCalledWith(
+      N1,
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(client.createPage).not.toHaveBeenCalled();
+    const main = await mainFiles();
+    expect(Object.keys(main)).toEqual(["Notes.md"]);
+    expect(main["Notes.md"]).toContain(`gitmost_id: ${N2}`);
+  });
+
+  it("Docmost renames a page and creates another under the old title while git edits the old path: each page keeps its own text", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setupPages([
+      { id: A, slugId: "a", title: "Old", parentPageId: null, updatedAt: T0, text: "p1\n\np2\n\np3" },
+    ]);
+
+    pages[0].title = "New";
+    pages[0].updatedAt = T1;
+    pages.push({ id: Q, slugId: "q", title: "Old", parentPageId: null, updatedAt: T1, text: "q1\n\nq2\n\nq3" });
+    await humanCommit(async (root) => {
+      const file = join(root, "Old.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("p1", "p1 GIT"), "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages[0].text).toBe("p1 GIT\n\np2\n\np3");
+    expect(pages[1].text).toBe("q1\n\nq2\n\nq3");
+    expect(client.deletePage).not.toHaveBeenCalled();
+    const main = await mainFiles();
+    expect(Object.keys(main).sort()).toEqual(["New.md", "Old.md"]);
+    expect(main["New.md"]).toContain(`gitmost_id: ${A}`);
+    expect(main["New.md"]).toContain("p1 GIT");
+    expect(main["Old.md"]).toContain(`gitmost_id: ${Q}`);
+  });
+
+  it("Docmost renames and edits a page while git edits it at the old path and adds an unrelated file at the new path: both edits land, git's file becomes its own page", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setupPages([
+      { id: A, slugId: "a", title: "Old", parentPageId: null, updatedAt: T0, text: "p1\n\np2\n\np3" },
+    ]);
+
+    const p3Doc = `p3 ${"DOC ".repeat(80).trim()}`;
+    pages[0].title = "New";
+    pages[0].text = `p1\n\np2\n\n${p3Doc}`;
+    pages[0].updatedAt = T1;
+    await humanCommit(async (root) => {
+      const file = join(root, "Old.md");
+      await writeFile(file, (await readFile(file, "utf8")).replace("p1", "p1 GIT"), "utf8");
+      await writeFile(join(root, "New.md"), "an unrelated git page\n", "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.pull.conflict).toBe(false);
+    expect(res.push.failures).toBe(0);
+    expect(pages[0].text).toBe(`p1 GIT\n\np2\n\n${p3Doc}`);
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(client.createPage).toHaveBeenCalledWith(
+      "New ~git",
+      "an unrelated git page",
+      "space-1",
+      undefined,
+    );
+    const main = await mainFiles();
+    expect(Object.keys(main).sort()).toEqual(["New ~git.md", "New.md"]);
+    expect(main["New.md"]).toContain(`gitmost_id: ${A}`);
+    expect(main["New ~git.md"]).toContain("an unrelated git page");
+  });
+
+  it.each([
+    ["untouched in Docmost", "omega"],
+    ["edited in Docmost", "omega DOC"],
+  ])(
+    "a git rename (with an edit) of a page %s renames the page and keeps both edits",
+    async (_name, omega) => {
+      if (!available) return;
+      const { page, client, cycle, humanCommit, mainFiles } = await setup(
+        "alpha\n\nmiddle\n\nomega",
+      );
+      client.renamePage.mockImplementation(async (id: string, title: string) => {
+        if (id === A) page.title = title;
+        return {};
+      });
+
+      page.text = `alpha\n\nmiddle\n\n${omega}`;
+      page.updatedAt = T1;
+      await humanCommit(async (root) => {
+        const text = await readFile(join(root, "Page.md"), "utf8");
+        await rm(join(root, "Page.md"));
+        await writeFile(join(root, "Mine.md"), text.replace("alpha", "alpha GIT"), "utf8");
+      });
+      const res = await cycle();
+
+      expect(res.push.failures).toBe(0);
+      expect(client.renamePage).toHaveBeenCalledWith(A, "Mine");
+      expect(client.deletePage).not.toHaveBeenCalled();
+      expect(client.createPage).not.toHaveBeenCalled();
+      expect(page.text).toBe(`alpha GIT\n\nmiddle\n\n${omega}`);
+      expect(Object.keys(await mainFiles())).toEqual(["Mine.md"]);
+
+      // It stays that way.
+      await cycle();
+      await cycle();
+      expect(Object.keys(await mainFiles())).toEqual(["Mine.md"]);
+      expect(client.createPage).not.toHaveBeenCalled();
+      expect(page.text).toBe(`alpha GIT\n\nmiddle\n\n${omega}`);
+    },
+  );
+
+  it("a copy of a page file (same gitmost_id) edited in git becomes a new page; the original stays as it was", async () => {
+    if (!available) return;
+    const { page, pages, client, cycle, humanCommit, mainFiles } = await setup(
+      "alpha\n\nmiddle\n\nomega",
+    );
+    client.createPage.mockImplementation(async (title: string, content: string) => {
+      pages.push({ id: C, slugId: "c", title, parentPageId: null, updatedAt: T1, text: content });
+      return { data: { id: C } };
+    });
+
+    await humanCommit(async (root) => {
+      const text = await readFile(join(root, "Page.md"), "utf8");
+      await writeFile(join(root, "Page copy.md"), text.replace("middle", "middle COPY"), "utf8");
+    });
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(client.createPage).toHaveBeenCalledWith(
+      "Page copy",
+      "alpha\n\nmiddle COPY\n\nomega",
+      "space-1",
+      undefined,
+    );
+    expect(client.importPageMarkdown).not.toHaveBeenCalled();
+    expect(page.text).toBe("alpha\n\nmiddle\n\nomega");
+    const main = await mainFiles();
+    expect(Object.keys(main).sort()).toEqual(["Page copy.md", "Page.md"]);
+    expect(main["Page.md"]).toContain(`gitmost_id: ${A}`);
+    expect(main["Page copy.md"]).toContain(`gitmost_id: ${C}`);
+
+    // Both files survive the next cycles, each its own page.
+    await cycle();
+    await cycle();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["Page copy.md", "Page.md"]);
+    expect(client.createPage).toHaveBeenCalledTimes(1);
+    expect(client.importPageMarkdown).not.toHaveBeenCalled();
+    expect(client.deletePage).not.toHaveBeenCalled();
+  });
 });

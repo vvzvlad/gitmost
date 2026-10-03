@@ -48,7 +48,7 @@ import {
   type DeletionDecision,
 } from "./reconcile.js";
 import { stabilizePageBody } from "./stabilize.js";
-import { findPageFileAtRef } from "./push.js";
+import { isPageFile } from "./push.js";
 import { disambiguate } from "./sanitize.js";
 
 // Engine-only mirror branch (SPEC §5): the engine writes here, humans never do.
@@ -324,9 +324,11 @@ export interface ApplyPullActionsDeps {
     | "commitMerge"
     | "showStage"
     | "mergeFileOurs"
-    | "grepFilesAtRef"
+    | "pageIdsAtRef"
     | "showFileAtRef"
     | "listTrackedFiles"
+    | "mergeBase"
+    | "revParse"
   >;
   /** Write a file by ABSOLUTE path (mkdir of the parent is done internally). */
   writeFile: (absPath: string, text: string) => Promise<void>;
@@ -552,17 +554,54 @@ export async function applyPullActions(
   //     add/add (no common ancestor) keeps the Docmost side and git's version
   //     as a new sibling file — see below. No markers ever reach `main`.
   await git.checkout(DEFAULT_BRANCH);
+  // IDENTITY (the gitmost_id), not the path, decides which page a file holds.
+  // The merge below is path-based (rename detection off), so `main` is first
+  // ALIGNED to the paths Docmost gave its pages since the merge base: then each
+  // path holds the same page on both sides, and a path Docmost handed to another
+  // page (a retitle freeing a bare name, a removed page's name reused) never
+  // merges one page's edits into another. Skipped when either side has nothing
+  // of its own since the merge base (a no-op or fast-forward merge).
+  const mergeBaseSha = await git.mergeBase(DOCMOST_BRANCH, DEFAULT_BRANCH);
+  const ident =
+    mergeBaseSha !== null &&
+    mergeBaseSha !== (await git.revParse(DOCMOST_BRANCH)) &&
+    mergeBaseSha !== (await git.revParse(DEFAULT_BRANCH))
+      ? {
+          mb: mergeBaseSha,
+          base: await idPathMap(git, mergeBaseSha),
+          doc: await idPathMap(git, DOCMOST_BRANCH),
+        }
+      : null;
+  if (ident !== null) {
+    await alignToDocmostLayout(deps, ident, vaultRoot, log, warn);
+  }
+  // The `main` side of the merge (after the alignment commit).
+  const oursSha = await git.revParse(DEFAULT_BRANCH);
   const merge = await git.merge(DOCMOST_BRANCH);
   let conflictedPaths: string[] = [];
   let mergeResult = merge;
+  const unmerged = merge.conflict ? await git.listUnmergedPaths() : [];
+  // Pages git moved keep git's path; paths settled there are skipped below.
+  const settled = new Set<string>();
+  const relocated =
+    ident !== null && oursSha !== null && (merge.ok || merge.conflict)
+      ? await relocateGitMovedPages(
+          deps,
+          ident,
+          oursSha,
+          new Set(unmerged),
+          settled,
+          vaultRoot,
+        )
+      : [];
   if (merge.conflict) {
-    const unmerged = await git.listUnmergedPaths();
     const genuine: string[] = [];
     const addAdd: string[] = [];
-    const movedMerged: string[] = [];
+    let normalized = 0;
     // Paths taken in the merge result (lazily listed on the first add/add).
     let taken: Set<string> | null = null;
     for (const rel of unmerged) {
+      if (settled.has(rel)) continue;
       const ours = await git.showStage(2, rel); // main side
       const theirs = await git.showStage(3, rel); // docmost side
       if (
@@ -572,40 +611,42 @@ export async function applyPullActions(
       ) {
         // SPURIOUS: identical once trailing/empty-line normalization is applied.
         // Commit the canonical (normalized) form — no conflict, no markers.
+        normalized++;
         await deps.writeFile(
           relToAbs(vaultRoot, rel),
           normalizeTrailingWhitespace(theirs),
         );
       } else {
-        genuine.push(rel);
         const base = await git.showStage(1, rel);
         let resolved: string | null;
-        if (base !== null && ours !== null && theirs !== null) {
-          // Content conflict: per hunk, git wins only the conflicting hunks. The
-          // engine writes exactly one trailing newline; a git side that drops it
-          // or adds blank lines would otherwise "change" the last line and win
-          // that hunk over a Docmost edit of the last block.
-          resolved = await git.mergeFileOurs(
-            normalizeTrailingWhitespace(base),
+        const pageBase =
+          ours !== null && theirs !== null
+            ? await pageMergeBase(git, ident, base, ours, theirs)
+            : null;
+        if (ours !== null && theirs !== null && pageBase !== null) {
+          // One page, both sides changed it: per hunk, git wins only the
+          // conflicting hunks. The engine writes exactly one trailing newline; a
+          // git side that drops it or adds blank lines would otherwise "change"
+          // the last line and win that hunk over a Docmost edit of the last block.
+          const merged = await git.mergeFileOurs(
+            normalizeTrailingWhitespace(pageBase),
             normalizeTrailingWhitespace(ours),
             normalizeTrailingWhitespace(theirs),
           );
+          resolved = merged.text;
+          // A clean merge of one page (e.g. a path new on both sides after the
+          // alignment) is not a conflict.
+          if (merged.conflicts > 0) genuine.push(rel);
         } else if (ours !== null && theirs !== null) {
-          // add/add: with no common ancestor nothing tells which blocks git
-          // changed, and OURS would push git's whole body over the page, reverting
-          // its Docmost content. Keep the Docmost side at the path and keep git's
-          // version as a NEW file at a disambiguated sibling path, its gitmost_id
-          // stripped so the push creates it as a new page.
+          // add/add, or two different pages at one path: nothing tells which
+          // blocks git changed, and OURS would push git's whole body over the
+          // page. Keep the Docmost side at the path and keep git's version as a
+          // NEW file at a disambiguated sibling path, its gitmost_id stripped so
+          // the push creates it as a new page.
+          genuine.push(rel);
           resolved = theirs;
           if (taken === null) taken = new Set(await git.listTrackedFiles());
-          const slash = rel.lastIndexOf("/");
-          const dir = slash >= 0 ? rel.slice(0, slash + 1) : "";
-          const stem = rel.slice(dir.length).replace(/\.md$/, "");
-          let copy = `${dir}${disambiguate(stem, "git")}.md`;
-          for (let n = 2; taken.has(copy); n++) {
-            copy = `${dir}${disambiguate(stem, `git-${n}`)}.md`;
-          }
-          taken.add(copy);
+          const copy = freeGitSibling(rel, taken);
           await deps.writeFile(
             relToAbs(vaultRoot, copy),
             normalizeTrailingWhitespace(parsePageFile(ours).body),
@@ -614,41 +655,8 @@ export async function applyPullActions(
         } else {
           // modify/delete: keep the remaining content. delete/delete: nothing to
           // write; commitMerge's `git add -A` stages the deletion.
+          genuine.push(rel);
           resolved = ours ?? theirs;
-          // git edited a page file that Docmost moved/renamed (git's rename
-          // detection missed the pair, so the docmost side reads as a delete):
-          // merge git's edit per hunk into the page's NEW file and drop the old
-          // path. Keeping git's copy at the old path would leave two files with
-          // one id on main, and the push would write its stale body over the
-          // page's Docmost edits.
-          const pageId =
-            base !== null && ours !== null ? parsePageFile(ours).id : null;
-          const movedTo =
-            pageId !== null
-              ? await findPageFileAtRef(git, DOCMOST_BRANCH, pageId)
-              : null;
-          const docmostText =
-            movedTo !== null && movedTo !== rel && !unmerged.includes(movedTo)
-              ? await git.showFileAtRef(DOCMOST_BRANCH, movedTo)
-              : null;
-          if (
-            base !== null &&
-            ours !== null &&
-            movedTo !== null &&
-            docmostText !== null
-          ) {
-            await deps.writeFile(
-              relToAbs(vaultRoot, movedTo),
-              await git.mergeFileOurs(
-                normalizeTrailingWhitespace(base),
-                normalizeTrailingWhitespace(ours),
-                normalizeTrailingWhitespace(docmostText),
-              ),
-            );
-            await deps.rm(relToAbs(vaultRoot, rel));
-            movedMerged.push(`${rel} -> ${movedTo}`);
-            resolved = null;
-          }
         }
         if (resolved !== null) {
           await deps.writeFile(relToAbs(vaultRoot, rel), resolved);
@@ -659,7 +667,9 @@ export async function applyPullActions(
     await git.commitMerge(
       genuine.length > 0
         ? `docmost: sync, ${genuine.length} page(s) auto-resolved (conflicting hunks to git, SPEC §9)`
-        : `docmost: sync (trailing-whitespace conflicts normalized, SPEC §9)`,
+        : normalized > 0
+          ? `docmost: sync (trailing-whitespace conflicts normalized, SPEC §9)`
+          : `docmost: sync, ${unmerged.length} path(s) merged by page identity`,
       {
         authorName: BOT_AUTHOR_NAME,
         authorEmail: BOT_AUTHOR_EMAIL,
@@ -687,21 +697,31 @@ export async function applyPullActions(
             `${addAdd.join(", ")}.`,
         );
       }
-      if (movedMerged.length > 0) {
-        log(
-          `pull: git edits of page(s) Docmost moved/renamed were merged per hunk ` +
-            `into the page's new file: ${movedMerged.join(", ")}.`,
-        );
-      }
-    } else {
+    } else if (normalized > 0) {
       log(
         `pull: merge of docmost -> main conflicted ONLY on trailing/empty-line ` +
-          `normalization (${unmerged.length} file(s)) — auto-normalized, no ` +
+          `normalization (${normalized} file(s)) — auto-normalized, no ` +
           `markers, content stays in sync (SPEC §9 spurious-conflict fix).`,
       );
     }
   } else if (!merge.ok) {
     log(`pull: merge of docmost -> main failed: ${merge.output}`);
+  } else if (relocated.length > 0) {
+    await git.stageAll();
+    await git.commit(
+      `docmost: sync, ${relocated.length} page(s) kept at git's path`,
+      {
+        authorName: BOT_AUTHOR_NAME,
+        authorEmail: BOT_AUTHOR_EMAIL,
+        trailers: [SOURCE_TRAILER],
+      },
+    );
+  }
+  if (relocated.length > 0) {
+    log(
+      `pull: page(s) git moved keep git's path, their Docmost edits merged per ` +
+        `hunk: ${relocated.join(", ")}.`,
+    );
   }
   log("pull: git push to remote is DEFERRED in this increment (SPEC §7).");
 
@@ -715,4 +735,233 @@ export async function applyPullActions(
     merge: mergeResult,
     conflictedPaths,
   };
+}
+
+/** Page identity around one pull merge: the merge base and id -> path maps. */
+interface MergeIdentity {
+  mb: string;
+  /** Page id -> its file path at the merge base. */
+  base: Map<string, string>;
+  /** Page id -> its file path at the `docmost` tip. */
+  doc: Map<string, string>;
+}
+
+/** Page id -> file path of every page file at `ref` (first file wins). */
+async function idPathMap(
+  git: Pick<VaultGit, "pageIdsAtRef">,
+  ref: string,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const { path, id } of await git.pageIdsAtRef(ref)) {
+    if (isPageFile(path) && !out.has(id)) out.set(id, path);
+  }
+  return out;
+}
+
+/**
+ * A free `<name> ~git.md` (then `~git-2`, …) sibling of `rel`, following the
+ * layout's ` ~<suffix>` disambiguation; reserved in `taken`.
+ */
+function freeGitSibling(rel: string, taken: Set<string>): string {
+  const slash = rel.lastIndexOf("/");
+  const dir = slash >= 0 ? rel.slice(0, slash + 1) : "";
+  const stem = rel.slice(dir.length).replace(/\.md$/, "");
+  let out = `${dir}${disambiguate(stem, "git")}.md`;
+  for (let n = 2; taken.has(out); n++) {
+    out = `${dir}${disambiguate(stem, `git-${n}`)}.md`;
+  }
+  taken.add(out);
+  return out;
+}
+
+/**
+ * The 3-way base for the two versions met at a conflicted path, or null when
+ * they are not the same page (different gitmost_ids) or the page has no merge-
+ * base version. The path's own base (stage 1) is used only when it holds that
+ * page; otherwise the page's merge-base file, found by id at any path. A git
+ * version without frontmatter counts as the path's page.
+ */
+async function pageMergeBase(
+  git: Pick<VaultGit, "showFileAtRef">,
+  ident: MergeIdentity | null,
+  base: string | null,
+  ours: string,
+  theirs: string,
+): Promise<string | null> {
+  const baseId = base !== null ? parsePageFile(base).id : null;
+  const theirsId = parsePageFile(theirs).id;
+  if ((parsePageFile(ours).id ?? baseId) !== theirsId) return null;
+  if (base !== null && baseId === theirsId) return base;
+  const at = theirsId !== null ? ident?.base.get(theirsId) : undefined;
+  return ident !== null && at !== undefined
+    ? git.showFileAtRef(ident.mb, at)
+    : null;
+}
+
+/**
+ * Before the path-based merge, move on `main` the file of every page Docmost
+ * moved since the merge base to the page's Docmost path, in one commit — only
+ * where `main` still has the page at its merge-base path (a page git moved
+ * keeps git's path, see `relocateGitMovedPages`). A file `main` has at a target
+ * path that is not itself moving away is git's: dropped when it is unchanged
+ * since the merge base (Docmost removed its page), else moved aside to a free
+ * `<name> ~git` sibling.
+ */
+async function alignToDocmostLayout(
+  deps: ApplyPullActionsDeps,
+  ident: MergeIdentity,
+  vaultRoot: string,
+  log: (line: string) => void,
+  warn: (line: string) => void,
+): Promise<void> {
+  const { git } = deps;
+  const moves: { from: string; to: string; text: string }[] = [];
+  for (const [id, from] of ident.base) {
+    const to = ident.doc.get(id);
+    if (to === undefined || to === from) continue;
+    const text = await git.showFileAtRef("HEAD", from);
+    if (text !== null && parsePageFile(text).id === id) {
+      moves.push({ from, to, text });
+    }
+  }
+  if (moves.length === 0) return;
+  const sources = new Set(moves.map((m) => m.from));
+  const taken = new Set([
+    ...(await git.listTrackedFiles()),
+    ...ident.doc.values(),
+    ...moves.map((m) => m.to),
+  ]);
+  const aside: { from: string; to: string; text: string }[] = [];
+  const dropped: string[] = [];
+  for (const m of moves) {
+    if (sources.has(m.to)) continue;
+    const occupant = await git.showFileAtRef("HEAD", m.to);
+    if (occupant === null) continue;
+    if (occupant === (await git.showFileAtRef(ident.mb, m.to))) {
+      dropped.push(m.to);
+    } else {
+      aside.push({ from: m.to, to: freeGitSibling(m.to, taken), text: occupant });
+    }
+  }
+  for (const m of moves) await deps.rm(relToAbs(vaultRoot, m.from));
+  for (const m of [...moves, ...aside]) {
+    await deps.writeFile(relToAbs(vaultRoot, m.to), m.text);
+  }
+  await git.stageAll();
+  await git.commit(
+    `docmost: align ${moves.length} page path(s) to the Docmost layout`,
+    {
+      authorName: BOT_AUTHOR_NAME,
+      authorEmail: BOT_AUTHOR_EMAIL,
+      trailers: [SOURCE_TRAILER],
+    },
+  );
+  log(
+    `pull: aligned main to the Docmost layout before the merge: ` +
+      moves.map((m) => `${m.from} -> ${m.to}`).join(", ") +
+      (dropped.length > 0
+        ? `; replaced unchanged file(s) of removed page(s): ${dropped.join(", ")}`
+        : "") +
+      ".",
+  );
+  if (aside.length > 0) {
+    warn(
+      `pull: git file(s) at a path Docmost gave to another page were moved ` +
+        `aside: ${aside.map((m) => `${m.from} -> ${m.to}`).join(", ")}.`,
+    );
+  }
+}
+
+/**
+ * Pages git moved (on `main` the page's file left its merge-base path) keep
+ * GIT's path: the page's Docmost-side edits are merged per hunk into git's file
+ * and its Docmost-side file goes. A path-based merge alone would leave the page
+ * in two files (Docmost's edits at Docmost's path, git's at its own). If Docmost
+ * put another page at git's path, that page keeps it and git's file of the page
+ * moves to a free `~git` sibling. Returns "docmost path -> kept path" per page
+ * and marks every path it settled.
+ */
+async function relocateGitMovedPages(
+  deps: ApplyPullActionsDeps,
+  ident: MergeIdentity,
+  oursSha: string,
+  unmerged: Set<string>,
+  settled: Set<string>,
+  vaultRoot: string,
+): Promise<string[]> {
+  const { git } = deps;
+  const pathsById = new Map<string, string[]>();
+  for (const { path, id } of await git.pageIdsAtRef(oursSha)) {
+    if (isPageFile(path)) pathsById.set(id, [...(pathsById.get(id) ?? []), path]);
+  }
+  const out: string[] = [];
+  let taken: Set<string> | null = null;
+  for (const [id, paths] of pathsById) {
+    // Two files with one id on `main` are a copy: the push makes it a new page.
+    if (paths.length !== 1) continue;
+    const gitPath = paths[0];
+    const basePath = ident.base.get(id);
+    const docPath = ident.doc.get(id);
+    if (
+      basePath === undefined ||
+      docPath === undefined ||
+      gitPath === basePath ||
+      gitPath === docPath
+    ) {
+      continue;
+    }
+    const gitText = await git.showFileAtRef(oursSha, gitPath);
+    const baseText = await git.showFileAtRef(ident.mb, basePath);
+    const docText = await git.showFileAtRef(DOCMOST_BRANCH, docPath);
+    if (
+      gitText === null ||
+      baseText === null ||
+      docText === null ||
+      parsePageFile(gitText).id !== id
+    ) {
+      continue;
+    }
+    // Docmost left the page alone: the merge already carried git's move.
+    if (docPath === basePath && docText === baseText && !unmerged.has(gitPath)) {
+      continue;
+    }
+    let target = gitPath;
+    if (unmerged.has(gitPath)) {
+      const theirsAt = await git.showFileAtRef(DOCMOST_BRANCH, gitPath);
+      if (theirsAt !== null && parsePageFile(theirsAt).id !== id) {
+        await deps.writeFile(relToAbs(vaultRoot, gitPath), theirsAt);
+        settled.add(gitPath);
+        if (taken === null) {
+          taken = new Set([
+            ...(await git.listTrackedFiles()),
+            ...ident.doc.values(),
+          ]);
+        }
+        target = freeGitSibling(gitPath, taken);
+      }
+    }
+    await deps.writeFile(
+      relToAbs(vaultRoot, target),
+      docText === baseText
+        ? gitText
+        : (
+            await git.mergeFileOurs(
+              normalizeTrailingWhitespace(baseText),
+              normalizeTrailingWhitespace(gitText),
+              normalizeTrailingWhitespace(docText),
+            )
+          ).text,
+    );
+    settled.add(target);
+    // The page's Docmost-side file goes; a file git put at that path stays.
+    const gitAtDocPath = await git.showFileAtRef(oursSha, docPath);
+    if (gitAtDocPath !== null && parsePageFile(gitAtDocPath).id !== id) {
+      await deps.writeFile(relToAbs(vaultRoot, docPath), gitAtDocPath);
+    } else {
+      await deps.rm(relToAbs(vaultRoot, docPath));
+    }
+    settled.add(docPath);
+    out.push(`${docPath} -> ${target}`);
+  }
+  return out;
 }

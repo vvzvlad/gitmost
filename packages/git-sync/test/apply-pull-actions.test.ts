@@ -90,9 +90,14 @@ function makeGit(
       return stage === 2 ? s.ours : stage === 3 ? s.theirs : (s.base ?? null);
     }),
     // Stands in for `git merge-file -p --ours` (covered on real git elsewhere).
-    mergeFileOurs: vi.fn(async () => 'per-hunk merged body\n'),
+    mergeFileOurs: vi.fn(async () => ({
+      text: 'per-hunk merged body\n',
+      conflicts: 1,
+    })),
     listTrackedFiles: vi.fn(async () => conflictStages?.tracked ?? []),
-    grepFilesAtRef: vi.fn(async () => [] as string[]),
+    pageIdsAtRef: vi.fn(async () => [] as { path: string; id: string }[]),
+    mergeBase: vi.fn(async () => null),
+    revParse: vi.fn(async () => null),
     showFileAtRef: vi.fn(async () => null),
     commitMerge: vi.fn(async (subject: string) => {
       order.push(`commitMerge:${subject}`);
