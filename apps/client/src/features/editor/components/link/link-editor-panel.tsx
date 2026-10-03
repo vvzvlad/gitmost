@@ -24,9 +24,11 @@ export const LinkEditorPanel = ({
   onSetLink,
   initialUrl,
   onUnsetLink,
+  spaceSlug: spaceSlugProp,
 }: LinkEditorPanelProps) => {
   const { t } = useTranslation();
-  const { spaceSlug } = useParams();
+  const params = useParams();
+  const spaceSlug = spaceSlugProp ?? params.spaceSlug;
   const { data: space } = useSpaceQuery(spaceSlug);
   const state = useLinkEditorState({ onSetLink, initialUrl });
   const [selectedIndex, setSelectedIndex] = useState(0);

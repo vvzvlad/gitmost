@@ -67,6 +67,10 @@ const Groups = lazy(() => import("@/pages/settings/group/groups"));
 const GroupInfo = lazy(() => import("./pages/settings/group/group-info"));
 const Spaces = lazy(() => import("@/pages/settings/space/spaces.tsx"));
 const Shares = lazy(() => import("@/pages/settings/shares/shares.tsx"));
+// The single app-wide link popover / click handler for every editor's links.
+const LinkClickHost = lazy(
+  () => import("@/features/editor/components/link/link-click-host"),
+);
 
 export default function App() {
   useTrackOrigin();
@@ -134,6 +138,10 @@ export default function App() {
 
         <Route path="*" element={<Error404 />} />
       </Routes>
+      {/* Own boundary: loading this chunk must not show the full-page loader. */}
+      <Suspense fallback={null}>
+        <LinkClickHost />
+      </Suspense>
     </Suspense>
   );
 }
