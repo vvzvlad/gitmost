@@ -101,6 +101,7 @@ describe('PersistenceExtension.onStoreDocument — provenance precedence (#2)', 
       notificationQueue as any,
       collabHistory as any,
       transclusionService as any,
+      { isGitSyncEnabled: () => true } as any, // environmentService
     );
 
     return { ext, pageRepo, pageHistoryRepo, historyQueue };

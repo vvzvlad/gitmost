@@ -91,6 +91,7 @@ describe('#370 idle-snapshot pipeline (real BullMQ)', () => {
       null as any, // notificationQueue
       null as any, // collabHistory
       null as any, // transclusionService
+      null as any, // environmentService
     );
   });
 

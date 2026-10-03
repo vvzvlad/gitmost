@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { SpaceService } from './space.service';
 
 // Direct instantiation with stub deps. The Test.createTestingModule form failed
@@ -16,6 +17,7 @@ describe('SpaceService', () => {
       {} as any, // db
       {} as any, // attachmentQueue
       {} as any, // auditService
+      {} as any, // environmentService
     );
   });
 
@@ -30,7 +32,10 @@ describe('SpaceService', () => {
     // executeTx runs the callback immediately with a passthrough trx so the
     // repo calls happen inline; mirrors how the sibling sharing/comments flags
     // are persisted.
-    const buildService = (settingsBefore: Record<string, any>) => {
+    const buildService = (
+      settingsBefore: Record<string, any>,
+      gitSyncFlag = true,
+    ) => {
       const spaceRepo = {
         findById: jest.fn().mockResolvedValue({
           id: spaceId,
@@ -58,6 +63,7 @@ describe('SpaceService', () => {
         {} as any, // db
         {} as any, // attachmentQueue
         auditService as any,
+        { isGitSyncEnabled: () => gitSyncFlag } as any, // environmentService
       );
 
       // executeTx is invoked via the imported helper; patch it on the module.
@@ -67,6 +73,25 @@ describe('SpaceService', () => {
 
       return { svc, spaceRepo, auditService };
     };
+
+    // GIT_SYNC_ENABLED off: a request carrying either git-sync field is rejected
+    // loudly before ANY write (no settings persist, no space update, no audit).
+    it.each([{ gitSyncEnabled: true }, { autoMergeConflicts: true }])(
+      'rejects %p with BadRequest and writes nothing when git-sync is disabled',
+      async (fields) => {
+        const { svc, spaceRepo, auditService } = buildService({}, false);
+
+        await expect(
+          svc.updateSpace({ spaceId, ...fields } as any, workspaceId),
+        ).rejects.toThrow(
+          new BadRequestException('Git sync is disabled on this server'),
+        );
+
+        expect(spaceRepo.updateGitSyncSettings).not.toHaveBeenCalled();
+        expect(spaceRepo.updateSpace).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
+      },
+    );
 
     it('persists gitSyncEnabled via updateGitSyncSettings(enabled)', async () => {
       const { svc, spaceRepo } = buildService({});

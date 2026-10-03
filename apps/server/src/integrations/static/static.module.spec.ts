@@ -232,6 +232,7 @@ describe('StaticModule.onModuleInit — the real SPA catch-all (#636, integratio
       getPostHogKey: () => '',
       isClientTelemetryEnabled: () => false,
       isLocalFirstEnabled: () => false,
+      isGitSyncEnabled: () => true,
       // #640 — OFFLINE_GRACE mirror; onModuleInit reads it for window.CONFIG.
       getOfflineGrace: () => '30d',
       isDrawioRasterEnabled: () => false,
@@ -310,6 +311,12 @@ describe('StaticModule.onModuleInit — the real SPA catch-all (#636, integratio
     expect(res.body).toContain('<!doctype html>');
     // The shell the module actually rewrote at boot, not the raw template.
     expect(res.body).toContain('window.CONFIG=');
+  });
+
+  it('mirrors GIT_SYNC_ENABLED into the served window.CONFIG', async () => {
+    const res = await app.inject({ method: 'GET', url: '/' });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('"GIT_SYNC_ENABLED":true');
   });
 
   it('still serves a real static asset (the catch-all did not swallow it)', async () => {

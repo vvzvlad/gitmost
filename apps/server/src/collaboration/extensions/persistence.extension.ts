@@ -50,6 +50,7 @@ import {
   observeCollabStore,
 } from '../../integrations/metrics/metrics.registry';
 import { hasTransclusionFamilyNodes } from '../../core/page/transclusion/utils/transclusion-prosemirror.util';
+import { EnvironmentService } from '../../integrations/environment/environment.service';
 
 /**
  * #251 — wire format of the client→server stateless message that signals a
@@ -211,6 +212,7 @@ export class PersistenceExtension implements Extension {
     @InjectQueue(QueueName.NOTIFICATION_QUEUE) private notificationQueue: Queue,
     private readonly collabHistory: CollabHistoryService,
     private readonly transclusionService: TransclusionService,
+    private readonly environmentService: EnvironmentService,
   ) {}
 
   async onLoadDocument(data: onLoadDocumentPayload) {
@@ -300,6 +302,8 @@ export class PersistenceExtension implements Extension {
    * scheduled (preserving the edit's context/actor) and clears the timer.
    */
   async onDisconnect(data: onDisconnectPayload) {
+    // Git-sync only: without it, keep develop's debounced-store behavior.
+    if (!this.environmentService.isGitSyncEnabled()) return;
     const { instance, document, documentName, clientsCount } = data;
     if (clientsCount > 0) return;
     if (!document || document.isLoading) return;

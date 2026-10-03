@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { DatabaseModule } from '@docmost/db/database.module';
 import { EnvironmentModule } from '../environment/environment.module';
@@ -33,30 +33,48 @@ import { GitHttpService } from './http/git-http.service';
  * RedisService is provided by the global RedisModule (app.module) and CASL's
  * WorkspaceAbilityFactory by the global CaslModule — both resolve without an
  * explicit import here.
+ *
+ * GATED by GIT_SYNC_ENABLED: when off, register() returns an EMPTY module — no
+ * /api/git-sync routes, no orchestrator poll, no listener, no /git host.
  */
-@Module({
-  imports: [
-    DatabaseModule,
-    EnvironmentModule,
-    CollaborationModule,
-    PageModule,
-    // AuthModule exports AuthService (verifyUserCredentials for /git HTTP Basic).
-    AuthModule,
-    ScheduleModule,
-  ],
-  controllers: [GitSyncController],
-  providers: [
-    GitmostDataSourceService,
-    GitSyncOrchestrator,
-    SpaceLockService,
-    VaultRegistryService,
-    PageChangeListener,
-    // /git smart-HTTP host (the raw Fastify route in main.ts resolves these).
-    GitHttpBackendService,
-    GitHttpService,
-  ],
-  // Exported so the raw Fastify route registered in main.ts can resolve the
-  // handler from the Nest container (app.get(GitHttpService)).
-  exports: [GitHttpService],
-})
-export class GitSyncModule {}
+@Module({})
+export class GitSyncModule {
+  static register(): DynamicModule {
+    // Read process.env directly (not EnvironmentService) so the toggle is
+    // resolved at module-registration time, like ClientTelemetryModule. Same
+    // parse as EnvironmentService.isGitSyncEnabled(): anything but "true" => OFF.
+    const enabled =
+      (process.env.GIT_SYNC_ENABLED ?? '').toLowerCase() === 'true';
+
+    return {
+      module: GitSyncModule,
+      imports: enabled
+        ? [
+            DatabaseModule,
+            EnvironmentModule,
+            CollaborationModule,
+            PageModule,
+            // AuthModule exports AuthService (verifyUserCredentials for /git HTTP Basic).
+            AuthModule,
+            ScheduleModule,
+          ]
+        : [],
+      controllers: enabled ? [GitSyncController] : [],
+      providers: enabled
+        ? [
+            GitmostDataSourceService,
+            GitSyncOrchestrator,
+            SpaceLockService,
+            VaultRegistryService,
+            PageChangeListener,
+            // /git smart-HTTP host (the raw Fastify route in main.ts resolves these).
+            GitHttpBackendService,
+            GitHttpService,
+          ]
+        : [],
+      // Exported so the raw Fastify route registered in main.ts can resolve the
+      // handler from the Nest container (app.get(GitHttpService)).
+      exports: enabled ? [GitHttpService] : [],
+    };
+  }
+}

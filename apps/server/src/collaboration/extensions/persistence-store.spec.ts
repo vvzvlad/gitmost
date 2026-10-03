@@ -125,6 +125,7 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
       notificationQueue as any,
       collabHistory as any,
       transclusionService as any,
+      { isGitSyncEnabled: () => true } as any, // environmentService
     );
     jest.spyOn(ext['logger'], 'debug').mockImplementation(() => undefined);
     jest.spyOn(ext['logger'], 'warn').mockImplementation(() => undefined);
@@ -708,6 +709,7 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
         notificationQueue as any,
         collabHistory as any,
         transclusionService as any,
+        { isGitSyncEnabled: () => true } as any, // environmentService
       );
       jest.spyOn(ext2['logger'], 'debug').mockImplementation(() => undefined);
       jest.spyOn(ext2['logger'], 'warn').mockImplementation(() => undefined);

@@ -146,6 +146,9 @@ export class StaticModule implements OnModuleInit {
         // #563 — mirrors LOCAL_FIRST_ENABLED so the client's page-meta boot
         // cache (instant chrome) is only active when the operator opts in.
         LOCAL_FIRST_ENABLED: this.environmentService.isLocalFirstEnabled(),
+        // Mirrors GIT_SYNC_ENABLED so the client only shows the space git-sync
+        // controls when the server actually runs git-sync.
+        GIT_SYNC_ENABLED: this.environmentService.isGitSyncEnabled(),
         // #640 — mirrors the network-independent session boundary. After this
         // long without a successful `/me`, the client refuses to draw ANY local
         // content and purges it (defaults to JWT_TOKEN_EXPIRES_IN).

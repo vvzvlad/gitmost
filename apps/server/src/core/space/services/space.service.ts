@@ -23,6 +23,7 @@ import { CursorPaginationResult } from '@docmost/db/pagination/cursor-pagination
 import { ShareRepo } from '@docmost/db/repos/share/share.repo';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { LicenseCheckService } from '../../../integrations/environment/license-check.service';
+import { EnvironmentService } from '../../../integrations/environment/environment.service';
 import { AuditEvent, AuditResource } from '../../../common/events/audit-events';
 import { diffAuditTrackedFields } from '../../../common/helpers';
 import {
@@ -41,6 +42,7 @@ export class SpaceService {
     @InjectKysely() private readonly db: KyselyDB,
     @InjectQueue(QueueName.ATTACHMENT_QUEUE) private attachmentQueue: Queue,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
+    private readonly environmentService: EnvironmentService,
   ) {}
 
   async createSpace(
@@ -121,6 +123,14 @@ export class SpaceService {
     updateSpaceDto: UpdateSpaceDto,
     workspaceId: string,
   ): Promise<Space> {
+    if (
+      (typeof updateSpaceDto.gitSyncEnabled !== 'undefined' ||
+        typeof updateSpaceDto.autoMergeConflicts !== 'undefined') &&
+      !this.environmentService.isGitSyncEnabled()
+    ) {
+      throw new BadRequestException('Git sync is disabled on this server');
+    }
+
     if (updateSpaceDto?.slug) {
       const slugExists = await this.spaceRepo.slugExists(
         updateSpaceDto.slug,

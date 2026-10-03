@@ -8,8 +8,8 @@ import { PersistenceExtension } from './persistence.extension';
  * now flushes the pending store on the LAST disconnect (and only then).
  */
 describe('PersistenceExtension.onDisconnect flush (loss-on-fast-close)', () => {
-  function makeExt(): PersistenceExtension {
-    // onDisconnect touches none of the injected deps; pass casts.
+  function makeExt(gitSyncEnabled = true): PersistenceExtension {
+    // onDisconnect touches only the git-sync flag; the other deps are casts.
     return new PersistenceExtension(
       null as any,
       null as any,
@@ -19,6 +19,7 @@ describe('PersistenceExtension.onDisconnect flush (loss-on-fast-close)', () => {
       null as any,
       null as any,
       null as any,
+      { isGitSyncEnabled: () => gitSyncEnabled } as any,
     );
   }
 
@@ -54,6 +55,16 @@ describe('PersistenceExtension.onDisconnect flush (loss-on-fast-close)', () => {
     await ext.onDisconnect(payload);
     expect(executeNow).toHaveBeenCalledTimes(1);
     expect(executeNow).toHaveBeenCalledWith('onStoreDocument-page.abc');
+  });
+
+  it('does NOT flush when git-sync is disabled (develop behavior)', async () => {
+    const ext = makeExt(false);
+    const { executeNow, payload } = makeData({
+      clientsCount: 0,
+      isDebounced: true,
+    });
+    await ext.onDisconnect(payload);
+    expect(executeNow).not.toHaveBeenCalled();
   });
 
   it('does NOT flush while other editors remain connected', async () => {

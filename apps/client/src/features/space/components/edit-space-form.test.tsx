@@ -38,6 +38,14 @@ vi.mock("@/features/space/queries/space-query.ts", () => ({
   }),
 }));
 
+// Server git-sync flag (window.CONFIG.GIT_SYNC_ENABLED): ON by default here so
+// the toggle tests see the switches; one test flips it OFF.
+let gitSyncFlag = true;
+vi.mock("@/lib/config.ts", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isGitSyncEnabled: () => gitSyncFlag,
+}));
+
 // jsdom lacks matchMedia, which MantineProvider's color-scheme hook needs.
 beforeAll(() => {
   if (!window.matchMedia) {
@@ -99,6 +107,17 @@ afterEach(() => {
   cleanup();
   mutateAsync.mockReset();
   isPending = false;
+  gitSyncFlag = true;
+});
+
+describe("EditSpaceForm with git-sync disabled on the server", () => {
+  it("renders no git-sync switches", () => {
+    gitSyncFlag = false;
+    renderForm({ space: makeSpace() });
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(screen.queryByText("Enable Git sync")).toBeNull();
+    expect(screen.queryByText("Auto-merge conflicts on push")).toBeNull();
+  });
 });
 
 describe("EditSpaceForm git-sync toggle", () => {

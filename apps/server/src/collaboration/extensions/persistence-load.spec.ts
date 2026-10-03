@@ -51,6 +51,7 @@ describe('PersistenceExtension.onLoadDocument — #401 fix 2 (apply-into-hook-do
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     jest.spyOn(ext['logger'], 'debug').mockImplementation(() => undefined);
     jest.spyOn(ext['logger'], 'warn').mockImplementation(() => undefined);

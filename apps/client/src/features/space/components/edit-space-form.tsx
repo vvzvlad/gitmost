@@ -15,6 +15,7 @@ import { z } from "zod/v4";
 import { useUpdateSpaceMutation } from "@/features/space/queries/space-query.ts";
 import { ISpace } from "@/features/space/types/space.types.ts";
 import { useTranslation } from "react-i18next";
+import { isGitSyncEnabled } from "@/lib/config.ts";
 
 const formSchema = z.object({
   name: z.string().min(2).max(100),
@@ -145,42 +146,46 @@ export function EditSpaceForm({ space, readOnly }: EditSpaceFormProps) {
           )}
         </form>
 
-        <Divider my="lg" />
+        {isGitSyncEnabled() && (
+          <>
+            <Divider my="lg" />
 
-        <Switch
-          label={t("Enable Git sync")}
-          description={t("Sync this space's pages to a Git repository.")}
-          checked={gitSyncEnabled}
-          disabled={readOnly || updateSpaceMutation.isPending}
-          onChange={(event) =>
-            handleToggle(
-              "gitSyncEnabled",
-              event.currentTarget.checked,
-              gitSyncEnabled,
-              setGitSyncEnabled,
-              "Failed to toggle git-sync for space",
-            )
-          }
-        />
+            <Switch
+              label={t("Enable Git sync")}
+              description={t("Sync this space's pages to a Git repository.")}
+              checked={gitSyncEnabled}
+              disabled={readOnly || updateSpaceMutation.isPending}
+              onChange={(event) =>
+                handleToggle(
+                  "gitSyncEnabled",
+                  event.currentTarget.checked,
+                  gitSyncEnabled,
+                  setGitSyncEnabled,
+                  "Failed to toggle git-sync for space",
+                )
+              }
+            />
 
-        <Switch
-          mt="md"
-          label={t("Auto-merge conflicts on push")}
-          description={t(
-            "When off (recommended), a page whose content still has unresolved Git conflict markers is skipped on push until you resolve the conflict in Git. When on, the markers are stripped and both sides' content is pushed.",
-          )}
-          checked={autoMergeConflicts}
-          disabled={readOnly || updateSpaceMutation.isPending}
-          onChange={(event) =>
-            handleToggle(
-              "autoMergeConflicts",
-              event.currentTarget.checked,
-              autoMergeConflicts,
-              setAutoMergeConflicts,
-              "Failed to toggle git-sync auto-merge-conflicts",
-            )
-          }
-        />
+            <Switch
+              mt="md"
+              label={t("Auto-merge conflicts on push")}
+              description={t(
+                "When off (recommended), a page whose content still has unresolved Git conflict markers is skipped on push until you resolve the conflict in Git. When on, the markers are stripped and both sides' content is pushed.",
+              )}
+              checked={autoMergeConflicts}
+              disabled={readOnly || updateSpaceMutation.isPending}
+              onChange={(event) =>
+                handleToggle(
+                  "autoMergeConflicts",
+                  event.currentTarget.checked,
+                  autoMergeConflicts,
+                  setAutoMergeConflicts,
+                  "Failed to toggle git-sync auto-merge-conflicts",
+                )
+              }
+            />
+          </>
+        )}
       </Box>
     </>
   );

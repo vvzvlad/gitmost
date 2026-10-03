@@ -150,22 +150,32 @@ async function bootstrap() {
       },
     );
 
+  // The /git smart-HTTP host (parsers below + raw route further down) exists
+  // only when git-sync AND its HTTP host are enabled; otherwise /git/... falls
+  // through like any unknown route and GitHttpService is never resolved (the
+  // GitSyncModule registers no providers when disabled).
+  const gitHttpEnabled =
+    environmentService.isGitSyncEnabled() &&
+    environmentService.isGitSyncHttpEnabled();
+
   // git smart-HTTP POST bodies use these media types. Register PASSTHROUGH
   // content-type parsers so Fastify does NOT buffer/parse them (it would
   // otherwise reject the unknown type with 415); the /git handler streams the
   // raw Node request (request.raw) to `git http-backend` stdin instead. A
   // passthrough parser also bypasses the bodyLimit, so large pushes are not
   // truncated (the bytes are never buffered by Fastify).
-  app
-    .getHttpAdapter()
-    .getInstance()
-    .addContentTypeParser(
-      [
-        'application/x-git-upload-pack-request',
-        'application/x-git-receive-pack-request',
-      ],
-      (_req, payload, done) => done(null, payload),
-    );
+  if (gitHttpEnabled) {
+    app
+      .getHttpAdapter()
+      .getInstance()
+      .addContentTypeParser(
+        [
+          'application/x-git-upload-pack-request',
+          'application/x-git-receive-pack-request',
+        ],
+        (_req, payload, done) => done(null, payload),
+      );
+  }
 
   app
     .getHttpAdapter()
@@ -236,13 +246,15 @@ async function bootstrap() {
   // NOT populated here; GitHttpService resolves the workspace itself (mirroring
   // DomainMiddleware). The Fastify wildcard '/git/*' captures the multi-segment
   // subpath; the handler re-parses req.url itself.
-  const gitHttpService = app.get(GitHttpService);
-  app
-    .getHttpAdapter()
-    .getInstance()
-    .all('/git/*', async (request, reply) => {
-      await gitHttpService.handle(request as any, reply as any);
-    });
+  if (gitHttpEnabled) {
+    const gitHttpService = app.get(GitHttpService);
+    app
+      .getHttpAdapter()
+      .getInstance()
+      .all('/git/*', async (request, reply) => {
+        await gitHttpService.handle(request as any, reply as any);
+      });
+  }
 
   const logger = new Logger('NestApplication');
 

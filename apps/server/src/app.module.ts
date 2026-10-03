@@ -93,7 +93,8 @@ try {
     TelemetryModule,
     ThrottleModule,
     McpModule,
-    GitSyncModule,
+    // Gated: registers nothing unless GIT_SYNC_ENABLED=true.
+    GitSyncModule.register(),
     SandboxModule,
     AiModule,
     AiChatModule,
