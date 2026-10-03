@@ -171,6 +171,8 @@ describe('VaultGit error paths (integration; temp repo)', () => {
     // assertion below still checks the spec's intended wrapped error
     // ("failed to pin vault git config", the vault path, and the writable/locked
     // `.git/config` hint), which is the branch under test.
+    // ensureRepo writes a pinned key only when it differs, so drift one first.
+    await execFileAsync('git', ['config', 'core.autocrlf', 'true'], { cwd: vault });
     const gitDir = join(vault, '.git');
     await chmod(gitDir, 0o555);
     try {

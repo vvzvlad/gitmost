@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   runPush,
-  LAST_PUSHED_REF,
   DOCMOST_BRANCH,
   CONFLICT_MARKERS_FAILURE_REASON,
 } from '../src/engine/push';
@@ -34,7 +33,6 @@ function makeSettings(): Settings {
 // ---------------------------------------------------------------------------
 function makePushGit(opts: {
   changes: { status: 'A' | 'M' | 'D' | 'R' | 'C'; path: string; oldPath?: string }[];
-  lastPushed?: string | null;
 }) {
   const calls = { updateRef: [] as { ref: string; target: string }[] };
   const git: PushDeps['git'] = {
@@ -46,9 +44,7 @@ function makePushGit(opts: {
     checkout: vi.fn(async () => {}),
     stageAll: vi.fn(async () => {}),
     commit: vi.fn(async () => false),
-    readRef: vi.fn(async (ref: string) =>
-      ref === LAST_PUSHED_REF ? (opts.lastPushed ?? 'base-sha') : null,
-    ),
+    mergeBase: vi.fn(async () => 'base-sha'),
     revParse: vi.fn(async (ref: string) => {
       if (ref === DOCMOST_BRANCH) return 'doc-sha';
       if (ref === 'main') return 'main-sha';
@@ -354,7 +350,7 @@ function fakeVault(overrides: Record<string, any> = {}) {
     stageAll: rec('stageAll'),
     commit: rec('commit', false),
     merge: rec('merge', { ok: true, conflict: false, output: '' }),
-    readRef: vi.fn(async () => null),
+    mergeBase: vi.fn(async () => 'main-commit-sha'),
     revParse: vi.fn(async () => 'main-commit-sha'),
     diffNameStatus: vi.fn(async () => [] as any[]),
     showFileAtRef: vi.fn(async () => ''),

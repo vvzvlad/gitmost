@@ -9,6 +9,12 @@ jest.mock('./collaboration.util', () => ({
   tiptapExtensions: [],
   getPageId: (name: string) => name.replace(/^page\./, ''),
   prosemirrorNodeToYElement: jest.fn(),
+  // Same rule as the real helper: exactly one paragraph with no content.
+  isEmptyParagraphDoc: (json: any) =>
+    json?.type === 'doc' &&
+    json.content?.length === 1 &&
+    json.content[0]?.type === 'paragraph' &&
+    !json.content[0].content?.length,
 }));
 jest.mock('./yjs.util', () => ({
   setYjsMark: jest.fn(),
@@ -35,6 +41,22 @@ jest.mock('@hocuspocus/transformer', () => {
         if (blocks.length) frag.insert(0, blocks);
         return d;
       },
+      fromYdoc: (doc: any) => ({
+        type: 'doc',
+        content: doc
+          .getXmlFragment('default')
+          .toArray()
+          .map((el: any) => {
+            const text = el
+              .toArray()
+              .map((c: any) => c.toString())
+              .join('');
+            return {
+              type: 'paragraph',
+              content: text ? [{ type: 'text', text }] : [],
+            };
+          }),
+      }),
     },
   };
 });
@@ -243,6 +265,61 @@ describe('CollaborationHandler.gitSyncWriteBody (owner-routed body write)', () =
     // happens first: the live doc is untouched and no connection was opened.
     expect(hocuspocus.openDirectConnection).not.toHaveBeenCalled();
     expect(texts(shared.getXmlFragment('default'))).toEqual(before);
+  });
+
+  it('refuses an empty body with no base over a non-empty live doc (live unchanged)', async () => {
+    const { hocuspocus, shared, editor } = fakeHocuspocus([
+      { text: 'alpha', id: 'p1' },
+      { text: 'beta', id: 'p2' },
+    ]);
+    const handler = new CollaborationHandler();
+
+    await expect(
+      handler.getHandlers(hocuspocus).gitSyncWriteBody('page.x', {
+        prosemirrorJson: pmDoc(''),
+        userId: 'svc-user',
+      }),
+    ).rejects.toThrow(/refused/);
+
+    expect(texts(shared.getXmlFragment('default'))).toEqual(['alpha', 'beta']);
+    expect(texts(editor.getXmlFragment('default'))).toEqual(['alpha', 'beta']);
+  });
+
+  it('flags the store as an intentional clear ONLY for an empty body with a non-empty base', async () => {
+    const contextOf = async (payload: any) => {
+      const { hocuspocus } = fakeHocuspocus([{ text: 'alpha', id: 'p1' }]);
+      await new CollaborationHandler()
+        .getHandlers(hocuspocus)
+        .gitSyncWriteBody('page.x', { userId: 'svc-user', ...payload });
+      return hocuspocus.openDirectConnection.mock.calls[0][1];
+    };
+
+    expect(
+      await contextOf({
+        prosemirrorJson: pmDoc(''),
+        baseProsemirrorJson: pmDoc('alpha'),
+      }),
+    ).toEqual({
+      actor: 'git-sync',
+      user: { id: 'svc-user' },
+      gitSyncIntentionalClear: true,
+    });
+    expect(
+      (
+        await contextOf({
+          prosemirrorJson: pmDoc(''),
+          baseProsemirrorJson: pmDoc(''),
+        })
+      ).gitSyncIntentionalClear,
+    ).toBe(false);
+    expect(
+      (
+        await contextOf({
+          prosemirrorJson: pmDoc('alpha', 'beta'),
+          baseProsemirrorJson: pmDoc('alpha'),
+        })
+      ).gitSyncIntentionalClear,
+    ).toBe(false);
   });
 
   it('falls back to a 2-way merge when no base is supplied', async () => {

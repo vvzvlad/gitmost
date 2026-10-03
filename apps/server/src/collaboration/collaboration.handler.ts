@@ -332,7 +332,8 @@ export class CollaborationHandler {
        * With a `baseProsemirrorJson` (the last-synced common ancestor) it does a
        * THREE-WAY merge — a block only the human changed is kept, a block only
        * git changed is taken (conflicts -> git). Without a base it falls back to
-       * the 2-way merge.
+       * the 2-way merge, which REFUSES (throws) an empty body over a non-empty
+       * live doc.
        */
       gitSyncWriteBody: async (
         documentName: string,
@@ -343,6 +344,14 @@ export class CollaborationHandler {
         },
       ) => {
         const { prosemirrorJson, baseProsemirrorJson, userId } = payload;
+        const targetEmpty = isEmptyParagraphDoc(prosemirrorJson);
+        // Only git clearing a file that HAD content (empty body, non-empty base)
+        // may persist an empty doc over a non-empty page; the store-side
+        // empty-guard (PersistenceExtension) honors exactly this flag.
+        const gitSyncIntentionalClear =
+          targetEmpty &&
+          baseProsemirrorJson != null &&
+          !isEmptyParagraphDoc(baseProsemirrorJson);
 
         // Build the incoming (and base) Yjs docs BEFORE opening the connection /
         // touching the live doc. If a transform throws (a malformed/unsupported
@@ -382,11 +391,11 @@ export class CollaborationHandler {
 
         // actor:'git-sync' + the service user flow into PersistenceExtension
         // (lastUpdatedSource='git-sync', lastUpdatedById=userId).
-        await this.withYdocConnection(
+        const refused = await this.withYdocConnection(
           hocuspocus,
           documentName,
-          { actor: 'git-sync', user: { id: userId } },
-          (doc) => {
+          { actor: 'git-sync', user: { id: userId }, gitSyncIntentionalClear },
+          (doc): boolean => {
             const liveFrag = doc.getXmlFragment('default');
             const targetFrag = targetDoc.getXmlFragment('default');
             if (baseDoc) {
@@ -409,10 +418,27 @@ export class CollaborationHandler {
                 );
               }
             } else {
+              // No base: the 2-way merge makes the live doc EQUAL the target, so
+              // an empty target would delete every live block. Nothing proves
+              // git cleared this page — refuse, leaving the live doc untouched.
+              if (
+                targetEmpty &&
+                !isEmptyParagraphDoc(TiptapTransformer.fromYdoc(doc, 'default'))
+              ) {
+                return true;
+              }
               mergeXmlFragments(liveFrag, targetFrag);
             }
+            return false;
           },
         );
+        if (refused) {
+          const message =
+            `git-sync write for ${documentName} refused: an empty body with ` +
+            `no merge base would wipe the non-empty live page`;
+          this.logger.error(message);
+          throw new Error(message);
+        }
       },
     };
   }

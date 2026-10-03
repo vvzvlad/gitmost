@@ -35,13 +35,16 @@ jest.mock('@docmost/editor-ext', () => ({
 // `require()`d under jest). Stub the loader: the real conversion is exercised by
 // the @docmost/git-sync converter tests and the converter gate; here the mocked
 // TiptapTransformer.toYdoc ignores the converted doc anyway, so a passthrough
-// body + a minimal ProseMirror doc is sufficient.
+// body + a minimal ProseMirror doc is sufficient (an empty body converts to the
+// empty doc, like the real converter).
 jest.mock('../git-sync.loader', () => ({
   loadGitSync: jest.fn(async () => ({
     parseDocmostMarkdown: (md: string) => ({ meta: {}, body: md }),
-    markdownToProseMirror: async () => ({
+    markdownToProseMirror: async (md: string) => ({
       type: 'doc',
-      content: [{ type: 'paragraph' }],
+      content: md
+        ? [{ type: 'paragraph', content: [{ type: 'text', text: md }] }]
+        : [{ type: 'paragraph' }],
     }),
     // renamePage funnels the current title through sanitizeTitle to detect the
     // sanitized-stem echo; identity is the correct default here (none of the
@@ -350,6 +353,33 @@ describe('GitmostDataSourceService', () => {
 
       expect(res).toEqual({});
       expect(mocks.collabGateway.writePageBody).not.toHaveBeenCalled();
+    });
+
+    it('guard #2 treats NULL page content as an empty doc: an empty body is not written', async () => {
+      const { service, mocks } = build();
+      mocks.pageRepo.findById.mockResolvedValue({
+        id: 'p1',
+        updatedAt: new Date('2026-06-20T11:00:00.000Z'),
+        content: null,
+      });
+
+      const res = await service.bind(CTX).importPageMarkdown('p1', '');
+
+      expect(mocks.collabGateway.writePageBody).not.toHaveBeenCalled();
+      expect(res.updatedAt).toBe('2026-06-20T11:00:00.000Z');
+    });
+
+    it('a non-empty body over NULL page content is still written', async () => {
+      const { service, mocks } = build();
+      mocks.pageRepo.findById.mockResolvedValue({
+        id: 'p1',
+        updatedAt: new Date('2026-06-20T11:00:00.000Z'),
+        content: null,
+      });
+
+      await service.bind(CTX).importPageMarkdown('p1', 'first words');
+
+      expect(mocks.collabGateway.writePageBody).toHaveBeenCalledTimes(1);
     });
 
     // F5 acceptance, criterion (b): guard #2 (docsCanonicallyEqual) must SKIP the

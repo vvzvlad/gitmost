@@ -32,7 +32,7 @@ function fakeVault(overrides: Record<string, any> = {}) {
     commitMerge: rec("commitMerge"),
     abortMerge: rec("abortMerge"),
     resetHardToHead: rec("resetHardToHead"),
-    readRef: vi.fn(async () => null),
+    mergeBase: vi.fn(async () => "0000000000000000000000000000000000000000"),
     revParse: vi.fn(async () => "0000000000000000000000000000000000000000"),
     diffNameStatus: vi.fn(async () => [] as any[]),
     showFileAtRef: vi.fn(async () => ""),

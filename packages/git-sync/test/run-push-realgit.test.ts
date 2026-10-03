@@ -83,8 +83,8 @@ describe('runPush --apply against a REAL VaultGit (binding contract)', () => {
     const vault = dir;
     const git = new VaultGit(vault);
     await git.ensureRepo();
-    // The `docmost` mirror branches off `main` at the initial commit; this is
-    // also the diff base (last-pushed is unset, so runPush falls back to it).
+    // The `docmost` mirror branches off `main` at the initial commit; that
+    // commit is the merge-base runPush diffs from.
     await git.ensureBranch('docmost', 'main');
 
     // A brand-new local file with meta carrying title + spaceId but NO pageId,

@@ -13,7 +13,7 @@ function fileFor(pageId: string, body = 'body'): string {
 // FAKES only — no live Docmost, git, fs, or network. Asserts the SAFE-BY-DEFAULT
 // contract: a dry-run builds NO client, makes ZERO Docmost calls, advances NO
 // refs; `--apply` is the ONLY path that writes. Also covers the merge-in-progress
-// abort, the divergent-`docmost` escalation, and the base selection fallback.
+// abort, the divergent-`docmost` escalation, and the merge-base diff base.
 
 /** A minimal valid Settings fixture (only fields runPush reads matter). */
 function makeSettings(): Settings {
@@ -32,8 +32,8 @@ function makeSettings(): Settings {
  */
 function makeGit(opts?: {
   mergeInProgress?: boolean;
-  lastPushed?: string | null;
-  docmostSha?: string | null;
+  /** merge-base(docmost, main); `null` = no shared history. */
+  mergeBase?: string | null;
   mainSha?: string;
   /** Diff rows returned by diffNameStatus(base, main). */
   changes?: { status: 'A' | 'M' | 'D' | 'R' | 'C'; path: string; oldPath?: string }[];
@@ -52,6 +52,7 @@ function makeGit(opts?: {
     updateRef: [] as { ref: string; target: string }[],
     fastForwardBranch: [] as { branch: string; toCommit: string }[],
     diffNameStatus: [] as { from: string; to: string }[],
+    mergeBase: [] as { a: string; b: string }[],
   };
   const prevTree = opts?.prevTree ?? {};
   const commitQueue = [...(opts?.commitResults ?? [])];
@@ -75,11 +76,11 @@ function makeGit(opts?: {
       calls.commit.push(subject);
       return commitQueue.length > 0 ? (commitQueue.shift() as boolean) : true;
     }),
-    readRef: vi.fn(async (ref: string) =>
-      ref === LAST_PUSHED_REF ? (opts?.lastPushed ?? null) : null,
-    ),
+    mergeBase: vi.fn(async (a: string, b: string) => {
+      calls.mergeBase.push({ a, b });
+      return opts?.mergeBase === undefined ? 'mb-sha' : opts.mergeBase;
+    }),
     revParse: vi.fn(async (ref: string) => {
-      if (ref === DOCMOST_BRANCH) return opts?.docmostSha ?? null;
       if (ref === 'main') return mainSha;
       return null;
     }),
@@ -169,7 +170,6 @@ describe('runPush — dry-run is the DEFAULT (safe)', () => {
   it('logs a plan, builds NO client, makes ZERO Docmost calls, advances NO refs', async () => {
     const file = fileFor('p-1', 'edited body');
     const { git, calls } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'M', path: 'Doc.md' }],
     });
     const fs = makeFs({ 'Doc.md': file });
@@ -194,12 +194,12 @@ describe('runPush — dry-run is the DEFAULT (safe)', () => {
     expect(logs.join('\n')).toMatch(/DRY-RUN/);
     expect(logs.join('\n')).toMatch(/update: p-1 \(Doc\.md\)/);
     // It still diffs the base against main and works on main.
-    expect(calls.diffNameStatus).toEqual([{ from: LAST_PUSHED_REF, to: 'main' }]);
+    expect(calls.diffNameStatus).toEqual([{ from: 'mb-sha', to: 'main' }]);
     expect(calls.checkout).toEqual(['main']);
   });
 
   it('commits the working tree with the local provenance trailer before diffing', async () => {
-    const { git, calls } = makeGit({ lastPushed: 'base-sha' });
+    const { git, calls } = makeGit();
     const fs = makeFs();
     const { deps } = makeDeps(git, fs);
 
@@ -219,7 +219,6 @@ describe('runPush — --apply is the ONLY write path', () => {
     // A brand-new hand-written file with NO frontmatter (title = filename `New`).
     const newFile = 'fresh body\n';
     const { git, calls, setMainSha } = makeGit({
-      lastPushed: 'base-sha',
       mainSha: 'main-1',
       changes: [{ status: 'A', path: 'New.md' }],
     });
@@ -264,7 +263,6 @@ describe('runPush — --apply is the ONLY write path', () => {
     // A brand-new hand-written file with NO frontmatter (title = filename `New`).
     const newFile = 'fresh body\n';
     const { git, calls, setMainSha } = makeGit({
-      lastPushed: 'base-sha',
       mainSha: 'main-1',
       changes: [{ status: 'A', path: 'New.md' }],
     });
@@ -302,7 +300,6 @@ describe('runPush — --apply is the ONLY write path', () => {
   it('an update goes through importPageMarkdown (collab path)', async () => {
     const file = fileFor('p-9', 'body');
     const { git } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'M', path: 'Doc.md' }],
     });
     const fs = makeFs({ 'Doc.md': file });
@@ -339,7 +336,6 @@ describe('runPush — divergent docmost escalation (SPEC §5)', () => {
   it('sets the escalation flag and logs a WARNING, but the apply still happened', async () => {
     const file = fileFor('p-1', 'body');
     const { git } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'M', path: 'Doc.md' }],
       // The applier refuses to clobber a divergent mirror.
       ffResult: { ok: false, reason: 'not-fast-forward' },
@@ -360,39 +356,54 @@ describe('runPush — divergent docmost escalation (SPEC §5)', () => {
   });
 });
 
-describe('runPush — base selection (last-pushed else docmost)', () => {
-  it('uses refs/docmost/last-pushed when it resolves', async () => {
-    const { git, calls } = makeGit({ lastPushed: 'lp-sha' });
-    const fs = makeFs();
-    const { deps } = makeDeps(git, fs);
-
-    const res = await runPush(deps, { dryRun: true });
-
-    expect(res.base).toEqual({
-      ref: LAST_PUSHED_REF,
-      source: 'last-pushed',
-      sha: 'lp-sha',
+describe('runPush — the diff base is merge-base(docmost, main)', () => {
+  it('diffs from the merge-base and reads every pre-image there', async () => {
+    const { git, calls } = makeGit({
+      mergeBase: 'mb-sha',
+      changes: [
+        { status: 'M', path: 'Doc.md' },
+        { status: 'D', path: 'Gone.md' },
+      ],
+      prevTree: {
+        'Doc.md': fileFor('p-1', 'base body'),
+        'Gone.md': fileFor('p-gone', 'gone body'),
+      },
     });
-    expect(calls.diffNameStatus[0].from).toBe(LAST_PUSHED_REF);
+    (git as any).listTrackedFiles = vi.fn(async () => ['Doc.md']);
+    const fs = makeFs({ 'Doc.md': fileFor('p-1', 'edited body') });
+    const client = makeClientFake();
+    const { deps } = makeDeps(git, fs, client);
+
+    const res = await runPush(deps, { dryRun: false });
+
+    expect(calls.mergeBase).toEqual([{ a: DOCMOST_BRANCH, b: 'main' }]);
+    expect(res.base).toEqual({ sha: 'mb-sha' });
+    expect(calls.diffNameStatus).toEqual([{ from: 'mb-sha', to: 'main' }]);
+    // The update's 3-way base and the delete's pageId both come from mb-sha.
+    expect(client.importPageMarkdown).toHaveBeenCalledWith(
+      'p-1',
+      'edited body',
+      'base body',
+    );
+    expect(client.deletePage).toHaveBeenCalledWith('p-gone');
+    for (const [ref] of (git.showFileAtRef as any).mock.calls) {
+      expect(ref).toBe('mb-sha');
+    }
+    // last-pushed is still advanced as the clean-push marker.
+    expect(calls.updateRef).toEqual([{ ref: LAST_PUSHED_REF, target: 'main-sha-1' }]);
   });
 
-  it('falls back to the docmost branch when last-pushed is missing', async () => {
-    const { git, calls } = makeGit({
-      lastPushed: null, // last-pushed does not resolve -> fall back.
-      docmostSha: 'doc-sha',
-    });
+  it('throws when docmost and main share no history, before diffing or building a client', async () => {
+    const { git, calls } = makeGit({ mergeBase: null });
     const fs = makeFs();
-    const { deps } = makeDeps(git, fs);
+    const { deps, makeClient } = makeDeps(git, fs);
 
-    const res = await runPush(deps, { dryRun: true });
-
-    expect(res.base).toEqual({
-      ref: DOCMOST_BRANCH,
-      source: 'docmost',
-      sha: 'doc-sha',
-    });
-    // The diff is taken against the docmost mirror branch.
-    expect(calls.diffNameStatus[0].from).toBe(DOCMOST_BRANCH);
+    await expect(runPush(deps, { dryRun: false })).rejects.toThrow(
+      /share no history/,
+    );
+    expect(calls.diffNameStatus).toEqual([]);
+    expect(makeClient).not.toHaveBeenCalled();
+    expect(calls.updateRef).toEqual([]);
   });
 });
 
@@ -407,7 +418,6 @@ describe('runPush --apply — applyPushActions edge branches', () => {
     // `String(err)` fallback in errMessage (push.ts:763) is otherwise uncovered.
     const file = fileFor('p-7', 'body');
     const { git, calls } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'M', path: 'Doc.md' }],
     });
     const fs = makeFs({ 'Doc.md': file });
@@ -441,7 +451,6 @@ describe('runPush --apply — applyPushActions edge branches', () => {
     // errMessage stringifies (not reads a .message) for non-Error throwables.
     const file = fileFor('p-8', 'body');
     const { git } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'M', path: 'Doc.md' }],
     });
     const fs = makeFs({ 'Doc.md': file });
@@ -465,7 +474,6 @@ describe('runPush --apply — applyPushActions edge branches', () => {
     // and parentPageId from the PATH (root -> undefined).
     const newFile = 'fresh body\n';
     const { git } = makeGit({
-      lastPushed: 'base-sha',
       mainSha: 'main-1',
       changes: [{ status: 'A', path: 'New.md' }],
     });
@@ -492,7 +500,6 @@ describe('runPush --apply — applyPushActions edge branches', () => {
     // CREATE, never skipped for a "missing spaceId" (that legacy skip is gone).
     const file = 'just some text\n';
     const { git } = makeGit({
-      lastPushed: 'base-sha',
       changes: [{ status: 'A', path: 'Orphan.md' }],
     });
     const fs = makeFs({ 'Orphan.md': file });

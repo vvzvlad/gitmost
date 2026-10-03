@@ -306,6 +306,50 @@ describe('PersistenceExtension.onStoreDocument — Approach-A boundary snapshot'
     expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
   });
 
+  // A git-sync store may clear a page ONLY with the explicit
+  // `gitSyncIntentionalClear` context flag (set by gitSyncWriteBody when git's
+  // body is empty and a non-empty base proves the file was cleared). The
+  // 'git-sync' actor alone must not let an empty merge result wipe the page.
+  it('does NOT let a git-sync store without the clear flag overwrite non-empty content with an empty doc', async () => {
+    const document = ydocFor({ type: 'doc', content: [{ type: 'paragraph' }] });
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+
+    await ext.onStoreDocument({
+      documentName: `page.${PAGE_ID}`,
+      document,
+      context: { user: { id: 'svc-user' }, actor: 'git-sync' },
+    } as any);
+
+    expect(pageRepo.updatePage).not.toHaveBeenCalled();
+  });
+
+  it('persists a git-sync clear WITH the flag, for that one store only (the disconnect store is guarded)', async () => {
+    const document = ydocFor({ type: 'doc', content: [{ type: 'paragraph' }] });
+    pageRepo.findById.mockResolvedValue({
+      ...persistedHumanPage('IGNORED'),
+      content: doc('IMPORTANT RICH CONTENT'),
+    });
+    // One direct connection's context, shared by its transact and disconnect stores.
+    const context = {
+      user: { id: 'svc-user' },
+      actor: 'git-sync',
+      gitSyncIntentionalClear: true,
+    };
+    const data = { documentName: `page.${PAGE_ID}`, document, context };
+
+    await ext.onStoreDocument(data as any);
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+    expect(pageRepo.updatePage.mock.calls[0][0].content).toEqual(
+      TiptapTransformer.fromYdoc(document, 'default'),
+    );
+
+    await ext.onStoreDocument(data as any);
+    expect(pageRepo.updatePage).toHaveBeenCalledTimes(1);
+  });
+
   // #251 — REAL-PATH regression test. The intentional-clear signal is set via
   // the actual transport seam (ext.onStateless with the exact stateless payload
   // the client's IntentionalClear extension sends), NOT a hand-injected

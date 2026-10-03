@@ -56,6 +56,7 @@ function deps(client: any, git: any, fs: ReturnType<typeof makeFs>): ApplyPushDe
     readFile: fs.fs.readFile,
     writeFile: fs.fs.writeFile,
     spaceId: SPACE_ID,
+    baseRef: 'base-sha',
   };
 }
 

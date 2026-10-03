@@ -21,6 +21,8 @@ const execFileAsync = promisify(execFile);
 export class VaultRegistryService {
   private readonly logger = new Logger(VaultRegistryService.name);
   private readonly vaults = new Map<string, VaultGit>();
+  /** The in-flight `ensureServable` run per space (single-flight). */
+  private readonly servableRuns = new Map<string, Promise<string>>();
 
   constructor(private readonly environmentService: EnvironmentService) {}
 
@@ -73,11 +75,26 @@ export class VaultRegistryService {
    *     at the git layer. (The engine's per-access lstat/realpath guard is the
    *     second layer — see path-guard.ts.)
    *
-   * All are set idempotently (plain `git config` overwrites the local value).
+   * Each key is read first and written only when its local value differs:
+   * every `git config` write takes `.git/config.lock`, and this runs on every
+   * /git request OUTSIDE the space lock, so unconditional writes collided with
+   * a running cycle's own config work (HTTP 500s, failed cycles). Concurrent
+   * calls for one space share a single in-flight run; it is forgotten once it
+   * settles, so a later request re-verifies (e.g. after a vault re-init).
    * Returns the absolute vault path. Idempotent and safe to call before every
    * request.
    */
   async ensureServable(spaceId: string): Promise<string> {
+    const inFlight = this.servableRuns.get(spaceId);
+    if (inFlight) return inFlight;
+    const run = this.makeServable(spaceId).finally(() => {
+      this.servableRuns.delete(spaceId);
+    });
+    this.servableRuns.set(spaceId, run);
+    return run;
+  }
+
+  private async makeServable(spaceId: string): Promise<string> {
     const { vaultGitEnv } = await loadGitSync();
     const vault = await this.getVault(spaceId);
     const path = this.vaultPath(spaceId);
@@ -98,15 +115,29 @@ export class VaultRegistryService {
     // otherwise hang the request indefinitely. Mirror the engine's GIT_EXEC
     // bound via the configured backend timeout.
     const timeout = this.environmentService.getGitSyncBackendTimeoutMs();
+    const opts = {
+      cwd: path,
+      // Use the engine's cwd-isolated env (strips GIT_DIR / GIT_WORK_TREE) so
+      // the config is read from / written to THIS vault's local config only.
+      env: vaultGitEnv(),
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+    };
     for (const [key, value] of configs) {
-      await execFileAsync('git', ['config', key, value], {
-        cwd: path,
-        // Use the engine's cwd-isolated env (strips GIT_DIR / GIT_WORK_TREE) so
-        // the config is written to THIS vault's local config, nothing else.
-        env: vaultGitEnv(),
-        timeout,
-        maxBuffer: 10 * 1024 * 1024,
-      });
+      const current = await execFileAsync(
+        'git',
+        ['config', '--local', '--get', key],
+        opts,
+      ).then(
+        (r) => String(r.stdout).trim(),
+        (err) => {
+          // Exit 1 = the key is unset; anything else is a real failure.
+          if (err?.code === 1) return null;
+          throw err;
+        },
+      );
+      if (current === value) continue;
+      await execFileAsync('git', ['config', key, value], opts);
     }
 
     return path;

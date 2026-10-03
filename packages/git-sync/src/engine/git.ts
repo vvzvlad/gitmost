@@ -214,11 +214,11 @@ export class VaultGit {
     // Neutralize correctness-affecting git config in the vault's LOCAL config so
     // a user's GLOBAL/system config cannot change porcelain BEHAVIOR (not just
     // output) and corrupt the vault. The vault is OUR dedicated repo, so LOCAL
-    // values (which override global/system) are the right scope. Set
-    // UNCONDITIONALLY every run — idempotent and cheap; `git config <key>`
-    // writes to `--local` by default inside the repo. These MUST be in place
-    // before any add/commit/checkout that could be affected, hence they run
-    // before the initial-commit block below.
+    // values (which override global/system) are the right scope. Each key is
+    // read first and written only when it differs (`ensureLocalConfig`); `git
+    // config <key>` writes to `--local` by default inside the repo. These MUST
+    // be in place before any add/commit/checkout that could be affected, hence
+    // they run before the initial-commit block below.
     //   - core.autocrlf=false — CRITICAL (SPEC §11): a global core.autocrlf=true
     //     would rewrite LF<->CRLF on add/checkout, making our deterministic,
     //     byte-stable markdown churn and breaking the round-trip invariant.
@@ -245,11 +245,11 @@ export class VaultGit {
     // contrast, only affects OUR parsing of output and so is baked into the
     // `runRaw` argv baseline instead.)
     try {
-      await this.run(["config", "core.autocrlf", "false"]);
-      await this.run(["config", "core.safecrlf", "false"]);
-      await this.run(["config", "commit.gpgsign", "false"]);
-      await this.run(["config", "core.attributesFile", "/dev/null"]);
-      await this.run(["config", "merge.conflictStyle", "merge"]);
+      await this.ensureLocalConfig("core.autocrlf", "false");
+      await this.ensureLocalConfig("core.safecrlf", "false");
+      await this.ensureLocalConfig("commit.gpgsign", "false");
+      await this.ensureLocalConfig("core.attributesFile", "/dev/null");
+      await this.ensureLocalConfig("merge.conflictStyle", "merge");
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -278,6 +278,19 @@ export class VaultGit {
   private async isRepo(): Promise<boolean> {
     const r = await this.runRaw(["rev-parse", "--is-inside-work-tree"]);
     return r.code === 0 && r.stdout.trim() === "true";
+  }
+
+  /**
+   * Set a LOCAL config key only when its local value differs. Every `git config`
+   * write takes `.git/config.lock`, and `ensureRepo` also runs for every smart-
+   * HTTP request outside the space lock, so an unconditional write collides with
+   * a concurrent one ("could not lock config file"). Reading first keeps the
+   * steady state write-free.
+   */
+  private async ensureLocalConfig(key: string, value: string): Promise<void> {
+    const r = await this.runRaw(["config", "--local", "--get", key]);
+    if (r.code === 0 && r.stdout.trim() === value) return;
+    await this.run(["config", key, value]);
   }
 
   /** True if a LOCAL git config key is set in the vault repo. */
@@ -708,6 +721,19 @@ export class VaultGit {
    */
   async readRef(ref: string): Promise<string | null> {
     return this.revParse(ref);
+  }
+
+  /**
+   * The best common ancestor of two commit-ishes (`git merge-base <a> <b>`), or
+   * `null` when they share no history or either side does not resolve. The push
+   * direction diffs `main` from merge-base(`docmost`, `main`) — the newest commit
+   * whose content Docmost already holds.
+   */
+  async mergeBase(a: string, b: string): Promise<string | null> {
+    const r = await this.runRaw(["merge-base", a, b]);
+    if (r.code !== 0) return null;
+    const sha = r.stdout.trim();
+    return sha.length > 0 ? sha : null;
   }
 
   /**

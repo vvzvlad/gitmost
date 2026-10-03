@@ -384,6 +384,12 @@ export class PersistenceExtension implements Extension {
     // every store consumes the flag here regardless of incoming emptiness, so a
     // subsequent non-empty store can never leave a usable flag behind.
     const allowIntentionalClear = this.consumeIntentionalClear(documentName);
+    // git-sync's explicit clear authorization (see the empty-guard below). It
+    // covers exactly ONE store — the merge's own — so it is taken off the shared
+    // direct-connection context here, once, before the retry loop; the same
+    // connection's disconnect store then takes the normal empty-guard.
+    const gitSyncClear = context?.gitSyncIntentionalClear === true;
+    if (gitSyncClear) context.gitSyncIntentionalClear = false;
 
     // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
     // of the latest edit until this hook returns: hocuspocus destroys/unloads the
@@ -433,14 +439,13 @@ export class PersistenceExtension implements Extension {
           // flag via that same hoisted consume (a "cleared then retyped"
           // sequence can't leave a usable one behind).
           const incomingEmpty = isEmptyParagraphDoc(tiptapJson as any);
-          // A git-sync write is authoritative and its content IS the vault file:
-          // an empty incoming doc there means the user DELIBERATELY cleared the
-          // page's markdown in git (there is no "transient glitch empty" for a
-          // file-sourced write). Honor it, otherwise the empty-guard rejects the
-          // clear, the vault ref has already advanced past the empty commit, and
-          // vault<->Docmost diverge permanently (review warning). This mirrors the
-          // #251 intentional-clear allowance for a different authoritative source.
-          const gitSyncClear = lastUpdatedSource === 'git-sync';
+          // A git-sync store may clear the page ONLY with the explicit
+          // `gitSyncIntentionalClear` context flag, which gitSyncWriteBody sets
+          // when git's body is empty AND a non-empty merge base proves the file
+          // was cleared in git (consumed above). The 'git-sync' actor alone is
+          // not enough: an empty merge result without that proof (a stale export
+          // merged into a new page) wiped live text, so every other git-sync
+          // store takes the normal guard. Mirrors the #251 allowance.
           if (
             incomingEmpty &&
             page.content &&

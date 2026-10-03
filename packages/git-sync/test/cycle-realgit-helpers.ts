@@ -76,8 +76,8 @@ export interface FakePage {
   title: string;
   parentPageId: string | null;
   updatedAt: string;
-  /** The page body: one paragraph of this text. */
-  text: string;
+  /** The page body: one paragraph per "\n\n"-separated chunk; `null` = no content. */
+  text: string | null;
 }
 
 /**
@@ -86,10 +86,16 @@ export interface FakePage {
  * no-ops (`createPage` returns the next id from `createdIds`).
  */
 export function makeClient(pages: FakePage[], createdIds: string[] = []) {
-  const doc = (text: string) => ({
-    type: "doc",
-    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
-  });
+  const doc = (text: string | null) =>
+    text === null
+      ? null
+      : {
+          type: "doc",
+          content: text.split("\n\n").map((t) => ({
+            type: "paragraph",
+            content: [{ type: "text", text: t }],
+          })),
+        };
   return {
     listSpaceTree: vi.fn(async () => ({
       pages: pages.map((p) => ({

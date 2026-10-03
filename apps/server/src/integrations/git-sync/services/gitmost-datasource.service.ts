@@ -372,7 +372,14 @@ export class GitmostDataSourceService {
             }
           })()
         : currentPage.content;
-    if (currentContent && docsCanonicallyEqual(doc, currentContent)) {
+    // A page whose content is NULL (never edited) compares as an EMPTY doc, so an
+    // empty incoming body is a no-op here instead of reaching the collab merge.
+    if (
+      docsCanonicallyEqual(
+        doc,
+        currentContent || (await markdownToProseMirror('')),
+      )
+    ) {
       return {
         updatedAt: new Date(currentPage.updatedAt).toISOString(),
       };

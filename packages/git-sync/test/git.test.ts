@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile, utimes } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -297,6 +297,40 @@ describe('VaultGit (integration; temp repo)', () => {
     expect(await localConfig('core.autocrlf')).toBe('false');
     expect(await localConfig('commit.gpgsign')).toBe('false');
     expect(await localConfig('core.safecrlf')).toBe('false');
+  });
+
+  it('ensureRepo on a configured vault does not rewrite .git/config (no config.lock taken)', async () => {
+    if (!available) return;
+    const vault = await freshDir();
+    const git = new VaultGit(vault);
+    await git.ensureRepo();
+    const configPath = join(vault, '.git', 'config');
+    const before = await stat(configPath);
+
+    // A `git config` write replaces the file via config.lock + rename (new
+    // inode); a read-only pass leaves it in place.
+    await Promise.all([git.ensureRepo(), git.ensureRepo(), git.ensureRepo()]);
+
+    const after = await stat(configPath);
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('ensureRepo restores a pinned config value that drifted', async () => {
+    if (!available) return;
+    const vault = await freshDir();
+    const git = new VaultGit(vault);
+    await git.ensureRepo();
+    await execFileAsync('git', ['config', 'core.autocrlf', 'true'], { cwd: vault });
+
+    await git.ensureRepo();
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['config', '--local', '--get', 'core.autocrlf'],
+      { cwd: vault },
+    );
+    expect(stdout.trim()).toBe('false');
   });
 
   it('preserves LF bytes verbatim on commit (SPEC §11: autocrlf=false)', async () => {

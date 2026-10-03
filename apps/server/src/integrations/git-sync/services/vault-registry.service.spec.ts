@@ -18,6 +18,7 @@ jest.mock('node:fs/promises', () => ({
 // callback-style fn so promisify resolves. Each `git config <key> <value>` call
 // is recorded so the config writes (incl. the security-critical
 // receive.denyNonFastForwards=true and core.symlinks=false) can be asserted.
+// By default a `git config --local --get` read returns '' (value differs).
 jest.mock('node:child_process', () => ({
   execFile: jest.fn((_cmd: string, _args: string[], _opts: any, cb: any) =>
     cb(null, { stdout: '', stderr: '' }),
@@ -51,6 +52,23 @@ const execFileMock = execFile as unknown as AnyMock;
 const VaultGitMock = mockVaultGit;
 void loadGitSync;
 
+/** The `git config <key> <value>` writes (reads via `--local --get` excluded). */
+function configWrites(): string[][] {
+  return execFileMock.mock.calls
+    .filter(
+      ([cmd, args]) => cmd === 'git' && args[0] === 'config' && args[1] !== '--local',
+    )
+    .map(([, args]) => [args[1], args[2]]);
+}
+
+const SERVABLE_CONFIG: Record<string, string> = {
+  'receive.denyCurrentBranch': 'updateInstead',
+  'receive.denyNonFastForwards': 'true',
+  'http.receivepack': 'true',
+  'http.uploadpack': 'true',
+  'core.symlinks': 'false',
+};
+
 function build(dataDir: string): { service: VaultRegistryService } {
   const env = {
     getGitSyncDataDir: jest.fn(() => dataDir),
@@ -62,6 +80,9 @@ function build(dataDir: string): { service: VaultRegistryService } {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: any) =>
+    cb(null, { stdout: '', stderr: '' }),
+  );
 });
 
 describe('VaultRegistryService', () => {
@@ -108,11 +129,7 @@ describe('VaultRegistryService', () => {
       expect((vault as any).ensureRepo).toHaveBeenCalledTimes(1);
 
       // Collect every `git config <key> <value>` write.
-      const configWrites = execFileMock.mock.calls
-        .filter(([cmd, args]) => cmd === 'git' && args[0] === 'config')
-        .map(([, args]) => [args[1], args[2]]);
-
-      expect(configWrites).toEqual([
+      expect(configWrites()).toEqual([
         ['receive.denyCurrentBranch', 'updateInstead'],
         // Security-critical: blocks force-push / history rewrites on main.
         ['receive.denyNonFastForwards', 'true'],
@@ -143,10 +160,77 @@ describe('VaultRegistryService', () => {
         'init failed',
       );
 
-      const configWrites = execFileMock.mock.calls.filter(
-        ([cmd, args]) => cmd === 'git' && args[0] === 'config',
+      expect(configWrites()).toHaveLength(0);
+    });
+
+    it('parallel calls for one space share one run and write nothing when values already match', async () => {
+      const { service } = build('/vaults');
+      const vault = await service.getVault('space-1');
+      // The vault already carries every servable value.
+      execFileMock.mockImplementation(
+        (_cmd: string, args: string[], _opts: any, cb: any) =>
+          cb(null, {
+            stdout: args[1] === '--local' ? `${SERVABLE_CONFIG[args[3]]}\n` : '',
+            stderr: '',
+          }),
       );
-      expect(configWrites).toHaveLength(0);
+      let active = 0;
+      let maxActive = 0;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      (vault as any).ensureRepo.mockImplementation(async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        active--;
+      });
+
+      const calls = [1, 2, 3].map(() => service.ensureServable('space-1'));
+      release();
+      const paths = await Promise.all(calls);
+
+      expect(paths).toEqual(Array(3).fill('/vaults/space-1'));
+      expect((vault as any).ensureRepo).toHaveBeenCalledTimes(1);
+      expect(maxActive).toBe(1);
+      expect(configWrites()).toEqual([]);
+
+      // Settled runs are not cached: a later request verifies again.
+      await service.ensureServable('space-1');
+      expect((vault as any).ensureRepo).toHaveBeenCalledTimes(2);
+      expect(configWrites()).toEqual([]);
+    });
+
+    it('a rejected run is dropped: the next call retries', async () => {
+      const { service } = build('/vaults');
+      const vault = await service.getVault('space-1');
+      (vault as any).ensureRepo.mockRejectedValueOnce(new Error('init failed'));
+
+      await expect(service.ensureServable('space-1')).rejects.toThrow(
+        'init failed',
+      );
+      await expect(service.ensureServable('space-1')).resolves.toBe(
+        '/vaults/space-1',
+      );
+      expect((vault as any).ensureRepo).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails loudly when reading a config key fails for a reason other than "unset"', async () => {
+      const { service } = build('/vaults');
+      execFileMock.mockImplementation(
+        (_cmd: string, args: string[], _opts: any, cb: any) => {
+          if (args[1] === '--local') {
+            const err: any = new Error('fatal: bad config file');
+            err.code = 128;
+            return cb(err);
+          }
+          return cb(null, { stdout: '', stderr: '' });
+        },
+      );
+
+      await expect(service.ensureServable('space-1')).rejects.toThrow(
+        'bad config file',
+      );
+      expect(configWrites()).toEqual([]);
     });
   });
 });
