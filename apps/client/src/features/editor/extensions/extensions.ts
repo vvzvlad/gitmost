@@ -120,7 +120,7 @@ import scala from "highlight.js/lib/languages/scala";
 import mentionRenderItems from "@/features/editor/components/mention/mention-suggestion.ts";
 import { ReactNodeViewRenderer, ReactMarkViewRenderer } from "@tiptap/react";
 import MentionView from "@/features/editor/components/mention/mention-view.tsx";
-import LinkView from "@/features/editor/components/link/link-view.tsx";
+import { createLinkClickPlugin } from "@/features/editor/components/link/link-click-plugin.ts";
 import SpoilerView from "@/features/editor/components/spoiler/spoiler-view.tsx";
 import i18n from "@/i18n.ts";
 import { MarkdownClipboard } from "@/features/editor/extensions/markdown-clipboard.ts";
@@ -240,8 +240,8 @@ export const mainExtensions = [
   LinkExtension.configure({
     openOnClick: false,
   }).extend({
-    addMarkView() {
-      return ReactMarkViewRenderer(LinkView);
+    addProseMirrorPlugins() {
+      return [...(this.parent?.() ?? []), createLinkClickPlugin(this.editor)];
     },
   }),
   Superscript,
