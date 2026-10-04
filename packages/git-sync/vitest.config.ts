@@ -18,6 +18,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // Many suites drive several sync cycles against a REAL git repo; on a CI
+    // runner one such test takes ~5 s, the vitest default timeout.
+    testTimeout: 30_000,
     // Coverage gate (issue #324). The v8 provider is used deliberately: the
     // istanbul provider instruments sources by rewriting their AST, which broke
     // on the ESM `@docmost/editor-ext` barrel import; v8 collects native

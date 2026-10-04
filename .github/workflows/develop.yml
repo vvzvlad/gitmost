@@ -220,6 +220,12 @@ jobs:
       - name: Build prosemirror-markdown
         run: pnpm --filter @docmost/prosemirror-markdown build
 
+      # The git-sync integration type-imports @docmost/git-sync; its build/ is
+      # gitignored and `test:e2e` type-checks, so build it here or tsc fails
+      # with TS2307 (mirrors the test.yml job).
+      - name: Build git-sync
+        run: pnpm --filter @docmost/git-sync build
+
       # docmost-client.loader.ts type-imports from @docmost/mcp (issue #446); its
       # build/ is gitignored and `test:e2e` type-checks, so build it here or tsc
       # fails with TS2307 (mirrors the e2e-mcp / mcp-server-parity jobs).
