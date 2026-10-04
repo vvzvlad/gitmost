@@ -642,7 +642,13 @@ export async function applyPullActions(
           // alignment) is not a conflict.
           if (merged.conflicts > 0) genuine.push(rel);
         } else if (ours !== null && theirs !== null) {
-          const adoptId = await unfinishedCreateId(client, ident, ours, theirs);
+          const adoptId = await unfinishedCreateId(
+            client,
+            ident,
+            ours,
+            theirs,
+            warn,
+          );
           if (adoptId !== null) {
             // git-sync's own create of git's new file, cut off before its id
             // write-back: ONE page — git's content under that page's id; the
@@ -801,6 +807,7 @@ async function unfinishedCreateId(
   ident: MergeIdentity | null,
   ours: string,
   theirs: string,
+  warn: (line: string) => void,
 ): Promise<string | null> {
   const gitFile = parsePageFile(ours);
   if (gitFile.id !== null) return null;
@@ -810,10 +817,21 @@ async function unfinishedCreateId(
   const live = await client.getPageJson(page.id);
   if (live.lastUpdatedSource !== "git-sync") return null;
   if (page.body.trim().length === 0) return page.id;
-  // git's body as the page would export after git-sync wrote it.
-  const gitBody = await stabilizePageBody(
-    await markdownToProseMirror(gitFile.body),
-  );
+  // git's body as the page would export after git-sync wrote it. A file the
+  // converter cannot take (e.g. nesting deep enough to overflow the stack)
+  // is not taken over: it becomes a copy instead of failing the whole pull.
+  let gitBody: string;
+  try {
+    gitBody = await stabilizePageBody(await markdownToProseMirror(gitFile.body));
+  } catch (err) {
+    warn(
+      `pull: could not convert git's new file at page ${page.id}'s path to ` +
+        `compare it with the page; keeping it as a copy: ${
+          err instanceof Error ? (err.stack ?? err.message) : String(err)
+        }`,
+    );
+    return null;
+  }
   return normalizeTrailingWhitespace(gitBody) ===
     normalizeTrailingWhitespace(page.body)
     ? page.id
