@@ -31,7 +31,11 @@
  */
 import { dirname } from "node:path";
 import { sep } from "node:path";
-import { parsePageFile, serializePageFile } from "@docmost/prosemirror-markdown";
+import {
+  markdownToProseMirror,
+  parsePageFile,
+  serializePageFile,
+} from "@docmost/prosemirror-markdown";
 import type { GitSyncClient } from "./client.types.js";
 import { buildVaultLayout, type PageNode } from "./layout.js";
 import {
@@ -782,10 +786,15 @@ interface MergeIdentity {
 
 /**
  * The id of the Docmost page at an add/add path when that page is git-sync's
- * own unfinished create of git's new file there: git's file has no
- * gitmost_id, and the page is new since the merge base and last written by
- * git-sync (a create cut off before its id write-back, with or without its
- * body written). `null` otherwise.
+ * own unfinished create of git's new file there (cut off before its id
+ * write-back, with or without its body written): git's file has no
+ * gitmost_id, the page is new since the merge base, last written by git-sync,
+ * and still empty or already holding git's body. `null` otherwise.
+ *
+ * Taking a page over writes git's body into it, so the body check keeps that
+ * from changing anything the page holds: a page that only looks like such a
+ * create (restored from the trash, or every page of a re-made vault) keeps its
+ * own text, and git's file becomes a copy.
  */
 async function unfinishedCreateId(
   client: Pick<GitSyncClient, "getPageJson">,
@@ -793,12 +802,22 @@ async function unfinishedCreateId(
   ours: string,
   theirs: string,
 ): Promise<string | null> {
-  if (parsePageFile(ours).id !== null) return null;
+  const gitFile = parsePageFile(ours);
+  if (gitFile.id !== null) return null;
   const page = parsePageFile(theirs);
   if (page.id === null) return null;
   if (ident === null || ident.base.has(page.id)) return null;
   const live = await client.getPageJson(page.id);
-  return live.lastUpdatedSource === "git-sync" ? page.id : null;
+  if (live.lastUpdatedSource !== "git-sync") return null;
+  if (page.body.trim().length === 0) return page.id;
+  // git's body as the page would export after git-sync wrote it.
+  const gitBody = await stabilizePageBody(
+    await markdownToProseMirror(gitFile.body),
+  );
+  return normalizeTrailingWhitespace(gitBody) ===
+    normalizeTrailingWhitespace(page.body)
+    ? page.id
+    : null;
 }
 
 /** Page id -> file path of every page file at `ref` (first file wins). */

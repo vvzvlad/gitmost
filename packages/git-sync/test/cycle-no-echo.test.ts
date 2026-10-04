@@ -878,6 +878,78 @@ describe("runCycle — the push never echoes the pull's export", () => {
     expect(pages).toHaveLength(2);
   });
 
+  it("a cut-off create whose page holds git's body in canonical form is taken over too", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const S = "019f2800-0000-7000-8000-0000000000cc";
+
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "New.md"), "__bold__ text\n", "utf8");
+    });
+    pages.push({
+      id: S,
+      slugId: "s",
+      title: "New",
+      parentPageId: null,
+      updatedAt: T1,
+      text: null,
+      lastUpdatedSource: "git-sync",
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "bold", marks: [{ type: "bold" }] },
+              { type: "text", text: " text" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(client.createPage).not.toHaveBeenCalled();
+    expect(Object.keys(await mainFiles()).sort()).toEqual(["New.md", "Page.md"]);
+  });
+
+  it("a page git-sync last wrote that only looks new (restored from the trash, a re-made vault) keeps its text: git's file becomes a copy", async () => {
+    if (!available) return;
+    const { pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
+    const S = "019f2800-0000-7000-8000-0000000000cd";
+
+    await humanCommit(async (root) => {
+      await writeFile(join(root, "New.md"), "my brand new notes\n", "utf8");
+    });
+    pages.push({
+      id: S,
+      slugId: "s",
+      title: "New",
+      parentPageId: null,
+      updatedAt: T1,
+      text: "valuable docmost content",
+      lastUpdatedSource: "git-sync",
+    });
+
+    const res = await cycle();
+
+    expect(res.push.failures).toBe(0);
+    expect(pages.find((p) => p.id === S)?.text).toBe("valuable docmost content");
+    expect(client.createPage).toHaveBeenCalledWith(
+      "New ~git",
+      "my brand new notes",
+      "space-1",
+      undefined,
+    );
+    expect(Object.keys(await mainFiles()).sort()).toEqual([
+      "New ~git.md",
+      "New.md",
+      "Page.md",
+    ]);
+  });
+
   it("a git-written page stored with the editor's trailing paragraph exports to git's bytes: idle cycles change nothing", async () => {
     if (!available) return;
     const { root, pages, client, cycle, humanCommit, mainFiles } = await setup("alpha");
