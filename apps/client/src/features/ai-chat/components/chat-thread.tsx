@@ -58,7 +58,6 @@ import {
 import {
   reduce,
   initialMachine,
-  RECONNECT_MAX_ATTEMPTS,
   type Machine,
   type Event as RunEvent,
   type Effect as RunEffect,
@@ -80,17 +79,6 @@ const STREAM_THROTTLE_MS = 50;
 // run keeps polling; only a genuinely stuck run trips it. This cap lives in the
 // THREAD now (the FSM owns polling->stalled); the window just polls while armed.
 const DEGRADED_POLL_IDLE_MAX_MS = 10 * 60_000;
-
-// #541: the bound on the persist re-seed (getRun) wait when ENTERING the reconnect
-// ladder after a live SSE drop. The axios client (lib/api-client.ts) sets NO request
-// timeout, and the stalled-idle cap only arms AFTER the FSM enters reconnecting/
-// polling — which never happens if getRun HANGS (connection established, no response).
-// Without this bound a live drop + a hung getRun sticks the FSM in `streaming` with
-// no banner and no poll until the browser socket timeout (minutes) — the silent-freeze
-// class #497 eliminates. This is a deliberate RECOVERY-START bound (drop the live
-// partial + enter the ladder so the poll/idle-cap arms), intentionally much shorter
-// than any network socket timeout — not a network read timeout.
-const RECONNECT_RESEED_TIMEOUT_MS = 4_000;
 
 // #665: how long the FIRST send of a fresh thread waits for an in-flight "New
 // chat" unbind (DELETE /bind-page) before sending anyway. It closes the "New
@@ -178,16 +166,17 @@ interface ChatThreadProps {
   onServerChatId?: (serverChatId?: string) => void;
   /** #184 phase 1.5: arm/disarm the parent's degraded-poll fallback for THIS
    *  chat's window. Called `true` when the FSM enters a poll-bearing recovery
-   *  (attach 204 / starved-or-torn resumed finish / a stop), `false` the moment a
+   *  (attach 204 / starved-or-torn resumed finish / a live SSE disconnect of an
+   *  active run / a stop), `false` the moment a
    *  local stream starts or the run settles. The window owns only the dumb 2.5s
    *  timer; the THREAD's FSM owns arm/disarm + the stalled cap (#488). */
   onResumeFallback?: (active: boolean) => void;
   /** #555 S3: the authoritative run fact carried by the degraded delta poll
    *  (`POST /ai-chat/messages/delta` → `run: { id, status } | null`), surfaced by
    *  the window's `useAiChatDeltaPoll`. The FSM consumes it: a fresh NEGATIVE fact
-   *  (no active run) quenches a stale `reconnecting`/`polling`/`attaching`/`stopping`
-   *  immediately (I3 fresh-negative gate), instead of waiting for the terminal ROW
-   *  or the reconnect ladder to exhaust. `undefined` = no poll result yet (ignored).
+   *  (no active run) quenches a stale `stopping` immediately and a stale `polling`
+   *  after merging the persisted reply (I3 fresh-negative gate), instead of waiting
+   *  for the terminal ROW. `undefined` = no poll result yet (ignored).
    *  Only meaningful while the poll is armed (a poll-bearing recovery). */
   polledRunFact?: { id: string; status: string } | null;
   /** #184: whether detached/autonomous agent runs are enabled for this workspace.
@@ -238,11 +227,11 @@ function rowToUiMessage(row: IAiChatMessageRow): UIMessage {
  * with a `key` when the selected chat changes, so initial messages re-seed
  * cleanly (the v6 transport-based hook keeps its state per mount).
  *
- * #488: the resume/reconnect/poll/stop/supersede lifecycle is driven by the pure
+ * #488: the resume/poll/stop/supersede lifecycle is driven by the pure
  * FSM in `state/run-fsm.ts` (see `run-fsm.spec.md`). The component is the RUNTIME:
  * it dispatches typed events (from SDK callbacks / HTTP outcomes) and executes the
  * reducer's command EFFECTS (attach GET, POST /run, POST /stop, POST /stream
- * supersede, backoff timers, poll arm/disarm). The FSM lives in this thread (not
+ * supersede, poll arm/disarm). The FSM lives in this thread (not
  * the window) so a late SDK callback dies with the owner (#161). The one-shot-ref
  * zoo is gone: the epoch counter (I1) drops stale-generation outcomes.
  */
@@ -286,9 +275,6 @@ export default function ChatThread({
   // These are useChat/prop values that change identity across renders; the effect
   // runner (useCallback([])) reads them live so it never captures a stale closure.
   const resumeStreamRef = useRef<(() => Promise<void> | void) | null>(null);
-  const setMessagesRef = useRef<
-    ((updater: (prev: UIMessage[]) => UIMessage[]) => void) | null
-  >(null);
   const sendMessageRef = useRef<((m: { text: string }) => void) | null>(null);
   const stopFnRef = useRef<(() => void) | null>(null);
   const onResumeFallbackRef = useRef<typeof onResumeFallback>(onResumeFallback);
@@ -326,13 +312,9 @@ export default function ChatThread({
       return { id: tail.id, stepsPersisted: stepsPersistedOf(tail) };
     })(),
   );
-  // Effect-owned backoff timers (not lifecycle flags): the reconnect ladder and the
-  // stalled inactivity cap. Cleared by the cancelReconnect effect / the cap effect.
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Effect-owned timer (not a lifecycle flag): the stalled inactivity cap. Cleared
+  // by the cap effect.
   const idleCapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // #541: the persist re-seed (getRun) timeout race on the disconnect->reconnect
-  // entry. Held in a ref so unmount (DISPOSE cleanup) clears it — no dangling timer.
-  const reseedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // #491 tail-only: seed EVERY persisted row unchanged (no strip). The streaming
   // tail holds steps 0..N-1; the run-stream registry's tail (steps >= N) is APPENDED
@@ -381,8 +363,8 @@ export default function ChatThread({
   // #488 F1: the epoch under which the CURRENTLY-OWNED stream started, used to
   // STAMP its onFinish (I1). A superseded/dead stream's late finish carries an OLD
   // generation and is dropped by the reducer, so it cannot drive the live machine
-  // into a false reconnect or reset its run-fact. Set at each honored stream start
-  // (local send, resume/reconnect attach, the supersede B-send).
+  // into a false disconnect recovery or reset its run-fact. Set at each honored
+  // stream start (local send, mount attach, the supersede B-send).
   // LOAD-BEARING (I1): this stamp is what ENFORCES the "two owned streams never
   // overlap" invariant — the superseded stream A's late onFinish is stamped with
   // A's now-stale generation and dropped, so only the live stream B drives the
@@ -414,10 +396,8 @@ export default function ChatThread({
         case "resumeStream": {
           // The attach GET. Stamp the outcome's generation (I1). #491 tail-only: the
           // store already holds EXACTLY the persisted steps 0..N-1 (the mount seed IS
-          // persist; a reconnect was re-seeded from persist BEFORE FINISH_DISCONNECT
-          // scheduled it — see the onFinish disconnect handler), so there is nothing
-          // to filter here: the SDK continues that seeded message, appending the tail
-          // (steps >= N) without duplicating the pre-drop partial step.
+          // persist), so there is nothing to filter here: the SDK continues that
+          // seeded message, appending the tail (steps >= N).
           pendingAttachEpochRef.current = epoch;
           // The resumed stream's onFinish is stamped with THIS attach generation
           // (F1), so a superseded attempt's late finish is dropped.
@@ -425,25 +405,6 @@ export default function ChatThread({
           void resumeStreamRef.current?.();
           break;
         }
-        case "scheduleReconnect": {
-          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-          const attempt = eff.attempt;
-          const scheduledEpoch = epoch;
-          reconnectTimerRef.current = setTimeout(() => {
-            dispatchRef.current({
-              type: "RECONNECT_ATTEMPT",
-              attempt,
-              epoch: scheduledEpoch,
-            });
-          }, eff.delayMs);
-          break;
-        }
-        case "cancelReconnect":
-          if (reconnectTimerRef.current) {
-            clearTimeout(reconnectTimerRef.current);
-            reconnectTimerRef.current = null;
-          }
-          break;
         case "armPoll":
           onResumeFallbackRef.current?.(true);
           break;
@@ -636,24 +597,22 @@ export default function ChatThread({
             }
             return response;
           }
-          // Reconnect/attach GET: the SDK passes no AbortSignal, so wire our own
+          // Attach GET: the SDK passes no AbortSignal, so wire our own
           // controller for observer Stop / unmount abort (effect-owned, I5).
           const controller = new AbortController();
           attachAbortRef.current = controller;
           const ep = pendingAttachEpochRef.current;
-          const wasReconnecting =
-            machineRef.current.phase.name === "reconnecting";
           try {
             const response = await fetch(input, {
               ...init,
               signal: controller.signal,
             });
             if (response.status === 204 || !response.ok)
-              handleAttachOutcome(ep, wasReconnecting, false);
-            else handleAttachOutcome(ep, wasReconnecting, true);
+              handleAttachOutcome(ep, false);
+            else handleAttachOutcome(ep, true);
             return response;
           } catch (err) {
-            handleAttachOutcome(ep, wasReconnecting, false);
+            handleAttachOutcome(ep, false);
             throw err;
           }
         },
@@ -690,24 +649,16 @@ export default function ChatThread({
   // NOTHING to restore — the anchor row was never stripped from the view (the seed
   // keeps it) — so we only invalidate for a fresh poll + dispatch the FSM event.
   const handleAttachOutcome = useCallback(
-    (ep: number, wasReconnecting: boolean, live: boolean) => {
+    (ep: number, live: boolean) => {
       if (ep !== epochRef.current) return; // stale generation — drop
       if (live) {
-        dispatchRef.current(
-          wasReconnecting
-            ? { type: "RECONNECT_ATTACHED", epoch: ep }
-            : { type: "ATTACH_LIVE", epoch: ep },
-        );
+        dispatchRef.current({ type: "ATTACH_LIVE", epoch: ep });
         return;
       }
       queryClient.invalidateQueries({
         queryKey: AI_CHAT_MESSAGES_RQ_KEY(chatIdRef.current),
       });
-      dispatchRef.current(
-        wasReconnecting
-          ? { type: "RECONNECT_NONE", epoch: ep }
-          : { type: "ATTACH_NONE", epoch: ep },
-      );
+      dispatchRef.current({ type: "ATTACH_NONE", epoch: ep });
     },
     [queryClient],
   );
@@ -730,9 +681,10 @@ export default function ChatThread({
       // (I1). A superseded/dead stream's late finish carries an OLD generation and
       // is dropped by the reducer, so it cannot drive the live machine.
       const stampEpoch = turnEpochRef.current;
-      // Ownership (I2) is the FSM ctx: a resumed/attached/reconnected turn is an
+      // Ownership (I2) is the FSM ctx: a resumed/attached turn is an
       // OBSERVER; a local send is the owner. The queue flushes ONLY under local
-      // ownership; an observer never flushes (invariant 7).
+      // ownership; an observer never flushes here (invariant 7) — a follow that
+      // settles out of polling("disconnect") is flushed by the polledRunFact effect.
       const wasObserver = machineRef.current.ctx.ownership === "observer";
       // Notify the parent on EVERY terminal outcome (threadKey-guarded downstream
       // for #161); fires even while unmounting.
@@ -756,8 +708,8 @@ export default function ChatThread({
       // #488 F1: the SUPERSEDED stream A just finalized (we are still `superseding`
       // and stream B has not been sent yet). Record A's terminal outcome STAMPED —
       // I1 drops it (superseding bumped the epoch), so A cannot drive a false
-      // reconnect / reset the run-fact — then start B NOW that A is fully done. B is
-      // deferred to a microtask so A's SDK `finally` (`activeResponse = void 0`)
+      // disconnect recovery / reset the run-fact — then start B NOW that A is fully
+      // done. B is deferred to a microtask so A's SDK `finally` (`activeResponse = void 0`)
       // runs BEFORE B's makeRequest sets `activeResponse`, else the dying A clobbers
       // B (ai@6). This is the no-overlap guarantee the CAS supersede needs.
       if (
@@ -768,7 +720,7 @@ export default function ChatThread({
         // { isError:true, isDisconnect:true }. All of these are dropped by I1 here
         // (superseding bumped the epoch) — the order only mirrors the main routing.
         if (isDisconnect)
-          dispatch({ type: "FINISH_DISCONNECT", hasVisibleContent: msgHasVisible, epoch: stampEpoch });
+          dispatch({ type: "FINISH_DISCONNECT", epoch: stampEpoch });
         else if (isError) dispatch({ type: "FINISH_ERROR", kind: "stream", epoch: stampEpoch });
         else if (isAbort) dispatch({ type: "FINISH_ABORT", epoch: stampEpoch });
         else dispatch({ type: "FINISH_CLEAN", epoch: stampEpoch });
@@ -787,7 +739,7 @@ export default function ChatThread({
       // yields BOTH `{ isError:true, isDisconnect:true }` — the SDK sets `isError`
       // unconditionally in its catch and `isDisconnect` only ALONGSIDE it (for a
       // fetch/network TypeError). Checking `isError` first therefore sent EVERY real
-      // drop to the terminal error banner and NEVER entered the reconnect ladder
+      // drop to the terminal error banner and NEVER entered disconnect recovery
       // (`FINISH_DISCONNECT` is its only entry). A disconnect — the detached run
       // keeps executing server-side — must win; only a NON-disconnect error (a
       // provider 500, `{ isError:true, isDisconnect:false }`) is terminal.
@@ -800,146 +752,37 @@ export default function ChatThread({
         // terminal notice, no reconnect. (An observer only exists in autonomous mode,
         // so this is always a local turn.)
         if (autonomousRunsEnabled !== true) {
-          dispatch({
-            type: "FINISH_DISCONNECT",
-            hasVisibleContent: false,
-            epoch: stampEpoch,
-          });
+          dispatch({ type: "FINISH_DISCONNECT", epoch: stampEpoch });
           setStopNotice("disconnect");
           return;
         }
-        // A mount-resume OBSERVER (one-shot resume, NOT live-follow) drop falls to
-        // the degraded POLL, which merges by id — it does NOT attach, so there is
-        // nothing to re-seed. #491 tail-only: the anchor row was never removed from
-        // the view (the seed keeps it; the continuation only APPENDED), so nothing to
-        // restore either. The FSM routes this to `polling` (ownership observer,
-        // !liveFollow).
-        if (wasObserver && !machineRef.current.ctx.liveFollow) {
-          queryClient.invalidateQueries({
-            queryKey: AI_CHAT_MESSAGES_RQ_KEY(chatIdRef.current),
-          });
-          dispatch({
-            type: "FINISH_DISCONNECT",
-            hasVisibleContent: msgHasVisible,
-            epoch: stampEpoch,
-          });
-          setStopNotice(null);
+        // No chat id yet (a new chat whose first frame never arrived): there is
+        // nothing to poll for, so no run-fact and no refetch — the FSM lands idle
+        // (runFact is null) and the terminal notice is shown.
+        if (!chatIdRef.current) {
+          dispatch({ type: "FINISH_DISCONNECT", epoch: stampEpoch });
+          setStopNotice("disconnect");
           return;
         }
-        // We will (re-)ENTER THE RECONNECT LADDER (an attach): a LOCAL live turn's
-        // first drop, OR a live-follow observer's SUBSEQUENT drop (#488 commit 3).
-        // #488 commit 2: recover by the RUN-FACT, not by the presence of an assistant
-        // message — a setup-phase break still leaves a detached run writing to pages.
-        //
-        // #491 tail-only (THE crux): the live store holds a PARTIAL step that is AHEAD
-        // of the persisted boundary; tail-applying the reconnect's step frames over it
-        // would DUPLICATE that partial step. So entering reconnecting is ALWAYS via a
-        // RE-SEED FROM PERSIST — never the live store. Fetch the authoritative
-        // persisted assistant row (`getRun` returns the projected `message`), replace
-        // the live partial by id (mergeById -> the store now holds EXACTLY steps
-        // 0..N-1), and set the anchor to `{ id, n = stepsPersisted }`. Only AFTER the
-        // re-seed is applied do we enter the ladder (FINISH_DISCONNECT schedules the
-        // backoff) — so the attach can never tail-apply over the live partial.
-        const cid = chatIdRef.current;
-        // The live-message runId is the run-fact source (the attach GET keys on
-        // chatId, so a sentinel still recovers a setup-phase break).
-        const runId = extractRunId(message ?? undefined) ?? "pending";
-        const enterReconnect = (fact: string): void => {
-          if (!mountedRef.current) return;
-          // Epoch-stamp the run-fact too (I1): the getRun rtt widens the
-          // onFinish->dispatch window, so a concurrent SEND_LOCAL during it must be
-          // able to drop this stale RUN_FACT (else it clobbers the new turn's
-          // runFact.runId). Consistent with the postRun RUN_FACT stamp.
-          dispatch({ type: "RUN_FACT", runFact: { runId: fact }, epoch: stampEpoch });
+        // The detached run keeps executing server-side: the FSM routes the drop
+        // straight to the degraded POLL (no re-attach attempts), which merges the
+        // polled rows by id. Refetch the messages so a run that finished DURING the
+        // drop still settles via the refetched tail.
+        queryClient.invalidateQueries({
+          queryKey: AI_CHAT_MESSAGES_RQ_KEY(chatIdRef.current),
+        });
+        // A LOCAL turn's drop: #488 commit 2 — recover by the RUN-FACT, not by the
+        // presence of an assistant message (a setup-phase break still leaves a
+        // detached run writing to pages, so a "pending" sentinel still recovers it).
+        // Epoch-stamped (I1) like the finish itself.
+        if (!wasObserver) {
           dispatch({
-            type: "FINISH_DISCONNECT",
-            hasVisibleContent: msgHasVisible,
+            type: "RUN_FACT",
+            runFact: { runId: extractRunId(message ?? undefined) ?? "pending" },
             epoch: stampEpoch,
           });
-        };
-        // Restore the STRUCTURAL guarantee that the live partial is never the
-        // tail-apply base: drop the live partial from the store by id and null the
-        // anchor, so the reconnect replays from step 0 into a CLEAN store (a full
-        // rebuild) or, past any rotation, 204s -> degraded poll. Used on BOTH the
-        // no-persisted-row and getRun-FAILURE paths — after this there is no path
-        // where the attach tail-applies frames onto a row that already has them
-        // (the #137/#161 duplication class).
-        const dropLivePartialAndReplayFromStart = (): void => {
-          if (message?.role === "assistant" && typeof message.id === "string") {
-            const liveId = message.id;
-            setMessagesRef.current?.((prev) =>
-              prev.filter((m) => m.id !== liveId),
-            );
-          }
-          anchorRef.current = null;
-        };
-        if (cid) {
-          // #541: bound the persist re-seed wait with a timeout race. getRun goes
-          // through the axios client, which has NO request timeout; a HUNG getRun
-          // (connection open, no response) — distinct from a REJECT, which the
-          // `.catch` already handles — would otherwise never let us enter the ladder,
-          // leaving the FSM stuck in `streaming` with no banner and no poll until the
-          // browser socket timeout. `settled` makes the three branches (resolve /
-          // reject / timeout) mutually exclusive: whichever fires FIRST wins and the
-          // others become no-ops. So a LATE getRun resolve AFTER the timeout is fully
-          // ignored — it cannot (i) re-enter reconnect a second time, (ii) overwrite
-          // the timeout's replay-from-start with a stale re-seed, or (iii) re-arm any
-          // timer. On timeout we take the SAME fallback as the reject path (drop the
-          // live partial + enter the ladder, so the poll and the stalled-idle cap arm).
-          let settled = false;
-          const finishReseed = (apply: () => void): void => {
-            if (settled) return;
-            settled = true;
-            if (reseedTimerRef.current) {
-              clearTimeout(reseedTimerRef.current);
-              reseedTimerRef.current = null;
-            }
-            if (!mountedRef.current) return;
-            apply();
-          };
-          reseedTimerRef.current = setTimeout(() => {
-            finishReseed(() => {
-              dropLivePartialAndReplayFromStart();
-              enterReconnect(runId);
-            });
-          }, RECONNECT_RESEED_TIMEOUT_MS);
-          void getRun(cid)
-            .then((res) => {
-              finishReseed(() => {
-                const persisted = res.message;
-                if (persisted && persisted.role === "assistant") {
-                  anchorRef.current = {
-                    id: persisted.id,
-                    stepsPersisted: stepsPersistedOf(persisted),
-                  };
-                  // Replace the live partial with the persisted row IN PLACE by id —
-                  // the re-seed from persist. The attach's tail (steps >= N) then
-                  // appends to a store holding EXACTLY steps 0..N-1: no duplication.
-                  setMessages((prev) => mergeById(prev, rowToUiMessage(persisted)));
-                } else {
-                  // No persisted assistant row (pre-first-frame break): drop the live
-                  // partial + replay from start (no anchor/n) so nothing is duplicated.
-                  dropLivePartialAndReplayFromStart();
-                }
-                enterReconnect(res.run?.id ?? runId);
-              });
-            })
-            .catch(() => {
-              finishReseed(() => {
-                // Persist read FAILED: we cannot re-seed from fresh persist, and a
-                // stale mount-time anchor over the live partial would tail-apply
-                // already-present steps -> duplication (a flaky-network blip:
-                // SSE + getRun both fail, network recovers in ~1s, the registry still
-                // covers from the mount frontier). Restore the removed-filter guarantee
-                // instead: drop the live partial + replay from start / 204 -> poll.
-                dropLivePartialAndReplayFromStart();
-                enterReconnect(runId);
-              });
-            });
-        } else {
-          dropLivePartialAndReplayFromStart();
-          enterReconnect(runId);
         }
+        dispatch({ type: "FINISH_DISCONNECT", epoch: stampEpoch });
         setStopNotice(null);
         return;
       }
@@ -998,9 +841,6 @@ export default function ChatThread({
 
   // Publish the live useChat handles to the effect-runner refs.
   resumeStreamRef.current = resumeStream;
-  setMessagesRef.current = setMessages as unknown as (
-    updater: (prev: UIMessage[]) => UIMessage[],
-  ) => void;
   sendMessageRef.current = sendMessage;
   stopFnRef.current = stop;
 
@@ -1068,25 +908,23 @@ export default function ChatThread({
     }
     return () => {
       mountedRef.current = false;
-      // #541: clear the in-flight persist re-seed timeout (not an FSM effect timer,
-      // so DISPOSE does not touch it) — no dangling setTimeout after unmount.
-      if (reseedTimerRef.current) {
-        clearTimeout(reseedTimerRef.current);
-        reseedTimerRef.current = null;
-      }
-      dispatch({ type: "DISPOSE" }); // aborts attach + timers, bumps epoch (I5)
+      dispatch({ type: "DISPOSE" }); // aborts the attach GET, disarms the poll, bumps epoch (I5)
     };
     // Mount-only by design; the parent remounts per chat via `key`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reconciliation + degraded-merge (invariant 8): while a poll-bearing recovery is
-  // active (polling / reconnecting / stopping), merge the polled assistant tail on
-  // every initialRows update and settle to terminal via POLL_TERMINAL.
+  // active (polling / stopping), merge the polled assistant tail on
+  // every initialRows update and settle to terminal via POLL_TERMINAL — except a
+  // `polling("disconnect")`, which settles ONLY on the server's run fact (the
+  // polledRunFact effect below). Right after a local drop (ai@6 flips status to
+  // "error" BEFORE onFinish) `initialRows` still ends on the PREVIOUS turn's settled
+  // assistant row, so a row-based settle would kill the disconnect poll instantly.
   useEffect(() => {
     if (isStreaming) return; // a local stream owns the view
     const p = machineRef.current.phase.name;
-    if (p !== "polling" && p !== "reconnecting" && p !== "stopping") return;
+    if (p !== "polling" && p !== "stopping") return;
     const rows = initialRows ?? [];
     const tail = rows[rows.length - 1];
     if (!tail || tail.role !== "assistant") return;
@@ -1100,11 +938,13 @@ export default function ChatThread({
       if (historical)
         setMessages((prev) => mergeById(prev, rowToUiMessage(historical)));
     }
+    const current = machineRef.current.phase;
+    if (current.name === "polling" && current.reason === "disconnect") return;
     if (tail.status !== "streaming") dispatch({ type: "POLL_TERMINAL" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRows, isStreaming, setMessages]);
 
-  // #488 commit 4a: the stalled inactivity cap. While polling/reconnecting, if no
+  // #488 commit 4a: the stalled inactivity cap. While polling, if no
   // new run activity (initialRows unchanged) for DEGRADED_POLL_IDLE_MAX_MS, fire
   // POLL_IDLE_CAP -> the FSM goes `stalled` (banner + Retry) instead of silent.
   // Reset on every activity (initialRows change) and on phase change.
@@ -1116,7 +956,7 @@ export default function ChatThread({
     // Review #4: `stopping` also arms the poll and needs a bounded exit (the FSM
     // maps POLL_IDLE_CAP from `stopping` -> idle, not stalled).
     const p = phase.name;
-    if (p !== "polling" && p !== "reconnecting" && p !== "stopping") return;
+    if (p !== "polling" && p !== "stopping") return;
     idleCapTimerRef.current = setTimeout(() => {
       dispatchRef.current({ type: "POLL_IDLE_CAP" });
     }, DEGRADED_POLL_IDLE_MAX_MS);
@@ -1126,17 +966,26 @@ export default function ChatThread({
   }, [phase, initialRows]);
 
   // #555 S3: consume the degraded delta poll's `run` field. Until now the delta
-  // endpoint's authoritative run fact rode the wire UNCONSUMED (run-fsm.spec.md §3.4)
-  // — a 204 reconnect went through RECONNECT_NONE and the run field of the DELTA
-  // response was ignored, so a stale `reconnecting` only cleared once the terminal
-  // ROW merged or the ladder exhausted. Wire it into the RUN_FACT dispatch path: a
-  // fresh NEGATIVE fact quenches recovery IMMEDIATELY (I3 fresh-negative gate),
+  // endpoint's authoritative run fact rode the wire UNCONSUMED (run-fsm.spec.md §3.4),
+  // so a stale recovery only cleared once the terminal ROW merged. Wire it into the
+  // RUN_FACT dispatch path: a
+  // fresh NEGATIVE fact quenches recovery (I3 fresh-negative gate) — in `stopping`
+  // immediately, in `polling` after merging the persisted reply (below) —
   // a positive fact refreshes ctx.runFact. No epoch — this is AMBIENT server truth (a
   // trigger event that is never dropped), not a per-generation command outcome; the
   // poll only runs while armed (a poll-bearing recovery), so it never races a live
   // local stream. Deduped by the derived active run id, and the dedupe ref is reset
   // when the poll disarms (`polledRunFact` returns to `undefined`) so the NEXT
   // recovery's negative fact re-quenches.
+  // A NEGATIVE fact while `polling`: the run may have finished DURING the drop, and
+  // the first delta tick (no cursor yet) carries the run fact but NO rows, so
+  // quenching right away would leave the truncated live answer on screen. Fetch the
+  // persisted assistant row first and merge it by id, THEN quench. Both steps are
+  // PHASE-guarded (polling / stopping), not epoch-stamped: a Stop pressed during the
+  // read bumps the epoch but must still exit `stopping` on this negative fact, while
+  // a local send in between (phase `sending`) drops them. A failed read (incl. the
+  // getRun deadline) still settles, with the "answer was interrupted" notice. A
+  // message queued while following the run after a drop is flushed once it settles.
   const lastPolledRunKeyRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (polledRunFact === undefined) {
@@ -1149,6 +998,36 @@ export default function ChatThread({
         : null;
     if (activeRunId === lastPolledRunKeyRef.current) return; // unchanged — no re-dispatch
     lastPolledRunKeyRef.current = activeRunId;
+    const cid = chatIdRef.current;
+    if (activeRunId === null && machineRef.current.phase.name === "polling" && cid) {
+      const settling = (): boolean => {
+        const n = machineRef.current.phase.name;
+        return n === "polling" || n === "stopping";
+      };
+      let readFailed = false;
+      void getRun(cid)
+        .then((res) => {
+          if (!mountedRef.current || !settling()) return;
+          const persisted = res.message;
+          if (persisted?.role === "assistant")
+            setMessages((prev) => mergeById(prev, rowToUiMessage(persisted)));
+        })
+        .catch((err) => {
+          // Settle anyway (the poll must not hang on a failed read); the answer
+          // may stay truncated, so leave a trace of why.
+          console.error("AI chat: fetching the final reply before settling the poll failed", err);
+          readFailed = true;
+        })
+        .finally(() => {
+          if (!mountedRef.current || !settling()) return;
+          const p = machineRef.current.phase;
+          const wasDisconnectPoll = p.name === "polling" && p.reason === "disconnect";
+          dispatch({ type: "RUN_FACT", runFact: null });
+          if (readFailed) setStopNotice("disconnect");
+          if (wasDisconnectPoll && machineRef.current.phase.name === "idle") flushNext();
+        });
+      return;
+    }
     dispatch({
       type: "RUN_FACT",
       runFact: activeRunId ? { runId: activeRunId } : null,
@@ -1264,12 +1143,11 @@ export default function ChatThread({
       // Legacy: no server run to stop from the client (the server's onClose issues
       // requestStop on disconnect). Just reset the FSM recovery.
       attachAbortRef.current?.abort();
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       dispatch({ type: "FINISH_ABORT" });
     }
   }, [autonomousRunsEnabled, dispatch]);
 
-  // Manual Retry from the reconnect-failed OR stalled banner.
+  // Manual Retry from the stalled banner.
   const onRetry = useCallback(() => {
     dispatch({ type: "RETRY" });
   }, [dispatch]);
@@ -1280,14 +1158,15 @@ export default function ChatThread({
 
   // #488 (browser QA): the FSM PHASE is the source of truth for WHICH banner to
   // show. A real network drop leaves useChat `error` SET even after the FSM has
-  // moved to `reconnecting` — in ai@6 a drop is always `{isError:true,
+  // moved to `polling` — in ai@6 a drop is always `{isError:true,
   // isDisconnect:true}` and the SDK sets `error` alongside `isError`. So the
   // terminal error banner must show ONLY when the FSM is actually TERMINAL
-  // (`error(kind)`); during recovery (reconnecting / polling / stalled /
+  // (`error(kind)`); during recovery (polling / stalled /
   // superseding / stopping) the recovery banner — or the streaming content — wins
   // over the residual `error`, otherwise the terminal "Lost connection… reload"
-  // banner masks "reconnecting… (N/5)". This still surfaces the classified #487 409
-  // errors: a supersede/gate 409 lands the FSM in `error(kind)`, so it shows then.
+  // banner masks "Connection lost — reconnecting…". This still surfaces the
+  // classified #487 409 errors: a supersede/gate 409 lands the FSM in
+  // `error(kind)`, so it shows then.
   const showError = errorView !== null && phase.name === "error";
 
   // Role-picker empty state (unchanged from #149).
@@ -1325,35 +1204,15 @@ export default function ChatThread({
 
       {showError && errorView ? (
         <ChatErrorAlert title={errorView.title} detail={errorView.detail} mb="xs" />
-      ) : phase.name === "reconnecting" ? (
-        // #430/#488: while auto-reconnecting to a detached run's live tail, show
-        // progress; once attempts are exhausted, offer a manual Retry (the degraded
-        // poll keeps catching up underneath).
+      ) : phase.name === "polling" && phase.reason === "disconnect" ? (
+        // A live disconnect of a detached run: the degraded poll follows it to
+        // terminal from the DB. Keep the recovery visible (invariant 10).
         <Alert variant="light" color="gray" p="xs" mb="xs" style={{ flexShrink: 0 }}>
           <Group gap={8} wrap="nowrap" align="center">
-            {!phase.failed ? (
-              <>
-                <Loader size={14} color="gray" style={{ flex: "none" }} />
-                <Text size="sm" lh={1.3} c="dimmed">
-                  {t("Connection lost — reconnecting…")}
-                  {` (${phase.attempt}/${RECONNECT_MAX_ATTEMPTS})`}
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text size="sm" lh={1.3} c="dimmed" style={{ flex: 1 }}>
-                  {t("Couldn't reconnect to the answer.")}
-                </Text>
-                <Button
-                  size="compact-xs"
-                  variant="light"
-                  color="gray"
-                  onClick={onRetry}
-                >
-                  {t("Retry")}
-                </Button>
-              </>
-            )}
+            <Loader size={14} color="gray" style={{ flex: "none" }} />
+            <Text size="sm" lh={1.3} c="dimmed">
+              {t("Connection lost — reconnecting…")}
+            </Text>
           </Group>
         </Alert>
       ) : phase.name === "stalled" ? (
@@ -1433,7 +1292,13 @@ export default function ChatThread({
           onSend={(text) => void localSend(text)}
           onQueue={enqueue}
           onStop={handleStop}
-          isStreaming={isStreaming}
+          // While following a detached run after a live drop there is no local
+          // stream, but the run is still active: keep Stop (-> STOP_REQUESTED) and
+          // queue-on-Enter instead of a plain send that would 409 and kill the poll.
+          isStreaming={
+            isStreaming ||
+            (phase.name === "polling" && phase.reason === "disconnect")
+          }
         />
       </Stack>
     </Box>

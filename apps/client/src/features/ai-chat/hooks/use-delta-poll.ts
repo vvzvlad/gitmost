@@ -59,8 +59,8 @@ export function sameRunFact(a: DeltaRunFact, b: DeltaRunFact): boolean {
  *
  * It RETURNS the latest run fact so the WINDOW can forward it to the thread
  * (`polledRunFact` prop), where the FSM consumes it (#555 S3): a fresh NEGATIVE
- * fact quenches a stale `reconnecting`/`polling` immediately (I3), instead of
- * waiting for the terminal row or the reconnect ladder to exhaust. The cursor and
+ * fact quenches a stale `polling` after merging the persisted reply (I3), instead
+ * of waiting for the terminal row. The cursor and
  * the surfaced fact RESET when the chat changes or the poll (dis)arms — the delta
  * chain is scoped to ONE resume attempt of ONE chat (invariant 8).
  */

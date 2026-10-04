@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   reduce,
   initialMachine,
-  reconnectDelayMs,
-  RECONNECT_MAX_ATTEMPTS,
   type Machine,
   type Effect,
   type Event,
@@ -16,7 +14,7 @@ function run(m: Machine, ...events: Event[]): Machine {
 function withRunFact(runId = "run-1"): Machine {
   return {
     ...initialMachine(),
-    ctx: { epoch: 0, ownership: "local", runFact: { runId }, liveFollow: false },
+    ctx: { epoch: 0, ownership: "local", runFact: { runId } },
   };
 }
 function effectTypes(m: Machine): string[] {
@@ -66,9 +64,7 @@ describe("run-fsm — local turn", () => {
     const m = reduce(withRunFact(), { type: "SEND_LOCAL" });
     expect(m.phase.name).toBe("sending");
     expect(m.ctx.ownership).toBe("local");
-    expect(effectTypes(m)).toEqual(
-      expect.arrayContaining(["cancelReconnect", "disarmPoll"]),
-    );
+    expect(effectTypes(m)).toEqual(expect.arrayContaining(["disarmPoll"]));
   });
 
   it("STREAM_START adopts the runId into the run-fact and goes streaming", () => {
@@ -78,7 +74,7 @@ describe("run-fsm — local turn", () => {
     expect(s.ctx.runFact).toEqual({ runId: "run-9" });
   });
 
-  it("FINISH_CLEAN → idle, run-fact cleared, poll/reconnect disarmed", () => {
+  it("FINISH_CLEAN → idle, run-fact cleared, poll disarmed", () => {
     const streaming = run(initialMachine(), { type: "SEND_LOCAL" }, { type: "STREAM_START", runId: "r" });
     const done = reduce(streaming, { type: "FINISH_CLEAN" });
     expect(done.phase.name).toBe("idle");
@@ -87,71 +83,37 @@ describe("run-fsm — local turn", () => {
 });
 
 // #488 commit 2 — SSE break BEFORE the first assistant frame must still recover.
-describe("run-fsm — commit 2: reconnect by run-fact, not by assistant message", () => {
-  it("FINISH_DISCONNECT with an active run-fact → reconnecting (even with no visible content)", () => {
+describe("run-fsm — commit 2: disconnect recovery by run-fact, not by assistant message", () => {
+  it("FINISH_DISCONNECT with an active run-fact → polling(disconnect) as observer, no re-attach", () => {
     // Setup-phase break: no assistant frame yet, but a run-fact exists.
     const streaming = withRunFact("run-2");
     const m = reduce(streaming, {
       type: "FINISH_DISCONNECT",
-      hasVisibleContent: false,
       epoch: streaming.ctx.epoch,
     });
-    expect(m.phase.name).toBe("reconnecting");
-    if (m.phase.name === "reconnecting") expect(m.phase.attempt).toBe(1);
+    expect(m.phase).toEqual({ name: "polling", reason: "disconnect" });
     expect(m.ctx.ownership).toBe("observer");
-    expect(hasEffect(m, "scheduleReconnect")).toBe(true);
-    // No visible content -> no poll arm yet (the reconnect ladder rebuilds it).
-    expect(hasEffect(m, "armPoll")).toBe(false);
-  });
-
-  it("FINISH_DISCONNECT WITH visible content also arms the poll", () => {
-    const m = reduce(withRunFact("run-2"), {
-      type: "FINISH_DISCONNECT",
-      hasVisibleContent: true,
-      epoch: 0,
-    });
-    expect(m.phase.name).toBe("reconnecting");
-    expect(hasEffect(m, "armPoll")).toBe(true);
+    expect(m.effects).toEqual([{ type: "armPoll", reason: "disconnect" }]);
+    expect(hasEffect(m, "resumeStream")).toBe(false);
   });
 
   it("FINISH_DISCONNECT with NO run-fact → idle (plain connection-lost)", () => {
     const m = reduce(initialMachine(), {
       type: "FINISH_DISCONNECT",
-      hasVisibleContent: true,
       epoch: 0,
     });
     expect(m.phase.name).toBe("idle");
   });
 });
 
-// #488 commit 3 — a SECOND break after a successful re-attach starts a NEW ladder.
-describe("run-fsm — commit 3: repeated reconnect cycles", () => {
-  it("two breaks in a row produce two reconnect cycles (counter resets on attach)", () => {
-    let m = withRunFact("run-3");
-    // First break -> reconnecting(1).
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: false, epoch: m.ctx.epoch });
-    expect(m.phase.name).toBe("reconnecting");
-    // Attempt fires, re-attaches live.
-    m = reduce(m, { type: "RECONNECT_ATTEMPT", attempt: 1, epoch: m.ctx.epoch });
-    m = reduce(m, { type: "RECONNECT_ATTACHED", epoch: m.ctx.epoch });
-    expect(m.phase.name).toBe("streaming");
-    // SECOND break: the counter was reset, so a fresh ladder starts at attempt 1
-    // (the old one-shot !wasResumed gate would have sent this to silent poll).
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: false, epoch: m.ctx.epoch });
-    expect(m.phase.name).toBe("reconnecting");
-    if (m.phase.name === "reconnecting") expect(m.phase.attempt).toBe(1);
-    expect(hasEffect(m, "scheduleReconnect")).toBe(true);
-  });
-
-  it("a MOUNT-attach observer drop falls to POLL, not the reconnect ladder", () => {
-    // Distinguishes commit 3 from a one-shot resume: an observer that never
-    // live-followed (liveFollow false) polls on a drop.
+describe("run-fsm — observer drop / incomplete finish fall to the poll", () => {
+  it("a MOUNT-attach observer drop falls to the poll", () => {
     let m = reduce(initialMachine(), { type: "ATTACH_START", runId: "r" });
     m = reduce(m, { type: "ATTACH_LIVE", epoch: m.ctx.epoch });
     expect(m.ctx.ownership).toBe("observer");
-    expect(m.ctx.liveFollow).toBe(false);
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: true, epoch: m.ctx.epoch });
-    expect(m.phase.name).toBe("polling");
+    m = reduce(m, { type: "FINISH_DISCONNECT", epoch: m.ctx.epoch });
+    expect(m.phase).toEqual({ name: "polling", reason: "disconnect" });
+    expect(m.ctx.ownership).toBe("observer");
     expect(hasEffect(m, "armPoll")).toBe(true);
   });
 
@@ -161,51 +123,6 @@ describe("run-fsm — commit 3: repeated reconnect cycles", () => {
     m = reduce(m, { type: "STREAM_INCOMPLETE", reason: "starved", epoch: m.ctx.epoch });
     expect(m.phase).toEqual({ name: "polling", reason: "starved" });
     expect(hasEffect(m, "armPoll")).toBe(true);
-  });
-
-  it("liveFollow is set on the first local drop and kept across a re-attach", () => {
-    let m = withRunFact("run-3");
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: false, epoch: m.ctx.epoch });
-    expect(m.ctx.liveFollow).toBe(true);
-    m = reduce(m, { type: "RECONNECT_ATTEMPT", attempt: 1, epoch: m.ctx.epoch });
-    m = reduce(m, { type: "RECONNECT_ATTACHED", epoch: m.ctx.epoch });
-    expect(m.ctx.liveFollow).toBe(true); // kept — so a second drop reconnects
-    // A clean finish clears it.
-    m = reduce(m, { type: "FINISH_CLEAN", epoch: m.ctx.epoch });
-    expect(m.ctx.liveFollow).toBe(false);
-  });
-
-  it("RECONNECT_NONE backs off through the ladder, then fails at the cap", () => {
-    let m = withRunFact("run-3");
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: false, epoch: m.ctx.epoch });
-    for (let n = 1; n < RECONNECT_MAX_ATTEMPTS; n++) {
-      m = reduce(m, { type: "RECONNECT_ATTEMPT", attempt: n, epoch: m.ctx.epoch });
-      m = reduce(m, { type: "RECONNECT_NONE", epoch: m.ctx.epoch });
-      expect(m.phase.name).toBe("reconnecting");
-      if (m.phase.name === "reconnecting") {
-        expect(m.phase.attempt).toBe(n + 1);
-        expect(m.phase.failed).toBe(false);
-      }
-      // The belt-and-suspenders poll is armed each failed attempt.
-      expect(hasEffect(m, "armPoll")).toBe(true);
-    }
-    // Final attempt fails -> failed banner (Retry), poll armed.
-    m = reduce(m, { type: "RECONNECT_ATTEMPT", attempt: RECONNECT_MAX_ATTEMPTS, epoch: m.ctx.epoch });
-    m = reduce(m, { type: "RECONNECT_NONE", epoch: m.ctx.epoch });
-    expect(m.phase.name).toBe("reconnecting");
-    if (m.phase.name === "reconnecting") expect(m.phase.failed).toBe(true);
-    // RETRY restarts at attempt 1.
-    m = reduce(m, { type: "RETRY" });
-    expect(m.phase.name).toBe("reconnecting");
-    if (m.phase.name === "reconnecting") {
-      expect(m.phase.attempt).toBe(1);
-      expect(m.phase.failed).toBe(false);
-    }
-    expect(hasEffect(m, "resumeStream")).toBe(true);
-  });
-
-  it("reconnectDelayMs is the exponential backoff 1s,2s,4s,8s,16s", () => {
-    expect([1, 2, 3, 4, 5].map(reconnectDelayMs)).toEqual([1000, 2000, 4000, 8000, 16000]);
   });
 });
 
@@ -403,20 +320,6 @@ describe("run-fsm — stop (I4: exit by data)", () => {
 // epoch filter alone is insufficient because POLL_TERMINAL uses to() (no epoch
 // bump) and does not abort the in-flight GET.
 describe("run-fsm — review-1: attach outcomes guarded by source phase", () => {
-  it("a late RECONNECT_ATTACHED after POLL_TERMINAL stays idle (no phantom streaming)", () => {
-    let m = withRunFact("run-1");
-    m = reduce(m, { type: "FINISH_DISCONNECT", hasVisibleContent: true, epoch: m.ctx.epoch });
-    m = reduce(m, { type: "RECONNECT_ATTEMPT", attempt: 1, epoch: m.ctx.epoch }); // attach GET
-    const epoch = m.ctx.epoch;
-    // The armed degraded poll reaches the terminal row FIRST (epoch unchanged).
-    m = reduce(m, { type: "POLL_TERMINAL" });
-    expect(m.phase.name).toBe("idle");
-    expect(m.ctx.epoch).toBe(epoch); // POLL_TERMINAL did NOT bump the epoch
-    // The slow GET returns live 2xx under the SAME epoch — must NOT resurrect.
-    m = reduce(m, { type: "RECONNECT_ATTACHED", epoch });
-    expect(m.phase.name).toBe("idle");
-  });
-
   it("a late ATTACH_LIVE / ATTACH_NONE after leaving `attaching` is ignored", () => {
     let m = reduce(initialMachine(), { type: "ATTACH_START", runId: "r" });
     const epoch = m.ctx.epoch;
@@ -456,7 +359,7 @@ describe("run-fsm — review-2: terminal transitions reset ownership to local", 
 });
 
 describe("run-fsm — ownership (I2) is context, orthogonal to phase", () => {
-  it("attach/reconnect set observer; send/supersede-ready set local", () => {
+  it("attach sets observer; send/supersede-ready set local", () => {
     let m = reduce(initialMachine(), { type: "ATTACH_START", runId: "r" });
     expect(m.ctx.ownership).toBe("observer");
     m = reduce(m, { type: "ATTACH_LIVE", epoch: m.ctx.epoch });
@@ -476,7 +379,7 @@ describe("run-fsm — dispose (I5)", () => {
     expect(m.phase.name).toBe("idle");
     expect(m.ctx.epoch).toBe(before + 1);
     expect(effectTypes(m)).toEqual(
-      expect.arrayContaining(["abortAttach", "cancelReconnect", "disarmPoll"]),
+      expect.arrayContaining(["abortAttach", "disarmPoll"]),
     );
   });
 });

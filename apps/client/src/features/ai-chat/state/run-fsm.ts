@@ -15,27 +15,30 @@
  * `(machine, event) -> machine`, where the returned machine carries the list of
  * COMMAND EFFECTS to run for that transition. A thin runtime in `chat-thread.tsx`
  * dispatches events (from SDK callbacks / HTTP outcomes) and executes the
- * effects (attach GET, POST /stream, POST /run, POST /stop, backoff timers,
- * poll arm/disarm). The runtime lives in a THREAD, not the window, so a late SDK
+ * effects (attach GET, POST /stream, POST /run, POST /stop, poll arm/disarm).
+ * The runtime lives in a THREAD, not the window, so a late SDK
  * callback dies with the owner (kills the "event from a dead view" class, #161).
  *
  * ============================================================================
  * INVARIANTS (see run-fsm.spec.md for the full spec + tables)
  * ----------------------------------------------------------------------------
  *  I1  EPOCH (generation counter). Commands (`resumeStream`, `postRun`, `stop`,
- *      `supersede`, `scheduleReconnect`) are async; their outcomes arrive on the
+ *      `supersede`) are async; their outcomes arrive on the
  *      SAME SDK/HTTP callbacks. Every command-emitting transition increments
  *      `ctx.epoch`; every OUTCOME event carries the epoch it was issued under;
  *      the reducer DROPS an outcome whose epoch != the current epoch. This is
  *      what the one-shot-ref zoo used to approximate by hand.
  *  I2  OWNERSHIP is a CONTEXT FIELD (`'local' | 'observer'`), not a state —
  *      orthogonal to the transport phase. The queue is flushed ONLY by a local
- *      owner (an observer following a detached run never flushes).
+ *      owner (an observer following a detached run never flushes, except a
+ *      follow that settles out of `polling(disconnect)` — flushed on the settle
+ *      to idle, see run-fsm.spec.md §3.4).
  *  I3  RUN-FACT ("a run is active") is first-class from the server: `runFact`
  *      holds the server-confirmed active run id (POST /run on mount, the `start`
- *      metadata runId, attach outcomes). Reconnect is entered by the RUN-FACT,
- *      not by the presence of an assistant message (#488 commit 2). A fresh
- *      negative fact (null) cancels reconnect immediately.
+ *      metadata runId, attach outcomes). A live disconnect recovers (to the
+ *      degraded poll) by the RUN-FACT, not by the presence of an assistant
+ *      message (#488 commit 2). A fresh negative fact (null) cancels recovery
+ *      immediately.
  *  I4  Exit `stopping` by DATA (a terminal row / negative run-fact), NEVER by the
  *      stopRun HTTP response (which returns after abort, before finalization).
  *  I5  Command controllers are effect-owned (abort in cleanup), NOT render-phase
@@ -51,8 +54,7 @@
 export type PollReason =
   | "attach-none" // mount attach returned 204 / error — nothing live to attach
   | "starved" // a resumed finish carried no visible content
-  | "disconnect-visible" // a live disconnect WITH on-screen content — poll to terminal
-  | "reconnect-exhausted"; // the live re-attach ladder gave up
+  | "disconnect"; // a live disconnect of an active run — poll to terminal
 
 /** The classified error kind (drives the banner text + composer behavior). */
 export type ErrorKind =
@@ -68,7 +70,6 @@ export type Phase =
   | { name: "sending" } // local POST in flight, before the first frame
   | { name: "streaming" } // receiving frames
   | { name: "attaching" } // mount-time attach GET in flight
-  | { name: "reconnecting"; attempt: number; failed: boolean }
   | { name: "polling"; reason: PollReason }
   | { name: "stalled" } // poll hit the inactivity cap — banner + Retry
   | { name: "stopping" }
@@ -87,16 +88,6 @@ export interface Ctx {
   ownership: Ownership;
   /** I3: the server-confirmed active run. */
   runFact: RunFact;
-  /**
-   * Are we FOLLOWING a live run we were locally streaming (the reconnect ladder),
-   * as opposed to a one-shot mount-attach resume? Both are `ownership: 'observer'`,
-   * but they recover DIFFERENTLY on a drop: a live-follow drop RE-ENTERS the
-   * reconnect ladder (#488 commit 3 — the second break after a successful re-attach
-   * must reconnect again, not fall to silent poll), while a mount-resume drop falls
-   * to the degraded poll. This is the ctx bit that separates the two WITHOUT a new
-   * component ref (it is why commit 3 needs the FSM, not a surgical patch).
-   */
-  liveFollow: boolean;
 }
 
 export interface Machine {
@@ -116,10 +107,6 @@ export type Effect =
   | { type: "postRun"; reason: "mount" | "verify" }
   /** Trigger the SDK `resumeStream()` (attach GET via prepareReconnectToStream). */
   | { type: "resumeStream" }
-  /** Schedule a reconnect attempt after a backoff, then dispatch RECONNECT_ATTEMPT. */
-  | { type: "scheduleReconnect"; attempt: number; delayMs: number }
-  /** Cancel any pending reconnect backoff timer. */
-  | { type: "cancelReconnect" }
   /** Arm the degraded poll (the window's dumb timer follows the run in the DB). */
   | { type: "armPoll"; reason: PollReason }
   /** Disarm the degraded poll. */
@@ -128,7 +115,7 @@ export type Effect =
   | { type: "stopRun" }
   /** POST /stream { supersede: { runId } } — the CAS "interrupt and send now". */
   | { type: "supersede"; targetRunId: string }
-  /** Abort the in-flight attach/reconnect GET controller (dispose / observer stop). */
+  /** Abort the in-flight attach GET controller (dispose / observer stop). */
   | { type: "abortAttach" };
 
 // ---------------------------------------------------------------------------
@@ -143,20 +130,16 @@ export type Event =
   | { type: "STREAM_START"; runId?: string; epoch?: number }
   /** An OBSERVER's attached stream ended WITHOUT reaching terminal (a starved
    *  clean replay, or a torn resume) — fall to the degraded poll to drive the row
-   *  to its real terminal state. (A live-follow drop uses FINISH_DISCONNECT.) */
+   *  to its real terminal state. (A live drop uses FINISH_DISCONNECT.) */
   | { type: "STREAM_INCOMPLETE"; reason: PollReason; epoch?: number }
   | { type: "FINISH_CLEAN"; epoch?: number }
   | { type: "FINISH_ABORT"; epoch?: number }
-  | { type: "FINISH_DISCONNECT"; hasVisibleContent: boolean; epoch?: number }
+  | { type: "FINISH_DISCONNECT"; epoch?: number }
   | { type: "FINISH_ERROR"; kind: ErrorKind; epoch?: number }
   // -- mount attach (resume) --
   | { type: "ATTACH_START"; runId?: string }
   | { type: "ATTACH_LIVE"; epoch?: number }
   | { type: "ATTACH_NONE"; epoch?: number }
-  // -- reconnect after a live disconnect (entered by FINISH_DISCONNECT, #488 c2) --
-  | { type: "RECONNECT_ATTEMPT"; attempt: number; epoch?: number }
-  | { type: "RECONNECT_ATTACHED"; epoch?: number }
-  | { type: "RECONNECT_NONE"; epoch?: number }
   | { type: "RETRY" }
   // -- degraded poll --
   | { type: "POLL_TERMINAL" }
@@ -175,13 +158,6 @@ export type Event =
   // -- lifecycle --
   | { type: "DISPOSE" };
 
-export const RECONNECT_MAX_ATTEMPTS = 5;
-export const RECONNECT_BASE_DELAY_MS = 1000;
-/** Backoff before attempt N (1-based): 1s, 2s, 4s, 8s, 16s. */
-export function reconnectDelayMs(attempt: number): number {
-  return RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1);
-}
-
 // ---------------------------------------------------------------------------
 // Constructors / helpers.
 // ---------------------------------------------------------------------------
@@ -189,7 +165,7 @@ export function reconnectDelayMs(attempt: number): number {
 export function initialMachine(overrides?: Partial<Ctx>): Machine {
   return {
     phase: { name: "idle" },
-    ctx: { epoch: 0, ownership: "local", runFact: null, liveFollow: false, ...overrides },
+    ctx: { epoch: 0, ownership: "local", runFact: null, ...overrides },
     effects: [],
   };
 }
@@ -256,8 +232,8 @@ export function reduce(m: Machine, event: Event): Machine {
     return to(m, { name: "idle" }, {
       // Reset ownership to local on this terminal transition (review #2): otherwise
       // an observer-stop leaves ownership 'observer' and hides "Send now" forever.
-      ctx: { runFact: null, liveFollow: false, ownership: "local" },
-      effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+      ctx: { runFact: null, ownership: "local" },
+      effects: [{ type: "disarmPoll" }],
     });
   }
 
@@ -270,13 +246,13 @@ export function reduce(m: Machine, event: Event): Machine {
     // ---- local turn ----------------------------------------------------
     case "SEND_LOCAL":
       // A local send owns the view: leave any recovery, become the local
-      // streamer, disarm poll/reconnect. epoch++ so a late recovery outcome
+      // streamer, disarm the poll. epoch++ so a late recovery outcome
       // from the previous phase is dropped.
       return command(
         m,
         { name: "sending" },
-        [{ type: "cancelReconnect" }, { type: "disarmPoll" }],
-        { ownership: "local", liveFollow: false },
+        [{ type: "disarmPoll" }],
+        { ownership: "local" },
       );
 
     case "STREAM_INCOMPLETE":
@@ -288,11 +264,11 @@ export function reduce(m: Machine, event: Event): Machine {
 
     case "STREAM_START": {
       // First frame arrived. Adopt the run-fact runId if present. sending ->
-      // streaming; a reconnect/attach that just went live also lands here.
+      // streaming; an attach that just went live also lands here.
       const runFact = event.runId ? { runId: event.runId } : m.ctx.runFact;
       return to(m, { name: "streaming" }, {
         ctx: { runFact },
-        effects: [{ type: "cancelReconnect" }, { type: "disarmPoll" }],
+        effects: [{ type: "disarmPoll" }],
       });
     }
 
@@ -302,55 +278,39 @@ export function reduce(m: Machine, event: Event): Machine {
       // FSM only models the phase.) Review #2: reset ownership to local so a
       // just-finished observer-attach turn re-exposes "Send now" for the queue.
       return to(m, { name: "idle" }, {
-        ctx: { runFact: null, liveFollow: false, ownership: "local" },
-        effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+        ctx: { runFact: null, ownership: "local" },
+        effects: [{ type: "disarmPoll" }],
       });
 
     case "FINISH_ABORT":
       // A user Stop / intentional abort finished. If we were stopping, the
       // terminal data has now arrived (I4) — go idle. The run-fact is cleared.
       return to(m, { name: "idle" }, {
-        ctx: { runFact: null, liveFollow: false, ownership: "local" },
-        effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+        ctx: { runFact: null, ownership: "local" },
+        effects: [{ type: "disarmPoll" }],
       });
 
     case "FINISH_DISCONNECT":
-      // A LIVE SSE drop. Recovery depends on WHO we are (I2 + liveFollow):
-      //  - a mount-attach OBSERVER (a one-shot resume, NOT live-follow) that drops
-      //    -> the degraded poll drives the row to terminal from the DB.
-      if (m.ctx.ownership === "observer" && !m.ctx.liveFollow) {
-        return to(m, { name: "polling", reason: "disconnect-visible" }, {
-          effects: [{ type: "armPoll", reason: "disconnect-visible" }],
-        });
-      }
-      //  - a LOCAL live turn (first drop) OR a live-follow re-attach (a SUBSEQUENT
-      //    drop) -> (re-)enter the reconnect ladder. #488 commit 3: allowed
-      //    REPEATEDLY — `liveFollow` is kept across a successful re-attach, so the
-      //    second break reconnects again instead of falling to silent poll.
-      // #488 commit 2: gated on the RUN-FACT (or an existing live-follow), NOT on
-      // the presence of an assistant message — a setup-phase break still recovers.
-      //  - visible content already on screen -> keep it, ALSO poll to terminal
-      //    (a full replay could clobber the fuller live tail);
-      //  - no visible content -> the reconnect ladder rebuilds it.
-      if (m.ctx.runFact || m.ctx.liveFollow) {
-        const effects: Effect[] = [
-          { type: "scheduleReconnect", attempt: 1, delayMs: reconnectDelayMs(1) },
-        ];
-        if (event.hasVisibleContent) effects.push({ type: "armPoll", reason: "disconnect-visible" });
-        return command(m, { name: "reconnecting", attempt: 1, failed: false }, effects, {
-          ownership: "observer",
-          liveFollow: true,
+      // A LIVE SSE drop. An OBSERVER (mount-attach) drop, or a local turn with a
+      // run-fact, leaves a detached run executing server-side: follow it to
+      // terminal via the degraded poll as an observer — no re-attach attempts.
+      // #488 commit 2: gated on the RUN-FACT, NOT on the presence of an assistant
+      // message — a setup-phase break still recovers.
+      if (m.ctx.ownership === "observer" || m.ctx.runFact) {
+        return to(m, { name: "polling", reason: "disconnect" }, {
+          ctx: { ownership: "observer" },
+          effects: [{ type: "armPoll", reason: "disconnect" }],
         });
       }
       // No run to recover: a plain disconnect. Surface the terminal notice.
       return to(m, { name: "idle" }, {
-        ctx: { runFact: null, liveFollow: false, ownership: "local" },
+        ctx: { runFact: null, ownership: "local" },
       });
 
     case "FINISH_ERROR":
       return to(m, { name: "error", kind: event.kind }, {
-        ctx: { runFact: null, liveFollow: false, ownership: "local" },
-        effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+        ctx: { runFact: null, ownership: "local" },
+        effects: [{ type: "disarmPoll" }],
       });
 
     // ---- mount attach (resume) ----------------------------------------
@@ -389,62 +349,8 @@ export function reduce(m: Machine, event: Event): Machine {
         effects: [{ type: "armPoll", reason: "attach-none" }],
       });
 
-    // ---- reconnect after a live disconnect ----------------------------
-    case "RECONNECT_ATTEMPT":
-      // A scheduled backoff fired — fire the attach GET. epoch++ so the previous
-      // attempt's late outcome cannot drive this one.
-      if (m.phase.name !== "reconnecting") return stay(m);
-      return command(
-        m,
-        { name: "reconnecting", attempt: event.attempt, failed: false },
-        [{ type: "resumeStream" }],
-      );
-
-    case "RECONNECT_ATTACHED":
-      // #488 commit 3: a live re-attach succeeded. Reset to streaming — the
-      // attempt counter is dropped, so a LATER disconnect can start a fresh
-      // ladder from attempt 1 (the old one-shot `!wasResumed` gate forbade a
-      // second cycle, sending the second break to silent poll).
-      // Review #1: guard by SOURCE phase. The armed degraded poll can reach the
-      // terminal row (POLL_TERMINAL -> idle, via to(), NO epoch bump, GET not
-      // aborted) BEFORE a slow reconnect GET returns 2xx; without this guard that
-      // late RECONNECT_ATTACHED (same epoch) would resurrect a settled run into a
-      // phantom `streaming`. Only re-enter streaming FROM `reconnecting`.
-      if (m.phase.name !== "reconnecting") return stay(m);
-      return to(m, { name: "streaming" }, {
-        effects: [{ type: "cancelReconnect" }, { type: "disarmPoll" }],
-      });
-
-    case "RECONNECT_NONE": {
-      // 204 / error during a reconnect attempt. Arm the degraded poll as the
-      // belt-and-suspenders fallback, then either back off to the next attempt
-      // or, at the cap, surface the manual Retry ("failed").
-      if (m.phase.name !== "reconnecting") return stay(m);
-      const attempt = m.phase.attempt;
-      if (attempt < RECONNECT_MAX_ATTEMPTS) {
-        return command(
-          m,
-          { name: "reconnecting", attempt: attempt + 1, failed: false },
-          [
-            { type: "armPoll", reason: "attach-none" },
-            { type: "scheduleReconnect", attempt: attempt + 1, delayMs: reconnectDelayMs(attempt + 1) },
-          ],
-        );
-      }
-      return to(m, { name: "reconnecting", attempt, failed: true }, {
-        effects: [{ type: "armPoll", reason: "reconnect-exhausted" }],
-      });
-    }
-
     case "RETRY":
-      // Manual Retry from the "failed" reconnect banner OR the stalled banner.
-      if (m.phase.name === "reconnecting" && m.phase.failed) {
-        return command(
-          m,
-          { name: "reconnecting", attempt: 1, failed: false },
-          [{ type: "resumeStream" }],
-        );
-      }
+      // Manual Retry from the stalled banner.
       if (m.phase.name === "stalled") {
         // Re-arm the poll to try to catch the run up again.
         return command(m, { name: "polling", reason: "attach-none" }, [
@@ -459,8 +365,8 @@ export function reduce(m: Machine, event: Event): Machine {
       // idle and disarm everything (I4: this is a DATA-driven exit, incl. exit
       // from `stopping`). Review #2: reset ownership to local.
       return to(m, { name: "idle" }, {
-        ctx: { runFact: null, liveFollow: false, ownership: "local" },
-        effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+        ctx: { runFact: null, ownership: "local" },
+        effects: [{ type: "disarmPoll" }],
       });
 
     case "POLL_IDLE_CAP":
@@ -471,33 +377,32 @@ export function reduce(m: Machine, event: Event): Machine {
       // pressed, so there is nothing for the user to retry).
       if (m.phase.name === "stopping") {
         return to(m, { name: "idle" }, {
-          ctx: { runFact: null, liveFollow: false, ownership: "local" },
-          effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+          ctx: { runFact: null, ownership: "local" },
+          effects: [{ type: "disarmPoll" }],
         });
       }
       // #488 commit 4a: the poll hit the inactivity cap. Instead of going SILENT
       // (the old "forever half-done answer"), surface a stalled banner + Retry.
-      if (m.phase.name !== "polling" && m.phase.name !== "reconnecting") return stay(m);
+      if (m.phase.name !== "polling") return stay(m);
       return to(m, { name: "stalled" }, {
-        effects: [{ type: "disarmPoll" }, { type: "cancelReconnect" }],
+        effects: [{ type: "disarmPoll" }],
       });
 
     // ---- run-fact ------------------------------------------------------
     case "RUN_FACT": {
       const runFact = event.runFact;
       // A fresh NEGATIVE fact (no active run) cancels recovery immediately (I3):
-      // there is nothing to reconnect to / poll for.
+      // there is nothing to attach to / poll for.
       if (!runFact) {
         if (
-          m.phase.name === "reconnecting" ||
           m.phase.name === "attaching" ||
           m.phase.name === "polling" ||
           m.phase.name === "stopping"
         ) {
           return to(m, { name: "idle" }, {
             // Review #2: reset ownership to local on this terminal transition.
-            ctx: { runFact: null, liveFollow: false, ownership: "local" },
-            effects: [{ type: "cancelReconnect" }, { type: "disarmPoll" }],
+            ctx: { runFact: null, ownership: "local" },
+            effects: [{ type: "disarmPoll" }],
           });
         }
         return to(m, m.phase, { ctx: { runFact: null } });
@@ -523,7 +428,6 @@ export function reduce(m: Machine, event: Event): Machine {
         [
           { type: "stopRun" },
           { type: "abortAttach" },
-          { type: "cancelReconnect" },
           { type: "armPoll", reason: "attach-none" },
         ],
       );
@@ -535,7 +439,7 @@ export function reduce(m: Machine, event: Event): Machine {
       return command(
         m,
         { name: "superseding" },
-        [{ type: "supersede", targetRunId: event.targetRunId }, { type: "cancelReconnect" }, { type: "disarmPoll" }],
+        [{ type: "supersede", targetRunId: event.targetRunId }, { type: "disarmPoll" }],
       );
 
     case "SUPERSEDE_READY": {
@@ -543,7 +447,7 @@ export function reduce(m: Machine, event: Event): Machine {
       // are now the local streamer of the NEW run. Adopt its runId if provided.
       const runFact = event.runId ? { runId: event.runId } : m.ctx.runFact;
       return to(m, { name: "streaming" }, {
-        ctx: { ownership: "local", runFact, liveFollow: false },
+        ctx: { ownership: "local", runFact },
       });
     }
 
@@ -577,17 +481,15 @@ export function reduce(m: Machine, event: Event): Machine {
 
     // ---- lifecycle -----------------------------------------------------
     case "DISPOSE":
-      // Unmount: abort in-flight controllers, drop timers, and bump the epoch so
-      // NO late callback can drive this (now dead) machine (I5).
+      // Unmount: abort the in-flight attach GET, disarm the poll, and bump the
+      // epoch so NO late callback can drive this (now dead) machine (I5).
       return command(
         m,
         { name: "idle" },
         [
           { type: "abortAttach" },
-          { type: "cancelReconnect" },
           { type: "disarmPoll" },
         ],
-        { liveFollow: false },
       );
 
     default: {

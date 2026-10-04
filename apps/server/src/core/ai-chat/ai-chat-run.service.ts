@@ -158,7 +158,9 @@ export interface RunHandle {
  *  - finalize the run row (succeeded / failed / aborted) and unregister it;
  *  - service an EXPLICIT user stop (`requestStop`) — the ONLY thing that aborts a
  *    run; a browser disconnect deliberately does NOT;
- *  - crash-recovery sweep of dangling runs on startup.
+ *  - crash-recovery sweep of dangling runs on startup; stale active runs are
+ *    also reclaimed periodically (`reconcileStaleRuns`, driven by the
+ *    AiChatService reconcile timer, #487).
  *
  * The agent loop itself still runs in AiChatService.stream (reusing #183's
  * step-granular durable write path, `consumeStream` already drains it independent
@@ -204,8 +206,8 @@ export class AiChatRunService implements OnModuleInit {
   // brief connection blip). Riding out that blip in-place matters because the
   // dominant success path (streamText onFinish) settles exactly ONCE — if that
   // write is dropped and never retried, the row is stranded 'running' and the
-  // one-active-run gate 409s every future turn in the chat until a restart (no
-  // periodic sweep in phase 1).
+  // one-active-run gate 409s every future turn in the chat until the periodic
+  // reconcile re-drives it as a zombie (every 2 min by default).
   private static readonly FINALIZE_MAX_ATTEMPTS = 3;
   private static readonly FINALIZE_RETRY_BASE_MS = 50;
 

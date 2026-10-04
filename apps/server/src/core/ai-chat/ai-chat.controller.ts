@@ -786,9 +786,6 @@ export class AiChatController {
     // Handle a client disconnect. `close` also fires on normal completion, so only
     // act when the response has not finished writing (a genuine disconnect). `once`
     // fires at most once and self-removes; we also drop it on response `finish`.
-    // DIAGNOSTIC (Safari stream-drop investigation) — temporary: wall-clock at
-    // which a Safari disconnect is observed, measured from request receipt.
-    const reqStartedAt = Date.now();
     const controller = new AbortController();
     const onClose = (): void => {
       if (!res.raw.writableEnded) {
@@ -797,8 +794,7 @@ export class AiChatController {
           // executing and persisting server-side; the client reconnects via
           // /ai-chat/run (or re-stops via /ai-chat/stop). Log only.
           this.logger.log(
-            `AI chat stream: client disconnected; run continues server-side ` +
-              `(elapsed=${Date.now() - reqStartedAt}ms since request received)`,
+            'AI chat stream: client disconnected; run continues server-side',
           );
         } else {
           // #487: legacy — a disconnect ENDS the turn, but the turn is now a RUN,
@@ -806,8 +802,7 @@ export class AiChatController {
           // longer consumes the socket signal (effectiveSignal is the run signal),
           // so aborting `controller` would do nothing; requestStop aborts the run.
           this.logger.warn(
-            `AI chat stream: client disconnected before completion; stopping the ` +
-              `run (elapsed=${Date.now() - reqStartedAt}ms since request received)`,
+            'AI chat stream: client disconnected before completion; stopping the run',
           );
           if (currentRunId) {
             void this.aiChatRunService.requestStop(currentRunId, workspace.id);
