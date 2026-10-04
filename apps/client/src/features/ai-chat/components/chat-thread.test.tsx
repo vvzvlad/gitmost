@@ -97,10 +97,12 @@ vi.mock("@/features/ai-chat/components/chat-input.tsx", () => ({
     onQueue,
     onStop,
     onSend,
+    isStreaming,
   }: {
     onQueue: (text: string) => void;
     onStop: () => void;
     onSend: (text: string) => void;
+    isStreaming: boolean;
   }) => (
     <>
       <button data-testid="queue-btn" onClick={() => onQueue("queued text")}>
@@ -109,7 +111,13 @@ vi.mock("@/features/ai-chat/components/chat-input.tsx", () => ({
       <button data-testid="send-btn" onClick={() => onSend("typed text")}>
         send
       </button>
-      <button aria-label="Stop" onClick={() => onStop()}>
+      {/* Always rendered so tests can click it; `data-streaming` mirrors the
+          prop the real ChatInput uses to show Stop / queue on Enter. */}
+      <button
+        aria-label="Stop"
+        data-streaming={String(isStreaming)}
+        onClick={() => onStop()}
+      >
         stop
       </button>
     </>
@@ -288,15 +296,16 @@ describe("ChatThread — send now", () => {
     expect(prep({ messages: [], body: {} }).body.supersede).toBeUndefined();
   });
 
-  it("#488 F1: a superseded stream's LATE disconnect does NOT falsely reconnect (epoch stamp drops it)", async () => {
+  it("#488 F1: a superseded stream's LATE disconnect does NOT falsely enter disconnect recovery (epoch stamp drops it)", async () => {
     // MUTATION-VERIFY: drop `epoch: stampEpoch` from the supersede-branch
-    // FINISH_DISCONNECT dispatch and this goes red (A's disconnect -> reconnecting).
+    // FINISH_DISCONNECT dispatch and this goes red (A's disconnect -> the
+    // polling(disconnect) banner).
     startLocalStreamWithRun();
     fireEvent.click(screen.getByTestId("queue-btn"));
     fireEvent.click(screen.getByLabelText("Send now")); // -> superseding, aborts A
     // A ends via a REAL network drop { isError:true, isDisconnect:true } + error set
     // (the server CAS closed it). The OLD overlap bug would route the LIVE new run
-    // into a false reconnect banner.
+    // into a false disconnect banner.
     h.state.error = { message: "Failed to fetch" };
     await act(async () => {
       h.state.onFinish?.({
@@ -376,15 +385,15 @@ describe("ChatThread — send now", () => {
     expect(screen.getAllByLabelText("Remove queued message")).toHaveLength(1);
   });
 
-  it("Stop then a REAL network-drop finish exits to idle (honor-in-stopping), NOT a false reconnect", async () => {
+  it("Stop then a REAL network-drop finish exits to idle (honor-in-stopping), NOT a false disconnect recovery", async () => {
     // Regression for the disconnect-first reorder: on the STOP path, even a drop-
     // form finish { isError:true, isDisconnect:true } arriving in `stopping` must be
-    // HONORED (reducer) and exit to idle — it must NOT enter the reconnect ladder.
+    // HONORED (reducer) and exit to idle — it must NOT enter disconnect recovery.
     startLocalStreamWithRun(); // live local stream, autonomous
     fireEvent.click(screen.getByLabelText("Stop")); // STOP_REQUESTED -> stopping
     h.state.error = { message: "Failed to fetch" };
-    // #491: the disconnect re-seeds from persist (async getRun) before dispatching
-    // FINISH_DISCONNECT, which the reducer HONORS in `stopping` -> idle. Flush it.
+    // The disconnect dispatches FINISH_DISCONNECT, which the reducer HONORS in
+    // `stopping` -> idle.
     await act(async () => {
       h.state.onFinish?.({
         message: { id: "a1", role: "assistant", parts: [] },
@@ -1108,9 +1117,9 @@ describe("ChatThread — resume (attach) machinery", () => {
 });
 
 // -----------------------------------------------------------------------------
-// Live reconnect (#430) + #488 commits 2/3 + stalled (4a). Fake timers.
+// Live disconnect -> degraded poll + #488 commit 2 + stalled (4a). Fake timers.
 // -----------------------------------------------------------------------------
-describe("ChatThread — live reconnect + stalled", () => {
+describe("ChatThread — live disconnect + stalled", () => {
   const liveMsg = {
     id: "a2",
     role: "assistant",
@@ -1127,26 +1136,13 @@ describe("ChatThread — live reconnect + stalled", () => {
     cleanup();
   });
 
-  // #491: the authoritative PERSISTED assistant row `getRun` projects on a local
-  // disconnect — the re-seed source. Its metadata.stepsPersisted becomes `n`.
-  const persistedAnchor = (steps = 3) => ({
-    run: { id: "run-1", status: "running" },
-    message: {
-      id: "a2",
-      role: "assistant",
-      content: "persisted 0..N-1",
-      status: "streaming",
-      createdAt: "2026-01-01T00:00:00Z",
-      metadata: { stepsPersisted: steps },
-    },
-  });
-
   // A REAL live SSE drop. ai@6.0.207 emits BOTH { isError:true, isDisconnect:true }
-  // for a network TypeError AND sets useChat `error`. #491: an autonomous local drop
-  // now RE-SEEDS from persist (async getRun) BEFORE entering the reconnect ladder, so
-  // this helper is async and flushes the getRun microtask before returning.
+  // for a network TypeError AND sets useChat `error`. Its makeRequest also flips the
+  // status to "error" BEFORE onFinish, so the first render after the drop already
+  // has isStreaming=false.
   async function disconnect(message: unknown = liveMsg) {
     h.state.error = { message: "Failed to fetch" }; // the SDK sets error on the drop
+    h.state.status = "error"; // ...and setStatus("error") before onFinish
     await act(async () => {
       h.state.onFinish?.({
         message,
@@ -1154,14 +1150,12 @@ describe("ChatThread — live reconnect + stalled", () => {
         isDisconnect: true,
         isError: true,
       });
-      // Flush the getRun().then re-seed + the deferred FINISH_DISCONNECT dispatch.
-      await Promise.resolve();
-      await Promise.resolve();
     });
   }
+  // A live local turn of a chat whose seed ends on the PREVIOUS turn's settled
+  // assistant row (settledTail) — the SDK status is "streaming" until the drop.
   function renderLive() {
-    // The persisted-anchor read the local disconnect performs to re-seed from persist.
-    h.state.getRun.mockResolvedValue(persistedAnchor());
+    h.state.status = "streaming";
     const view = renderThread({
       autonomousRunsEnabled: true,
       initialRows: settledTail(),
@@ -1169,155 +1163,46 @@ describe("ChatThread — live reconnect + stalled", () => {
     expect(h.state.resumeStream).not.toHaveBeenCalled();
     return view;
   }
-  function advanceToAttempt(attempt: number) {
-    act(() => {
-      vi.advanceTimersByTime(1000 * 2 ** (attempt - 1));
-    });
-  }
-  async function reconnect(response: unknown) {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
-    await act(async () => {
-      await h.state.transport!.fetch!("http://x", { method: "GET" });
-    });
+  // Flush the microtask chain of a NEGATIVE polled fact while polling
+  // (getRun -> merge -> stamped RUN_FACT{null}).
+  async function flushMicrotasks() {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
   }
 
-  it("#491: a live disconnect RE-SEEDS from persist, then backs off to reconnect with ?anchor=&n=", async () => {
-    renderLive();
-    await disconnect();
-    // The re-seed read the authoritative persisted row and replaced the live partial.
-    // MUTATION-VERIFY: skip the getRun re-seed (send `n` off the live message) and the
-    // n below no longer matches the PERSISTED stepsPersisted.
-    expect(h.state.getRun).toHaveBeenCalledWith("c1");
-    expect(h.state.setMessages).toHaveBeenCalled(); // re-seeded the store from persist
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    expect(h.state.resumeStream).not.toHaveBeenCalled();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    // n=3 is the PERSISTED row's stepsPersisted (from getRun), NOT the live store.
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream?anchor=a2&n=3",
-    );
-  });
-
-  it("#491 regression (#137/#161 dup): getRun REJECT on a live disconnect drops the live partial + nulls the anchor", async () => {
-    // The re-seed source (getRun) FAILS — a flaky-network blip (SSE + getRun both
-    // fail, network recovers in ~1s). The OLD .catch just re-entered the ladder with
-    // NO re-seed and NO filter, so the reconnect could tail-apply the registry's
-    // frames onto the live partial that ALREADY has those steps -> duplicated text.
-    renderLive();
-    h.state.getRun.mockReset();
-    h.state.getRun.mockRejectedValue(new Error("network"));
-    await disconnect(); // live partial = liveMsg (id "a2")
-    expect(h.state.getRun).toHaveBeenCalledWith("c1");
-    // THE GUARANTEE: on the getRun failure the live partial (a2) is FILTERED from the
-    // store, so the reconnect can never tail-apply already-present steps onto it.
-    // MUTATION-VERIFY: revert the .catch fix (enterReconnect only, no filter) and no
-    // setMessages call removes a2 -> this reddens.
-    const removedLivePartial = (
-      h.state.setMessages as unknown as {
-        mock: { calls: [unknown][] };
-      }
-    ).mock.calls.some(([updater]) => {
-      if (typeof updater !== "function") return false;
-      const out = (updater as (p: { id: string }[]) => { id: string }[])([
-        { id: "a2" },
-        { id: "u1" },
-      ]);
-      return !out.some((m) => m.id === "a2");
-    });
-    expect(removedLivePartial).toBe(true);
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    // Anchor was nulled -> replay-from-start (no params) / 204 -> poll; never a stale
-    // ?anchor=&n= over the live partial.
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream",
-    );
-  });
-
-  it("#488 (browser QA): the reconnect banner is SHOWN, not masked by the residual useChat error", async () => {
+  it("#488 (browser QA): a live disconnect goes straight to the degraded poll; its banner is SHOWN (no counter), not masked by the residual useChat error", async () => {
     // The drop sets useChat `error` (real SDK), and the terminal errorView describes
     // it ("Lost connection to the server"). The FSM phase-gate must let the
-    // `reconnecting` banner WIN over that residual error. MUTATION-VERIFY: revert the
-    // errorView phase-gate (show errorView whenever error is set) and the terminal
+    // polling(disconnect) banner WIN over that residual error. MUTATION-VERIFY: revert
+    // the errorView phase-gate (show errorView whenever error is set) and the terminal
     // banner masks "reconnecting…" -> red.
-    renderLive();
+    const { onResumeFallback, invalidateSpy } = renderLive();
     await disconnect();
     expect(h.state.error).not.toBeNull(); // the SDK error IS set during recovery
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
+    expect(onResumeFallback).toHaveBeenCalledWith(true); // armPoll
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["ai-chat-messages", "c1"],
+    });
+    // Exact text: no attempt counter, no Retry.
+    expect(screen.getByText("Connection lost — reconnecting…")).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
     // The terminal "Lost connection… reload" banner must NOT be showing.
     expect(screen.queryByText(/reload and try again/i)).toBeNull();
+    // No re-attach attempts.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(h.state.resumeStream).not.toHaveBeenCalled();
   });
 
-  it("#488 commit 2: a disconnect BEFORE the first assistant frame reconnects with NO anchor", async () => {
-    renderLive();
-    // No persisted assistant row for a pre-first-frame break -> no anchor.
-    h.state.getRun.mockResolvedValue({ run: null, message: null });
+  it("#488 commit 2: a disconnect BEFORE the first assistant frame still recovers to the degraded poll", async () => {
+    const { onResumeFallback } = renderLive();
     await disconnect(null); // no assistant message yet (pre-first-frame break)
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
+    expect(onResumeFallback).toHaveBeenCalledWith(true); // armPoll
+    expect(screen.getByText("Connection lost — reconnecting…")).toBeTruthy();
     expect(
       screen.queryByText("Connection lost — the answer was interrupted."),
     ).toBeNull();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream",
-    );
-  });
-
-  it("a live re-attach (2xx) clears the reconnect banner", async () => {
-    renderLive();
-    await disconnect();
-    advanceToAttempt(1);
-    await reconnect({ status: 200, ok: true });
-    expect(screen.queryByText(/reconnecting/i)).toBeNull();
-  });
-
-  it("a 204 arms the degraded poll and backs off to the next attempt", async () => {
-    const { onResumeFallback } = renderLive();
-    await disconnect();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    await reconnect({ status: 204, ok: false });
-    expect(onResumeFallback).toHaveBeenCalledWith(true);
-    expect(screen.getByText(/reconnecting.*2\/5/i)).toBeTruthy();
-    advanceToAttempt(2);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(2);
-  });
-
-  it("exhausts the attempt limit into a manual Retry, which restarts the sequence", async () => {
-    renderLive();
-    await disconnect();
-    for (let n = 1; n <= 5; n++) {
-      advanceToAttempt(n);
-      expect(h.state.resumeStream).toHaveBeenCalledTimes(n);
-      await reconnect({ status: 204, ok: false });
-    }
-    expect(screen.queryByText(/reconnecting/i)).toBeNull();
-    const retry = screen.getByText("Retry");
-    act(() => {
-      fireEvent.click(retry);
-    });
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(6);
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-  });
-
-  it("#488 commit 3: two breaks in a row produce two reconnect cycles", async () => {
-    renderLive();
-    // First break -> reconnect -> re-attach live.
-    await disconnect();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    await reconnect({ status: 200, ok: true });
-    expect(screen.queryByText(/reconnecting/i)).toBeNull();
-    // The re-attached observer (live-follow) stream drops AGAIN -> a SECOND reconnect
-    // cycle. #491: this too re-seeds from persist before re-attaching (never tail-
-    // applies over the live-follow partial).
-    await disconnect();
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(2);
+    expect(h.state.resumeStream).not.toHaveBeenCalled();
   });
 
   it("does NOT reconnect when autonomous runs are disabled", async () => {
@@ -1327,15 +1212,12 @@ describe("ChatThread — live reconnect + stalled", () => {
     expect(
       screen.getByText("Connection lost — the answer was interrupted."),
     ).toBeTruthy();
-    advanceToAttempt(1);
     expect(h.state.resumeStream).not.toHaveBeenCalled();
   });
 
   it("#488 commit 4a: the poll idle cap surfaces a stalled banner + Retry (not silent)", async () => {
     renderLive();
-    await disconnect();
-    advanceToAttempt(1);
-    await reconnect({ status: 204, ok: false }); // arms the poll (reconnecting)
+    await disconnect(); // arms the poll (polling(disconnect))
     // No activity for the whole idle cap -> stalled.
     act(() => {
       vi.advanceTimersByTime(10 * 60_000);
@@ -1365,25 +1247,26 @@ describe("ChatThread — live reconnect + stalled", () => {
     expect(onResumeFallback).toHaveBeenCalledWith(false); // POLL_IDLE_CAP -> idle -> disarm
   });
 
-  it("#555 S3: a delta poll's NEGATIVE run-fact quenches `reconnecting` immediately (RUN_FACT{null})", async () => {
-    // Drive into the reconnect ladder, then have the degraded delta poll report NO
+  it("#555 S3: a delta poll's NEGATIVE run-fact quenches the disconnect `polling` (RUN_FACT{null})", async () => {
+    // Drive into the disconnect poll, then have the degraded delta poll report NO
     // active run (run == null): the thread must consume that fact and dispatch
-    // RUN_FACT{null}, which the reducer's fresh-negative gate (I3) sends to idle —
-    // WITHOUT waiting for the terminal row (POLL_TERMINAL) or the ladder to exhaust.
-    // MUTATION-VERIFY: delete the thread's polledRunFact consume effect and the
-    // banner never clears here -> red.
+    // RUN_FACT{null} (after merging the persisted row), which the reducer's
+    // fresh-negative gate (I3) sends to idle — WITHOUT waiting for the terminal row
+    // (POLL_TERMINAL). MUTATION-VERIFY: delete the thread's polledRunFact consume
+    // effect and the banner never clears here -> red.
     const view = renderLive();
     await disconnect();
     expect(screen.getByText(/reconnecting/i)).toBeTruthy(); // precondition
-    act(() => {
+    await act(async () => {
       view.setPolledRunFact(null); // the poll: no active run
+      await flushMicrotasks();
     });
     expect(screen.queryByText(/reconnecting/i)).toBeNull(); // quenched -> idle
   });
 
   it("#555 S3: a delta poll's POSITIVE active fact does NOT quench recovery (no over-quench)", async () => {
-    // Control for the above: while reconnecting, a poll reporting a STILL-active run
-    // must keep the ladder going (a positive fact only refreshes ctx.runFact). Guards
+    // Control for the above: while polling, a poll reporting a STILL-active run
+    // must keep the poll going (a positive fact only refreshes ctx.runFact). Guards
     // against a consume effect that quenches on ANY poll result.
     const view = renderLive();
     await disconnect();
@@ -1403,18 +1286,19 @@ describe("ChatThread — live reconnect + stalled", () => {
     // second negative fact (null === the stale null) is deduped -> the banner never
     // clears the second time -> red.
     const view = renderLive();
-    // First recovery: reconnecting, a NEGATIVE poll fact quenches to idle (ref=null).
+    // First recovery: polling, a NEGATIVE poll fact quenches to idle (ref=null).
     await disconnect();
     expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    act(() => {
+    await act(async () => {
       view.setPolledRunFact(null);
+      await flushMicrotasks();
     });
     expect(screen.queryByText(/reconnecting/i)).toBeNull();
     // The poll DISARMS (no result) -> the dedupe ref must reset to `undefined`.
     act(() => {
       view.setPolledRunFact(undefined);
     });
-    // Second recovery: a fresh local send that then drops re-enters the ladder (the
+    // Second recovery: a fresh local send that then drops re-enters the poll (the
     // send re-stamps the turn epoch so this drop's dispatches are not epoch-dropped).
     act(() => {
       fireEvent.click(screen.getByTestId("send-btn")); // SEND_LOCAL -> sending
@@ -1423,94 +1307,171 @@ describe("ChatThread — live reconnect + stalled", () => {
     expect(screen.getByText(/reconnecting/i)).toBeTruthy();
     // The SAME negative fact (null) must re-quench — it would be deduped (null === the
     // stale null from the first recovery) if the ref had NOT reset on disarm.
-    act(() => {
+    await act(async () => {
       view.setPolledRunFact(null);
+      await flushMicrotasks();
     });
     expect(screen.queryByText(/reconnecting/i)).toBeNull();
   });
 
-  it("#541: getRun HANGS on a live disconnect — the timeout race still enters reconnect (no silent freeze in `streaming`)", async () => {
-    // MUTATION-VERIFY: revert the race to a bare `getRun(cid).then/.catch` and this
-    // reddens — a HUNG (never-settling, NOT rejected) getRun leaves the FSM stuck in
-    // `streaming` with no reconnect banner and no poll (the axios client sets no
-    // request timeout, and the stalled-idle cap only arms AFTER reconnecting/polling).
-    renderLive();
-    h.state.getRun.mockReset();
-    h.state.getRun.mockReturnValue(new Promise(() => {})); // getRun HANGS forever
-    await disconnect(); // live partial = liveMsg (id "a2")
+  it("a drop on the SECOND turn of a chat stays in polling(disconnect): the stale settled tail in initialRows does NOT settle it", async () => {
+    // ai@6 flips status to "error" BEFORE onFinish, so the first render after the
+    // drop has isStreaming=false while initialRows still ends on the PREVIOUS turn's
+    // settled assistant row (a1). MUTATION-VERIFY: drop the polling("disconnect")
+    // early-return in the reconcile effect and POLL_TERMINAL fires from that stale
+    // tail -> idle + disarm -> red.
+    const { onResumeFallback } = renderLive(); // seed: u1 + settled a1
+    fireEvent.click(screen.getByTestId("send-btn")); // the second turn (SEND_LOCAL)
+    onResumeFallback.mockClear();
+    await disconnect();
+    expect(screen.getByText("Connection lost — reconnecting…")).toBeTruthy();
+    expect(onResumeFallback).toHaveBeenCalledWith(true); // poll armed
+    expect(onResumeFallback).not.toHaveBeenCalledWith(false); // ...and not disarmed
+  });
+
+  it("a NEGATIVE polled fact while polling merges the persisted terminal row (getRun) FIRST, then quenches to idle + disarms", async () => {
+    // The first delta tick carries the run fact but NO rows: if the run finished
+    // during the drop, quenching right away would leave the truncated live answer.
+    // MUTATION-VERIFY: dispatch RUN_FACT{null} immediately (no getRun merge) and no
+    // setMessages call carries the full answer -> red.
+    const view = renderLive();
+    await disconnect(); // live partial a2 on screen
+    h.state.getRun.mockResolvedValue({
+      run: { id: "run-1", status: "succeeded" },
+      message: {
+        id: "a2",
+        role: "assistant",
+        content: "full answer",
+        status: "succeeded",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    });
+    h.state.setMessages.mockClear();
+    view.onResumeFallback.mockClear();
+    await act(async () => {
+      view.setPolledRunFact(null); // the poll: the run is over
+      await flushMicrotasks();
+    });
     expect(h.state.getRun).toHaveBeenCalledWith("c1");
-    // BEFORE the bound fires the FSM is still in the live turn — the very freeze bug.
-    expect(screen.queryByText(/reconnecting/i)).toBeNull();
-    // The recovery-start bound fires -> the SAME fallback as the reject path.
-    act(() => {
-      vi.advanceTimersByTime(4_000);
-    });
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    // The live partial (a2) was DROPPED from the store (replay-from-start, no stale
-    // tail-apply base). Mirrors the getRun-REJECT test's inspection.
-    const removedLivePartial = (
-      h.state.setMessages as unknown as {
-        mock: { calls: [unknown][] };
-      }
-    ).mock.calls.some(([updater]) => {
+    const setMessagesMock = h.state.setMessages as unknown as {
+      mock: { calls: [unknown][]; invocationCallOrder: number[] };
+    };
+    const mergeIdx = setMessagesMock.mock.calls.findIndex(([updater]) => {
       if (typeof updater !== "function") return false;
-      const out = (updater as (p: { id: string }[]) => { id: string }[])([
-        { id: "a2" },
-        { id: "u1" },
-      ]);
-      return !out.some((m) => m.id === "a2");
+      const out = (
+        updater as (
+          p: { id: string; parts?: { text?: string }[] }[],
+        ) => { id: string; parts?: { text?: string }[] }[]
+      )([{ id: "u1" }, liveMsg]);
+      return out.find((m) => m.id === "a2")?.parts?.[0]?.text === "full answer";
     });
-    expect(removedLivePartial).toBe(true);
-    // ...and the anchor was NULLED -> replay-from-start (no ?anchor=&n= over the partial).
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream",
+    expect(mergeIdx).toBeGreaterThanOrEqual(0); // the terminal row merged by id
+    const fallbackMock = view.onResumeFallback as unknown as {
+      mock: { calls: [boolean][]; invocationCallOrder: number[] };
+    };
+    const disarmIdx = fallbackMock.mock.calls.findIndex(([a]) => a === false);
+    expect(disarmIdx).toBeGreaterThanOrEqual(0); // idle -> poll disarmed
+    // ...and the merge happened BEFORE the quench.
+    expect(setMessagesMock.mock.invocationCallOrder[mergeIdx]).toBeLessThan(
+      fallbackMock.mock.invocationCallOrder[disarmIdx],
     );
+    expect(screen.queryByText(/reconnecting/i)).toBeNull();
   });
 
-  it("#541: a getRun resolve AFTER the timeout already fired is IGNORED (no double reconnect, no stale re-seed)", async () => {
-    // The timeout wins first and enters the ladder via replay-from-start. When the
-    // hung getRun FINALLY answers, its late `.then` must be a full no-op: it must not
-    // re-seed the store from the (now stale) persisted row, must not re-set the
-    // anchor, and must not re-enter reconnect. The local `settled` flag makes the
-    // resolve/reject/timeout branches mutually exclusive.
-    // MUTATION-VERIFY: drop the `settled` guard (let the late `.then` run) and the
-    // late re-seed re-sets the anchor (URL regains ?anchor=a2&n=3) + calls setMessages.
-    renderLive();
+  it("during polling(disconnect) the composer stays in streaming mode, and Stop requests the server stop", async () => {
+    // No local stream is left after the drop (status "error"), but the detached run
+    // is still active: ChatInput must keep Stop (and queue-on-Enter) instead of a
+    // plain send that would 409. MUTATION-VERIFY: pass bare `isStreaming` to
+    // ChatInput and data-streaming reads "false" -> red.
+    const { onServerStop } = renderLive();
+    await disconnect();
+    const stop = screen.getByLabelText("Stop");
+    expect(stop.getAttribute("data-streaming")).toBe("true");
+    fireEvent.click(stop); // STOP_REQUESTED -> stopRun
+    expect(onServerStop).toHaveBeenCalledWith("c1");
+  });
+
+  it("a drop of a NEW chat before any frame (no chat id yet) goes idle with the terminal notice, never arming the poll", async () => {
+    // MUTATION-VERIFY: drop the `!chatIdRef.current` branch and the drop adopts a
+    // "pending" run-fact -> polling(disconnect) + armPoll on a chat the poll cannot
+    // follow -> red.
+    h.state.status = "streaming";
+    const { onResumeFallback, invalidateSpy } = renderThread({
+      chatId: null,
+      autonomousRunsEnabled: true,
+      initialRows: [],
+    });
+    fireEvent.click(screen.getByTestId("send-btn")); // first turn of the new chat
+    invalidateSpy.mockClear();
+    await disconnect(null); // no assistant frame ever arrived
+    expect(
+      screen.getByText("Connection lost — the answer was interrupted."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/reconnecting/i)).toBeNull();
+    expect(onResumeFallback).not.toHaveBeenCalledWith(true);
+    expect(invalidateSpy).not.toHaveBeenCalled();
+  });
+
+  it("a FAILED persisted-reply read (getRun rejects, e.g. its deadline) still settles to idle and shows the interrupted notice", async () => {
+    // MUTATION-VERIFY: drop the setStopNotice("disconnect") on a failed read and the
+    // notice never shows -> red.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const view = renderLive();
+    await disconnect();
+    h.state.getRun.mockRejectedValue(new Error("timeout of 10000ms exceeded"));
+    view.onResumeFallback.mockClear();
+    await act(async () => {
+      view.setPolledRunFact(null);
+      await flushMicrotasks();
+    });
+    expect(view.onResumeFallback).toHaveBeenCalledWith(false); // idle -> disarmed
+    expect(screen.queryByText(/reconnecting/i)).toBeNull();
+    expect(
+      screen.getByText("Connection lost — the answer was interrupted."),
+    ).toBeTruthy();
+    errorSpy.mockRestore();
+  });
+
+  it("Stop pressed WHILE the persisted-reply read is in flight still exits `stopping` when the read lands (phase guard, not epoch)", async () => {
+    // STOP_REQUESTED bumps the epoch; an epoch-stamped RUN_FACT{null} would be dropped
+    // and leave the FSM in `stopping` until the 10-min cap. MUTATION-VERIFY: restamp
+    // that RUN_FACT with the pre-read epoch and no disarm follows -> red.
+    const view = renderLive();
+    await disconnect();
     let resolveGetRun!: (v: unknown) => void;
-    h.state.getRun.mockReset();
     h.state.getRun.mockReturnValue(
       new Promise((r) => {
         resolveGetRun = r;
       }),
     );
-    await disconnect();
-    act(() => {
-      vi.advanceTimersByTime(4_000); // bound fires -> replay-from-start, reconnecting
-    });
-    expect(screen.getByText(/reconnecting/i)).toBeTruthy();
-    advanceToAttempt(1);
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
-    // Anchor is null -> replay-from-start URL (the pre-condition the late resolve must
-    // not undo).
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream",
-    );
-    const setMessagesCallsBefore = h.state.setMessages.mock.calls.length;
-    // NOW the hung getRun finally resolves with a persisted anchor (id a2, steps 3).
     await act(async () => {
-      resolveGetRun(persistedAnchor());
-      await Promise.resolve();
+      view.setPolledRunFact(null); // negative fact -> getRun pending
+      await flushMicrotasks();
     });
-    // The late resolve did NOT re-seed the store...
-    expect(h.state.setMessages.mock.calls.length).toBe(setMessagesCallsBefore);
-    // ...did NOT re-set the anchor (URL stays replay-from-start, no ?anchor=&n=)...
-    expect(h.state.transport!.prepareReconnectToStreamRequest!().api).toBe(
-      "/api/ai-chat/runs/c1/stream",
-    );
-    // ...and did NOT trigger a fresh reconnect attach.
-    expect(h.state.resumeStream).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByLabelText("Stop")); // STOP_REQUESTED -> stopping
+    view.onResumeFallback.mockClear();
+    await act(async () => {
+      resolveGetRun({ run: null, message: null });
+      await flushMicrotasks();
+    });
+    expect(view.onResumeFallback).toHaveBeenCalledWith(false); // stopping -> idle
+  });
+
+  it("a message queued during polling(disconnect) is sent once the negative fact settles the poll", async () => {
+    // Enter queues while following the run after a drop; only a local clean finish
+    // used to flush the queue. MUTATION-VERIFY: drop the flushNext() after the settle
+    // and the queued text is never sent -> red.
+    const view = renderLive();
+    await disconnect();
+    fireEvent.click(screen.getByTestId("queue-btn")); // composer queues (streaming mode)
+    expect(screen.getAllByLabelText("Remove queued message")).toHaveLength(1);
+    h.state.sendMessage.mockClear();
+    await act(async () => {
+      view.setPolledRunFact(null); // getRun default: { run: null, message: null }
+      await flushMicrotasks();
+    });
+    expect(h.state.sendMessage).toHaveBeenCalledWith({ text: "queued text" });
+    expect(screen.queryByLabelText("Remove queued message")).toBeNull();
   });
 });
 

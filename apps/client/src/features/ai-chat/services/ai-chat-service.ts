@@ -82,6 +82,9 @@ export async function getAiChatMessagesDelta(
   return req.data;
 }
 
+// Deadline for POST /ai-chat/run (AGENTS.md invariant 3) — the axios client sets none.
+const GET_RUN_TIMEOUT_MS = 10_000;
+
 /**
  * #488: the run-fact — "is a run active on this chat?" — first-class from the
  * server (POST /ai-chat/run). Called on mount to seed the client FSM's run-fact
@@ -97,7 +100,7 @@ export async function getRun(chatId: string): Promise<{
   const req = await api.post<{
     run: { id: string; status: string } | null;
     message: IAiChatMessageRow | null;
-  }>("/ai-chat/run", { chatId });
+  }>("/ai-chat/run", { chatId }, { timeout: GET_RUN_TIMEOUT_MS });
   return req.data;
 }
 

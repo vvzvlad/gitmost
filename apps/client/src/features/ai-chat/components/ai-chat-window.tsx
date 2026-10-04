@@ -275,9 +275,10 @@ export default function AiChatWindow() {
 
   // #184 phase 1.5 / #488: degraded-poll fallback. ChatThread's FSM arms this via
   // onResumeFallback(true) when it enters a poll-bearing recovery (attach 204 /
-  // starved finish / stop) and disarms it on settle / local stream / stalled. The
-  // window owns ONLY the dumb 2.5s timer; the THREAD owns arm/disarm AND the
-  // inactivity cap (a stuck run -> the thread's `stalled` banner disarms this).
+  // starved finish / a live SSE disconnect of an active run / stop) and disarms it
+  // on settle / local stream / stalled. The window owns ONLY the dumb 2.5s timer;
+  // the THREAD owns arm/disarm AND the inactivity cap (a stuck run -> the thread's
+  // `stalled` banner disarms this).
   const [degradedPoll, setDegradedPoll] = useState(false);
   const onResumeFallback = useCallback((active: boolean): void => {
     setDegradedPoll(active);
@@ -305,7 +306,8 @@ export default function AiChatWindow() {
   // is unit-testable in isolation (W1). The thread's FSM owns arm/disarm (degradedPoll
   // via onResumeFallback) and CONSUMES the run fact the hook surfaces: `polledRunFact`
   // is threaded into <ChatThread>, where a fresh NEGATIVE fact quenches a stale
-  // `reconnecting`/`polling` immediately (#555 S3 / I3). See run-fsm.spec.md §3.4.
+  // `polling` after merging the persisted reply (#555 S3 / I3). See run-fsm.spec.md
+  // §3.4.
   const polledRunFact = useAiChatDeltaPoll({
     chatId: activeChatId,
     armed: degradedPoll,
@@ -1088,8 +1090,9 @@ export default function AiChatWindow() {
               // disarms it on settle / local stream.
               onResumeFallback={onResumeFallback}
               // #555 S3: the degraded delta poll's authoritative run fact. The FSM
-              // consumes a fresh NEGATIVE fact to quench a stale reconnecting/polling
-              // immediately (I3), rather than waiting for the terminal row.
+              // consumes a fresh NEGATIVE fact to quench a stale polling after
+              // merging the persisted reply (I3), rather than waiting for the
+              // terminal row.
               polledRunFact={polledRunFact}
               // #184: in autonomous mode the Stop button must hit the authoritative
               // server stop (a local SSE abort is a client disconnect the server
