@@ -120,7 +120,13 @@ function isDefaultAttr(
 ): boolean {
   if (value === null || value === undefined) return true;
   const spec = attrSpecs?.[attrName];
-  return !!spec && spec.default === value;
+  if (!spec) return false;
+  // A numeric default also matches its string form: the markdown round-trip
+  // brings a pdf's default `width: 800` back from git as "800".
+  return (
+    spec.default === value ||
+    (typeof spec.default === 'number' && String(spec.default) === value)
+  );
 }
 
 /**
@@ -170,7 +176,8 @@ function normalizeDelta(delta: any[]): any[] {
  * `getMergeSchema`) are excluded at every level — on element attributes AND on
  * the mark attributes inside each XmlText delta — so a block compares equal by
  * CONTENT across the git round-trip (which materializes neither), keeping the
- * merge anchor-able and idempotent.
+ * merge anchor-able and idempotent. For the same reason a numeric attribute is
+ * keyed by its string form and an empty XmlText child is ignored.
  */
 export function serializeXmlNode(node: unknown): unknown {
   if (node instanceof Y.XmlText) {
@@ -185,12 +192,22 @@ export function serializeXmlNode(node: unknown): unknown {
     for (const k of Object.keys(attrs).sort()) {
       if (VOLATILE_KEY_ATTRS.has(k)) continue;
       if (isDefaultAttr(attrSpecs, k, attrs[k])) continue;
-      sorted[k] = attrs[k];
+      // The markdown round-trip writes numeric attrs as strings (an image's
+      // `width: 652` comes back from git as "652"), so a number compares by its
+      // string form — otherwise no live image ever matches its git twin and the
+      // merge loses its anchors.
+      sorted[k] = typeof attrs[k] === 'number' ? String(attrs[k]) : attrs[k];
     }
     return {
       n: node.nodeName,
       a: sorted,
-      c: node.toArray().map(serializeXmlNode),
+      // An empty XmlText (left behind when a user types into a block and erases
+      // it) carries no content: such a paragraph is the same empty paragraph a
+      // git body produces with no text child at all.
+      c: node
+        .toArray()
+        .filter((c) => !(c instanceof Y.XmlText && c.length === 0))
+        .map(serializeXmlNode),
     };
   }
   // XmlHook / unknown: fall back to a stable string so it compares by identity
