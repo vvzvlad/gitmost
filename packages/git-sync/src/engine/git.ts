@@ -19,7 +19,17 @@
  *   - "nothing to commit" is treated as a graceful no-op, not an error.
  */
 import { execFile } from "node:child_process";
-import { mkdir, rm, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -43,6 +53,41 @@ export const BOT_AUTHOR_EMAIL = "docmost-sync@local";
 
 /** Default branch the vault repo is initialized on. */
 export const DEFAULT_BRANCH = "main";
+
+/**
+ * The vault's `pre-receive` hook. `receive.denyCurrentBranch=updateInstead`
+ * checks a pushed commit out into the working tree BEFORE it compare-and-swaps
+ * `main` against the old value the client read from the ref advertisement, and
+ * that advertisement is served without the space lock. When a cycle moves
+ * `main` in between, the ref update fails but the working tree already holds the
+ * pushed commit; the next cycle's dirty-tree recovery then commits it as local
+ * work, reverting what had moved `main` (Docmost edits) and landing the rejected
+ * push anyway. The hook runs before that checkout and refuses such a push; the
+ * receive-pack runs under the space lock, so nothing moves `main` between the
+ * hook and the ref update.
+ *
+ * It also refuses any push to the engine's own refs (the `docmost` mirror and
+ * `refs/docmost/*`): an edit pushed there never reaches Docmost and is merged
+ * into `main` as if Docmost had made it.
+ */
+export const PUSH_GUARD_HOOK = `#!/bin/sh
+# Installed by git-sync: refuse a push to the engine's own refs, and a push to
+# ${DEFAULT_BRANCH} whose old value is not its current tip, before receive-pack
+# touches the working tree.
+tip=$(git rev-parse --verify --quiet refs/heads/${DEFAULT_BRANCH})
+while read -r old new ref; do
+  case "$ref" in
+    refs/heads/docmost|refs/docmost/*)
+      echo "'$ref' is managed by git-sync and cannot be pushed." >&2
+      exit 1 ;;
+  esac
+  if [ "$ref" = refs/heads/${DEFAULT_BRANCH} ] && [ "$old" != "$tip" ]; then
+    echo "'${DEFAULT_BRANCH}' changed on the server since your last fetch: pull, then push again." >&2
+    exit 1
+  fi
+done
+exit 0
+`;
 
 /**
  * One row of `git diff --name-status` (SPEC §6 "FS -> Docmost"). `status` is the
@@ -187,14 +232,19 @@ export class VaultGit {
    * with an initial (empty) commit so branches exist. Idempotent: safe to call
    * on every run. Sets a LOCAL bot identity for the vault repo if none is set
    * (so engine commits never fall back to a global/unset identity).
+   *
+   * Returns `true` when the vault was NOT a repo and had to be (re)initialized
+   * with `git init` (a fresh or wiped vault), `false` for an existing repo.
    */
-  async ensureRepo(): Promise<void> {
+  async ensureRepo(): Promise<boolean> {
     await mkdir(this.vaultPath, { recursive: true });
 
+    let initialized = false;
     if (!(await this.isRepo())) {
       // `git init -b main` sets the initial branch on modern git; we still
       // guard the branch name below for safety on older binaries.
       await this.run(["init", "-b", DEFAULT_BRANCH]);
+      initialized = true;
     }
 
     // Set a local identity for the vault repo if unset, so engine commits have
@@ -209,11 +259,11 @@ export class VaultGit {
     // Neutralize correctness-affecting git config in the vault's LOCAL config so
     // a user's GLOBAL/system config cannot change porcelain BEHAVIOR (not just
     // output) and corrupt the vault. The vault is OUR dedicated repo, so LOCAL
-    // values (which override global/system) are the right scope. Set
-    // UNCONDITIONALLY every run — idempotent and cheap; `git config <key>`
-    // writes to `--local` by default inside the repo. These MUST be in place
-    // before any add/commit/checkout that could be affected, hence they run
-    // before the initial-commit block below.
+    // values (which override global/system) are the right scope. Each key is
+    // read first and written only when it differs (`ensureLocalConfig`); `git
+    // config <key>` writes to `--local` by default inside the repo. These MUST
+    // be in place before any add/commit/checkout that could be affected, hence
+    // they run before the initial-commit block below.
     //   - core.autocrlf=false — CRITICAL (SPEC §11): a global core.autocrlf=true
     //     would rewrite LF<->CRLF on add/checkout, making our deterministic,
     //     byte-stable markdown churn and breaking the round-trip invariant.
@@ -240,11 +290,11 @@ export class VaultGit {
     // contrast, only affects OUR parsing of output and so is baked into the
     // `runRaw` argv baseline instead.)
     try {
-      await this.run(["config", "core.autocrlf", "false"]);
-      await this.run(["config", "core.safecrlf", "false"]);
-      await this.run(["config", "commit.gpgsign", "false"]);
-      await this.run(["config", "core.attributesFile", "/dev/null"]);
-      await this.run(["config", "merge.conflictStyle", "merge"]);
+      await this.ensureLocalConfig("core.autocrlf", "false");
+      await this.ensureLocalConfig("core.safecrlf", "false");
+      await this.ensureLocalConfig("commit.gpgsign", "false");
+      await this.ensureLocalConfig("core.attributesFile", "/dev/null");
+      await this.ensureLocalConfig("merge.conflictStyle", "merge");
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -265,13 +315,31 @@ export class VaultGit {
         authorEmail: BOT_AUTHOR_EMAIL,
         allowEmpty: true,
       });
+      // Start the `docmost` mirror here too: a vault made by a clone can take
+      // a push before the space's first cycle, and a mirror branched from
+      // that `main` would count the pushed files as already in Docmost.
+      await this.ensureBranch("docmost", DEFAULT_BRANCH);
     }
+    return initialized;
   }
 
   /** True if `cwd` is inside a git work-tree (the vault is initialized). */
   private async isRepo(): Promise<boolean> {
     const r = await this.runRaw(["rev-parse", "--is-inside-work-tree"]);
     return r.code === 0 && r.stdout.trim() === "true";
+  }
+
+  /**
+   * Set a LOCAL config key only when its local value differs. Every `git config`
+   * write takes `.git/config.lock`, and `ensureRepo` also runs for every smart-
+   * HTTP request outside the space lock, so an unconditional write collides with
+   * a concurrent one ("could not lock config file"). Reading first keeps the
+   * steady state write-free.
+   */
+  private async ensureLocalConfig(key: string, value: string): Promise<void> {
+    const r = await this.runRaw(["config", "--local", "--get", key]);
+    if (r.code === 0 && r.stdout.trim() === value) return;
+    await this.run(["config", key, value]);
   }
 
   /** True if a LOCAL git config key is set in the vault repo. */
@@ -315,17 +383,21 @@ export class VaultGit {
    * the `docmost` mirror branch if present (they track each other), else the
    * current `HEAD` commit. If the repo has no commit at all, ensureRepo's
    * fresh-init path owns it — nothing to do here.
+   *
+   * Returns `true` when `main` was missing and has been re-created.
    */
-  async ensureMainBranch(): Promise<void> {
-    if (await this.branchExists(DEFAULT_BRANCH)) return;
+  async ensureMainBranch(): Promise<boolean> {
+    if (await this.branchExists(DEFAULT_BRANCH)) return false;
     if (await this.branchExists("docmost")) {
       await this.run(["branch", DEFAULT_BRANCH, "docmost"]);
-      return;
+      return true;
     }
     const head = await this.runRaw(["rev-parse", "--verify", "--quiet", "HEAD"]);
     if (head.code === 0 && head.stdout.trim().length > 0) {
       await this.run(["branch", DEFAULT_BRANCH, head.stdout.trim()]);
+      return true;
     }
+    return false;
   }
 
   /** Name of the currently checked-out branch. */
@@ -382,9 +454,9 @@ export class VaultGit {
    * multi-replica TTL-lapse window — is PRESERVED, so we never delete a lock a
    * live git process is still using (which would corrupt the index/refs). Clear
    * them best-effort in the cycle preflight, alongside the mid-merge recovery.
-   * Missing files are a no-op.
+   * Missing files are a no-op. Returns the number of stale locks removed.
    */
-  async clearStaleGitLocks(): Promise<void> {
+  async clearStaleGitLocks(): Promise<number> {
     const gitDir = `${this.vaultPath}/.git`;
     const locks = [
       "index.lock",
@@ -396,7 +468,10 @@ export class VaultGit {
       "refs/heads/main.lock",
       "refs/heads/docmost.lock",
       "refs/docmost/last-pushed.lock",
+      "refs/docmost/pulling.lock",
+      "refs/docmost/recording.lock",
     ];
+    let removed = 0;
     await Promise.all(
       locks.map(async (rel) => {
         const path = `${gitDir}/${rel}`;
@@ -405,13 +480,31 @@ export class VaultGit {
           // Only remove a lock old enough that no live git process can hold it.
           // A fresh lock (mtime within the staleness window) is left in place.
           if (Date.now() - stats.mtimeMs >= STALE_LOCK_MIN_AGE_MS) {
-            await rm(path, { force: true }).catch(() => undefined);
+            await rm(path, { force: true });
+            removed++;
           }
         } catch {
           // Missing lock (ENOENT) or unreadable — nothing to clear.
         }
       }),
     );
+    return removed;
+  }
+
+  /**
+   * Install PUSH_GUARD_HOOK as the vault's `pre-receive` hook. Written only when
+   * it differs, through a rename, so a concurrent receive-pack never runs a
+   * half-written hook.
+   */
+  async installPushGuard(): Promise<void> {
+    const hooks = `${this.vaultPath}/.git/hooks`;
+    const path = `${hooks}/pre-receive`;
+    const current = await readFile(path, "utf8").catch(() => null);
+    if (current === PUSH_GUARD_HOOK) return;
+    await mkdir(hooks, { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, PUSH_GUARD_HOOK, { mode: 0o755 });
+    await rename(tmp, path);
   }
 
   /**
@@ -479,9 +572,27 @@ export class VaultGit {
    * markers are left in the worktree for manual resolution by a later increment,
    * and — critically — nothing is pushed to Docmost (we never write to Docmost
    * anyway).
+   *
+   * The merge is PATH-based (`-s resolve`, no rename detection): a page's
+   * identity is its `gitmost_id`, which the pull reconciles itself, while rename
+   * detection pairs files by content and can pair one page's old path with
+   * ANOTHER page's file (a path reused after a rename), merging one page's
+   * edits into the other. The default `ort` strategy always detects exact
+   * renames, even with `-X no-renames`.
+   *
+   * A non-fast-forward merge stops BEFORE committing (`--no-commit`); the caller
+   * completes it with `commitMerge`, so the merge and the engine writes that
+   * finish it land on `main` as ONE commit, never a merge commit without them.
    */
   async merge(fromBranch: string): Promise<MergeResult> {
-    const r = await this.runRaw(["merge", "--no-edit", fromBranch]);
+    const r = await this.runRaw([
+      "merge",
+      "--no-edit",
+      "--no-commit",
+      "-s",
+      "resolve",
+      fromBranch,
+    ]);
     const output = `${r.stdout}\n${r.stderr}`.trim();
     if (r.code === 0) {
       return { ok: true, conflict: false, output };
@@ -556,6 +667,27 @@ export class VaultGit {
    * entries). Best-effort recovery primitive (SPEC §9). */
   async resetHardToHead(): Promise<void> {
     await this.runRaw(["reset", "--hard", "HEAD"]);
+  }
+
+  /**
+   * True when the working tree or the index differs from HEAD — a modified,
+   * staged, deleted OR untracked (non-ignored) file. A process killed between an
+   * engine file write and its commit leaves exactly this state behind.
+   */
+  async isWorkingTreeDirty(): Promise<boolean> {
+    return (await this.run(["status", "--porcelain"])).length > 0;
+  }
+
+  /**
+   * Throw away every uncommitted change on the current branch: `reset --hard
+   * HEAD` (tracked files + index) and `clean -fd` (untracked files and
+   * directories; ignored files are kept). Unlike `resetHardToHead` this is NOT
+   * best-effort — a failure throws, so a recovery that did not happen is never
+   * reported as done.
+   */
+  async discardWorkingTreeChanges(): Promise<void> {
+    await this.run(["reset", "--hard", "HEAD"]);
+    await this.run(["clean", "-fd"]);
   }
 
   /**
@@ -677,12 +809,103 @@ export class VaultGit {
   }
 
   /**
+   * The best common ancestor of two commit-ishes (`git merge-base <a> <b>`), or
+   * `null` when they share no history or either side does not resolve. The push
+   * direction diffs `main` from merge-base(`docmost`, `main`) — the newest commit
+   * whose content Docmost already holds.
+   */
+  async mergeBase(a: string, b: string): Promise<string | null> {
+    const r = await this.runRaw(["merge-base", a, b]);
+    if (r.code !== 0) return null;
+    const sha = r.stdout.trim();
+    return sha.length > 0 ? sha : null;
+  }
+
+  /**
    * Point `ref` at `target` (`git update-ref <ref> <target>`). Used to advance
    * `refs/docmost/last-pushed` to the just-pushed `main` commit after a push
    * (SPEC §6 step 3 / §5). `target` may be a SHA or any commit-ish git accepts.
+   * With `expected`, the update fails unless `ref` still points there.
    */
-  async updateRef(ref: string, target: string): Promise<void> {
-    await this.run(["update-ref", ref, target]);
+  async updateRef(ref: string, target: string, expected?: string): Promise<void> {
+    await this.run(["update-ref", ref, target, ...(expected ? [expected] : [])]);
+  }
+
+  /** True when commit `a` is an ancestor of (or equal to) commit `b`. */
+  async isAncestor(a: string, b: string): Promise<boolean> {
+    return (await this.runRaw(["merge-base", "--is-ancestor", a, b])).code === 0;
+  }
+
+  /**
+   * The tree of `ref` with each of `paths` as it is at `fromRef` instead (left
+   * out where `fromRef` has no such path), built in a private index so neither
+   * the working tree nor the real index is touched. Returns the tree id.
+   */
+  async treeWithPathsFrom(
+    ref: string,
+    fromRef: string,
+    paths: string[],
+  ): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "git-sync-index-"));
+    const env = { GIT_INDEX_FILE: join(dir, "index") };
+    try {
+      await this.run(["read-tree", ref], { env });
+      for (const path of paths) {
+        const entry = await this.run([
+          "--literal-pathspecs",
+          "ls-tree",
+          "-z",
+          fromRef,
+          "--",
+          path,
+        ]);
+        const m = entry.match(/^(\d+) blob ([0-9a-f]+)\t/);
+        await this.run(
+          m
+            ? ["update-index", "--add", "--cacheinfo", `${m[1]},${m[2]},${path}`]
+            : ["update-index", "--force-remove", "--", path],
+          { env },
+        );
+      }
+      return await this.run(["write-tree"], { env });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Create a commit of `tree` (any tree-ish) with `parents`, without touching
+   * a branch, the index or the working tree. Returns the commit id.
+   */
+  async commitTree(
+    tree: string,
+    parents: string[],
+    message: string,
+    opts: CommitOptions,
+  ): Promise<string> {
+    return this.run(
+      [
+        "commit-tree",
+        tree,
+        ...parents.flatMap((p) => ["-p", p]),
+        "-m",
+        buildCommitMessage(message, opts.trailers),
+      ],
+      {
+        env: {
+          GIT_AUTHOR_NAME: opts.authorName,
+          GIT_AUTHOR_EMAIL: opts.authorEmail,
+          GIT_COMMITTER_NAME: opts.authorName,
+          GIT_COMMITTER_EMAIL: opts.authorEmail,
+        },
+      },
+    );
+  }
+
+  /** Delete `ref` (`git update-ref -d`); a missing ref is a no-op. */
+  async deleteRef(ref: string): Promise<void> {
+    if ((await this.revParse(ref)) === null) return;
+    await this.run(["update-ref", "-d", ref]);
   }
 
   /**
@@ -762,6 +985,66 @@ export class VaultGit {
   }
 
   /**
+   * The newest commit reachable from `ref` that added `path` (a rename counts as
+   * an add of its new path), or `null` when none did.
+   */
+  async commitAddingPath(ref: string, path: string): Promise<string | null> {
+    const sha = await this.run([
+      // Titles may keep `[`/`]`; match the path literally, not as a glob.
+      "--literal-pathspecs",
+      "log",
+      "-1",
+      "--format=%H",
+      "--no-renames",
+      "--diff-filter=A",
+      ref,
+      "--",
+      path,
+    ]);
+    return sha.length > 0 ? sha : null;
+  }
+
+  /**
+   * The `gitmost_id` of every `*.md` file at `ref` that has one, in ONE
+   * `git grep` (no per-file reads): the value of the file's FIRST line starting
+   * with `gitmost_id:`. For an engine-written file that is its frontmatter id; a
+   * hand-written file can carry such a line in its body, so a caller confirms a
+   * hit with `parsePageFile` where identity is load-bearing.
+   */
+  async pageIdsAtRef(ref: string): Promise<{ path: string; id: string }[]> {
+    const r = await this.runRaw([
+      "grep",
+      "-z",
+      "-E",
+      "-e",
+      "^gitmost_id:",
+      ref,
+      "--",
+      "*.md",
+    ]);
+    if (r.code === 1) return []; // no match
+    if (r.code !== 0) {
+      const detail = (r.stderr || r.stdout || "").trim();
+      throw new Error(`git grep at ${ref} failed: ${detail}`);
+    }
+    // One `<ref>:<path>\0<line>` record per matching line.
+    const prefix = `${ref}:`;
+    const out: { path: string; id: string }[] = [];
+    const seen = new Set<string>();
+    for (const record of r.stdout.split("\n")) {
+      const nul = record.indexOf("\0");
+      if (nul < 0 || !record.startsWith(prefix)) continue;
+      const path = record.slice(prefix.length, nul);
+      const m = record.slice(nul + 1).match(/^gitmost_id:\s*(.+?)\s*$/);
+      const id = m ? m[1].replace(/^["']|["']$/g, "") : "";
+      if (seen.has(path) || id === "") continue;
+      seen.add(path);
+      out.push({ path, id });
+    }
+    return out;
+  }
+
+  /**
    * Read ONE side of a conflicted file from the merge index (`git show :N:path`),
    * where the stage `N` is the standard 3-way merge slot:
    *   1 = merge BASE (common ancestor), 2 = OURS (the current branch = `main`),
@@ -782,20 +1065,70 @@ export class VaultGit {
   }
 
   /**
-   * Pin the repo's symbolic `HEAD` to `main` WITHOUT touching the working tree or
-   * index (`git symbolic-ref HEAD refs/heads/main`). The smart-HTTP host advertises
-   * whatever `HEAD` resolves to as the clone's default branch, so a clone that
-   * races a cycle mid-pull (when the engine has transiently checked out the
-   * read-only `docmost` mirror) would otherwise default to `docmost`. Pinning HEAD
-   * back to the canonical writable branch makes the advertised symref deterministic.
-   *
-   * symbolic-ref only rewrites `.git/HEAD`; it does NOT move the working tree, so
-   * it must only ever run when the working tree is ALREADY on `main` (between
-   * cycles / under the per-space lock with no cycle in flight) — otherwise HEAD and
-   * the index would desync. Callers serialize this with the engine via the lock.
+   * Three-way merge of one file's texts (`git merge-file -p --ours`): a hunk only
+   * one side changed is taken from that side, and only the hunks BOTH sides
+   * changed resolve to `ours`. The pull uses it to resolve a conflicted
+   * docmost -> main merge per hunk (SPEC §9), so git wins only where it actually
+   * conflicts and Docmost's other changes in the same file survive. The texts go
+   * through a private temp dir (merge-file reads files) removed afterwards.
+   * `conflicts` counts the hunks both sides changed (0: a clean merge).
    */
-  async pinHeadToMain(): Promise<void> {
-    await this.run(["symbolic-ref", "HEAD", `refs/heads/${DEFAULT_BRANCH}`]);
+  async mergeFileOurs(
+    base: string,
+    ours: string,
+    theirs: string,
+  ): Promise<{ text: string; conflicts: number }> {
+    const dir = await mkdtemp(join(tmpdir(), "git-sync-merge-"));
+    try {
+      const oursPath = join(dir, "ours");
+      const basePath = join(dir, "base");
+      const theirsPath = join(dir, "theirs");
+      await writeFile(oursPath, ours, "utf8");
+      await writeFile(basePath, base, "utf8");
+      await writeFile(theirsPath, theirs, "utf8");
+      const run = (favor: string[]) =>
+        this.runRaw(["merge-file", "-p", ...favor, oursPath, basePath, theirsPath]);
+      // Without a favor option the exit code is the number of conflicts
+      // (capped at 127); anything above that is an error.
+      const plain = await run([]);
+      if (plain.code < 0 || plain.code > 127) {
+        throw new Error(
+          `git merge-file failed (exit ${plain.code}): ${(plain.stderr || plain.stdout).trim()}`,
+        );
+      }
+      if (plain.code === 0) return { text: plain.stdout, conflicts: 0 };
+      const r = await run(["--ours"]);
+      if (r.code !== 0) {
+        throw new Error(
+          `git merge-file failed (exit ${r.code}): ${(r.stderr || r.stdout).trim()}`,
+        );
+      }
+      return { text: r.stdout, conflicts: plain.code };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Put `HEAD` back on `main`. The smart-HTTP host advertises whatever `HEAD`
+   * resolves to as the clone's default branch, so a clone after a cycle cut off
+   * mid-pull (left on the read-only `docmost` mirror) would otherwise default to
+   * `docmost`. Pinning HEAD back to the canonical writable branch makes the
+   * advertised symref deterministic.
+   *
+   * Off `main` this is a real checkout, so the index and working tree follow
+   * HEAD; a bare symref move would leave `docmost`'s tree in the index, which the
+   * next cycle would commit on `main` as user work. A dirty tree is left alone
+   * for the next cycle's recovery. Callers serialize this with the engine via the
+   * lock.
+   *
+   * Returns `false` when it skipped (HEAD stays off `main`).
+   */
+  async pinHeadToMain(): Promise<boolean> {
+    if ((await this.currentBranch()) === DEFAULT_BRANCH) return true;
+    if (await this.isWorkingTreeDirty()) return false;
+    await this.checkout(DEFAULT_BRANCH);
+    return true;
   }
 }
 

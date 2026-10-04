@@ -2,6 +2,7 @@ import {
   afterUnloadDocumentPayload,
   Extension,
   onChangePayload,
+  onDisconnectPayload,
   onLoadDocumentPayload,
   onStatelessPayload,
   onStoreDocumentPayload,
@@ -49,6 +50,7 @@ import {
   observeCollabStore,
 } from '../../integrations/metrics/metrics.registry';
 import { hasTransclusionFamilyNodes } from '../../core/page/transclusion/utils/transclusion-prosemirror.util';
+import { EnvironmentService } from '../../integrations/environment/environment.service';
 
 /**
  * #251 — wire format of the client→server stateless message that signals a
@@ -113,7 +115,17 @@ export function resolveSource(
   stickyTouched: boolean,
   contextActor?: string,
 ): ProvenanceSource {
-  return stickyTouched || contextActor === 'agent' ? 'agent' : 'user';
+  // An EXPLICIT current-write actor is authoritative for THIS write and wins
+  // over the sticky-agent fallback. Order: explicit 'agent' > explicit
+  // 'git-sync' > sticky agent marker > plain human 'user'. The git-sync case
+  // must NOT be masked by the sticky marker, or the PageChangeListener
+  // loop-guard (which keys on lastUpdatedSource === 'git-sync') would re-export
+  // git-sync's own writes (#14). Explicit agent still wins so a window that
+  // mixed an agent edit stays tagged 'agent'.
+  if (contextActor === 'agent') return 'agent';
+  if (contextActor === 'git-sync') return 'git-sync';
+  if (stickyTouched) return 'agent';
+  return 'user';
 }
 
 /**
@@ -200,6 +212,7 @@ export class PersistenceExtension implements Extension {
     @InjectQueue(QueueName.NOTIFICATION_QUEUE) private notificationQueue: Queue,
     private readonly collabHistory: CollabHistoryService,
     private readonly transclusionService: TransclusionService,
+    private readonly environmentService: EnvironmentService,
   ) {}
 
   async onLoadDocument(data: onLoadDocumentPayload) {
@@ -270,6 +283,42 @@ export class PersistenceExtension implements Extension {
     return;
   }
 
+  /**
+   * LOSS-ON-FAST-CLOSE FIX (QA #119). When the LAST editor disconnects, FLUSH any
+   * pending (debounced) store to the DB IMMEDIATELY instead of waiting out the
+   * up-to-10s `debounce` window.
+   *
+   * The collab server runs with `unloadImmediately: false` (collaboration.gateway),
+   * so on a last-client disconnect Hocuspocus does NOT flush the debounced
+   * onStoreDocument — it relies on the timer firing later. A quick edit-then-close
+   * (closing the tab within the debounce window, ~3-18s) therefore left the edit
+   * only in the soon-to-be-unloaded in-memory Y.Doc; meanwhile git-sync mirrored
+   * the STALE/empty DB body to the vault (the reported "59-byte frontmatter-only"
+   * data loss). Running the already-scheduled store now closes that window.
+   *
+   * Gated tightly so it never adds a redundant write: only on the LAST disconnect
+   * (`clientsCount === 0`), only for a fully-loaded doc, and only when a store is
+   * actually pending (`isDebounced`). `executeNow` runs the SAME payload Hocuspocus
+   * scheduled (preserving the edit's context/actor) and clears the timer.
+   */
+  async onDisconnect(data: onDisconnectPayload) {
+    // Git-sync only: without it, keep develop's debounced-store behavior.
+    if (!this.environmentService.isGitSyncEnabled()) return;
+    const { instance, document, documentName, clientsCount } = data;
+    if (clientsCount > 0) return;
+    if (!document || document.isLoading) return;
+    const debounceId = `onStoreDocument-${documentName}`;
+    if (!instance?.debouncer?.isDebounced(debounceId)) return;
+    try {
+      await instance.debouncer.executeNow(debounceId);
+    } catch (err) {
+      this.logger.error(
+        `onDisconnect flush failed for ${documentName}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
   async onStoreDocument(data: onStoreDocumentPayload) {
     // #355 — time the full store (persist + post-store side effects) into
     // collab_store_duration_seconds. #402 — also tag by document size bucket.
@@ -313,6 +362,11 @@ export class PersistenceExtension implements Extension {
     // Sticky agent marker: 'agent' if any agent edit landed in this window, OR
     // if the current writer is the agent (covers a store with no prior onChange
     // agent event in the same window). §15 H2.
+    // Provenance precedence: agent > git-sync > user (see resolveSource). A
+    // 'git-sync' store is NOT given an immediate history snapshot — it is
+    // debounced like a human edit (a git-sync write is a block-level merge into
+    // the live doc, so it reads like an incremental human edit, not a bulk
+    // import that would warrant its own immediate snapshot).
     const lastUpdatedSource = resolveSource(
       this.consumeAgentTouched(documentName),
       context?.actor,
@@ -330,6 +384,12 @@ export class PersistenceExtension implements Extension {
     // every store consumes the flag here regardless of incoming emptiness, so a
     // subsequent non-empty store can never leave a usable flag behind.
     const allowIntentionalClear = this.consumeIntentionalClear(documentName);
+    // git-sync's explicit clear authorization (see the empty-guard below). It
+    // covers exactly ONE store — the merge's own — so it is taken off the shared
+    // direct-connection context here, once, before the retry loop; the same
+    // connection's disconnect store then takes the normal empty-guard.
+    const gitSyncClear = context?.gitSyncIntentionalClear === true;
+    if (gitSyncClear) context.gitSyncIntentionalClear = false;
 
     // Persist with a small bounded retry. The in-memory Y.Doc is the ONLY copy
     // of the latest edit until this hook returns: hocuspocus destroys/unloads the
@@ -379,17 +439,24 @@ export class PersistenceExtension implements Extension {
           // flag via that same hoisted consume (a "cleared then retyped"
           // sequence can't leave a usable one behind).
           const incomingEmpty = isEmptyParagraphDoc(tiptapJson as any);
+          // A git-sync store may clear the page ONLY with the explicit
+          // `gitSyncIntentionalClear` context flag, which gitSyncWriteBody sets
+          // when git's body is empty AND a non-empty merge base proves the file
+          // was cleared in git (consumed above). The 'git-sync' actor alone is
+          // not enough: an empty merge result without that proof (a stale export
+          // merged into a new page) wiped live text, so every other git-sync
+          // store takes the normal guard. Mirrors the #251 allowance.
           if (
             incomingEmpty &&
             page.content &&
             !isEmptyParagraphDoc(page.content as any)
           ) {
-            if (allowIntentionalClear) {
+            if (allowIntentionalClear || gitSyncClear) {
               this.logger.debug(
                 `Intentional clear for ${pageId}: persisting empty doc over ` +
-                  `non-empty content (user-signalled)`,
+                  `non-empty content (${gitSyncClear ? 'git-sync' : 'user-signalled'})`,
               );
-              // fall through — the empty write is allowed exactly once.
+              // fall through — the empty write is allowed.
             } else {
               this.logger.warn(
                 `Skipping store for ${pageId}: empty live doc would overwrite ` +
@@ -423,7 +490,10 @@ export class PersistenceExtension implements Extension {
           // later by the debounced idle job. Skip if the page is effectively
           // empty or if the latest existing snapshot already equals this state
           // (the shared isDeepStrictEqual gate — avoids duplicates). Generalizing
-          // beyond the old user→agent special-case also covers git-sync for free.
+          // beyond the old user→agent special-case also covers git-sync for free:
+          // a git-sync write over a differently-sourced page pins the pre-merge
+          // state so a same-block human edit "lost" to git stays recoverable
+          // (SPEC §9 observable-loss guard).
           if (
             page.lastUpdatedSource &&
             page.lastUpdatedSource !== lastUpdatedSource

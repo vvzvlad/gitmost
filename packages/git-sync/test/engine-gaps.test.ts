@@ -277,8 +277,9 @@ describe('applyPushActions (push.ts) — move prefetch isolation', () => {
     const git = {
       updateRef: vi.fn(async () => {}),
       fastForwardBranch: vi.fn(async () => ({ ok: true })),
-      // The OLD-side parent/meta reads resolve to null (absent at last-pushed).
+      // The OLD-side parent/meta reads resolve to null (absent at the base).
       showFileAtRef: vi.fn(async () => null),
+      commitAddingPath: vi.fn(async () => null),
     };
     // The update file exists and is readable; the move's NEW-path tree reads
     // throw (simulating an unreadable/missing parent folder file at `current`).
@@ -294,6 +295,7 @@ describe('applyPushActions (push.ts) — move prefetch isolation', () => {
       }),
       writeFile: vi.fn(async () => {}),
       spaceId: 'sp',
+      baseRef: 'base-sha',
     };
     const actions: PushActions = {
       creates: [],
@@ -377,6 +379,9 @@ describe('applyPullActions (pull.ts) — failedPageIds keyed per-pageId', () => 
       commit: vi.fn(async () => true),
       checkout: vi.fn(async () => {}),
       merge: vi.fn(async () => ({ ok: true, conflict: false, output: '' })),
+      mergeBase: vi.fn(async () => null),
+      revParse: vi.fn(async () => null),
+      isMergeInProgress: vi.fn(async () => false),
     };
   }
   function makeFs(failWriteFor: Set<string>) {

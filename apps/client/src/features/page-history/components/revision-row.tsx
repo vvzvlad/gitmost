@@ -1,5 +1,6 @@
 import { Badge, Box, Group, Text } from "@mantine/core";
 import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
+import { GitSyncBadge } from "@/components/ui/git-sync-badge.tsx";
 import { LucideGlyph } from "@/components/ui/lucide/lucide-glyph.tsx";
 import { parseIconRef } from "@/lib/icon-ref.ts";
 import { useTranslation } from "react-i18next";
@@ -115,6 +116,8 @@ const RevisionRow = memo(function RevisionRow({
           </Text>
         )}
       </Group>
+
+      {row.isGitSync && <GitSyncBadge authorName={row.authorName} />}
 
       {row.saved && (
         <Badge

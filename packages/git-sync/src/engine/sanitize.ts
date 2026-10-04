@@ -107,3 +107,16 @@ export function sanitizeTitle(title: string): string {
 export function disambiguate(name: string, slugId: string): string {
   return `${name} ~${slugId}`;
 }
+
+/**
+ * The stem of git's version of a page the pull could not merge, kept as a new
+ * file beside it: `<stem> ~git`, then `<stem> ~git-2`, … for the `n`-th free one.
+ */
+export function gitCopyStem(stem: string, n: number): string {
+  return disambiguate(stem, n === 1 ? "git" : `git-${n}`);
+}
+
+/** True for a page file named by `gitCopyStem`. */
+export function isGitCopyPath(path: string): boolean {
+  return / ~git(-\d+)?\.md$/.test(path);
+}

@@ -133,7 +133,7 @@ describe('computePushActions — D (deleted)', () => {
       'Gone.md|prev': meta({ pageId: 'p-gone' }),
     });
     const actions = computePushActions({ changes, metaAt });
-    expect(actions.deletes).toEqual([{ pageId: 'p-gone' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'p-gone', path: 'Gone.md' }]);
     expect(actions.skipped).toEqual([]);
   });
 
@@ -160,7 +160,7 @@ describe('computePushActions — D (deleted)', () => {
       'Gone.md|prev': meta({ pageId: 'p-correct' }),
     });
     const actions = computePushActions({ changes, metaAt });
-    expect(actions.deletes).toEqual([{ pageId: 'p-correct' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'p-correct', path: 'Gone.md' }]);
   });
 });
 
@@ -274,7 +274,7 @@ describe('computePushActions — mixed batch', () => {
       // for an honest 3-way merge; the plain A/M updates carry no basePath.
       { pageId: 'p-mv', path: 'Dst.md', basePath: 'Srcc.md' },
     ]);
-    expect(actions.deletes).toEqual([{ pageId: 'p-rm' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'p-rm', path: 'Removed.md' }]);
     expect(actions.renamesMoves).toEqual([
       { pageId: 'p-mv', oldPath: 'Srcc.md', newPath: 'Dst.md' },
     ]);
@@ -349,7 +349,7 @@ describe('computePushActions — ghost-move coalescing (data-loss guard)', () =>
       'Gone.md|prev': meta({ pageId: 'p9', title: 'Gone', spaceId: 'sp1' }),
     });
     const actions = computePushActions({ changes, metaAt });
-    expect(actions.deletes).toEqual([{ pageId: 'p9' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'p9', path: 'Gone.md' }]);
     expect(actions.renamesMoves).toEqual([]);
   });
 
@@ -363,7 +363,7 @@ describe('computePushActions — ghost-move coalescing (data-loss guard)', () =>
       'B.md|current': meta({ pageId: 'pb', title: 'B', spaceId: 'sp1' }),
     });
     const actions = computePushActions({ changes, metaAt });
-    expect(actions.deletes).toEqual([{ pageId: 'pa' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'pa', path: 'A.md' }]);
     expect(actions.updates).toEqual([{ pageId: 'pb', path: 'B.md' }]);
     expect(actions.renamesMoves).toEqual([]);
   });
@@ -402,7 +402,7 @@ describe('computePushActions — currentPageIds guard (cross-cycle move)', () =>
       metaAt,
       currentPageIds: new Set(['pOther']), // pY is NOT present -> genuinely deleted
     });
-    expect(actions.deletes).toEqual([{ pageId: 'pY' }]);
+    expect(actions.deletes).toEqual([{ pageId: 'pY', path: 'Removed.md' }]);
     expect(actions.skipped).toEqual([]);
   });
 });

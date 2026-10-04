@@ -23,6 +23,7 @@ import { CursorPaginationResult } from '@docmost/db/pagination/cursor-pagination
 import { ShareRepo } from '@docmost/db/repos/share/share.repo';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
 import { LicenseCheckService } from '../../../integrations/environment/license-check.service';
+import { EnvironmentService } from '../../../integrations/environment/environment.service';
 import { AuditEvent, AuditResource } from '../../../common/events/audit-events';
 import { diffAuditTrackedFields } from '../../../common/helpers';
 import {
@@ -41,6 +42,7 @@ export class SpaceService {
     @InjectKysely() private readonly db: KyselyDB,
     @InjectQueue(QueueName.ATTACHMENT_QUEUE) private attachmentQueue: Queue,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
+    private readonly environmentService: EnvironmentService,
   ) {}
 
   async createSpace(
@@ -121,6 +123,14 @@ export class SpaceService {
     updateSpaceDto: UpdateSpaceDto,
     workspaceId: string,
   ): Promise<Space> {
+    if (
+      (typeof updateSpaceDto.gitSyncEnabled !== 'undefined' ||
+        typeof updateSpaceDto.autoMergeConflicts !== 'undefined') &&
+      !this.environmentService.isGitSyncEnabled()
+    ) {
+      throw new BadRequestException('Git sync is disabled on this server');
+    }
+
     if (updateSpaceDto?.slug) {
       const slugExists = await this.spaceRepo.slugExists(
         updateSpaceDto.slug,
@@ -209,6 +219,41 @@ export class SpaceService {
           workspaceId,
           'allowViewerComments',
           updateSpaceDto.allowViewerComments,
+          trx,
+        );
+      }
+
+      if (typeof updateSpaceDto.gitSyncEnabled !== 'undefined') {
+        const prev = settingsBefore?.gitSync?.enabled ?? false;
+        if (prev !== updateSpaceDto.gitSyncEnabled) {
+          before.gitSyncEnabled = prev;
+          after.gitSyncEnabled = updateSpaceDto.gitSyncEnabled;
+        }
+
+        await this.spaceRepo.updateGitSyncSettings(
+          updateSpaceDto.spaceId,
+          workspaceId,
+          'enabled',
+          updateSpaceDto.gitSyncEnabled,
+          trx,
+        );
+      }
+
+      if (typeof updateSpaceDto.autoMergeConflicts !== 'undefined') {
+        const prev = settingsBefore?.gitSync?.autoMergeConflicts ?? false;
+        if (prev !== updateSpaceDto.autoMergeConflicts) {
+          before.autoMergeConflicts = prev;
+          after.autoMergeConflicts = updateSpaceDto.autoMergeConflicts;
+        }
+
+        // Merges into the SAME `gitSync` jsonb object as `enabled` (the repo's
+        // jsonb-merge preserves sibling keys), so toggling one never clobbers the
+        // other.
+        await this.spaceRepo.updateGitSyncSettings(
+          updateSpaceDto.spaceId,
+          workspaceId,
+          'autoMergeConflicts',
+          updateSpaceDto.autoMergeConflicts,
           trx,
         );
       }

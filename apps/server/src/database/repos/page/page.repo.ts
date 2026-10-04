@@ -386,6 +386,11 @@ export class PageRepo {
     // delete never broadcasts). With no trx the behaviour is unchanged: own
     // transaction, broadcast right after it commits.
     existingTrx?: KyselyTransaction,
+    // Optional provenance marker. When the soft-delete is driven by an automated
+    // data plane (e.g. git-sync), stamp `lastUpdatedSource` so the change-listener
+    // loop-guard recognizes it as its own write and does not schedule an echo
+    // cycle. Omitted for ordinary user deletes (column keeps its prior value).
+    lastUpdatedSource?: string,
   ): Promise<void> {
     const currentDate = new Date();
     const readDb = dbOrTx(this.db, existingTrx);
@@ -441,6 +446,7 @@ export class PageRepo {
             .set({
               deletedById: deletedById,
               deletedAt: currentDate,
+              ...(lastUpdatedSource ? { lastUpdatedSource } : {}),
             })
             .where('id', 'in', pageIds)
             .where('deletedAt', 'is', null)
@@ -488,7 +494,14 @@ export class PageRepo {
     }
   }
 
-  async restorePage(pageId: string, workspaceId: string): Promise<void> {
+  async restorePage(
+    pageId: string,
+    workspaceId: string,
+    // See removePage: stamp `lastUpdatedSource` for automated (git-sync) restores
+    // so the change-listener loop-guard skips the echo cycle. Omitted for
+    // ordinary user restores.
+    lastUpdatedSource?: string,
+  ): Promise<void> {
     // First, check if the page being restored has a deleted parent
     const pageToRestore = await this.db
       .selectFrom('pages')
@@ -539,7 +552,12 @@ export class PageRepo {
       // On restore, disarm the death timer: pulling a note out of trash means
       // "keep it". Otherwise a deadline now in the past would re-trash it on the
       // next cleanup sweep.
-      .set({ deletedById: null, deletedAt: null, temporaryExpiresAt: null })
+      .set({
+        deletedById: null,
+        deletedAt: null,
+        temporaryExpiresAt: null,
+        ...(lastUpdatedSource ? { lastUpdatedSource } : {}),
+      })
       .where('id', 'in', pageIds)
       .execute();
 

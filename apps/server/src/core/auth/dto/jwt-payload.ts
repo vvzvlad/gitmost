@@ -3,8 +3,12 @@
  * from the SIGNED token claim (never a request body), so 'agent' is unspoofable.
  * Single source of truth so a typo like 'agnet' can't slip through as a bare
  * string (#143 review). Distinct from `ActorType` (auth principal kind).
+ *
+ * 'git-sync' marks writes made by the git-sync data plane (issue #194 §8.1). It NEVER
+ * travels in a user-facing token; it is set in-process on the collab connection
+ * context by the native datasource, so it cannot be spoofed from a request.
  */
-export type ProvenanceSource = 'user' | 'agent';
+export type ProvenanceSource = 'user' | 'agent' | 'git-sync';
 
 export enum JwtType {
   ACCESS = 'access',
@@ -26,7 +30,8 @@ export type JwtPayload = {
   // normal user token (treated as 'user'); set only when the internal agent
   // mints a provenance access token so REST writes (create/rename/move page,
   // comment create/resolve) record a non-spoofable 'agent' marker (§6.5 / §15
-  // C3 / §14 N2).
+  // C3 / §14 N2). (git-sync writes use the in-process actor, not a token — see
+  // the ProvenanceSource note.)
   actor?: ProvenanceSource;
   // Nullable: an external MCP agent has no internal ai_chats row, so it carries
   // an 'agent' actor with a null aiChatId.
@@ -50,7 +55,8 @@ export type JwtCollabPayload = {
   type: 'collab';
   // Optional agent-edit provenance, signed into the collab token. Absent for
   // the human collab path (treated as 'user'); set only when the internal agent
-  // mints a provenance collab token (§6.6 / §15 C2).
+  // mints a provenance collab token (§6.6 / §15 C2). 'git-sync' (in ProvenanceSource)
+  // is accepted for type-compatibility with the in-process git-sync write path.
   actor?: ProvenanceSource;
   // Nullable: an external MCP agent has no internal ai_chats row, so it carries
   // an 'agent' actor with a null aiChatId.

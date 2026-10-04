@@ -61,6 +61,7 @@ import {
   Spoiler,
   Indent,
   UniqueID,
+  UNIQUE_ID_TYPES,
   SharedStorage,
   Columns,
   Column,
@@ -206,7 +207,7 @@ export const mainExtensions = [
   SharedStorage,
   Heading,
   UniqueID.configure({
-    types: ["heading", "paragraph", "transclusionSource"],
+    types: UNIQUE_ID_TYPES,
     filterTransaction: (transaction) => !isChangeOrigin(transaction),
   }),
   Placeholder.configure({

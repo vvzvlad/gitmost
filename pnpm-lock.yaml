@@ -564,6 +564,9 @@ importers:
       '@docmost/editor-ext':
         specifier: workspace:*
         version: link:../../packages/editor-ext
+      '@docmost/git-sync':
+        specifier: workspace:*
+        version: link:../../packages/git-sync
       '@docmost/mcp':
         specifier: workspace:*
         version: link:../../packages/mcp

@@ -113,11 +113,12 @@ export type {
 
 export type { Settings } from "./engine/settings.js";
 
-export { runCycle } from "./engine/cycle.js";
+export { runCycle, recoverVault } from "./engine/cycle.js";
 export type {
   RunCycleDeps,
   RunCycleResult,
   CycleFs,
+  RecoverVaultDeps,
 } from "./engine/cycle.js";
 
 export {

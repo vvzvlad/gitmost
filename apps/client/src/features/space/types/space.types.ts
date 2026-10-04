@@ -13,9 +13,15 @@ export interface ISpaceCommentsSettings {
   allowViewerComments?: boolean;
 }
 
+export interface ISpaceGitSyncSettings {
+  enabled?: boolean;
+  autoMergeConflicts?: boolean;
+}
+
 export interface ISpaceSettings {
   sharing?: ISpaceSharingSettings;
   comments?: ISpaceCommentsSettings;
+  gitSync?: ISpaceGitSyncSettings;
 }
 
 export interface ISpace {
@@ -35,6 +41,8 @@ export interface ISpace {
   // for updates
   disablePublicSharing?: boolean;
   allowViewerComments?: boolean;
+  gitSyncEnabled?: boolean;
+  autoMergeConflicts?: boolean;
 }
 
 interface IMembership {

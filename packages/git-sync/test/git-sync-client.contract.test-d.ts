@@ -65,6 +65,16 @@ describe('GitSyncClient contract (type-level)', () => {
     expect(true).toBe(true);
   });
 
+  it('pageIdsExist(ids) -> ids subset (D-P3-1 ghost guard seam)', () => {
+    expectTypeOf<GitSyncClient['pageIdsExist']>().parameters.toEqualTypeOf<
+      [string[]]
+    >();
+    expectTypeOf<
+      Awaited<ReturnType<GitSyncClient['pageIdsExist']>>
+    >().toEqualTypeOf<string[]>();
+    expect(true).toBe(true);
+  });
+
   it('a structurally-correct adapter satisfies GitSyncClient (drift => compile error)', () => {
     // A minimal dummy adapter mirroring the EXACT result shapes the engine reads.
     // The `satisfies GitSyncClient` clause is the contract guard: any drift in a
@@ -74,6 +84,7 @@ describe('GitSyncClient contract (type-level)', () => {
         pages: [] as GitSyncPageNodeLite[],
         complete: true,
       }),
+      pageIdsExist: async (_pageIds: string[]) => [] as string[],
       getPageJson: async (pageId: string) => ({
         id: pageId,
         slugId: 'slug',
@@ -130,6 +141,7 @@ describe('GitSyncClient contract (type-level)', () => {
     // in BOTH directions).
     const bad = {
       listSpaceTree: async () => ({ pages: [] as GitSyncPageNodeLite[], complete: true }),
+      pageIdsExist: async () => [] as string[],
       getPageJson: async (pageId: string) => ({
         id: pageId,
         slugId: 's',

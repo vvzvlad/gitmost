@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile, utimes } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -160,16 +160,17 @@ describe('VaultGit (integration; temp repo)', () => {
       execFileAsync('git', ['add', '-A'], { cwd: vault }),
     ).rejects.toThrow(/index\.lock/);
 
-    // The preflight clears it (stale by mtime, no live git process holds it).
-    await git.clearStaleGitLocks();
+    // The preflight clears it (stale by mtime, no live git process holds it)
+    // and reports the removal (the cycle treats it as a recovery).
+    await expect(git.clearStaleGitLocks()).resolves.toBe(1);
 
     // The lock is gone and git ops succeed again.
     await expect(
       execFileAsync('git', ['add', '-A'], { cwd: vault }),
     ).resolves.toBeDefined();
 
-    // Idempotent / safe when no lock exists.
-    await expect(git.clearStaleGitLocks()).resolves.toBeUndefined();
+    // Idempotent / safe when no lock exists: nothing removed.
+    await expect(git.clearStaleGitLocks()).resolves.toBe(0);
   });
 
   it('clearStaleGitLocks PRESERVES a fresh index.lock (a concurrent replica may hold it) (bug D3-N3 / F1)', async () => {
@@ -209,13 +210,13 @@ describe('VaultGit (integration; temp repo)', () => {
       execFileAsync('git', ['rev-parse', '--verify', 'main'], { cwd: vault }),
     ).rejects.toThrow();
 
-    // The preflight re-creates main (from docmost).
-    await git.ensureMainBranch();
+    // The preflight re-creates main (from docmost) and reports the recovery.
+    await expect(git.ensureMainBranch()).resolves.toBe(true);
     await expect(
       execFileAsync('git', ['rev-parse', '--verify', 'main'], { cwd: vault }),
     ).resolves.toBeDefined();
-    // Idempotent when main already exists.
-    await expect(git.ensureMainBranch()).resolves.toBeUndefined();
+    // Idempotent when main already exists (no recovery performed).
+    await expect(git.ensureMainBranch()).resolves.toBe(false);
   });
 
   it('ensureMainBranch restores a deleted main from HEAD when docmost is gone too (bug D3-N1)', async () => {
@@ -261,7 +262,7 @@ describe('VaultGit (integration; temp repo)', () => {
     const git = new VaultGit(vault);
 
     // Nothing to do (ensureRepo's fresh-init path owns this case); must not throw.
-    await expect(git.ensureMainBranch()).resolves.toBeUndefined();
+    await expect(git.ensureMainBranch()).resolves.toBe(false);
     expect(await git.branchExists('main')).toBe(false);
   });
 
@@ -298,6 +299,40 @@ describe('VaultGit (integration; temp repo)', () => {
     expect(await localConfig('core.safecrlf')).toBe('false');
   });
 
+  it('ensureRepo on a configured vault does not rewrite .git/config (no config.lock taken)', async () => {
+    if (!available) return;
+    const vault = await freshDir();
+    const git = new VaultGit(vault);
+    await git.ensureRepo();
+    const configPath = join(vault, '.git', 'config');
+    const before = await stat(configPath);
+
+    // A `git config` write replaces the file via config.lock + rename (new
+    // inode); a read-only pass leaves it in place.
+    await Promise.all([git.ensureRepo(), git.ensureRepo(), git.ensureRepo()]);
+
+    const after = await stat(configPath);
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('ensureRepo restores a pinned config value that drifted', async () => {
+    if (!available) return;
+    const vault = await freshDir();
+    const git = new VaultGit(vault);
+    await git.ensureRepo();
+    await execFileAsync('git', ['config', 'core.autocrlf', 'true'], { cwd: vault });
+
+    await git.ensureRepo();
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['config', '--local', '--get', 'core.autocrlf'],
+      { cwd: vault },
+    );
+    expect(stdout.trim()).toBe('false');
+  });
+
   it('preserves LF bytes verbatim on commit (SPEC §11: autocrlf=false)', async () => {
     if (!available) return;
     const vault = await freshDir();
@@ -330,19 +365,20 @@ describe('VaultGit (integration; temp repo)', () => {
     expect(storedBuf.toString('utf8')).toBe(content);
   });
 
-  it('ensureBranch creates the docmost branch from main', async () => {
+  it('ensureRepo starts the docmost branch; ensureBranch creates a branch from main', async () => {
     if (!available) return;
     const vault = await freshDir();
     const git = new VaultGit(vault);
     await git.ensureRepo();
 
-    expect(await git.branchExists('docmost')).toBe(false);
-    await git.ensureBranch('docmost', 'main');
     expect(await git.branchExists('docmost')).toBe(true);
+    expect(await git.branchExists('other')).toBe(false);
+    await git.ensureBranch('other', 'main');
+    expect(await git.branchExists('other')).toBe(true);
 
     // Idempotent.
-    await git.ensureBranch('docmost', 'main');
-    expect(await git.branchExists('docmost')).toBe(true);
+    await git.ensureBranch('other', 'main');
+    expect(await git.branchExists('other')).toBe(true);
   });
 
   it('commit writes a commit with the provenance trailer and the bot identity', async () => {

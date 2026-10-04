@@ -27,6 +27,7 @@ const base: RevisionRowData = {
   isAgent: false,
   authorName: "Alice",
   authorAvatarUrl: "",
+  isGitSync: false,
   saved: false,
   version: true,
 };
@@ -68,6 +69,17 @@ describe("RevisionRow (#568 dense row)", () => {
     expect(screen.getByText(/Bob/)).toBeDefined();
     // Agent versions are marked by the glyph, not a duplicate SAVED badge.
     expect(screen.queryByText("Saved")).toBeNull();
+  });
+
+  it("git-sync version: shows the Git sync badge next to the author", () => {
+    renderRow({ ...base, isGitSync: true });
+    expect(screen.getByText("Git sync")).toBeDefined();
+    expect(screen.getByText("Alice")).toBeDefined();
+  });
+
+  it("non-git-sync version: no Git sync badge", () => {
+    renderRow(base);
+    expect(screen.queryByText("Git sync")).toBeNull();
   });
 
   it("clicking the row selects it by id", () => {

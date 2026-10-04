@@ -14,6 +14,14 @@ const resolveTypes = (types: string[] | "all", extensions: Extensions) => {
     .filter((type) => type !== "doc" && type !== "text");
 };
 
+/**
+ * The block types the editor gives a unique `id`. The ONE list: the editor, its
+ * read-only renderers and the server (whose git-sync writes must carry the
+ * same ids, or opening a page would add them as the viewer's edit) all
+ * configure `UniqueID` with it.
+ */
+export const UNIQUE_ID_TYPES = ["heading", "paragraph", "transclusionSource"];
+
 export const UniqueID = TiptapUniqueID.extend({
   addOptions() {
     return {

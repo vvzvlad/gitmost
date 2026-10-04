@@ -39,7 +39,7 @@ export const Details = Node.create<DetailsOptions>({
     return {
       open: {
         default: false,
-        parseHTML: (e) => e.getAttribute("open"),
+        parseHTML: (e) => e.hasAttribute("open"),
         renderHTML: (a) => (a.open ? { open: "" } : {}),
       },
     };

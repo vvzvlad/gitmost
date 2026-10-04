@@ -24,8 +24,9 @@ RUN pnpm build
 
 FROM base AS installer
 
+# git: required by the git-sync VaultGit (shells out to git)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl bash \
+  && apt-get install -y --no-install-recommends curl bash git \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -50,14 +51,20 @@ COPY --from=builder /app/packages/mcp/package.json /app/packages/mcp/package.jso
 # i.e. from packages/mcp/data/. tsc emits only build/, so ship data/ explicitly or
 # drawioFromGraph and the shape catalog die with ENOENT on packages/mcp/data/*.
 COPY --from=builder /app/packages/mcp/data /app/packages/mcp/data
-# mcp now depends on @docmost/prosemirror-markdown (workspace:*) and eager-imports
-# it at runtime (the in-app ai-chat DocmostClient loads build/index.js -> lib/
-# markdown-converter.js). Ship the built package + its manifest, or the prod
-# install resolves a broken workspace symlink and every ai-chat tool dies with
-# ERR_MODULE_NOT_FOUND (#293/#326 step 5). (git-sync has no runtime consumer yet;
-# revisit at step 6 when #119 lands.)
+# @docmost/prosemirror-markdown is the shared converter (#293/#326). Both mcp and
+# git-sync depend on it (workspace:*) and load it at runtime, so the built package +
+# its manifest must be shipped or the prod install resolves a broken workspace
+# symlink and every consumer dies with ERR_MODULE_NOT_FOUND.
 COPY --from=builder /app/packages/prosemirror-markdown/build /app/packages/prosemirror-markdown/build
 COPY --from=builder /app/packages/prosemirror-markdown/package.json /app/packages/prosemirror-markdown/package.json
+# git-sync: the server loads @docmost/git-sync at runtime via the loader
+# (git-sync.loader.ts), which deliberately does NOT `require()` it — the package is
+# ESM-only, so the loader uses `require.resolve` + a dynamic `import()`. Without
+# these copied build artifacts that resolve/import fails and the server crashes on
+# first use. Built fresh by the builder's `pnpm build` (nx builds the package's tsc
+# `build` target). This branch (#119) is where git-sync gains its runtime consumer.
+COPY --from=builder /app/packages/git-sync/build /app/packages/git-sync/build
+COPY --from=builder /app/packages/git-sync/package.json /app/packages/git-sync/package.json
 
 # apps/server imports @docmost/token-estimate (workspace:*) at runtime
 # (history-budget.ts, #490). tsc emits only dist/ and dist/ is gitignored, so the

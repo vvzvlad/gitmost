@@ -9,19 +9,16 @@ data
 !packages/mcp/data/**
 # compiled output
 /dist
-node_modules
+/node_modules
+# workspace package node_modules (pnpm symlinks — never commit; they bake
+# machine-local store paths).
+packages/*/node_modules/
 
-# git-sync compiled output (built in CI/Docker via `pnpm build`, never committed,
-# so src/ and prod can never silently diverge).
+# Compiled package output: build/ is gitignored for every workspace package
+# (built in CI/Docker via `pnpm build`, never committed, so src/ and prod can
+# never silently diverge). Private packages are rebuilt at deploy.
 packages/git-sync/build/
-
-# prosemirror-markdown compiled output (built in CI/Docker via `pnpm build`,
-# never committed, so src/ and prod can never silently diverge).
 packages/prosemirror-markdown/build/
-
-# mcp compiled output (built in CI/Docker via `pnpm build`, never committed, so
-# src/ and prod can never silently diverge). Matches the git-sync/prosemirror-
-# markdown convention; the package is private and rebuilt at deploy.
 packages/mcp/build/
 
 # mcp REGISTRY_STAMP codegen output (issue #447). Regenerated into src/ by

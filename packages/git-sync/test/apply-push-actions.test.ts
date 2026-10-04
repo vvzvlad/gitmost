@@ -7,6 +7,8 @@ import { parsePageFile, serializePageFile } from '@docmost/prosemirror-markdown'
 // The Docmost space this vault mirrors (native files carry no spaceId; the run
 // supplies it). A CREATE targets this space.
 const SPACE_ID = 'sp-test';
+// The commit the push diff was computed from (runPush: merge-base(docmost, main)).
+const BASE_REF = 'base-commit';
 
 // FS→Docmost push, FIRST increment (SPEC §6). `applyPushActions` is the THIN IO
 // half: create/update/delete via FAKES that record every call — no real network,
@@ -63,7 +65,7 @@ function makeClient(opts?: { createId?: string }) {
  */
 function makeGit(opts?: {
   ffResult?: { ok: boolean; reason?: string };
-  /** Pre-image tree at `refs/docmost/last-pushed` (path -> text). */
+  /** Pre-image tree at `BASE_REF` (path -> text). */
   prevTree?: Record<string, string>;
 }) {
   const updateRefCalls: { ref: string; target: string }[] = [];
@@ -77,8 +79,8 @@ function makeGit(opts?: {
       ffCalls.push({ branch, toCommit });
       return opts?.ffResult ?? { ok: true };
     }),
-    // The move/rename classifier reads the PREVIOUS parent folder's `.md` at
-    // refs/docmost/last-pushed via this; `null` when absent there (SPEC §5).
+    // The update base and the move/rename classifier's PREVIOUS side are read at
+    // BASE_REF via this; `null` when absent there (SPEC §5).
     showFileAtRef: vi.fn(async (_ref: string, path: string) =>
       path in prevTree ? prevTree[path] : null,
     ),
@@ -112,6 +114,7 @@ function deps(client: any, git: any, fs: ReturnType<typeof makeFs>): ApplyPushDe
     readFile: fs.fs.readFile,
     writeFile: fs.fs.writeFile,
     spaceId: SPACE_ID,
+    baseRef: BASE_REF,
   };
 }
 
@@ -167,9 +170,9 @@ describe('applyPushActions — update (collab path, SPEC §2/§15.6)', () => {
     expect(client.deletePage).not.toHaveBeenCalled();
   });
 
-  it('forwards the last-pushed base body (3-way merge ancestor) when present', async () => {
+  it('forwards the base body (3-way merge ancestor) when present', async () => {
     const client = makeClient();
-    // The pre-image (refs/docmost/last-pushed) carries the base version; both
+    // The pre-image at BASE_REF carries the base version; both
     // sides are stripped to their clean body for a body-to-body 3-way merge.
     const { git } = makeGit({ prevTree: { 'Doc.md': fileFor('p-1', 'base body') } });
     const fs = makeFs({ 'Doc.md': fileFor('p-1', 'updated body') });
@@ -185,12 +188,12 @@ describe('applyPushActions — update (collab path, SPEC §2/§15.6)', () => {
       'updated body',
       'base body',
     );
-    expect(git.showFileAtRef).toHaveBeenCalledWith(LAST_PUSHED_REF, 'Doc.md');
+    expect(git.showFileAtRef).toHaveBeenCalledWith(BASE_REF, 'Doc.md');
   });
 
   it('RENAME-derived update resolves the 3-way base from the OLD path (basePath), not the new path', async () => {
     // The residual flaw after F4: a rename+edit emits an UPDATE whose `path` is the
-    // NEW path, but at refs/docmost/last-pushed the file lived at the OLD path. If
+    // NEW path, but at BASE_REF the file lived at the OLD path. If
     // the base were looked up at the NEW path it would return null and the merge
     // would degrade to a 2-way (clobbering a concurrent Docmost-side edit). The fix
     // threads `basePath = oldPath` so the base is the pre-rename file (honest 3-way).
@@ -222,16 +225,16 @@ describe('applyPushActions — update (collab path, SPEC §2/§15.6)', () => {
       'base body',
     );
     // The base lookup hit the OLD path, NOT the new path (the core of the fix).
-    expect(git.showFileAtRef).toHaveBeenCalledWith(LAST_PUSHED_REF, 'Old/Path.md');
+    expect(git.showFileAtRef).toHaveBeenCalledWith(BASE_REF, 'Old/Path.md');
     expect(git.showFileAtRef).not.toHaveBeenCalledWith(
-      LAST_PUSHED_REF,
+      BASE_REF,
       'New/Path.md',
     );
   });
 
   it('PURE rename (no body edit) still 3-way merges against the old-path base (no 2-way clobber)', async () => {
     // Even a rename with NO body change pushes a body update (F4). Before this fix
-    // its base would be null (new path absent at last-pushed) -> a 2-way merge that
+    // its base would be null (new path absent at the base) -> a 2-way merge that
     // could roll a concurrent Docmost edit back to git's body. With basePath=oldPath
     // the base equals the (unchanged) body, so the 3-way merge of
     // (base=oldBody, incoming=oldBody) is a no-op and any live Docmost edit survives.
@@ -255,7 +258,7 @@ describe('applyPushActions — update (collab path, SPEC §2/§15.6)', () => {
       'same body',
       'same body',
     );
-    expect(git.showFileAtRef).toHaveBeenCalledWith(LAST_PUSHED_REF, 'Old.md');
+    expect(git.showFileAtRef).toHaveBeenCalledWith(BASE_REF, 'Old.md');
   });
 });
 
@@ -675,10 +678,12 @@ describe('applyPushActions — move whose client call throws (SPEC §12 isolatio
         kind: 'move',
         pageId: 'p-mv',
         path: 'Parent/Doc.md',
+        oldPath: 'Doc.md',
         error: 'move boom',
       },
     ]);
-    // A failure means the refs are NOT advanced — a re-run retries cleanly (§12).
+    // A failure means the applier advances no ref; runPush records per page
+    // what reached Docmost (both paths of the failed move stay out).
     expect(res.lastPushedAdvanced).toBe(false);
     expect(updateRefCalls).toEqual([]);
     expect(ffCalls).toEqual([]);

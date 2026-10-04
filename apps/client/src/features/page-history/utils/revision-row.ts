@@ -48,6 +48,8 @@ export interface RevisionRowData {
   launcherName?: string | null;
   authorName?: string;
   authorAvatarUrl?: string;
+  /** provenance badge: the version was written by git-sync (a git push). */
+  isGitSync: boolean;
   /** intentionality badge: SAVED shown only when true (kind === 'manual'). */
   saved: boolean;
   /** historyKindMeta().version — non-versions (autosaves) are dimmed. */
@@ -68,6 +70,7 @@ export function toRevisionRow(item: IPageHistory, tz: string): RevisionRowData {
     launcherName: item.launcher?.name ?? null,
     authorName: item.lastUpdatedBy?.name,
     authorAvatarUrl: item.lastUpdatedBy?.avatarUrl,
+    isGitSync: item.lastUpdatedSource === "git-sync",
     saved: item.kind === "manual",
     version: historyKindMeta(item.kind).version,
   };

@@ -51,8 +51,13 @@ function makeGit(
   },
   conflictStages?: {
     unmerged?: string[];
-    /** path -> { ours, theirs } blob content for showStage(2|3, path). */
-    stages?: Record<string, { ours: string | null; theirs: string | null }>;
+    /** path -> { base?, ours, theirs } blob content for showStage(1|2|3, path). */
+    stages?: Record<
+      string,
+      { base?: string | null; ours: string | null; theirs: string | null }
+    >;
+    /** Paths of the merge result (`listTrackedFiles`). */
+    tracked?: string[];
   },
 ) {
   const order: string[] = [];
@@ -82,8 +87,19 @@ function makeGit(
     showStage: vi.fn(async (stage: 1 | 2 | 3, path: string) => {
       const s = stages[path];
       if (!s) return null;
-      return stage === 2 ? s.ours : stage === 3 ? s.theirs : null;
+      return stage === 2 ? s.ours : stage === 3 ? s.theirs : (s.base ?? null);
     }),
+    // Stands in for `git merge-file -p --ours` (covered on real git elsewhere).
+    mergeFileOurs: vi.fn(async () => ({
+      text: 'per-hunk merged body\n',
+      conflicts: 1,
+    })),
+    listTrackedFiles: vi.fn(async () => conflictStages?.tracked ?? []),
+    pageIdsAtRef: vi.fn(async () => [] as { path: string; id: string }[]),
+    mergeBase: vi.fn(async () => null),
+    revParse: vi.fn(async () => null),
+    isMergeInProgress: vi.fn(async () => false),
+    showFileAtRef: vi.fn(async () => null),
     commitMerge: vi.fn(async (subject: string) => {
       order.push(`commitMerge:${subject}`);
     }),
@@ -125,6 +141,7 @@ function makeFs(opts?: { failWriteFor?: Set<string> }) {
 // spy instead of console.warn/console.error. `deps()` creates a fresh spy per
 // call and stashes it on `lastLog` for the current test to assert against.
 let lastLog: ReturnType<typeof vi.fn>;
+let lastWarn: ReturnType<typeof vi.fn>;
 
 function deps(
   client: any,
@@ -132,6 +149,7 @@ function deps(
   fs: ReturnType<typeof makeFs>,
 ): ApplyPullActionsDeps {
   lastLog = vi.fn();
+  lastWarn = vi.fn();
   return {
     client,
     git,
@@ -139,6 +157,7 @@ function deps(
     mkdir: fs.fs.mkdir,
     rm: fs.fs.rm,
     log: lastLog,
+    warn: lastWarn,
   };
 }
 
@@ -208,6 +227,8 @@ describe('applyPullActions — happy path (write + commit + merge)', () => {
       'checkout:main',
       'merge',
     ]);
+    // No per-cycle boilerplate line (it filled the log every poll).
+    expect(lastLog.mock.calls.flat().join('\n')).not.toContain('DEFERRED');
   });
 });
 
@@ -424,19 +445,23 @@ describe('applyPullActions — commit subject reflects ACTUAL counts', () => {
 });
 
 describe('applyPullActions — merge result is surfaced, not swallowed', () => {
-  it('GENUINE conflict: auto-resolves to OURS (git wins), no markers, surfaces conflictedPaths', async () => {
+  it('GENUINE conflict: auto-resolves PER HUNK (git wins the conflicting hunks), no markers, surfaces conflictedPaths', async () => {
     // QA #119 round-2: a genuine same-block docmost -> main conflict must NOT be
     // committed with raw markers onto `main` (external clones would see them and
-    // the body re-conflicts forever). It is auto-resolved to the git/main side
-    // (git wins, SPEC §9), the conflicted page is surfaced in `conflictedPaths`,
-    // and the merge is committed CLEAN (no wedge).
+    // the body re-conflicts forever). It is auto-resolved per hunk (only the
+    // conflicting hunks take the git/main side, SPEC §9), the conflicted page is
+    // surfaced in `conflictedPaths`, and the merge is committed CLEAN (no wedge).
     const { client } = makeClient();
     const g = makeGit(
       { ok: false, conflict: true, output: 'CONFLICT' },
       {
         unmerged: ['Conflicted.md'],
         stages: {
-          'Conflicted.md': { ours: 'git wins body\n', theirs: 'docmost body\n' },
+          'Conflicted.md': {
+            base: 'base body\n',
+            ours: 'git wins body\n',
+            theirs: 'docmost body\n',
+          },
         },
       },
     );
@@ -452,9 +477,14 @@ describe('applyPullActions — merge result is surfaced, not swallowed', () => {
     expect(res.merge.conflict).toBe(true);
     expect(res.merge.ok).toBe(true);
     expect(res.conflictedPaths).toEqual(['Conflicted.md']);
-    // The conflicted file was rewritten with OURS (git side) — NO markers.
+    // The conflicted file was rewritten with the per-hunk merge — NO markers.
+    expect(g.git.mergeFileOurs).toHaveBeenCalledWith(
+      'base body\n',
+      'git wins body\n',
+      'docmost body\n',
+    );
     const resolved = fs.writes.find((w) => w.abs === '/vault/Conflicted.md');
-    expect(resolved?.text).toBe('git wins body\n');
+    expect(resolved?.text).toBe('per-hunk merged body\n');
     expect(resolved?.text).not.toContain('<<<<<<<');
     expect(resolved?.text).not.toContain('>>>>>>>');
     // The merge was COMMITTED (vault no longer mid-merge).
@@ -494,6 +524,44 @@ describe('applyPullActions — merge result is surfaced, not swallowed', () => {
     expect(resolved?.text).toBe('Hello world\n');
     // Still committed (clears the merge), but as a clean merge.
     expect(g.git.commitMerge).toHaveBeenCalledTimes(1);
+  });
+
+  it('add/add conflict (no base stage): keeps the DOCMOST side, keeps git\'s version as a new file and warns', async () => {
+    // Without a common ancestor nothing tells which blocks git changed; writing
+    // OURS would make the push send git's whole body over the page and revert
+    // its Docmost content. The Docmost side is kept at the path; git's version
+    // goes to a free disambiguated sibling without its gitmost_id.
+    const { client } = makeClient();
+    const g = makeGit(
+      { ok: false, conflict: true, output: 'CONFLICT (add/add)' },
+      {
+        unmerged: ['Dir/New.md'],
+        stages: {
+          'Dir/New.md': {
+            ours: '---\ngitmost_id: some-id\n---\n\ngit body\n',
+            theirs: 'docmost body\n',
+          },
+        },
+        tracked: ['Dir/New.md', 'Dir/New ~git.md'],
+      },
+    );
+    const fs = makeFs();
+
+    const res = await applyPullActions(
+      deps(client, g.git, fs),
+      actions({ toWrite: [] }),
+      VAULT,
+    );
+
+    expect(res.conflictedPaths).toEqual(['Dir/New.md']);
+    expect(g.git.mergeFileOurs).not.toHaveBeenCalled();
+    const w = fs.writes.find((x) => x.abs === '/vault/Dir/New.md');
+    expect(w?.text).toBe('docmost body\n');
+    const copy = fs.writes.find((x) => x.abs === '/vault/Dir/New ~git-2.md');
+    expect(copy?.text).toBe('git body\n');
+    expect(lastWarn.mock.calls.map((c) => c[0]).join('\n')).toMatch(
+      /add\/add.*Dir\/New\.md -> Dir\/New ~git-2\.md/,
+    );
   });
 
   // NULL-EDGE coverage (round-2 review F1): the genuine-conflict branch resolves

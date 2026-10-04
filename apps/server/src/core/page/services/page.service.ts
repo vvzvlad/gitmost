@@ -1183,6 +1183,12 @@ export class PageService {
     // Optional agent-edit provenance (from the signed access claim). Stamps the
     // source marker when the agent moves a page via REST (§6.6 REST path).
     provenance?: AuthProvenanceData,
+    // Optional responsible author. When set (git-sync), the move is ATTRIBUTED
+    // to that account via `lastUpdatedById` — parity with create/delete/rename,
+    // which all stamp the service user. A normal user move omits it, leaving
+    // `lastUpdatedById` untouched (a reparent is not a content edit, so the
+    // existing author is preserved — unchanged behavior).
+    actorUserId?: string,
   ) {
     // validate position value by attempting to generate a key
     try {
@@ -1252,6 +1258,9 @@ export class PageService {
         {
           position: dto.position,
           parentPageId: parentPageId,
+          // Attribute a git-initiated move to the service account (parity with
+          // create/delete/rename). Omitted for normal user moves -> unchanged.
+          ...(actorUserId ? { lastUpdatedById: actorUserId } : {}),
           // Agent-edit provenance: annotate the source on an agent move. A
           // normal user request leaves the existing source value unchanged.
           ...agentSourceFields(
@@ -1555,8 +1564,20 @@ export class PageService {
     pageId: string,
     userId: string,
     workspaceId: string,
+    // Optional provenance. A git-sync-driven soft-delete stamps
+    // `lastUpdatedSource = 'git-sync'` so the change-listener loop-guard skips
+    // its own write (mirrors the create/update/move provenance branches above).
+    provenance?: AuthProvenanceData,
   ): Promise<void> {
-    await this.pageRepo.removePage(pageId, userId, workspaceId);
+    const isGitSync = provenance?.actor === 'git-sync';
+    await this.pageRepo.removePage(
+      pageId,
+      userId,
+      workspaceId,
+      // No caller transaction on the git-sync path; existingTrx stays undefined.
+      undefined,
+      isGitSync ? 'git-sync' : undefined,
+    );
   }
 
   private async parseProsemirrorContent(

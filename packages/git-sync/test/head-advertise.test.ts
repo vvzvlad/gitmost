@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -93,5 +93,38 @@ describe('VaultGit.pinHeadToMain — advertised HEAD is stably main (real git)',
     await git.pinHeadToMain();
     expect(await headSymref(dir)).toBe('main');
     expect(await advertisedHead(dir)).toBe('main');
+  });
+
+  it("moves the index and working tree with HEAD, and leaves a dirty tree on docmost alone", async () => {
+    if (!available) return;
+    dir = await mkdtemp(join(tmpdir(), 'docmost-head-'));
+    const git = new VaultGit(dir);
+    await git.ensureRepo();
+    await writeFile(join(dir, 'A.md'), 'main\n', 'utf8');
+    await git.stageAll();
+    await git.commit('seed', {
+      authorName: BOT_AUTHOR_NAME,
+      authorEmail: BOT_AUTHOR_EMAIL,
+    });
+    await execFileAsync('git', ['branch', '-f', 'docmost', 'main'], { cwd: dir });
+    await git.checkout('docmost');
+    await writeFile(join(dir, 'A.md'), 'docmost\n', 'utf8');
+    await git.stageAll();
+    await git.commit('mirror', {
+      authorName: BOT_AUTHOR_NAME,
+      authorEmail: BOT_AUTHOR_EMAIL,
+    });
+
+    expect(await git.pinHeadToMain()).toBe(true);
+    expect(await headSymref(dir)).toBe('main');
+    expect(await git.isWorkingTreeDirty()).toBe(false);
+    expect(await readFile(join(dir, 'A.md'), 'utf8')).toBe('main\n');
+
+    // A dirty tree off `main` is not carried over: HEAD stays where it is.
+    await git.checkout('docmost');
+    await writeFile(join(dir, 'A.md'), 'uncommitted\n', 'utf8');
+    expect(await git.pinHeadToMain()).toBe(false);
+    expect(await headSymref(dir)).toBe('docmost');
+    expect(await readFile(join(dir, 'A.md'), 'utf8')).toBe('uncommitted\n');
   });
 });

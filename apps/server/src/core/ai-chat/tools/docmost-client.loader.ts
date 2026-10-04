@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { DocmostClient, SharedToolSpec } from '@docmost/mcp';
+import { esmImport } from '../../../common/helpers/esm-import';
 
 // Re-export SharedToolSpec so downstream server modules keep a single import
 // path (they import it from this loader). The shape is DERIVED from the package
@@ -290,14 +291,8 @@ function collectStampFiles(dir: string): string[] {
   return out;
 }
 
-// TS with module:commonjs downlevels a literal `import()` to `require()`, which
-// cannot load the ESM-only `@docmost/mcp` package. Indirect through Function so
-// the real dynamic `import()` survives compilation and can load ESM from
-// CommonJS at runtime (same trick as integrations/mcp/mcp.service.ts).
-const esmImport = new Function(
-  'specifier',
-  'return import(specifier)',
-) as (specifier: string) => Promise<unknown>;
+// The CJS->ESM dynamic-import bridge lives in one shared helper
+// (common/helpers/esm-import.ts). The typed `loadDocmostMcp()` wrapper stays here.
 
 // Memoize the in-flight/loaded module so the dynamic import runs at most once.
 let modulePromise: Promise<DocmostMcpModule> | null = null;

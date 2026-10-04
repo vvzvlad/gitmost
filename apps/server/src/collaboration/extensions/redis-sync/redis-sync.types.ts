@@ -72,6 +72,10 @@ export type RSAMessageCustomEventComplete = {
   type: 'customEventComplete';
   replyId: number;
   payload: unknown;
+  // When the remote handler THREW, the owner sends back the error message here
+  // instead of a payload, so the origin can reject its awaiting promise promptly
+  // (with the real error) rather than waiting out the customEventTTL timeout.
+  error?: string;
 };
 
 export type RSAMessage =

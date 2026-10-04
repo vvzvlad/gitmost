@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   runPush,
-  LAST_PUSHED_REF,
   DOCMOST_BRANCH,
   CONFLICT_MARKERS_FAILURE_REASON,
 } from '../src/engine/push';
@@ -34,7 +33,6 @@ function makeSettings(): Settings {
 // ---------------------------------------------------------------------------
 function makePushGit(opts: {
   changes: { status: 'A' | 'M' | 'D' | 'R' | 'C'; path: string; oldPath?: string }[];
-  lastPushed?: string | null;
 }) {
   const calls = { updateRef: [] as { ref: string; target: string }[] };
   const git: PushDeps['git'] = {
@@ -46,21 +44,28 @@ function makePushGit(opts: {
     checkout: vi.fn(async () => {}),
     stageAll: vi.fn(async () => {}),
     commit: vi.fn(async () => false),
-    readRef: vi.fn(async (ref: string) =>
-      ref === LAST_PUSHED_REF ? (opts.lastPushed ?? 'base-sha') : null,
-    ),
+    mergeBase: vi.fn(async () => 'base-sha'),
     revParse: vi.fn(async (ref: string) => {
       if (ref === DOCMOST_BRANCH) return 'doc-sha';
       if (ref === 'main') return 'main-sha';
+      if (ref === 'doc-sha^{tree}') return 'doc-tree';
       return null;
     }),
     diffNameStatus: vi.fn(async () => opts.changes),
     showFileAtRef: vi.fn(async () => null),
+    pageIdsAtRef: vi.fn(async () => [] as { path: string; id: string }[]),
     updateRef: vi.fn(async (ref: string, target: string) => {
       calls.updateRef.push({ ref, target });
     }),
     fastForwardBranch: vi.fn(async () => ({ ok: true })),
     listTrackedFiles: vi.fn(async () => [] as string[]),
+    // The per-page record of a push with failures: with every changed page
+    // failed, `main` minus the failed paths is the `docmost` tree, so nothing
+    // is recorded.
+    isAncestor: vi.fn(async () => true),
+    treeWithPathsFrom: vi.fn(async () => 'doc-tree'),
+    commitTree: vi.fn(async () => 'record-sha'),
+    deleteRef: vi.fn(async () => {}),
   };
   return { git, calls };
 }
@@ -347,13 +352,16 @@ function fakeVault(overrides: Record<string, any> = {}) {
     clearStaleGitLocks: rec('clearStaleGitLocks'),
     ensureMainBranch: rec('ensureMainBranch'),
     isMergeInProgress: vi.fn(async () => false),
+    isWorkingTreeDirty: vi.fn(async () => false),
+    readRef: vi.fn(async () => null),
+    deleteRef: rec('deleteRef'),
     ensureBranch: rec('ensureBranch'),
     checkout: rec('checkout'),
     listTrackedFiles: vi.fn(async () => [] as string[]),
     stageAll: rec('stageAll'),
     commit: rec('commit', false),
     merge: rec('merge', { ok: true, conflict: false, output: '' }),
-    readRef: vi.fn(async () => null),
+    mergeBase: vi.fn(async () => 'main-commit-sha'),
     revParse: vi.fn(async () => 'main-commit-sha'),
     diffNameStatus: vi.fn(async () => [] as any[]),
     showFileAtRef: vi.fn(async () => ''),

@@ -72,6 +72,12 @@ export function isLocalFirstEnabled(): boolean {
   return castToBoolean(getConfigValue("LOCAL_FIRST_ENABLED", "false"));
 }
 
+// Operator toggle for git-sync. DEFAULT OFF: the server mirrors GIT_SYNC_ENABLED
+// into window.CONFIG; when off the space git-sync controls are not rendered.
+export function isGitSyncEnabled(): boolean {
+  return castToBoolean(getConfigValue("GIT_SYNC_ENABLED", "false"));
+}
+
 // #640 — network-independent session boundary. After OFFLINE_GRACE has elapsed
 // since the last successful `/me` (`sessionVerifiedAt`), the client refuses to
 // draw ANY local content (chrome, tree, ydoc body) and purges it — offline or

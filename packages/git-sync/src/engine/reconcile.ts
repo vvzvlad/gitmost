@@ -96,6 +96,16 @@ export interface ReconciliationPlan {
 export function planReconciliation(
   live: LiveEntry[],
   existing: ExistingEntry[],
+  /**
+   * The subset of tracked pageIds that correspond to a REAL page row (D-P3-1
+   * ghost guard). When provided, a tracked file whose pageId is ABSENT from
+   * `live` is absence-deleted ONLY if its id is in this set — a deleted/moved/
+   * trashed page has a row (delete its stale vault file), while a GHOST id (a
+   * git file whose id was never a page) has NO row and is PRESERVED. When
+   * `undefined` (pure unit callers that do not model ghosts), every absent id is
+   * treated as deletable — the historical behavior.
+   */
+  deletableIds?: ReadonlySet<string>,
 ): ReconciliationPlan {
   // Desired path for each live pageId.
   const liveByPageId = new Map<string, string>();
@@ -119,9 +129,17 @@ export function planReconciliation(
   for (const ex of existing) {
     const liveRel = liveByPageId.get(ex.pageId);
     if (liveRel === undefined) {
-      // Tracked page is gone from the live tree -> absence delete.
+      // Tracked page is gone from the live tree -> candidate absence delete.
+      // D-P3-1: a candidate is only deleted when its id corresponds to a real
+      // page row (deleted/moved/trashed). A GHOST id (never a page) is NOT in
+      // `deletableIds` and is preserved rather than silently deleted. When the
+      // gate is not supplied (pure unit callers), fall back to the historical
+      // "all absent ids deletable" behavior.
+      const deletable = deletableIds === undefined || deletableIds.has(ex.pageId);
       // Never queue a path a live page will (re)write (path reuse -> no loss).
-      if (!liveTargetPaths.has(ex.relPath)) toDeleteSet.add(ex.relPath);
+      if (deletable && !liveTargetPaths.has(ex.relPath)) {
+        toDeleteSet.add(ex.relPath);
+      }
       continue;
     }
     if (liveRel !== ex.relPath) {
