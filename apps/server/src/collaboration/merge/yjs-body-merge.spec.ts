@@ -348,6 +348,120 @@ describe('yjs-body-merge', () => {
     });
   });
 
+  // Regression: a line appended at the END of a page in git landed in the MIDDLE
+  // of the live page, replacing one of the empty paragraphs there (wb, page with
+  // images). The live images store numeric attrs (`width: 652`) while the git
+  // body carries them as strings ("652"), and the editor leaves an empty XmlText
+  // in a paragraph the user typed into and erased — so neither the images nor the
+  // trailing empty paragraph matched their git twins, and the merge anchored the
+  // git-side trailing paragraph (which became the new line) on an empty
+  // paragraph in the middle of the page.
+  describe('anchoring a live page edited in the browser', () => {
+    type B =
+      | { p: string }
+      | { img: string }
+      | { pdf: string }
+      | { empty: 'bare' | 'erased' };
+    function build(doc: Y.Doc, blocks: B[], numericAttrs: boolean) {
+      const frag = doc.getXmlFragment('default');
+      frag.insert(
+        0,
+        blocks.map((b) => {
+          if ('pdf' in b) {
+            // Default-sized pdf: the schema defaults are numbers (800x600).
+            const el = new Y.XmlElement('pdf');
+            el.setAttribute('attachmentId', b.pdf);
+            el.setAttribute('width', (numericAttrs ? 800 : '800') as any);
+            el.setAttribute('height', (numericAttrs ? 600 : '600') as any);
+            return el;
+          }
+          if ('img' in b) {
+            const el = new Y.XmlElement('image');
+            el.setAttribute('attachmentId', b.img);
+            el.setAttribute('width', (numericAttrs ? 652 : '652') as any);
+            el.setAttribute(
+              'aspectRatio',
+              (numericAttrs ? 3.142857142857143 : '3.142857142857143') as any,
+            );
+            return el;
+          }
+          const el = new Y.XmlElement('paragraph');
+          if ('p' in b) {
+            const t = new Y.XmlText();
+            t.insert(0, b.p);
+            el.insert(0, [t]);
+          } else if (b.empty === 'erased') {
+            el.insert(0, [new Y.XmlText()]);
+          }
+          return el;
+        }),
+      );
+      return frag;
+    }
+    const shape = (frag: Y.XmlFragment): string[] =>
+      frag.toArray().map((el) => {
+        const e = el as Y.XmlElement;
+        if (e.nodeName === 'image') return `img:${e.getAttribute('attachmentId')}`;
+        if (e.nodeName === 'pdf') return `pdf:${e.getAttribute('attachmentId')}`;
+        const text = e.toArray().map((c) => (c as Y.XmlText).toString()).join('');
+        return text || '_';
+      });
+
+    it('a line appended in git lands at the end, not in place of a middle empty paragraph', () => {
+      // git body (base): no empty paragraphs (the export drops them) except the
+      // trailing one the editor shape adds after a final image.
+      const gitBlocks: B[] = [
+        { p: 'one' }, { img: 'a' }, { img: 'b' }, { p: 'two' }, { img: 'c' },
+        { img: 'd' }, { img: 'e' }, { img: 'f' },
+      ];
+      const baseFrag = build(new Y.Doc(), [...gitBlocks, { empty: 'bare' }], false);
+      const targetFrag = build(new Y.Doc(), [...gitBlocks, { p: 'NEW' }], false);
+      const live = new Y.Doc();
+      const liveFrag = build(
+        live,
+        [
+          { p: 'one' }, { img: 'a' }, { img: 'b' }, { p: 'two' }, { img: 'c' },
+          { empty: 'erased' }, { empty: 'bare' }, { empty: 'bare' }, { empty: 'bare' },
+          { img: 'd' }, { img: 'e' }, { img: 'f' },
+          { empty: 'erased' },
+        ],
+        true,
+      );
+
+      let res: { applied: number; conflicts: number } | undefined;
+      live.transact(() => {
+        res = mergeXmlFragments3WayWithStats(liveFrag, targetFrag, baseFrag);
+      });
+
+      expect(shape(liveFrag)).toEqual([
+        'one', 'img:a', 'img:b', 'two', 'img:c', '_', '_', '_', '_',
+        'img:d', 'img:e', 'img:f', 'NEW',
+      ]);
+      expect(res!.conflicts).toBe(0);
+    });
+
+    it.each(['bare', 'erased'] as const)(
+      'a page ending in a default-sized pdf anchors on it (%s middle empty paragraph)',
+      (middle) => {
+        const gitBlocks: B[] = [{ p: 'one' }, { p: 'two' }, { pdf: 'p' }];
+        const baseFrag = build(new Y.Doc(), [...gitBlocks, { empty: 'bare' }], false);
+        const targetFrag = build(new Y.Doc(), [...gitBlocks, { p: 'NEW' }], false);
+        const live = new Y.Doc();
+        const liveFrag = build(
+          live,
+          [{ p: 'one' }, { p: 'two' }, { empty: middle }, { pdf: 'p' }, { empty: 'erased' }],
+          true,
+        );
+
+        live.transact(() =>
+          mergeXmlFragments3WayWithStats(liveFrag, targetFrag, baseFrag),
+        );
+
+        expect(shape(liveFrag)).toEqual(['one', 'two', '_', 'pdf:p', 'NEW']);
+      },
+    );
+  });
+
   describe('cloneXmlNode', () => {
     it('preserves text marks (XmlText delta) across docs', () => {
       const src = new Y.Doc();
