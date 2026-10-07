@@ -13,6 +13,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
+    // Node >= 25 ships a built-in global `localStorage` that is `undefined` without
+    // --localstorage-file and shadows jsdom's, so tests touching localStorage crash.
+    // Turn Node's Web Storage off in the workers (the flag also exists on Node 22).
+    execArgv: ['--no-experimental-webstorage'],
     // Coverage gate (issue #324). v8 provider (not istanbul) so ESM barrels
     // like `@docmost/editor-ext` are not re-parsed/instrumented. Thresholds are
     // set a few points below the level measured on develop, scoped to the files

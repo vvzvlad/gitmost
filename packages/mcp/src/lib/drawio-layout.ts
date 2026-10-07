@@ -99,6 +99,7 @@ interface ElkGraph extends ElkNode {
 function layoutInWorker(graph: ElkGraph, timeoutMs: number): Promise<ElkGraph> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(
+      // @ts-ignore TS1343 only under the server's module:commonjs type-check (see drawio-presets.ts).
       new URL("./drawio-layout.worker.js", import.meta.url),
       { workerData: { graph } },
     );

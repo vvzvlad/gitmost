@@ -315,8 +315,9 @@ export function createDocmostMcpServer(config: DocmostMcpConfig): McpServer {
   // contract pins their name/description/schema across both hosts) but carry the
   // `inlineBothHosts` flag and NO execute: their pure backing helpers
   // (searchShapes / getGuideSection) cannot be value-imported into the
-  // zod-agnostic tool-specs.ts without breaking the in-app server's commonjs
-  // type-check (searchShapes' catalog loader uses import.meta). So both hosts wire
+  // zod-agnostic tool-specs.ts without breaking the in-app server's specs, which
+  // load it through ts-jest as CommonJS (searchShapes' catalog loader uses
+  // import.meta, a SyntaxError there). So both hosts wire
   // them directly. Here on the MCP host they reuse the spec's name/description/
   // schema and wrap the raw helper result as JSON text content — byte-identical to
   // what the registry loop would have produced. The in-app host mirrors this in
