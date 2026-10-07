@@ -249,7 +249,7 @@ export class AiChatRunService implements OnModuleInit {
   }
 
   /**
-   * F2 (DECISION A): autonomous runs are SINGLE-INSTANCE-ONLY in phase 1. An
+   * F2 (DECISION A): agent runs are SINGLE-INSTANCE-ONLY in phase 1. An
    * explicit Stop, and the in-memory AbortController that backs it, are
    * process-local: a Stop only aborts the live turn if it lands on the SAME
    * replica that owns the run (it still stamps `stop_requested_at` cross-instance,
@@ -261,7 +261,7 @@ export class AiChatRunService implements OnModuleInit {
    * is mandatory), so the adapter alone is NOT a horizontal-scaling signal. The
    * authoritative signal the codebase has is `CLOUD=true` (EnvironmentService
    * .isCloud()), the Docmost-cloud multi-replica deployment. We warn whenever that
-   * is set, because any workspace could enable settings.ai.autonomousRuns. A
+   * is set, because every agent run is detached (a disconnect never stops it). A
    * self-hosted operator running multiple replicas behind a load balancer is also
    * multi-instance; the deploy docs (.env.example / AGENTS.md) spell out the
    * single-instance constraint for that case.
@@ -269,11 +269,10 @@ export class AiChatRunService implements OnModuleInit {
   private warnIfMultiInstance(): void {
     if (this.environment.isCloud()) {
       this.logger.warn(
-        'Autonomous agent runs (settings.ai.autonomousRuns) are SINGLE-INSTANCE-ONLY ' +
-          'in phase 1: a horizontally-scaled deployment was detected (CLOUD=true). ' +
-          'An explicit Stop only aborts a run executing on the same replica that owns ' +
-          'it (cross-instance Stop is not yet reliable — phase 2). Run a single ' +
-          'instance if you enable autonomousRuns, or keep the flag off.',
+        'Agent runs are SINGLE-INSTANCE-ONLY in phase 1: a horizontally-scaled ' +
+          'deployment was detected (CLOUD=true). An explicit Stop only aborts a run ' +
+          'executing on the same replica that owns it (cross-instance Stop is not ' +
+          'yet reliable — phase 2). Run a single instance.',
       );
     }
   }

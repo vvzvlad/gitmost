@@ -414,23 +414,6 @@ export class EnvironmentService {
     return this.getPositiveIntEnv('MCP_PERSONAL_SERVERS_MAX', 10);
   }
 
-  /**
-   * Resumable SSE transport for durable agent runs (#184 phase 1.5). When
-   * enabled, a run tees its SSE frames into the in-memory run-stream registry so
-   * a late/reloaded tab can attach (replay + live tail) via
-   * `GET /ai-chat/runs/:chatId/stream`. Defaults to DISABLED: PR 1 ships the
-   * server code dormant — with the flag off, `open`/`bind`/`generateMessageId`
-   * are never called and attach always answers 204, so the legacy and #184
-   * phase-1 wire paths stay byte-for-byte identical. Set
-   * AI_CHAT_RESUMABLE_STREAM=true to activate it (paired with the PR 2 client).
-   */
-  isAiChatResumableStreamEnabled(): boolean {
-    const enabled = this.configService
-      .get<string>('AI_CHAT_RESUMABLE_STREAM', 'false')
-      .toLowerCase();
-    return enabled === 'true';
-  }
-
   getPostHogHost(): string {
     return this.configService.get<string>('POSTHOG_HOST');
   }

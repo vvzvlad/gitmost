@@ -91,7 +91,8 @@ export class PublicShareChatController {
     );
     const { shareId, share, model, role, messages, openedPage } = resolved;
 
-    // Abort the agent loop when the client disconnects (mirrors ai-chat).
+    // Abort the agent loop when the client disconnects (public-share turns are
+    // not durable runs, unlike ai-chat).
     const controller = new AbortController();
     const onClose = (): void => {
       if (!res.raw.writableEnded) controller.abort();

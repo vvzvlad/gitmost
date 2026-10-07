@@ -55,14 +55,6 @@ export class UpdateWorkspaceDto extends PartialType(CreateWorkspaceDto) {
   @IsBoolean()
   aiDictationStreaming: boolean;
 
-  // #184: detached/autonomous agent runs (settings.ai.autonomousRuns). When on, a
-  // chat turn becomes a server-side RUN that survives a browser disconnect; only
-  // an explicit /ai-chat/stop ends it. Off by default; single-instance-only in
-  // phase 1 (see AiChatRunService.warnIfMultiInstance / AGENTS.md).
-  @IsOptional()
-  @IsBoolean()
-  autonomousRuns: boolean;
-
   // Workspace master toggle that enables/disables the HTML embed block type.
   // Persisted at settings.htmlEmbed. ABSENT/false => OFF (default). The block
   // itself renders in a sandboxed iframe, so this is a feature switch, not a

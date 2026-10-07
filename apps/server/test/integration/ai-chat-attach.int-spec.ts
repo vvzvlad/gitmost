@@ -28,7 +28,7 @@ import {
  * REAL `AiChatStreamRegistryService`. The run-hooks mirror the controller: they
  * begin a durable run and `open()` the registry entry at begin, and the service
  * tees the SSE frames into it via `consumeSseStream` while stamping the DB row id
- * via `generateMessageId` (both gated on runId + the resumable flag).
+ * via `generateMessageId` (both gated on runId).
  *
  * Proven here (tail-only #491): a finished run attached at its persisted frontier
  * N_final delivers only the TAIL past N (a synthetic `start` carrying the run-fact
@@ -169,8 +169,8 @@ describe('AiChatService run-stream attach [integration]', () => {
     }),
   };
 
-  // Build the service with the run-stream registry wired and the resumable flag
-  // ON (the property under test). Deferred tools OFF (irrelevant here).
+  // Build the service with the run-stream registry wired (the property under
+  // test). Deferred tools OFF (irrelevant here).
   function buildService(registry: AiChatStreamRegistryService): AiChatService {
     return new AiChatService(
       { getChatModel: async () => null } as any,
@@ -185,7 +185,6 @@ describe('AiChatService run-stream attach [integration]', () => {
       {} as any,
       {
         isAiChatDeferredToolsEnabled: () => false,
-        isAiChatResumableStreamEnabled: () => true,
         isAiChatFinalStepLockdownEnabled: () => false,
         isAiChatViewImageEnabled: () => false,
       } as any,
@@ -517,7 +516,6 @@ describe('AiChatService run-stream attach [integration]', () => {
       {} as any,
       {
         isAiChatDeferredToolsEnabled: () => false,
-        isAiChatResumableStreamEnabled: () => true,
         isAiChatFinalStepLockdownEnabled: () => false,
         isAiChatViewImageEnabled: () => false,
       } as any,

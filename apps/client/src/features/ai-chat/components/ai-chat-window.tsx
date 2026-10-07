@@ -57,7 +57,6 @@ import {
   useAiChatsQuery,
   useAiRolesQuery,
 } from "@/features/ai-chat/queries/ai-chat-query.ts";
-import { workspaceAtom } from "@/features/user/atoms/current-user-atom";
 import {
   markOperationStart,
   measureOperation,
@@ -314,18 +313,10 @@ export default function AiChatWindow() {
     enabled: windowOpen,
   });
 
-  // #184 reconnect-and-live-follow. Whether detached agent runs are enabled for
-  // this workspace. When the feature is off no runs are ever created, so the
-  // resume attempt would only ever 204; gating ChatThread's resume on it avoids a
-  // pointless attach round-trip.
-  const workspace = useAtomValue(workspaceAtom);
-  const autonomousRunsEnabled =
-    workspace?.settings?.ai?.autonomousRuns === true;
-
-  // Authoritative stop of the open chat's detached run (the Stop button in
-  // autonomous mode). Request the server stop — the ONLY thing that ends a
-  // detached run; a mere local SSE abort is a client disconnect the server
-  // ignores. On failure surface the error.
+  // Authoritative stop of the open chat's detached run (the Stop button).
+  // Request the server stop — the ONLY thing that ends a detached run; a mere
+  // local SSE abort is a client disconnect the server ignores. On failure
+  // surface the error.
   const handleServerStop = useCallback(
     (chatId: string): void => {
       void stopRun(chatId).catch(() => {
@@ -1094,10 +1085,8 @@ export default function AiChatWindow() {
               // merging the persisted reply (I3), rather than waiting for the
               // terminal row.
               polledRunFact={polledRunFact}
-              // #184: in autonomous mode the Stop button must hit the authoritative
-              // server stop (a local SSE abort is a client disconnect the server
-              // ignores).
-              autonomousRunsEnabled={autonomousRunsEnabled}
+              // #184: the Stop button must hit the authoritative server stop (a
+              // local SSE abort is a client disconnect the server ignores).
               onServerStop={handleServerStop}
               // #665: the last "New chat" unbind promise; the thread's first send
               // of a fresh thread waits on it so an instant role-card click can't

@@ -32,7 +32,6 @@ describe('AiChatController.boundChat', () => {
       {} as never, // aiTranscription
       pageRepo as never,
       undefined, // streamRegistry
-      undefined, // environment
       undefined, // aiChatRunStepRepo
       bindingRepo as never,
     );

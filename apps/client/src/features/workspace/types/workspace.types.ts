@@ -26,9 +26,6 @@ export interface IWorkspace {
   aiDictation?: boolean;
   aiDictationStreaming?: boolean;
   aiPublicShareAssistant?: boolean;
-  // Write-only field for updateWorkspace({ autonomousRuns }). Read state lives at
-  // settings.ai.autonomousRuns.
-  autonomousRuns?: boolean;
   trashRetentionDays?: number;
   // Default lifetime (HOURS) for new temporary notes; frozen per-note at creation.
   temporaryNoteHours?: number;
@@ -76,9 +73,6 @@ export interface IWorkspaceAiSettings {
   dictation?: boolean;
   dictationStreaming?: boolean;
   publicShareAssistant?: boolean;
-  // #184: detached agent runs (a run survives a browser disconnect and can be
-  // reconnected to / live-followed on reopen). Gates the run-reconnect polling.
-  autonomousRuns?: boolean;
 }
 
 export interface IWorkspaceSharingSettings {

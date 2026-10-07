@@ -134,7 +134,6 @@ AI-агент стримит ответы через Server-Sent Events. Эти 
 
 - `POST /api/ai-chat/stream` — живой стрим хода агента
 - `GET /api/ai-chat/runs/<chatId>/stream` — подключение/резюм detached-рана
-  (`AI_CHAT_RESUMABLE_STREAM`)
 - `POST /api/shares/ai/stream` — анонимный ассистент публичных шар
 
 Буферизующий или сжимающий прокси не ломает эти пути с ошибкой — он тихо их портит:
