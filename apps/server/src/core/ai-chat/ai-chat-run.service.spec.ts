@@ -111,7 +111,7 @@ describe('AiChatRunService.onModuleInit (startup sweep)', () => {
     expect(firstArg?.staleMs).toBeUndefined();
   });
 
-  it('F2 (DECISION A): warns at startup that autonomousRuns is single-instance-only when a horizontally-scaled deployment (CLOUD) is detected', async () => {
+  it('F2 (DECISION A): warns at startup that agent runs are single-instance-only when a horizontally-scaled deployment (CLOUD) is detected', async () => {
     const repo = makeRepo();
     const warnSpy = jest
       .spyOn(Logger.prototype, 'warn')

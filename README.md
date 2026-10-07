@@ -133,7 +133,6 @@ compression** at every proxy in front of the app:
 
 - `POST /api/ai-chat/stream` — the live agent turn stream
 - `GET /api/ai-chat/runs/<chatId>/stream` — attach/resume of a detached agent run
-  (`AI_CHAT_RESUMABLE_STREAM`)
 - `POST /api/shares/ai/stream` — the anonymous public-share assistant
 
 A buffering or compressing proxy does not break these with an error — it silently ruins them:

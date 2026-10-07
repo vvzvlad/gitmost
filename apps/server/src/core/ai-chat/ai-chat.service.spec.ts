@@ -1834,13 +1834,10 @@ describe('isInterruptResume', () => {
 /**
  * #184 phase 1.5 — the run-wrapped pipe options (unit). Drives stream() to the
  * pipe call with streamText mocked, capturing the options object, and asserts:
- *  - flag OFF while a runId IS present -> the LEGACY option shape (no
- *    consumeSseStream, no generateMessageId), and the registry is never touched.
- *    This is the exact dormancy guarantee this PR rests on.
- *  - flag ON + runId -> consumeSseStream tees into the registry and
+ *  - runId -> consumeSseStream tees into the registry and
  *    generateMessageId returns the seeded assistant DB row id.
- *  - flag ON but no runHooks (runId undefined) -> legacy (the runId gate).
- *  - flag ON + runId -> the outer catch releases the entry via abortEntry.
+ *  - no runHooks (runId undefined) -> neither option is set (the runId gate).
+ *  - runId -> the outer catch releases the entry via abortEntry.
  */
 describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () => {
   const streamTextMock = streamText as unknown as jest.Mock;
@@ -1881,7 +1878,7 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
   }
 
   // Wire only the deps reached on the way to the pipe call, plus a spy registry.
-  function makeService(opts: { resumable: boolean; history?: unknown[] }) {
+  function makeService(opts: { history?: unknown[] } = {}) {
     const aiChatRepo = {
       findById: jest.fn(async () => ({ id: 'chat-1', workspaceId: 'ws-1' })),
       insert: jest.fn(),
@@ -1925,7 +1922,6 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
         isAiChatDeferredToolsEnabled: () => false,
         isAiChatFinalStepLockdownEnabled: () => false,
         isAiChatViewImageEnabled: () => false,
-        isAiChatResumableStreamEnabled: () => opts.resumable,
       } as never,
       streamRegistry as never,
     );
@@ -1963,21 +1959,8 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
     });
   }
 
-  it('flag OFF + runId present: LEGACY option shape (no consumeSseStream / generateMessageId); registry untouched', async () => {
-    const { svc, streamRegistry } = makeService({ resumable: false });
-    await drive(svc, makeRunHooks());
-    expect(pipeMock).toHaveBeenCalledTimes(1);
-    const options = pipeMock.mock.calls[0][1];
-    // The dormancy guarantee: a live run with the flag off tees NOTHING and does
-    // not stamp a message id — byte-for-byte the pre-1.5 wire.
-    expect(options.consumeSseStream).toBeUndefined();
-    expect(options.generateMessageId).toBeUndefined();
-    expect(streamRegistry.bind).not.toHaveBeenCalled();
-    expect(streamRegistry.abortEntry).not.toHaveBeenCalled();
-  });
-
-  it('flag ON + runId: consumeSseStream tees into the registry; generateMessageId returns the seeded row id', async () => {
-    const { svc, streamRegistry } = makeService({ resumable: true });
+  it('runId: consumeSseStream tees into the registry; generateMessageId returns the seeded row id', async () => {
+    const { svc, streamRegistry } = makeService();
     await drive(svc, makeRunHooks());
     const options = pipeMock.mock.calls[0][1];
     expect(typeof options.consumeSseStream).toBe('function');
@@ -1995,8 +1978,8 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
     );
   });
 
-  it('flag ON but NO runHooks (runId undefined): pipe options stay legacy (the runId gate)', async () => {
-    const { svc, streamRegistry } = makeService({ resumable: true });
+  it('NO runHooks (runId undefined): no consumeSseStream / generateMessageId (the runId gate)', async () => {
+    const { svc, streamRegistry } = makeService();
     await drive(svc, undefined);
     const options = pipeMock.mock.calls[0][1];
     expect(options.consumeSseStream).toBeUndefined();
@@ -2004,8 +1987,8 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
     expect(streamRegistry.bind).not.toHaveBeenCalled();
   });
 
-  it('flag ON + runId: the outer catch calls abortEntry when the stream throws', async () => {
-    const { svc, streamRegistry } = makeService({ resumable: true });
+  it('runId: the outer catch calls abortEntry when the stream throws', async () => {
+    const { svc, streamRegistry } = makeService();
     streamTextMock.mockImplementation(() => {
       throw new Error('boom');
     });
@@ -2022,7 +2005,6 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
   // the marker reaches the model, and exactly ONE user row is inserted.
   it('#489: a poisoned OLD-history row keeps the chat working; the marker reaches the model; one user insert', async () => {
     const { svc, aiChatMessageRepo } = makeService({
-      resumable: false,
       history: [
         {
           id: 'old-1',
@@ -2055,7 +2037,7 @@ describe('AiChatService.stream — resumable pipe options (#184 phase 1.5)', () 
   // exact "bricking" payload) are dropped ON RECEIPT — never persisted — so they
   // can never poison future turns. Only the text survives into metadata.parts.
   it('#489: a non-text client part is stripped before persist (only text survives)', async () => {
-    const { svc, aiChatMessageRepo } = makeService({ resumable: false });
+    const { svc, aiChatMessageRepo } = makeService();
     await svc.stream({
       user: { id: 'u1' } as never,
       workspace: { id: 'ws-1' } as never,
@@ -2221,7 +2203,6 @@ describe('AiChatService.stream — token-degeneration reaction (#444)', () => {
         // lockdown OFF => the degeneration detector is the anti-babble guard.
         isAiChatFinalStepLockdownEnabled: () => false,
         isAiChatViewImageEnabled: () => false,
-        isAiChatResumableStreamEnabled: () => false,
       } as never,
       streamRegistry as never,
     );

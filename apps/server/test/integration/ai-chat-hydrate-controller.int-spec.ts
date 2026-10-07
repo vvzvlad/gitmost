@@ -48,7 +48,6 @@ describe('#492 controller hydration read path [integration]', () => {
       {} as any, // aiTranscription
       {} as any, // pageRepo
       undefined, // streamRegistry
-      undefined, // environment
       stepRepo, // #492 aiChatRunStepRepo
     );
   }

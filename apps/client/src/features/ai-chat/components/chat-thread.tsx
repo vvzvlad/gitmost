@@ -179,13 +179,10 @@ interface ChatThreadProps {
    *  for the terminal ROW. `undefined` = no poll result yet (ignored).
    *  Only meaningful while the poll is armed (a poll-bearing recovery). */
   polledRunFact?: { id: string; status: string } | null;
-  /** #184: whether detached/autonomous agent runs are enabled for this workspace.
-   *  When true the Stop button must additionally hit the AUTHORITATIVE server stop
-   *  (via onServerStop) — aborting only the local SSE is just a client disconnect,
-   *  which the server deliberately ignores, so the detached run would keep going. */
-  autonomousRunsEnabled?: boolean;
   /** #184: request the server-side stop of this chat's active run. Called with the
-   *  resolved chat id when the user presses Stop in autonomous mode. */
+   *  resolved chat id when the user presses Stop — aborting only the local SSE is
+   *  just a client disconnect, which the server deliberately ignores, so the
+   *  detached run would keep going. */
   onServerStop?: (chatId: string) => void;
   /** #665: a WINDOW-owned ref holding the last "New chat" unbind (DELETE
    *  /bind-page) promise. The first send of a fresh thread reads-and-clears it and
@@ -249,7 +246,6 @@ export default function ChatThread({
   onServerChatId,
   onResumeFallback,
   polledRunFact,
-  autonomousRunsEnabled,
   onServerStop,
   pendingUnbindRef,
 }: ChatThreadProps) {
@@ -748,14 +744,6 @@ export default function ChatThread({
           setStopNotice(null);
           return;
         }
-        // No detached run to recover (legacy, non-autonomous): a plain disconnect —
-        // terminal notice, no reconnect. (An observer only exists in autonomous mode,
-        // so this is always a local turn.)
-        if (autonomousRunsEnabled !== true) {
-          dispatch({ type: "FINISH_DISCONNECT", epoch: stampEpoch });
-          setStopNotice("disconnect");
-          return;
-        }
         // No chat id yet (a new chat whose first frame never arrived): there is
         // nothing to poll for, so no run-fact and no refetch — the FSM lands idle
         // (runFact is null) and the terminal notice is shown.
@@ -892,7 +880,7 @@ export default function ChatThread({
   // attached -> 204 -> ~240 req/10min storm). A SETTLED assistant tail never resumes.
   useEffect(() => {
     mountedRef.current = true;
-    if (autonomousRunsEnabled === true && chatId !== null) {
+    if (chatId !== null) {
       const rows = initialRows ?? [];
       if (isStreamingTail(rows)) {
         dispatch({ type: "ATTACH_START" });
@@ -1068,7 +1056,7 @@ export default function ChatThread({
         (p === "sending" || p === "streaming") &&
         machineRef.current.ctx.ownership === "local";
       const runId = machineRef.current.ctx.runFact?.runId;
-      if (aLiveLocal && autonomousRunsEnabled === true && runId && runId !== "pending") {
+      if (aLiveLocal && runId && runId !== "pending") {
         // CAS supersede: the server stops the old run + starts this one atomically.
         // #488 F1: do NOT start stream B synchronously — the local stream A is still
         // live, and overlapping streams corrupt each other in ai@6 (A's `finally`
@@ -1099,12 +1087,7 @@ export default function ChatThread({
       // Send), not an auto-retry. A plain stream error cleared runFact to null and
       // correctly falls through to a plain send. The reducer already permits
       // SUPERSEDE_REQUESTED from `error` (spec §1).
-      if (
-        p === "error" &&
-        autonomousRunsEnabled === true &&
-        runId &&
-        runId !== "pending"
-      ) {
+      if (p === "error" && runId && runId !== "pending") {
         setQueue(removeQueuedById(queuedRef.current, id));
         // dispatch first: the `supersede` effect arms pendingSupersedeRef, which
         // prepareSendMessagesRequest reads-and-clears on the POST below (order-
@@ -1116,7 +1099,7 @@ export default function ChatThread({
         return;
       }
       if (aLiveLocal) {
-        // No CAS possible (legacy without a run, or the runId not adopted yet):
+        // No CAS possible (the runId not adopted yet):
         // promote to head and abort; the local turn's abort finishes and the queue
         // holds the promoted head for the user (a blind re-POST would 409 -> the
         // classified "already answering — interrupt and send" banner guides them).
@@ -1128,24 +1111,17 @@ export default function ChatThread({
       setQueue(removeQueuedById(queuedRef.current, id));
       void localSend(msg.text);
     },
-    [setQueue, autonomousRunsEnabled, dispatch, localSend],
+    [setQueue, dispatch, localSend],
   );
 
-  // Stop the current turn. Abort the local SSE + the attach GET; in AUTONOMOUS mode
-  // additionally request the AUTHORITATIVE server stop (a local abort is only a
-  // client disconnect the server ignores). The FSM `stopping` exits by DATA (I4):
-  // the local turn's onFinish (FINISH_ABORT) or the poll reaching terminal.
+  // Stop the current turn. Abort the local SSE + the attach GET and request the
+  // AUTHORITATIVE server stop (a local abort is only a client disconnect the server
+  // ignores). The FSM `stopping` exits by DATA (I4): the local turn's onFinish
+  // (FINISH_ABORT) or the poll reaching terminal.
   const handleStop = useCallback(() => {
     stopFnRef.current?.();
-    if (autonomousRunsEnabled) {
-      dispatch({ type: "STOP_REQUESTED" });
-    } else {
-      // Legacy: no server run to stop from the client (the server's onClose issues
-      // requestStop on disconnect). Just reset the FSM recovery.
-      attachAbortRef.current?.abort();
-      dispatch({ type: "FINISH_ABORT" });
-    }
-  }, [autonomousRunsEnabled, dispatch]);
+    dispatch({ type: "STOP_REQUESTED" });
+  }, [dispatch]);
 
   // Manual Retry from the stalled banner.
   const onRetry = useCallback(() => {

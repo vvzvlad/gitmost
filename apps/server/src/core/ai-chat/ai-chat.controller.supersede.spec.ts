@@ -8,7 +8,7 @@ import { AiChatController } from './ai-chat.controller';
 import type { User, Workspace } from '@docmost/db/types/entity.types';
 
 /**
- * #487 commit 3 — the single concurrency GATE (both modes) + the server supersede
+ * #487 commit 3 — the single concurrency GATE + the server supersede
  * CAS, at the controller boundary. The gate + CAS run BEFORE res.hijack(), so a
  * rejected concurrent start / a CAS branch returns clean JSON (an HttpException
  * the controller's post-hijack catch re-serializes). These assert the OBSERVABLE
@@ -17,12 +17,10 @@ import type { User, Workspace } from '@docmost/db/types/entity.types';
 describe('#487 AiChatController.stream — gate + supersede', () => {
   const user = { id: 'u1' } as User;
 
-  function wsWith(autonomousRuns: boolean): Workspace {
-    return {
-      id: 'ws1',
-      settings: { ai: { chat: true, autonomousRuns } },
-    } as unknown as Workspace;
-  }
+  const workspace = {
+    id: 'ws1',
+    settings: { ai: { chat: true } },
+  } as unknown as Workspace;
 
   function makeReqRes(body: Record<string, unknown>) {
     const req = {
@@ -88,37 +86,30 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     (((err as HttpException).getResponse() as Record<string, unknown>) ?? {})
       .code;
 
-  describe('single concurrency gate — BOTH modes reject the second tab with 409', () => {
-    for (const autonomousRuns of [true, false]) {
-      it(`rejects a concurrent start with 409 A_RUN_ALREADY_ACTIVE (autonomousRuns=${autonomousRuns})`, async () => {
-        const { controller, aiChatRunService } = makeController({
-          getActiveForChat: jest
-            .fn()
-            .mockResolvedValue({ id: 'run-live', chatId: 'c1' }),
-        });
-        const { req, res } = makeReqRes({ chatId: 'c1' });
-        let thrown: unknown;
-        try {
-          await controller.stream(
-            req as never,
-            res as never,
-            user,
-            wsWith(autonomousRuns),
-          );
-        } catch (e) {
-          thrown = e;
-        }
-        expect(thrown).toBeInstanceOf(ConflictException);
-        expect((thrown as HttpException).getStatus()).toBe(409);
-        expect(codeOf(thrown)).toBe('A_RUN_ALREADY_ACTIVE');
-        // Rejected BEFORE committing to the stream (no hijack, no service.stream).
-        expect(res.hijack).not.toHaveBeenCalled();
-        expect(aiChatRunService.getActiveForChat).toHaveBeenCalledWith(
-          'c1',
-          'ws1',
-        );
+  describe('single concurrency gate — rejects the second tab with 409', () => {
+    it('rejects a concurrent start with 409 A_RUN_ALREADY_ACTIVE', async () => {
+      const { controller, aiChatRunService } = makeController({
+        getActiveForChat: jest
+          .fn()
+          .mockResolvedValue({ id: 'run-live', chatId: 'c1' }),
       });
-    }
+      const { req, res } = makeReqRes({ chatId: 'c1' });
+      let thrown: unknown;
+      try {
+        await controller.stream(req as never, res as never, user, workspace);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ConflictException);
+      expect((thrown as HttpException).getStatus()).toBe(409);
+      expect(codeOf(thrown)).toBe('A_RUN_ALREADY_ACTIVE');
+      // Rejected BEFORE committing to the stream (no hijack, no service.stream).
+      expect(res.hijack).not.toHaveBeenCalled();
+      expect(aiChatRunService.getActiveForChat).toHaveBeenCalledWith(
+        'c1',
+        'ws1',
+      );
+    });
   });
 
   // #487 [security, F1]: stream() MUST owner-gate an existing chat exactly like its
@@ -149,7 +140,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
       });
       let thrown: unknown;
       try {
-        await controller.stream(req as never, res as never, user, wsWith(true));
+        await controller.stream(req as never, res as never, user, workspace);
       } catch (e) {
         thrown = e;
       }
@@ -183,7 +174,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     });
     let thrown: unknown;
     try {
-      await controller.stream(req as never, res as never, user, wsWith(true));
+      await controller.stream(req as never, res as never, user, workspace);
     } catch (e) {
       thrown = e;
     }
@@ -206,7 +197,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     });
     let thrown: unknown;
     try {
-      await controller.stream(req as never, res as never, user, wsWith(false));
+      await controller.stream(req as never, res as never, user, workspace);
     } catch (e) {
       thrown = e;
     }
@@ -225,7 +216,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     });
     let thrown: unknown;
     try {
-      await controller.stream(req as never, res as never, user, wsWith(true));
+      await controller.stream(req as never, res as never, user, workspace);
     } catch (e) {
       thrown = e;
     }
@@ -238,7 +229,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     const { req, res } = makeReqRes({ supersede: { runId: 'run-x' } });
     let thrown: unknown;
     try {
-      await controller.stream(req as never, res as never, user, wsWith(true));
+      await controller.stream(req as never, res as never, user, workspace);
     } catch (e) {
       thrown = e;
     }
@@ -256,11 +247,11 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
       chatId: 'c1',
       supersede: { runId: 'run-x' },
     });
-    await controller.stream(req as never, res as never, user, wsWith(true));
+    await controller.stream(req as never, res as never, user, workspace);
     expect(res.hijack).toHaveBeenCalled();
     expect(aiChatService.stream).toHaveBeenCalledTimes(1);
     expect(aiChatService.stream.mock.calls[0][0].superseded).toBe(true);
-    // The run hooks are always present now (both modes).
+    // The run hooks are always present now.
     expect(aiChatService.stream.mock.calls[0][0].runHooks).toBeDefined();
   });
 
@@ -272,7 +263,7 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
       chatId: 'c1',
       supersede: { runId: 'run-x' },
     });
-    await controller.stream(req as never, res as never, user, wsWith(false));
+    await controller.stream(req as never, res as never, user, workspace);
     expect(aiChatService.stream).toHaveBeenCalledTimes(1);
     expect(aiChatService.stream.mock.calls[0][0].superseded).toBe(false);
   });

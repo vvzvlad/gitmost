@@ -267,7 +267,7 @@ describe('AiChatService.stream — abortSignal wiring (#184 F3)', () => {
       signal: socketSignal,
       model: {} as never,
       role: null,
-      // No runHooks -> the turn stays socket-bound (flag off / default).
+      // No runHooks -> the turn stays socket-bound.
     });
 
     expect(streamTextMock).toHaveBeenCalledTimes(1);

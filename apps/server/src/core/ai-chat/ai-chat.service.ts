@@ -546,8 +546,9 @@ export interface AiChatStreamBody {
  * in a first-class server-side RUN: `begin` is called once the chat id is known
  * and returns the run's AbortSignal (decoupled from the HTTP socket — a browser
  * disconnect no longer governs the abort), and the lifecycle callbacks persist
- * the run's progress and terminal status. Absent (the default) => the legacy
- * socket-bound behavior is unchanged.
+ * the run's progress and terminal status. Absent => the turn is bound to the
+ * caller's `signal` and `runId` is undefined (only test harnesses omit it; the
+ * controller always supplies the hooks).
  */
 export interface AiChatRunHooks {
   // Called once the chat id is resolved; returns the run handle whose `signal`
@@ -575,7 +576,7 @@ export interface AiChatStreamArgs {
   signal: AbortSignal;
   // Run-lifecycle hooks (#184). When present the turn becomes a detached,
   // durable RUN whose abort is governed by the run (explicit stop), not the
-  // socket; when absent the turn stays socket-bound (legacy behavior).
+  // socket; when absent (test harnesses only) the turn is bound to `signal`.
   runHooks?: AiChatRunHooks;
   // Resolved by the controller BEFORE res.hijack(), so an unconfigured provider
   // (AiNotConfiguredException -> 503) surfaces as clean JSON before streaming.
@@ -626,7 +627,7 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
     private readonly environment: EnvironmentService,
     // #184 phase 1.5 run-stream registry. OPTIONAL so existing positional
     // constructions (int-specs) compile unchanged; Nest always injects the real
-    // provider in production. Only ever touched on the run-wrapped + flag-on path.
+    // provider in production. Only ever touched on the run-wrapped path.
     private readonly streamRegistry?: AiChatStreamRegistryService,
     // #487: the run lifecycle service, for the periodic + opportunistic reconcile
     // (zombie re-drive + stale-run abort). OPTIONAL so positional test
@@ -1141,8 +1142,7 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
     // returned `runId` + `signal` make the turn a first-class server-side object
     // whose abort is governed by the run (an explicit user stop), NOT by the HTTP
     // socket — so a browser disconnect no longer ends the turn. With no runHooks
-    // (the default / flag off) the turn stays socket-bound via `signal` and
-    // `runId` is undefined, leaving the legacy path byte-for-byte unchanged.
+    // the turn stays socket-bound via `signal` and `runId` is undefined.
     let runId: string | undefined;
     let effectiveSignal = signal;
     if (runHooks) {
@@ -1167,14 +1167,13 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
         }
         // Any OTHER run-start failure (e.g. a DB-pool blip) must FAIL THE TURN,
         // not silently stream without a run-row. The old fallback let the turn
-        // continue untracked: in autonomous mode nobody could then abort it —
+        // continue untracked: nobody could then abort it —
         // /stop can't see a run that doesn't exist, a client disconnect doesn't
         // abort it, and the one-run-per-chat gate would let a SECOND run in. That
         // is an unstoppable, invisible run until process restart. Reject NOW,
         // BEFORE the first byte (nothing is written yet, no user row inserted, no
         // MCP lease taken), so the controller's post-hijack catch turns this
-        // HttpException into an honest 503 on the raw socket. Same policy for BOTH
-        // modes — #487 inherits it (no mode-branching here).
+        // HttpException into an honest 503 on the raw socket.
         this.logger.error(
           `Failed to begin agent run (chat ${chatId}); failing the turn`,
           err as Error,
@@ -1496,12 +1495,12 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
       } catch (err) {
         // An explicit Stop reached the RUN's signal DURING setup: re-throw so the
         // outer catch finalizes the run as aborted — never swallow a Stop. #487: the
-        // turn is ALWAYS run-wrapped now (both modes), so `effectiveSignal` is the
-        // RUN signal and `runId` is set in BOTH — a Stop (from /ai-chat/stop or a
-        // legacy disconnect's requestStop) aborts it identically. The `runId` guard
-        // now only defends the theoretical no-handle fallback (`begin` returned
-        // nothing, leaving `effectiveSignal` as the bare socket signal): there we
-        // keep the old warn-and-proceed rather than re-throw.
+        // turn is ALWAYS run-wrapped now, so `effectiveSignal` is the RUN signal
+        // and `runId` is set — a Stop (from /ai-chat/stop or a supersede) aborts
+        // it. The `runId` guard now only defends the theoretical no-handle
+        // fallback (`begin` returned nothing, leaving `effectiveSignal` as the
+        // bare socket signal): there we keep the old warn-and-proceed rather than
+        // re-throw.
         if (runId && effectiveSignal.aborted) {
           throw err;
         }
@@ -1991,8 +1990,8 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
             return injectViewImages(base, opts, viewImageCache);
           },
           // #184: the RUN's signal (explicit-stop) when a run wraps this turn, else
-          // the socket-bound signal (legacy). A browser disconnect aborts only in
-          // the legacy path. #444: UNION it with the internal degeneration signal
+          // the socket-bound signal (no run). A browser disconnect never aborts a
+          // run. #444: UNION it with the internal degeneration signal
           // so a detected token-loop aborts the run too (AbortSignal.any — Node 20.3+).
           abortSignal: AbortSignal.any([
             effectiveSignal,
@@ -2045,16 +2044,12 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
             // stream), but SERIALIZED via stepUpdateChain so the writes commit in
             // step order; updateStreaming is error-tolerant (logs + swallows).
             // #491: on a CONFIRMED persist, rotate the run-stream registry ring to
-            // drop the now-on-disk steps (stamp < stepsPersisted). Gated on the
-            // resumable flag (same as open/bind) and identity-checked in the
-            // registry; a null return (skipped/failed) rotates NOTHING (auto-safe).
+            // drop the now-on-disk steps (stamp < stepsPersisted). Gated on
+            // `runId` (same as open/bind) and identity-checked in the registry;
+            // a null return (skipped/failed) rotates NOTHING (auto-safe).
             stepUpdateChain = stepUpdateChain.then(async () => {
               const persisted = await updateStreaming();
-              if (
-                persisted != null &&
-                runId &&
-                this.environment?.isAiChatResumableStreamEnabled?.()
-              ) {
+              if (persisted != null && runId) {
                 this.streamRegistry?.confirmPersistedStep(
                   chatId,
                   runId,
@@ -2321,12 +2316,9 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
         // as the cumulative authoritative usage so the client never jumps DOWN.
         let cumulativeStepUsage: ChatStreamUsage | undefined;
         result.pipeUIMessageStreamToResponse(res.raw, {
-          // #184 phase 1.5: run-wrapped mode only — the legacy path (flag off) stays
-          // byte-for-byte identical, including the absence of start.messageId. Both
-          // fields are gated on `runId` (present only for a durable run) AND the
-          // AI_CHAT_RESUMABLE_STREAM flag; the seed `assistantId` is unconditional,
-          // so gating on `assistantId` alone would change the legacy wire.
-          ...(runId && this.environment?.isAiChatResumableStreamEnabled?.()
+          // #184 phase 1.5: both fields are gated on `runId` (present only for a
+          // durable run); without a run the wire carries no start.messageId.
+          ...(runId
             ? {
                 // Tee the SSE frames into the run-stream registry so late tabs can
                 // attach (replay + live tail).
@@ -2420,10 +2412,8 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
       if (runId) {
         // #184 phase 1.5: a failure here means the tee `done` will never arrive,
         // so release the registry entry's subscribers explicitly — otherwise an
-        // attached tab hangs forever. Same flag gate as the tee wiring above.
-        if (this.environment?.isAiChatResumableStreamEnabled?.()) {
-          this.streamRegistry?.abortEntry(chatId, runId);
-        }
+        // attached tab hangs forever.
+        this.streamRegistry?.abortEntry(chatId, runId);
         // Distinguish an explicit Stop (the run's signal aborted during setup) from
         // a real failure, so the run settles with the correct terminal status
         // instead of always 'error'. onSettled/finalizeRun is idempotent, so this
@@ -2622,7 +2612,7 @@ export function chatStreamMetadata(
   cumulativeStepUsage?: ChatStreamUsage,
   // #184: the active run's id, attached alongside `chatId` on the `start` part so
   // the client learns the run it can reconnect to / stop. Omitted when the turn
-  // is not run-wrapped (legacy path).
+  // is not run-wrapped (no runHooks — test harnesses only).
   runId?: string,
   // #686 P4: external-MCP connection failures for this turn, delivered on the
   // `start` part so the client can show which external tools are unavailable.
