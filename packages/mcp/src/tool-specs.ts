@@ -198,8 +198,9 @@ export interface SharedToolSpec {
    * is registered INLINE by BOTH hosts instead of through the registry loop. Used
    * for tools whose implementation cannot cross into this zod-agnostic file — the
    * drawioShapes / drawioGuide pure helpers, whose backing module resolves a
-   * bundled data file via `import.meta` and so cannot be value-imported here
-   * without breaking the in-app server's commonjs type-check of this source. Both
+   * bundled data file via `import.meta` and so cannot be value-imported here:
+   * the server's specs load this source through ts-jest as CommonJS, where
+   * `import.meta` is a SyntaxError (TS1343 itself is @ts-ignore'd). Both
    * registry loops SKIP a spec with this flag; the per-host inline registrations
    * own it (index.ts on MCP, ai-chat-tools.service.ts in-app).
    */
@@ -2522,10 +2523,10 @@ export const SHARED_TOOL_SPECS = {
     }),
     // INLINE on both hosts (no `execute`): drawioShapes calls the PURE helper
     // searchShapes, which is NOT a client method — it reads the bundled shape
-    // catalog via `import.meta.url` (drawio-shapes.ts). tool-specs.ts is
-    // type-checked FROM SOURCE by the in-app server under module:commonjs, where a
-    // static value-import of that `import.meta` module is a compile error
-    // (TS1343), so its execute CANNOT live here. `inlineBothHosts` tells BOTH
+    // catalog via `import.meta.url` (drawio-shapes.ts). tool-specs.ts is loaded
+    // FROM SOURCE by the in-app server's specs through ts-jest as CommonJS, where a
+    // static value-import of that `import.meta` module is a SyntaxError (TS1343
+    // itself is @ts-ignore'd), so its execute CANNOT live here. `inlineBothHosts` tells BOTH
     // registry loops to skip it; index.ts (MCP) and ai-chat-tools.service.ts
     // (in-app) each register it directly, calling searchShapes from the loaded
     // module. It STAYS in this registry so the shared-tool-specs contract still
