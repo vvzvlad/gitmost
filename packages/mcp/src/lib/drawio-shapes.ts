@@ -243,6 +243,7 @@ let _index: IndexRecord[] | null = null;
 /** Path to the bundled gzipped index, resolved relative to the built module. */
 function indexPath(): URL {
   // build/lib/drawio-shapes.js -> ../../data/… -> packages/mcp/data/…
+  // @ts-ignore TS1343 only under the server's module:commonjs type-check (see drawio-presets.ts).
   return new URL("../../data/drawio-shape-index.json.gz", import.meta.url);
 }
 

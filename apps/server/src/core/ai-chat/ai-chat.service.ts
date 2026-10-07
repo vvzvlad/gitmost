@@ -1437,7 +1437,7 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
       messages = preTrim.messages;
       // Observability (#490): record the budgeter's decision on the turn so the UI
       // can surface "replay truncated at N tokens". Threaded into flushAssistant.
-      let replayTrimmedToTokens: number | undefined = preTrim.trimmed
+      const replayTrimmedToTokens: number | undefined = preTrim.trimmed
         ? preTrim.estimatedTokens
         : undefined;
       if (preTrim.trimmed) {
@@ -3313,7 +3313,7 @@ export async function applyFinalize(
 export function stripNulChars<T>(value: T): T {
   if (typeof value === 'string') {
     return (value.includes('\u0000')
-      ? value.replace(/\u0000/g, '')
+      ? value.replaceAll('\u0000', '')
       : value) as T;
   }
   if (Array.isArray(value)) {
