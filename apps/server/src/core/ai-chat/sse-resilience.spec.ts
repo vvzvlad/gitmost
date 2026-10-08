@@ -1,4 +1,6 @@
+import * as http from 'node:http';
 import type { ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
   startSseHeartbeat,
   stripStreamingHopByHopHeaders,
@@ -80,20 +82,61 @@ describe('startSseHeartbeat', () => {
     expect(res.write).toHaveBeenCalledTimes(1);
   });
 
-  it('does not write when the response is already ended', () => {
-    const { res } = makeRes({ writableEnded: true });
+  it('does not write once the response has ended', () => {
+    const { res } = makeRes();
     startSseHeartbeat(res as unknown as ServerResponse, 15_000);
+    res.writableEnded = true;
 
     jest.advanceTimersByTime(45_000);
     expect(res.write).not.toHaveBeenCalled();
   });
 
-  it('does not write when the socket is destroyed', () => {
-    const { res } = makeRes({ destroyed: true });
+  it('does not write once the socket is destroyed', () => {
+    const { res } = makeRes();
     startSseHeartbeat(res as unknown as ServerResponse, 15_000);
+    res.destroyed = true;
 
     jest.advanceTimersByTime(45_000);
     expect(res.write).not.toHaveBeenCalled();
+  });
+
+  it('does not arm on a response that is already gone', () => {
+    const { res } = makeRes({ destroyed: true });
+    startSseHeartbeat(res as unknown as ServerResponse, 15_000);
+    expect(res.once).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+});
+
+// #717 on a REALLY closed response: the client left before the stream started,
+// so 'close' already fired and will not fire again. A timer started now would
+// never be cleared and would pin the dead response in memory forever.
+describe('startSseHeartbeat on a response whose client already left', () => {
+  it('schedules no timer', async () => {
+    let server: http.Server | undefined;
+    const res = await new Promise<ServerResponse>((resolve) => {
+      let client: http.ClientRequest;
+      server = http.createServer((req, serverRes) => {
+        req.resume();
+        serverRes.once('close', () => resolve(serverRes));
+        client.destroy();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server!.address() as AddressInfo;
+        client = http.request({ port, host: '127.0.0.1', method: 'POST' });
+        client.on('error', () => undefined);
+        client.end('{}');
+      });
+    });
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    try {
+      expect(res.destroyed).toBe(true);
+      startSseHeartbeat(res, 10);
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      await new Promise((r) => server!.close(r));
+    }
   });
 });
 
