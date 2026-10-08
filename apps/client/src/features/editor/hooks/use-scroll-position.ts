@@ -82,14 +82,14 @@ export function useScrollPosition(pageId: string): {
   restoreScrollPosition: () => void;
 } {
   // CONTRACT: this hook assumes PageEditor REMOUNTS per page — page.tsx renders
-  // `<MemoizedFullEditor key={page.id} ...>`, so switching pages creates a fresh
+  // `<MemoizedFullEditor key={chromeMeta.id} ...>`, so switching pages creates a fresh
   // hook instance with fresh refs. Restore is idempotent and interaction-gated
   // (not single-shot): it may be called from several triggers and re-asserts the
   // SAME captured target, which is a no-op once the window is already positioned.
   // The per-mount refs that latch are `initialTargetRef` (the captured target)
   // and `userInteractedRef` (the reader has taken over scrolling). They are NOT
   // reset when `pageId` changes in place (only the effect re-runs on [pageId]).
-  // If that `key={page.id}` is ever removed, restore would silently break on the
+  // If that `key={chromeMeta.id}` is ever removed, restore would silently break on the
   // 2nd page (refs would hold the first page's target / interaction flag) — in
   // that case the refs must be reset on a pageId change.
   //

@@ -80,13 +80,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   localStorage.clear();
-  // The cache is default-off; the flag is mirrored from the server into
-  // window.CONFIG (process.env in DEV/test — see lib/config.ts).
-  process.env.LOCAL_FIRST_ENABLED = "true";
 });
 
 afterEach(() => {
-  delete process.env.LOCAL_FIRST_ENABLED;
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -181,35 +177,6 @@ describe("pageMetaCacheAtom (localStorage boot cache)", () => {
         slug1: { id: "x", slugId: "slug1", title: "Leaked", lastAccess: 1 },
       }),
     );
-  });
-
-  it("LOCAL_FIRST_ENABLED=false: neither reads nor writes (today's behavior)", async () => {
-    const seeded = JSON.stringify({
-      slug1: {
-        id: "11111111-1111-4111-8111-111111111111",
-        slugId: "slug1",
-        title: "Roadmap",
-        lastAccess: 1,
-      },
-    });
-    localStorage.setItem(SCOPE_KEY, seeded);
-    process.env.LOCAL_FIRST_ENABLED = "false";
-
-    const off = await freshImport();
-    const offStore = createStore();
-    offStore.set(off.currentUserAtom, currentUser("w1", "u1"));
-
-    expect(offStore.get(off.pageMetaCacheAtom)).toEqual({});
-    offStore.set(off.writePageMetaAtom, page({ title: "Written while off" }));
-    expect(offStore.get(off.pageMetaCacheAtom)).toEqual({});
-    expect(localStorage.getItem(SCOPE_KEY)).toBe(seeded);
-
-    // Non-vacuity: the very same seed IS served with the flag on.
-    process.env.LOCAL_FIRST_ENABLED = "true";
-    const on = await freshImport();
-    const onStore = createStore();
-    onStore.set(on.currentUserAtom, currentUser("w1", "u1"));
-    expect(onStore.get(on.pageMetaCacheAtom)["slug1"].title).toBe("Roadmap");
   });
 
   it("degrades silently on corrupt JSON and on non-entry shapes", async () => {

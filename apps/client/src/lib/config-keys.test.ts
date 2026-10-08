@@ -16,9 +16,10 @@ import {
  * `process.env` wholesale with the static object `vite.config.ts` builds. A key
  * absent from that object is not merely unset in dev — it is *unreachable*,
  * reading `undefined` forever and collapsing to `getConfigValue`'s default no
- * matter what `.env` says. That is why `isLocalFirstEnabled()` was ALWAYS false
- * in dev, so every dev verification of the local-first phases measured the old
- * path; the same held for OFFLINE_GRACE and the two raster flags.
+ * matter what `.env` says. That is why the (since removed) local-first flag was
+ * ALWAYS false in dev, so every dev verification of the local-first phases
+ * measured the old path; the same held for OFFLINE_GRACE and the two raster
+ * flags.
  *
  * `vite.config.ts` now GENERATES that object via `buildDefineEnv`, so there is
  * one list instead of three. This test closes the remaining gap — that the list
@@ -28,7 +29,7 @@ import {
  *
  * Note the trap this design avoids: under vitest `process.env` is the real Node
  * object and vite's substitution never runs, so a test that simply reads
- * `process.env.LOCAL_FIRST_ENABLED` passes vacuously and proves nothing about
+ * `process.env.OFFLINE_GRACE` passes vacuously and proves nothing about
  * the bundle. What a dev build actually sees is the output of `buildDefineEnv`,
  * so that function — the real one the config calls — is what is exercised here.
  */
@@ -60,7 +61,6 @@ describe("dev config reachability (#638 finding 1)", () => {
     // Guards the derivation itself: a regex that silently matched nothing would
     // make the drift assertion below vacuously true.
     expect(DERIVED_KEYS.length).toBeGreaterThanOrEqual(10);
-    expect(DERIVED_KEYS).toContain("LOCAL_FIRST_ENABLED");
     expect(DERIVED_KEYS).toContain("APP_URL");
   });
 
@@ -89,16 +89,6 @@ describe("dev config reachability (#638 finding 1)", () => {
     }
   });
 
-  it("lets a dev build actually see the local-first flag as enabled", () => {
-    // The observable property the phase 1-2 dev verifications needed and never
-    // had: with the flag configured, what `isLocalFirstEnabled()` reads in dev is
-    // the literal "true" (castToBoolean maps it to true), not `undefined`
-    // falling back to the "false" default.
-    const devProcessEnv = buildDefineEnv({ LOCAL_FIRST_ENABLED: "true" });
-
-    expect(devProcessEnv.LOCAL_FIRST_ENABLED).toBe("true");
-  });
-
   it("keeps the define object generated from the single list", () => {
     // The generation is what makes the guard above meaningful: if vite.config
     // went back to hand-listing keys, CLIENT_CONFIG_KEYS could be correct while
@@ -125,9 +115,6 @@ describe("dev config reachability (#638 finding 1)", () => {
     // This change makes keys REACHABLE; it must not flip a default. The defaults
     // live in the `getConfigValue` call sites, untouched here, so an
     // unconfigured deploy (dev or prod) still reads exactly what it read before.
-    expect(CONFIG_SOURCE).toContain(
-      'getConfigValue("LOCAL_FIRST_ENABLED", "false")',
-    );
     expect(CONFIG_SOURCE).toContain(
       'getConfigValue("DRAWIO_RASTER_ENABLED", "false")',
     );

@@ -5,7 +5,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // isClientTelemetryEnabled.
 vi.mock("@/lib/config", () => ({
   isClientTelemetryEnabled: () => false,
-  isLocalFirstEnabled: () => true,
   getOfflineGraceMs: () => 30 * 24 * 60 * 60 * 1000,
 }));
 

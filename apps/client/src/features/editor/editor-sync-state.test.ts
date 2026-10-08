@@ -154,20 +154,16 @@ describe("computeDictationAvailability (mic reason precedence, #309)", () => {
 
 describe("shouldSwapToLive (#564 guard 1)", () => {
   const base = {
-    localFirst: true,
     isLocalSynced: false,
     ydocNonEmpty: false,
     collabSynced: false,
   };
 
-  it("swaps once the collab provider is connected+synced (today's rule)", () => {
+  it("swaps once the collab provider is connected+synced", () => {
     expect(shouldSwapToLive({ ...base, collabSynced: true })).toBe(true);
-    expect(
-      shouldSwapToLive({ ...base, localFirst: false, collabSynced: true }),
-    ).toBe(true);
   });
 
-  it("swaps early on a NON-EMPTY local ydoc when local-first is on", () => {
+  it("swaps early on a NON-EMPTY local ydoc", () => {
     expect(
       shouldSwapToLive({ ...base, isLocalSynced: true, ydocNonEmpty: true }),
     ).toBe(true);
@@ -180,22 +176,10 @@ describe("shouldSwapToLive (#564 guard 1)", () => {
       shouldSwapToLive({ ...base, isLocalSynced: true, ydocNonEmpty: false }),
     ).toBe(false);
   });
-
-  it("flag off: a non-empty local ydoc alone never swaps (byte-identical to today)", () => {
-    expect(
-      shouldSwapToLive({
-        localFirst: false,
-        isLocalSynced: true,
-        ydocNonEmpty: true,
-        collabSynced: false,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("computeBodyIndicator (#564 guards 4+5)", () => {
   const base = {
-    localFirst: true,
     showStatic: false,
     isRemoteConfirmed: false,
     isDisconnected: false,
@@ -216,7 +200,7 @@ describe("computeBodyIndicator (#564 guards 4+5)", () => {
   // While showStatic is true, what is on screen is the SERVER-seeded static copy
   // (first visit / empty local ydoc / ydoc still loading), so saying that would
   // be a plain lie about fresh server content. A dead socket in the static window
-  // gets the quiet badge, exactly like the flag-off path.
+  // gets the quiet badge.
   it("never claims 'offline, local copy' while the STATIC server copy is on screen", () => {
     expect(
       computeBodyIndicator({ ...base, showStatic: true, isDisconnected: true }),
@@ -257,20 +241,6 @@ describe("computeBodyIndicator (#564 guards 4+5)", () => {
         isDisconnected: true,
       }),
     ).toBe("none");
-  });
-
-  it("flag off: exactly today's rule (quiet badge, static window, editors only)", () => {
-    const off = { ...base, localFirst: false };
-    expect(computeBodyIndicator({ ...off, showStatic: true })).toBe(
-      "connecting",
-    );
-    expect(
-      computeBodyIndicator({ ...off, showStatic: true, isDisconnected: true }),
-    ).toBe("connecting");
-    expect(
-      computeBodyIndicator({ ...off, showStatic: true, canEdit: false }),
-    ).toBe("none");
-    expect(computeBodyIndicator({ ...off, showStatic: false })).toBe("none");
   });
 
   // #641, part 6 — hysteresis. Over a multi-hour offline session Hocuspocus

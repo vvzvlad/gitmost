@@ -31,12 +31,6 @@ vi.mock("@/features/user/hooks/use-current-user", () => ({
   default: () => hoisted.meResult,
 }));
 
-// Local-first ON — the degraded branch only exists with the flag on.
-vi.mock("@/lib/config", async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, isLocalFirstEnabled: () => true };
-});
-
 // Side-effects a headless mount cannot run (sockets, version-reload, collab
 // token). None participate in the gate decision.
 vi.mock("socket.io-client", () => ({

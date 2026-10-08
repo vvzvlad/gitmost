@@ -11,17 +11,7 @@ import { resolveUserGate } from "@/features/user/user-provider-gate";
 // now seeds react-query from the persisted `currentUserAtom` so UserProvider's
 // `if (isLoading) return <></>` gate passes through on the first frame, and
 // `useRedirectIfAuthenticated` requires a CONFIRMED fetch so a stale seed cannot
-// bounce /login into the app. All under `LOCAL_FIRST_ENABLED`.
-
-const hoisted = vi.hoisted(() => ({ localFirst: true }));
-
-vi.mock("@/lib/config.ts", async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return {
-    ...actual,
-    isLocalFirstEnabled: () => hoisted.localFirst,
-  };
-});
+// bounce /login into the app.
 
 const getMyInfoMock = vi.hoisted(() => vi.fn());
 vi.mock("@/features/user/services/user-service", () => ({
@@ -89,7 +79,6 @@ function LoginProbe() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  hoisted.localFirst = true;
 });
 
 afterEach(() => {
@@ -119,7 +108,6 @@ describe("useCurrentUser seed (#642 parts 1+2)", () => {
     // And that state resolves the UserProvider gate to "children".
     expect(
       resolveUserGate({
-        localFirst: true,
         isLoading: result.current.isLoading,
         error: result.current.error,
         hasData: Boolean(result.current.data),
@@ -148,22 +136,6 @@ describe("useCurrentUser seed (#642 parts 1+2)", () => {
     );
   });
 
-  it("flag OFF: a persisted user is NOT seeded — frame 1 is today's empty gate (byte-unchanged)", () => {
-    hoisted.localFirst = false;
-    const store = createStore();
-    store.set(currentUserAtom, persisted());
-    getMyInfoMock.mockReturnValue(new Promise<never>(() => {}));
-    const wrapper = makeWrapper(store);
-
-    render(<MiniUserGate />, { wrapper });
-    expect(screen.queryByTestId("empty-gate")).not.toBeNull();
-    expect(screen.queryByTestId("children")).toBeNull();
-
-    const { result } = renderHook(() => useCurrentUser(), { wrapper });
-    expect(result.current.isLoading).toBe(true);
-    expect(result.current.data).toBeUndefined();
-  });
-
   it("criterion 7: a transport error on /me WITH a persisted user keeps data present (app stays mounted via Ф5 'degraded') — the seed does not break Ф5", async () => {
     const store = createStore();
     store.set(currentUserAtom, persisted());
@@ -177,7 +149,6 @@ describe("useCurrentUser seed (#642 parts 1+2)", () => {
     expect(result.current.data).toEqual(persisted());
     expect(
       resolveUserGate({
-        localFirst: true,
         isLoading: false,
         error: result.current.error,
         hasData: Boolean(result.current.data),
@@ -221,8 +192,7 @@ describe("useRedirectIfAuthenticated confirmed-fetch gate (#642 part 4)", () => 
     await waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   });
 
-  it("flag OFF: redirect still fires only after a confirmed fetch (behavior-equivalent to today's `data && data.user`)", async () => {
-    hoisted.localFirst = false;
+  it("no persisted user: redirect fires only after a confirmed fetch", async () => {
     const store = createStore();
     let resolve!: (v: ICurrentUser) => void;
     getMyInfoMock.mockReturnValue(

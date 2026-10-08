@@ -197,7 +197,7 @@ describe("useSwapHeightReservation", () => {
     expect(result.current.reservedHeight).toBeNull();
   });
 
-  // (c3) The strict (flag-off / post-sync) rule is untouched: a shorter live doc
+  // (c3) The strict (post-sync) rule is untouched: a shorter live doc
   // holds the reservation until the 4s cap, exactly as before #564.
   it("(c3) non-early swap still demands a full height match", () => {
     vi.useFakeTimers({ toFake: ["Date"] });

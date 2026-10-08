@@ -4,7 +4,6 @@ import { useMemo } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { scopeKeyAtom } from "@/features/page/tree/atoms/open-tree-nodes-atom";
 import type { IPage } from "@/features/page/types/page.types";
-import { isLocalFirstEnabled } from "@/lib/config";
 import { isSessionExpired } from "@/features/user/session-verified";
 import { reportClientMetric } from "@/lib/telemetry/vitals";
 import { httpStatusOf } from "@/lib/http-error";
@@ -109,16 +108,13 @@ let writeFailureWarned = false;
 let persistenceDisabled = false;
 
 /**
- * Is the cache usable for this scope? Fail-closed on two conditions:
- *  - the operator flag is off (default-off rollout), and
- *  - the scope is not fully resolved yet (`anon` segment): `/me` is async and
- *    login is an SPA nav, so at t0 after a reload `scopeKeyAtom` is
- *    "anon:anon". Reading OR writing real page titles under `anon` would leak
- *    them across accounts on a shared browser, so both are skipped until the
- *    user is known.
+ * Is the cache usable for this scope? Fail-closed while the scope is not fully
+ * resolved yet (`anon` segment): `/me` is async and login is an SPA nav, so at
+ * t0 after a reload `scopeKeyAtom` is "anon:anon". Reading OR writing real page
+ * titles under `anon` would leak them across accounts on a shared browser, so
+ * both are skipped until the user is known.
  */
 function isCacheUsable(scopeKey: string): boolean {
-  if (!isLocalFirstEnabled()) return false;
   // #640, part 6 — refuse to draw local chrome once the session is past
   // OFFLINE_GRACE (30d since the last `/me`), offline or not. The boot purge
   // already deleted the blob; this live gate is belt-and-suspenders so nothing
@@ -129,9 +125,9 @@ function isCacheUsable(scopeKey: string): boolean {
 
 /**
  * Is the scope resolved enough to DELETE a page's cached meta? (#640, part 7)
- * Deletion of revoked content must bypass the flag check — a revoked page's meta
- * surviving a flag-OFF deploy and resurfacing on flip is the exact inconsistency
- * this fixes. Only the anon scope (no scope to key by) blocks a delete.
+ * Deletion of revoked content bypasses the session-expiry check of
+ * `isCacheUsable`: a fail-closed delete is always safe. Only the anon scope (no
+ * scope to key by) blocks a delete.
  */
 function isScopeResolvedForDelete(scopeKey: string): boolean {
   return !scopeKey.split(":").includes("anon");
@@ -369,8 +365,8 @@ const pageMetaFamily = atomFamily((scopeKey: string) =>
 
 /**
  * Read-only view of the current scope's meta cache. Returns an EMPTY map (and
- * never even touches localStorage) when the feature flag is off or the user is
- * not resolved yet — restore is gated exactly like persist.
+ * never even touches localStorage) when the user is not resolved yet or the
+ * session is past OFFLINE_GRACE — restore is gated exactly like persist.
  */
 export const pageMetaCacheAtom = atom<PageMetaCache>((get) => {
   const scopeKey = get(scopeKeyAtom);
@@ -381,7 +377,8 @@ export const pageMetaCacheAtom = atom<PageMetaCache>((get) => {
 /**
  * Write-through: called whenever a page query resolves. Stores the entry under
  * both aliases, refreshes the LRU stamp, and evicts to fit. No-op when the
- * cache is not usable (flag off / anon scope) or the payload lacks identifiers.
+ * cache is not usable (anon scope / expired session) or the payload lacks
+ * identifiers.
  */
 export const writePageMetaAtom = atom(
   null,
@@ -424,10 +421,8 @@ export const removePageMetaAtom = atom(
   null,
   (get, set, pageIdOrSlugId: string) => {
     const scopeKey = get(scopeKeyAtom);
-    // #640, part 7 — bypass the flag gate: a fail-closed DELETE is safe always,
-    // and gating it on the flag let a revoked page's meta survive a flag-OFF
-    // deploy and resurface on the next flip. Only an unresolved (anon) scope
-    // blocks the delete.
+    // #640, part 7 — bypass the `isCacheUsable` gate: a fail-closed DELETE is
+    // safe always. Only an unresolved (anon) scope blocks the delete.
     if (!isScopeResolvedForDelete(scopeKey)) return;
     const target = pageMetaFamily(scopeKey);
     const prev = get(target);

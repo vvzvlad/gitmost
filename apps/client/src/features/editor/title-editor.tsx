@@ -41,9 +41,8 @@ export interface TitleEditorProps {
   // Ф7 (#643) — whether the LIVE page of this pageId has resolved. `false` while
   // mounted on cached meta with `/pages/info` still in flight. Gates the two
   // operations that can erase/misroute a title from a non-authoritative value:
-  // the canonicalizing navigate and the force-save-on-unmount. Flag OFF (and the
-  // legacy `page && space` mount, which only renders after the live page is in
-  // hand): defaults to `true`, so behavior is unchanged.
+  // the canonicalizing navigate and the force-save-on-unmount. Defaults to
+  // `true` when absent.
   pageResolved?: boolean;
 }
 
@@ -126,8 +125,7 @@ export function TitleEditor({
     // resolved. Before that, `title` is the cached/placeholder value; navigating
     // on it could rewrite the route to a non-authoritative slug (and, with a
     // route that already carries the real spaceSlug, needlessly churn). Once the
-    // live title lands this re-runs and canonicalizes. Flag OFF: `pageResolved`
-    // is always true, so this fires on mount + title change exactly as today.
+    // live title lands this re-runs and canonicalizes.
     if (!pageResolved) return;
     const anchorId = window.location.hash
       ? window.location.hash.substring(1)

@@ -20,7 +20,6 @@ import {
 } from "@/features/user/guarded-reload.tsx";
 import type { AppVersionSocketPayload } from "@/features/user/version-coherence.ts";
 import { recordSessionVerified } from "@/features/user/session-verified";
-import { isLocalFirstEnabled } from "@/lib/config";
 import { reportOfflineCriticalServerError } from "@/lib/http-error";
 import { resolveUserGate } from "@/features/user/user-provider-gate";
 import { UserDegradedIndicator } from "@/features/user/user-degraded-indicator";
@@ -48,7 +47,7 @@ export function UserProvider({ children }: React.PropsWithChildren) {
   // distinct from an unreachable network (which is the normal degraded mode).
   const reportedMeErrorRef = useRef<unknown>(null);
   useEffect(() => {
-    if (!isLocalFirstEnabled() || !isError) return;
+    if (!isError) return;
     if (reportedMeErrorRef.current === error) return;
     reportedMeErrorRef.current = error;
     reportOfflineCriticalServerError(error, "/users/me");
@@ -122,7 +121,6 @@ export function UserProvider({ children }: React.PropsWithChildren) {
   // tested decision). It keeps the app MOUNTED on a tolerated `/me` failure when
   // a user is already known, instead of collapsing everything to `<></>`.
   const gate = resolveUserGate({
-    localFirst: isLocalFirstEnabled(),
     isLoading,
     error,
     hasData: Boolean(data),

@@ -174,9 +174,9 @@ function resolveYdocName(queryKeyId: string, scopeKey: string): string | null {
   const known = ydocNameByQueryKey.get(queryKeyId);
   if (known) return known;
 
-  // Read the RAW page-meta blob, NOT the flag-gated `pageMetaCacheAtom` (which
-  // returns empty when LOCAL_FIRST is off): deleting revoked content must work
-  // regardless of the flag (#640, part 7 / acceptance 10).
+  // Read the RAW page-meta blob, NOT the gated `pageMetaCacheAtom` (which
+  // returns empty for an expired session): deleting revoked content must work
+  // regardless (#640, part 7 / acceptance 10).
   const cached = rawMetaEntry(scopeKey, queryKeyId);
   if (cached?.id) return pageYdocDbName(scopeKey, cached.id);
 
@@ -185,8 +185,8 @@ function resolveYdocName(queryKeyId: string, scopeKey: string): string | null {
 
 /**
  * Read a single page-meta entry for a scope straight from the RAW localStorage
- * blob (bypassing the flag-gated atom). Used by eviction/tombstoning so a
- * flag-OFF deploy still resolves `slugId -> pageId` and deletes revoked content.
+ * blob (bypassing the gated atom). Used by eviction/tombstoning so an expired
+ * session still resolves `slugId -> pageId` and deletes revoked content.
  */
 function rawMetaEntry(
   scopeKey: string,
@@ -305,11 +305,6 @@ let scopeDrainInstalled = false;
  * Subscribe ydoc eviction to page-query FAILURES, globally and independently of
  * what is mounted. Installed ONCE at app level (main.tsx): the revoked-page case
  * this exists for never mounts the page editor at all.
- *
- * NOT gated on the local-first flag (#640, part 7): deleting revoked content is
- * not an experiment. "Rollback = flag flip" therefore no longer restores the old
- * behavior — a flag-OFF deploy now deletes revoked ydoc databases it did not
- * touch before. See the PR description.
  *
  * ORDERING (load-bearing): this must be installed BEFORE #563's
  * `installPageMetaEviction`, because that subscriber DELETES the page-meta entry
@@ -589,8 +584,8 @@ export async function purgePageYdocDatabases(): Promise<void> {
 
 /**
  * Every pageId/slugId held in the RAW #563 page-meta boot-cache blobs across all
- * scopes. Scans localStorage directly (not the flag-gated atom) so the legacy
- * migration can derive `page.<id>` names even with LOCAL_FIRST off.
+ * scopes. Scans localStorage directly (not the scope-gated atom) so the legacy
+ * migration can derive `page.<id>` names for every scope.
  */
 function legacyPageIdsFromMetaBlobs(): Set<string> {
   const ids = new Set<string>();
@@ -664,9 +659,9 @@ export function migratePageYdocDatabasesOnce(): void {
   // Meta-cache-derived legacy names (Firefox-safe). Every cached pageId/slugId
   // yields a candidate legacy `page.<id>` name; a delete of a non-existent db is
   // a harmless no-op, so we need not know which actually exist. Read the RAW
-  // localStorage blobs (not the flag-gated `pageMetaCacheAtom`, which returns
-  // empty when LOCAL_FIRST is off — the default): legacy databases must be
-  // removed regardless of the flag (#640, part 7/8).
+  // localStorage blobs (not the gated `pageMetaCacheAtom`, which only serves the
+  // current, unexpired scope): legacy databases must be removed regardless
+  // (#640, part 7/8).
   for (const id of legacyPageIdsFromMetaBlobs()) {
     void deleteYdocDatabase(`${PAGE_YDOC_PREFIX}${id}`);
   }

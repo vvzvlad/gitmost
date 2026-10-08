@@ -60,8 +60,8 @@ export default defineConfig(({ mode }) => {
       // #638 finding 1 — GENERATED from `CLIENT_CONFIG_KEYS`, never hand-listed.
       // In dev `getConfigValue` reads `process.env`, which vite replaces with
       // this static object, so a key missing here is unreachable in dev whatever
-      // `.env` says — that is how `isLocalFirstEnabled()` stayed false through
-      // every phase 1-2 dev verification. Deriving the object from the same list
+      // `.env` says — that is how the (since removed) local-first flag stayed
+      // false through every phase 1-2 dev verification. Deriving the object from the same list
       // the drift test checks against `config.ts` keeps a new flag from ever
       // being silently dev-dead again. See client-config-keys.ts for why the
       // allowlist must stay an allowlist (loadEnv with an empty prefix returns

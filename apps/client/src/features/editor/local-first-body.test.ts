@@ -58,7 +58,6 @@ function createAppendingPlugin(getEnabled: () => boolean) {
 }
 
 let canWrite = false;
-let isActive = true;
 let appendEnabled = false;
 let editor: Editor;
 
@@ -68,14 +67,12 @@ function docText(): string {
 
 beforeEach(() => {
   canWrite = false;
-  isActive = true;
   appendEnabled = false;
   editor = new Editor({
     extensions: [
       StarterKit.configure({ undoRedo: false } as never),
       createAppendingPlugin(() => appendEnabled),
       createBodyWriteGuard({
-        isActive: () => isActive,
         canWrite: () => canWrite,
       }),
     ],
@@ -150,15 +147,6 @@ describe("createBodyWriteGuard", () => {
     const before = editor.state.doc.toJSON();
     editor.view.dispatch(editor.state.tr.setMeta("decorations", true));
     expect(editor.state.doc.toJSON()).toEqual(before);
-  });
-
-  it("is INERT when the flag is off — the flag-off path behaves like today", () => {
-    isActive = false;
-    appendEnabled = true;
-
-    editor.commands.insertContent("typed");
-    expect(docText()).toContain("typed");
-    expect(docText()).toContain("[appended]");
   });
 });
 

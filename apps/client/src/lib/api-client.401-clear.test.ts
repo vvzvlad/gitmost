@@ -9,13 +9,10 @@ import type { ICurrentUser } from "@/features/user/types/user.types";
 // reload paints the shell from the seed then redirects to /login, where the key
 // survives → /login seeds again → app → /me → 401: an infinite loop.
 
-const hoisted = vi.hoisted(() => ({ localFirst: true }));
-
 vi.mock("@/lib/config.ts", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    isLocalFirstEnabled: () => hoisted.localFirst,
     isCloud: () => false,
   };
 });
@@ -50,7 +47,6 @@ function error401(responseURL: string) {
 
 beforeEach(() => {
   localStorage.clear();
-  hoisted.localFirst = true;
   store.set(currentUserAtom, persisted());
   // Land on /login: redirectToLogin early-returns here WITHOUT clearing — the
   // exact path the loop trap lives on.
@@ -77,17 +73,5 @@ describe("api-client 401 currentUser purge (#642 part 3)", () => {
 
     expect(localStorage.getItem("currentUser")).toBeNull();
     expect(store.get(currentUserAtom)).toBeNull();
-  });
-
-  it("non-vacuity + flag OFF: with local-first OFF the key SURVIVES a 401 (byte-unchanged; proves the assertion above is not vacuous)", async () => {
-    hoisted.localFirst = false;
-    const rejected = get401Handler();
-
-    await expect(
-      rejected(error401("http://localhost/api/users/me")),
-    ).rejects.toBeDefined();
-
-    expect(localStorage.getItem("currentUser")).not.toBeNull();
-    expect(store.get(currentUserAtom)).toEqual(persisted());
   });
 });

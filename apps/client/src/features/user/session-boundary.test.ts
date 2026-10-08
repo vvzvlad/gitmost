@@ -3,7 +3,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // Mock config: the real one pulls @/lib/utils -> page-icon -> lucide-react/dynamic,
 // unresolved in the test env (pre-existing). Keep OFFLINE_GRACE at the real 30d.
 vi.mock("@/lib/config", () => ({
-  isLocalFirstEnabled: () => true,
   isClientTelemetryEnabled: () => false,
   getOfflineGraceMs: () => 30 * 24 * 60 * 60 * 1000,
 }));

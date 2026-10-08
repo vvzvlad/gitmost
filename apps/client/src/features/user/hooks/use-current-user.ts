@@ -3,7 +3,6 @@ import { useAtomValue } from "jotai";
 import { getMyInfo } from "@/features/user/services/user-service";
 import { ICurrentUser } from "@/features/user/types/user.types";
 import { currentUserAtom } from "@/features/user/atoms/current-user-atom";
-import { isLocalFirstEnabled } from "@/lib/config";
 
 export default function useCurrentUser(): UseQueryResult<ICurrentUser> {
   // #642, parts 1+2 — seed the query from the persisted current-user so the very
@@ -21,13 +20,10 @@ export default function useCurrentUser(): UseQueryResult<ICurrentUser> {
   // (#642 part 4). `staleTime:0` + `refetchOnMount:"always"` guarantee the seed
   // is only a first-frame placeholder that the network overwrites within one RTT.
   //
-  // Gated on `isLocalFirstEnabled()`: with the flag OFF, or with NO persisted
-  // user (first visit / post-logout), we fall back to today's plain query
-  // (isLoading true → today's empty gate), so that path is byte-for-behavior
-  // unchanged and there is no regression.
+  // With NO persisted user (first visit / post-logout) we fall back to the plain
+  // query (isLoading true → the empty gate).
   const persistedUser = useAtomValue(currentUserAtom);
-  const seed =
-    isLocalFirstEnabled() && persistedUser ? persistedUser : undefined;
+  const seed = persistedUser ? persistedUser : undefined;
 
   return useQuery({
     queryKey: ["currentUser"],

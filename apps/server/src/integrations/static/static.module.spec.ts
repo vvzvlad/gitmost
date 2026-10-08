@@ -231,7 +231,6 @@ describe('StaticModule.onModuleInit — the real SPA catch-all (#636, integratio
       getPostHogHost: () => '',
       getPostHogKey: () => '',
       isClientTelemetryEnabled: () => false,
-      isLocalFirstEnabled: () => false,
       isGitSyncEnabled: () => true,
       // #640 — OFFLINE_GRACE mirror; onModuleInit reads it for window.CONFIG.
       getOfflineGrace: () => '30d',
