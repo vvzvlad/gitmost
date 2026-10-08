@@ -33,6 +33,11 @@ export function startSseHeartbeat(
   res: ServerResponse,
   intervalMs = 15_000,
 ): () => void {
+  // A response that is already gone (the client left before the stream
+  // started) never emits 'close'/'finish' again, so a timer started now would
+  // never be cleared — and it would pin the dead response, plus everything the
+  // SDK pipe still buffers for it, in memory for the life of the process (#717).
+  if (res.destroyed || res.writableEnded) return () => undefined;
   const timer = setInterval(() => {
     if (res.writableEnded || res.destroyed) return;
     try {
