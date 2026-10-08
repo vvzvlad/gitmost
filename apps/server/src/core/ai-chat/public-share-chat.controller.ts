@@ -92,13 +92,17 @@ export class PublicShareChatController {
     const { shareId, share, model, role, messages, openedPage } = resolved;
 
     // Abort the agent loop when the client disconnects (public-share turns are
-    // not durable runs, unlike ai-chat).
+    // not durable runs, unlike ai-chat). Listen on the RESPONSE: Fastify has
+    // already consumed the POST body, so `req.raw` is closed and its 'close'
+    // never fires on a later disconnect (#716). `close` also fires on normal
+    // completion, hence the writableEnded check. A client that left during the
+    // funnel above closed the socket before this listener existed: abort now.
     const controller = new AbortController();
     const onClose = (): void => {
       if (!res.raw.writableEnded) controller.abort();
     };
-    req.raw.once('close', onClose);
-    res.raw.once('finish', () => req.raw.off('close', onClose));
+    res.raw.once('close', onClose);
+    if (res.raw.destroyed) controller.abort();
 
     // Commit to streaming.
     res.hijack();
