@@ -40,7 +40,6 @@ import { useSetAtom, useStore } from "jotai";
 import { treeDataAtom } from "@/features/page/tree/atoms/tree-data-atom";
 import { writePageMetaAtom } from "@/features/page/atoms/page-meta-cache-atom";
 import { clearPageTombstoneOnAccess } from "@/features/editor/page-ydoc-eviction";
-import { isLocalFirstEnabled } from "@/lib/config";
 import { treeModel } from "@/features/page/tree/model/tree-model";
 import { SpaceTreeNode } from "@/features/page/tree/types";
 import { useQueryEmit } from "@/features/websocket/use-query-emit";
@@ -65,9 +64,8 @@ export function usePageQuery(
     // main.tsx) would otherwise suppress the refetch inside a 5-minute window,
     // and a page renamed / deleted / access-revoked less than 5 minutes ago
     // would keep showing stale chrome with nothing ever correcting it. The
-    // refetch is a background one (cached data stays on screen), and it is gated
-    // on the flag so a flag-off deployment behaves exactly as it does today.
-    refetchOnMount: isLocalFirstEnabled() ? "always" : false,
+    // refetch is a background one (cached data stays on screen).
+    refetchOnMount: "always",
   });
 
   useEffect(() => {
@@ -77,8 +75,8 @@ export function usePageQuery(
       } else {
         queryClient.setQueryData(["pages", query.data.id], query.data);
       }
-      // Write-through to the boot cache (no-op when the flag is off or the user
-      // is not resolved yet). Reconciliation: the freshly fetched page always
+      // Write-through to the boot cache (no-op while the user is not resolved
+      // yet). Reconciliation: the freshly fetched page always
       // overwrites the cached entry, so a server-side rename/icon/permission
       // change lands in the cache the moment it arrives.
       store.set(writePageMetaAtom, query.data);

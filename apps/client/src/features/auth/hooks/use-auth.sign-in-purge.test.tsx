@@ -68,11 +68,9 @@ function wrapper(store: ReturnType<typeof createStore>) {
 
 beforeEach(() => {
   localStorage.clear();
-  process.env.LOCAL_FIRST_ENABLED = "true";
 });
 
 afterEach(() => {
-  delete process.env.LOCAL_FIRST_ENABLED;
   vi.restoreAllMocks();
 });
 

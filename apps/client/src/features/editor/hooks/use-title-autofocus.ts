@@ -17,7 +17,7 @@ const TITLE_AUTOFOCUS_DELAY_MS = 300;
  * Extracted from TitleEditor so this exact decision is unit-testable.
  *
  * CONTRACT: relies on TitleEditor remounting per page (page.tsx renders
- * `<MemoizedFullEditor key={page.id}>`), so `hasSavedScrollRef` is captured fresh
+ * `<MemoizedFullEditor key={chromeMeta.id}>`), so `hasSavedScrollRef` is captured fresh
  * per page. It is read synchronously on first render, before any scroll-save
  * handler can clobber the stored value to 0 — matching `useScrollPosition`'s own
  * synchronous capture of `initialTargetRef`.
@@ -31,7 +31,7 @@ export function useTitleAutofocus(
   // then skips (it never overwrites a focused field), so the cached/placeholder
   // title stays put and a navigate-away can persist it over the real one (title
   // erasure). Gating focus on resolution keeps the field un-focused when the live
-  // title arrives, so setContent applies it. Flag OFF: always `true` (unchanged).
+  // title arrives, so setContent applies it.
   resolved: boolean = true,
 ): void {
   const hasSavedScrollRef = useRef<boolean | null>(null);

@@ -100,7 +100,6 @@ import {
   releasePageSession,
 } from "@/features/editor/page-session-cache";
 import { scopeKeyAtom } from "@/features/page/tree/atoms/open-tree-nodes-atom";
-import { isLocalFirstEnabled } from "@/lib/config.ts";
 import {
   armBodyPaint,
   disarmBodyPaint,
@@ -116,11 +115,7 @@ import {
 // listener. There is no warm / default split in the component: a warm session
 // yields synced, confirmed and live on its own. `isRemoteConfirmed` stays
 // sticky (`wasRemoteConfirmed`), as before.
-function flagsFromSession(
-  s: PageSession,
-  localFirst: boolean,
-  wasRemoteConfirmed: boolean,
-) {
+function flagsFromSession(s: PageSession, wasRemoteConfirmed: boolean) {
   const isLocalSynced = s.localSynced;
   const ydocNonEmpty = s.ydocNonEmpty;
   const isRemoteSynced = s.remote.isSynced;
@@ -132,7 +127,6 @@ function flagsFromSession(
     yjsConnectionStatus,
     isRemoteConfirmed: wasRemoteConfirmed || isRemoteSynced,
     swapToLive: shouldSwapToLive({
-      localFirst,
       isLocalSynced,
       ydocNonEmpty,
       collabSynced: isCollabSynced(
@@ -152,7 +146,7 @@ interface PageEditorProps {
   // (`isLoading || !livePage` in page.tsx). Owns the SKELETON state: while the
   // static copy is up and no authoritative content exists (no REST body AND the
   // local ydoc is not reconciled), show a skeleton rather than an empty editor
-  // or another page's static copy. Absent (legacy mount / flag OFF) ⇒ false.
+  // or another page's static copy. Absent ⇒ false.
   bodyContentPending?: boolean;
 }
 
@@ -184,9 +178,6 @@ export default function PageEditor({
   const [, setActiveCommentId] = useAtom(activeCommentIdAtom);
   const [showCommentPopup, setShowCommentPopup] = useAtom(showCommentPopupAtom);
   const [showReadOnlyCommentPopup] = useAtom(showReadOnlyCommentPopupAtom);
-  // Read the flag once per mount: a mid-session flip must not move the editor
-  // between two different state machines.
-  const localFirst = useMemo(() => isLocalFirstEnabled(), []);
   const bodyDbName = useMemo(
     () => pageYdocDbName(ydocScopeKey, pageId),
     [ydocScopeKey, pageId],
@@ -203,7 +194,7 @@ export default function PageEditor({
   const activeSession =
     boundSession?.dbName === bodyDbName ? boundSession : null;
   const [mountSessionFlags] = useState(() =>
-    activeSession ? flagsFromSession(activeSession, localFirst, false) : null,
+    activeSession ? flagsFromSession(activeSession, false) : null,
   );
   const [isLocalSynced, setIsLocalSynced] = useState(
     mountSessionFlags?.isLocalSynced ?? false,
@@ -236,8 +227,8 @@ export default function PageEditor({
   // rip out. A reconciliation that happens DURING this session is covered by
   // `isRemoteConfirmed` in `bodyReconciled` below.
   const durablyReconciled = useMemo(
-    () => (localFirst ? getReconciledAt(bodyDbName) !== undefined : false),
-    [localFirst, bodyDbName],
+    () => getReconciledAt(bodyDbName) !== undefined,
+    [bodyDbName],
   );
   const setBodyLocalOnly = useSetAtom(bodyLocalOnlyAtom);
   const setBodyWriteBlocked = useSetAtom(bodyWriteBlockedAtom);
@@ -335,16 +326,15 @@ export default function PageEditor({
       ...collabExtensions(session.remote, currentUser?.user),
       // #564, guard 2 (Yjs-level half): while the body is live but the remote
       // room has not confirmed a sync, NO local doc mutation may reach the Y.Doc
-      // — not a keystroke, not a plugin's appendTransaction. Both predicates are
+      // — not a keystroke, not a plugin's appendTransaction. Both conditions are
       // read live, so flipping them never recreates the editor. #709 — a write
       // into a DESTROYED session (evicted between the render that bound it and
-      // the acquire effect) is rejected whatever the local-first flag.
+      // the acquire effect) is rejected too.
       createBodyWriteGuard({
-        isActive: () => localFirst || !sessionLive(),
         canWrite: () => sessionLive() && isRemoteConfirmedRef.current,
       }),
     ];
-  }, [activeSession, currentUser?.user, pageId, localFirst]);
+  }, [activeSession, currentUser?.user, pageId]);
 
   // Stable editorProps for the static read-only copy. Its EditorProvider has
   // `deps=[]`, so TipTap compares options by reference on every render and calls
@@ -608,7 +598,7 @@ export default function PageEditor({
     () => typeof navigator !== "undefined" && navigator.onLine === false,
   );
   useEffect(() => {
-    if (!localFirst || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     const update = () => setBrowserOffline(navigator.onLine === false);
     update();
     window.addEventListener("online", update);
@@ -617,7 +607,7 @@ export default function PageEditor({
       window.removeEventListener("online", update);
       window.removeEventListener("offline", update);
     };
-  }, [localFirst]);
+  }, []);
 
   // #564 — a page switch that does NOT remount this component (page.tsx keys
   // FullEditor by page.id today, but nothing here may rely on that) must not
@@ -637,9 +627,7 @@ export default function PageEditor({
     syncStateKey.session !== activeSession
   ) {
     setSyncStateKey({ pageId, session: activeSession });
-    const flags = activeSession
-      ? flagsFromSession(activeSession, localFirst, false)
-      : null;
+    const flags = activeSession ? flagsFromSession(activeSession, false) : null;
     setIsLocalSynced(flags?.isLocalSynced ?? false);
     setIsRemoteSynced(flags?.isRemoteSynced ?? false);
     setYdocNonEmpty(flags?.ydocNonEmpty ?? false);
@@ -671,11 +659,7 @@ export default function PageEditor({
     if (!activeSession) return;
     const s = activeSession;
     const apply = () => {
-      const flags = flagsFromSession(
-        s,
-        localFirst,
-        isRemoteConfirmedRef.current,
-      );
+      const flags = flagsFromSession(s, isRemoteConfirmedRef.current);
       isRemoteConfirmedRef.current = flags.isRemoteConfirmed;
       setIsLocalSynced(flags.isLocalSynced);
       setYdocNonEmpty(flags.ydocNonEmpty);
@@ -796,7 +780,6 @@ export default function PageEditor({
     if (!showStatic) return;
     if (
       !shouldSwapToLive({
-        localFirst,
         isLocalSynced,
         ydocNonEmpty,
         collabSynced,
@@ -816,7 +799,6 @@ export default function PageEditor({
     isLocalSynced,
     ydocNonEmpty,
     showStatic,
-    localFirst,
   ]);
 
   // #564 — re-run the plugin appendTransaction pass once writes are allowed, for
@@ -830,17 +812,17 @@ export default function PageEditor({
   // synchronously inside the provider's "synced" emit (the session listener
   // above, notified from the cache's onSyncedHandler).
   useEffect(() => {
-    if (!localFirst || !isRemoteConfirmed || !editor || editor.isDestroyed) {
+    if (!isRemoteConfirmed || !editor || editor.isDestroyed) {
       return;
     }
     editor.view.dispatch(editor.state.tr);
-  }, [localFirst, isRemoteConfirmed, editor]);
+  }, [isRemoteConfirmed, editor]);
 
   // #564, guard 2 — publish the "programmatic writes are being dropped" window
   // so the paths that write to the body without typing (history restore, comment
   // resolve/delete mark updates) can refuse instead of silently doing nothing and
   // reporting success. Mirrors the guard's own predicate exactly.
-  const bodyWriteBlocked = localFirst && !isRemoteConfirmed;
+  const bodyWriteBlocked = !isRemoteConfirmed;
   useEffect(() => {
     setBodyWriteBlocked(bodyWriteBlocked);
     return () => setBodyWriteBlocked(false);
@@ -862,7 +844,6 @@ export default function PageEditor({
 
   // #564, guards 4+5 — what the user is told about the un-reconciled state.
   const bodyIndicator = computeBodyIndicator({
-    localFirst,
     showStatic,
     isRemoteConfirmed,
     isDisconnected: reallyOffline,
@@ -920,11 +901,10 @@ export default function PageEditor({
   // LOADED-EMPTY page, and a reconciled-but-empty page revisited offline, both
   // render an empty static copy, never an eternal skeleton. A non-empty local
   // ydoc has already swapped to the live editor, so this only gates the static
-  // window. Flag OFF (or the legacy mount): `bodyContentPending` is false, so
-  // this is never a skeleton — today's static→live behavior exactly.
+  // window.
   const bodyReconciled = durablyReconciled || isRemoteConfirmed;
   const showBodySkeleton =
-    localFirst && showStatic && !!bodyContentPending && !bodyReconciled;
+    showStatic && !!bodyContentPending && !bodyReconciled;
 
   return (
     <TransclusionLookupProvider>

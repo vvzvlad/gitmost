@@ -529,8 +529,7 @@ function createSession({
     // 403/404 subscriber (installed at app level in main.tsx, because the
     // revoked-page case never mounts the editor at all), keyed by both aliases
     // a page query can use. Registered whenever a local persistence was
-    // actually opened, regardless of the flag: deleting revoked content is not
-    // gated on the local-first experiment.
+    // actually opened.
     registerPageYdoc({ dbName, persistence: local, keys: [pageId, slugId] });
   } else {
     // #707 — no local persistence: the local side is ready and empty, so

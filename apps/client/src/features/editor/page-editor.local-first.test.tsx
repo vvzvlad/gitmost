@@ -47,7 +47,6 @@ const hoisted = vi.hoisted(() => ({
   providers: [] as any[],
   persistences: [] as any[],
   sockets: [] as any[],
-  localFirst: true,
   idStampAttempts: 0,
 }));
 
@@ -55,7 +54,6 @@ vi.mock("@/lib/config.ts", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    isLocalFirstEnabled: () => hoisted.localFirst,
     getCollaborationUrl: () => "ws://localhost/collab",
   };
 });
@@ -478,7 +476,6 @@ beforeEach(() => {
   hoisted.providers.length = 0;
   hoisted.persistences.length = 0;
   hoisted.sockets.length = 0;
-  hoisted.localFirst = true;
   hoisted.idStampAttempts = 0;
   resetPageYdocRegistryForTests();
   // #640 fail-closed latches are module-level: clear them so one test's tombstone
@@ -782,65 +779,6 @@ describe("#564 body-instant: live body from the local ydoc, read-only until remo
       expect(container.querySelector(".editor-container")).not.toBeNull();
     });
     expect(container.textContent).not.toContain("PAGE A LOCAL BODY");
-  });
-});
-
-describe("#564 flag OFF: behavior identical to today", () => {
-  beforeEach(() => {
-    hoisted.localFirst = false;
-  });
-
-  it("does NOT swap early even with a non-empty local ydoc; swaps + edits on remote sync", async () => {
-    const store = makeStore();
-    const { container } = renderEditor(store, PAGE_A);
-
-    const persistence = lastPersistence();
-    seedYdoc(persistence.doc, "Local body text");
-    act(() => persistence.emitSynced());
-
-    // Today's rule: the network still gates the body.
-    await waitFor(() => {
-      expect(container.textContent).toContain("Server seeded copy");
-    });
-    expect(container.querySelector(".editor-container")).toBeNull();
-    expect(getEditor(store).isEditable).toBe(false);
-    expect(
-      container.querySelector('[data-testid="body-connecting-badge"]'),
-    ).not.toBeNull();
-
-    const provider = lastProvider();
-    const socket = lastSocket();
-    act(() => {
-      socket.emitStatus("connected");
-      provider.emitSynced(true);
-    });
-
-    await waitFor(() => {
-      expect(container.querySelector(".editor-container")).not.toBeNull();
-    });
-    await waitFor(() => expect(getEditor(store).isEditable).toBe(true));
-
-    const editor = getEditor(store);
-    const updates = vi.fn();
-    persistence.doc.on("update", updates);
-    act(() => simulateUserEdit(editor));
-    expect(updates).toHaveBeenCalled();
-  });
-
-  it("shows no offline banner while disconnected in the static window (today's badge only)", async () => {
-    const store = makeStore();
-    const { container } = renderEditor(store, PAGE_A);
-
-    const persistence = lastPersistence();
-    seedYdoc(persistence.doc, "Local body text");
-    act(() => persistence.emitSynced());
-    act(() => lastSocket().emitStatus("disconnected"));
-
-    expect(store.get(bodyLocalOnlyAtom).isOffline).toBe(false);
-    expect(
-      container.querySelector('[data-testid="body-connecting-badge"]'),
-    ).not.toBeNull();
-    expect(container.querySelector(".editor-container")).toBeNull();
   });
 });
 
@@ -1429,10 +1367,9 @@ describe("#709 warm collab sessions", () => {
     });
   });
 
-  it.each([true, false])(
-    "f — evicted between peek and acquire: the editor rebinds, and a write into the destroyed session is rejected (local-first %s)",
-    async (localFirst) => {
-      hoisted.localFirst = localFirst;
+  it(
+    "f — evicted between peek and acquire: the editor rebinds, and a write into the destroyed session is rejected",
+    async () => {
       const warm = parkWarm();
 
       // Runs after PageEditor's render peeked (and bound) the warm session,

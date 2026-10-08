@@ -244,19 +244,6 @@ export class EnvironmentService {
   }
 
   /**
-   * Operator toggle for the local-first page boot cache (#563). DEFAULT OFF:
-   * mirrored into window.CONFIG so the client only persists/restores the
-   * localStorage page-meta cache when the operator opts in. Off => the client
-   * keeps today's behavior (skeleton until the page query resolves).
-   */
-  isLocalFirstEnabled(): boolean {
-    const enabled = this.configService
-      .get<string>('LOCAL_FIRST_ENABLED', 'false')
-      .toLowerCase();
-    return enabled === 'true';
-  }
-
-  /**
    * #640 — network-independent session boundary. Mirrored into window.CONFIG so
    * the client refuses to draw ANY local content (chrome, tree, ydoc body) once
    * more than this has elapsed since the last successful `/me`, even offline.

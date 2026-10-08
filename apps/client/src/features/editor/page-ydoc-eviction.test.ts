@@ -15,14 +15,11 @@ const SLUG_ID = "slugid1";
 const SCOPE_STORAGE_KEY = "pageMeta:v1:w1:u1";
 const SCOPE = "w1:u1";
 
-let localFirstEnabled = true;
-
 // Full mock (NOT importOriginal): the real @/lib/config pulls in
 // @/lib/utils -> page-icon -> lucide-react/dynamic, which is unresolved in the
 // test env (one of the repo's ~38 pre-existing lucide load failures). Provide
 // every config function the transitive graph reads.
 vi.mock("@/lib/config", () => ({
-  isLocalFirstEnabled: () => localFirstEnabled,
   isClientTelemetryEnabled: () => false,
   getOfflineGraceMs: () => 30 * 24 * 60 * 60 * 1000,
 }));
@@ -78,7 +75,6 @@ function successReq(): any {
 }
 
 beforeEach(() => {
-  localFirstEnabled = true;
   localStorage.clear();
   deleteDatabase = vi.fn(() => successReq());
   vi.stubGlobal("indexedDB", { deleteDatabase });
@@ -258,22 +254,6 @@ describe("installPageYdocEviction (global page-query error subscriber)", () => {
 
   it("destroys the ydoc of a REVOKED page that never mounted in this session", async () => {
     seedBootCache(PAGE_ID, SLUG_ID);
-    const mod = await freshImport();
-    const queryClient = new QueryClient();
-    const unsubscribe = mod.installPageYdocEviction(queryClient);
-
-    await failPageQuery(queryClient, SLUG_ID, 403);
-
-    await vi.waitFor(() =>
-      expect(deleteDatabase).toHaveBeenCalledWith(`page.${SCOPE}.${PAGE_ID}`),
-    );
-    unsubscribe();
-  });
-
-  // #640, acceptance 10 — deletion is OUT of the flag gate now.
-  it("STILL deletes when the local-first flag is OFF", async () => {
-    seedBootCache(PAGE_ID, SLUG_ID);
-    localFirstEnabled = false;
     const mod = await freshImport();
     const queryClient = new QueryClient();
     const unsubscribe = mod.installPageYdocEviction(queryClient);

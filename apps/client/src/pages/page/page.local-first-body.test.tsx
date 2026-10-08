@@ -18,7 +18,6 @@ import type { ICurrentUser } from "@/features/user/types/user.types";
  *    cache-hit for B must show B's content (or nothing yet), NEVER A's body.
  *  - trap 3 ROUTING: `spaceSlug` comes from the ROUTE (useParams), never the
  *    meta cache (which stores none).
- *  - crit 10 flag OFF: the legacy `page && space` gate, byte-for-behavior.
  */
 
 const fullEditorProps: Record<string, unknown>[] = [];
@@ -133,7 +132,6 @@ function lastProps() {
 beforeEach(() => {
   localStorage.clear();
   fullEditorProps.length = 0;
-  process.env.LOCAL_FIRST_ENABLED = "true";
   pageQueryState.data = undefined;
   pageQueryState.isLoading = true;
   pageQueryState.isError = false;
@@ -142,7 +140,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.LOCAL_FIRST_ENABLED;
   vi.restoreAllMocks();
 });
 
@@ -208,40 +205,5 @@ describe("Ф7 body mount — routing (trap 3)", () => {
     expect(props.pageId).toBe(B_ID);
     expect(props.spaceSlug).toBe("engineering");
     expect(props.bodyContentPending).toBe(true);
-  });
-});
-
-describe("Ф7 flag OFF — the legacy `page && space` gate (crit 10)", () => {
-  beforeEach(() => {
-    process.env.LOCAL_FIRST_ENABLED = "false";
-  });
-
-  it("mounts the body only when BOTH page and space resolve, keyed by page.id", () => {
-    const store = makeStore(); // cache is unusable with the flag off
-    pageQueryState.data = { ...pageB(), content: "BBB-BODY" } as IPage;
-    pageQueryState.isLoading = false;
-    spaceData = { settings: {} };
-
-    renderPageB(store);
-
-    const props = lastProps();
-    // Legacy path: content from `page`, spaceSlug from `page.space.slug`, and NO
-    // bodyContentPending prop (the skeleton state is a flag-ON concept).
-    expect(props.pageId).toBe(B_ID);
-    expect(props.content).toBe("BBB-BODY");
-    expect(props.spaceSlug).toBe("engineering");
-    expect(props.bodyContentPending).toBeUndefined();
-  });
-
-  it("with the space NOT resolved, the body stays gated (no FullEditor)", () => {
-    const store = makeStore();
-    pageQueryState.data = { ...pageB(), content: "BBB-BODY" } as IPage;
-    pageQueryState.isLoading = false;
-    spaceData = undefined; // space still loading
-
-    renderPageB(store);
-
-    // The legacy gate holds: page without space → skeleton, no body.
-    expect(screen.queryByTestId("full-editor")).toBeNull();
   });
 });

@@ -12,8 +12,8 @@
  *
  * That allowlist used to be hand-maintained, listing each key TWICE (a `loadEnv`
  * destructuring plus the `define` object). It drifted exactly as AGENTS invariant
- * #7 predicts: `LOCAL_FIRST_ENABLED` was absent, so `isLocalFirstEnabled()` was
- * ALWAYS false in dev and every dev verification of the local-first phases
+ * #7 predicts: the (since removed) local-first flag key was absent, so that flag
+ * was ALWAYS false in dev and every dev verification of the local-first phases
  * measured the old code path (#639); `OFFLINE_GRACE`, `DRAWIO_RASTER_ENABLED` and
  * `EXCALIDRAW_RASTER_ENABLED` were still absent after that.
  *
@@ -43,7 +43,6 @@ export const CLIENT_CONFIG_KEYS = [
   "FILE_IMPORT_SIZE_LIMIT",
   "FILE_UPLOAD_SIZE_LIMIT",
   "GIT_SYNC_ENABLED",
-  "LOCAL_FIRST_ENABLED",
   "OFFLINE_GRACE",
   "POSTHOG_HOST",
   "POSTHOG_KEY",

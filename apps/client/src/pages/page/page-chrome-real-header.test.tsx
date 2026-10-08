@@ -196,7 +196,6 @@ const header = () => document.querySelector("[data-page-header]");
 
 beforeEach(() => {
   localStorage.clear();
-  process.env.LOCAL_FIRST_ENABLED = "true";
   pageQueryState.data = undefined;
   pageQueryState.isLoading = true;
   pageQueryState.isError = false;
@@ -204,7 +203,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.LOCAL_FIRST_ENABLED;
   vi.restoreAllMocks();
 });
 

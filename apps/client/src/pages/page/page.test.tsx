@@ -115,7 +115,6 @@ function makeStore(seed?: Partial<IPage>) {
 
 beforeEach(() => {
   localStorage.clear();
-  process.env.LOCAL_FIRST_ENABLED = "true";
   pageQueryState.data = undefined;
   pageQueryState.isLoading = true;
   pageQueryState.isError = false;
@@ -124,7 +123,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.LOCAL_FIRST_ENABLED;
   vi.restoreAllMocks();
 });
 

@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 import APP_ROUTE from "@/lib/app-route.ts";
-import { isCloud, isLocalFirstEnabled } from "@/lib/config.ts";
+import { isCloud } from "@/lib/config.ts";
 import { clearPersistedTreeCaches } from "@/features/page/tree/atoms/tree-data-atom";
 import { clearPersistedCurrentUser } from "@/features/user/atoms/current-user-atom";
 import { purgePageYdocDatabases } from "@/features/editor/page-ydoc-eviction";
@@ -35,12 +35,8 @@ api.interceptors.response.use(
           // return, incl. /login). Otherwise a dead-session reload paints the
           // shell from the seed (#642 part 1) then redirects to /login, where
           // redirectToLogin early-returns WITHOUT clearing → the key survives →
-          // /login seeds again → app → /me → 401: an infinite loop. Gated on the
-          // flag so a flag-OFF deploy is byte-for-behavior unchanged (there is no
-          // seed to clear, and today's 401 path never touched this key).
-          if (isLocalFirstEnabled()) {
-            clearPersistedCurrentUser();
-          }
+          // /login seeds again → app → /me → 401: an infinite loop.
+          clearPersistedCurrentUser();
 
           if (url === "/api/auth/collab-token") return;
           if (window.location.pathname.startsWith("/share/")) return;

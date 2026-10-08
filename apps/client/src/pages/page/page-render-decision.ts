@@ -22,18 +22,10 @@ export type PageErrorDecision =
   | "error-screen";
 
 export function classifyPageError(opts: {
-  localFirst: boolean;
   error: unknown;
   hasChromeMeta: boolean;
   hasLocalBody: boolean;
 }): PageErrorDecision {
-  // Flag OFF — byte-for-behavior identical to pre-Ф5: an auth status (401/403/404)
-  // shows not-found, everything else shows today's error screen. No offline
-  // branches exist, so no cached render can happen with the flag off.
-  if (!opts.localFirst) {
-    return isAuthError(opts.error) ? "not-found" : "error-screen";
-  }
-
   // The server ANSWERED with an access verdict → not-found + (global) evict.
   if (isAuthError(opts.error)) return "not-found";
 
