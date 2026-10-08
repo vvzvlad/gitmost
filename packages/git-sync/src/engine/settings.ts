@@ -10,7 +10,6 @@
 export type Settings = {
   docmostSpaceId: string;
   vaultPath: string;
-  gitRemote?: string;
   pollIntervalMs: number;
   debounceMs: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';

@@ -18,12 +18,11 @@
  * blocks are emitted from LIVE so the applier keeps the existing Yjs block
  * instances (and the human's in-flight edits) in place.
  *
- * LOCATION (deferred): this and its `lcs.ts` sibling are pure, framework-free and
- * could conceptually live in `packages/git-sync` (the engine). They are kept in
- * the server integration on purpose: `packages/git-sync` is a VENDORED engine
- * (pinned upstream, manually re-synced), so adding first-party files there
- * complicates the re-sync story, and the only consumer today is the server. Move
- * them into the engine only once the vendoring re-sync story is settled.
+ * LOCATION: this and its `lcs.ts` sibling are pure and framework-free, but they
+ * stay next to their only consumer, the synchronous Yjs applier
+ * (`yjs-body-merge.ts`) called from the collaboration handler. `@docmost/git-sync`
+ * is ESM-only and the server reaches it through an async dynamic import, so
+ * moving the planner there would turn that synchronous merge path async.
  */
 
 import { buildLcsTable } from './lcs';
