@@ -170,38 +170,50 @@ root, sibling directories, or temp folders — is forbidden.
 
 This rule has no exceptions:
 
-- **Where:** the only remote for commits/pushes is **`gitea`**
-  (`gitea.vvzvlad.xyz`). **Never** push to `origin` (the GitHub mirror), and
+- **Where:** the only remote for commits/pushes is **`gitea`** (its address:
+  `git remote get-url gitea`). **Never** push to `origin` (the GitHub mirror), and
   especially not to `upstream` (the original Docmost). The GitHub mirror is
   updated by the owner's CI process, not by the agent.
 - **Who:** commit **only** as the agent identity. Any commit whose author or
   committer is `vvzvlad` is an error and must be rewritten.
   - **name:** `claude_code`
-  - **email:** `claude_code@vvzvlad.xyz`
+  - **email:** the address set in this clone's local config —
+    `git config --local user.email`. If it is unset, ask the owner for it; never
+    guess it.
 
-Use `--reset-author` when amending, otherwise git keeps the original author
-(the default config on this machine is `vvzvlad`, so check after every commit):
+The clone's local config must carry that identity; check it before the first
+commit:
 
 ```bash
-GIT_AUTHOR_NAME="claude_code" \
-GIT_AUTHOR_EMAIL="claude_code@vvzvlad.xyz" \
-GIT_COMMITTER_NAME="claude_code" \
-GIT_COMMITTER_EMAIL="claude_code@vvzvlad.xyz" \
-git commit --amend --no-edit --reset-author
+git config --local user.name    # must print claude_code
+git config --local user.email   # must print the agent email
 ```
 
-For a regular new commit, set the branch-local config once and commit normally:
+In a fresh clone where they are unset:
 
 ```bash
-git config user.name "claude_code"
-git config user.email "claude_code@vvzvlad.xyz"
+git config --local user.name claude_code
+git config --local user.email "<the agent email, from the owner>"
+```
+
+Use `--reset-author` when amending, otherwise git keeps the original author
+(the global config on the owner's machines is `vvzvlad`, so check after every
+commit):
+
+```bash
+AGENT_EMAIL=$(git config --local user.email)
+GIT_AUTHOR_NAME="claude_code" \
+GIT_AUTHOR_EMAIL="$AGENT_EMAIL" \
+GIT_COMMITTER_NAME="claude_code" \
+GIT_COMMITTER_EMAIL="$AGENT_EMAIL" \
+git commit --amend --no-edit --reset-author
 ```
 
 Check before push:
 
 ```bash
 git log -1 --format='Author: %an <%ae>%nCommitter: %cn <%ce>'
-# both lines must show claude_code <claude_code@vvzvlad.xyz>
+# both lines must show claude_code and the email from `git config --local user.email`
 ```
 
 ### 4. Push and PR to develop
@@ -211,7 +223,7 @@ commits is git-native** (the Gitea MCP cannot push local git history, so the
 branch is still pushed with `git push`), while **the PR itself is opened through
 the Gitea MCP** (see below). The `claude_code` password lives in the macOS
 keychain as a **generic password** under service `gitea-claude-code` (do not
-duplicate it as an internet-password for `gitea.vvzvlad.xyz` — that creates a
+duplicate it as an internet-password for the Gitea host — that creates a
 conflict with the owner's account in the git credential helper):
 
 ```bash
@@ -224,11 +236,11 @@ config / reflog):
 
 ```bash
 ORIG_URL=$(git remote get-url gitea)
-SAFE_PASS=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$AGENT_PASS")
-git remote set-url gitea "https://claude_code:${SAFE_PASS}@gitea.vvzvlad.xyz/vvzvlad/gitmost.git"
+AUTH_URL=$(python3 -c "import sys,urllib.parse as u;p=u.urlsplit(sys.argv[1]);print(p._replace(netloc='claude_code:'+u.quote(sys.argv[2],safe='')+'@'+p.netloc.rsplit('@',1)[-1]).geturl())" "$ORIG_URL" "$AGENT_PASS")
+git remote set-url gitea "$AUTH_URL"
 git push -u gitea <branch>
 git remote set-url gitea "$ORIG_URL"
-unset AGENT_PASS SAFE_PASS
+unset AGENT_PASS AUTH_URL
 ```
 
 The PR is opened through the **Gitea MCP** (server `gitea`), not `curl`/`tea` —
@@ -291,9 +303,9 @@ below.
 
 | Item | Value |
 | --- | --- |
-| Only remote for commits | `gitea` → `https://vvzvlad@gitea.vvzvlad.xyz/vvzvlad/gitmost.git` |
+| Only remote for commits | `gitea` → address: `git remote get-url gitea` |
 | Agent user (Gitea/git) | `claude_code` |
-| Agent email | `claude_code@vvzvlad.xyz` |
+| Agent email | `git config --local user.email` of this clone (ask the owner if unset) |
 | Keychain password | `security find-generic-password -s gitea-claude-code -w` |
 | Forge API (PR / issue / review / reads) | **Gitea MCP** — server `gitea` (`pull_request_write`, `issue_write`, `list_pull_requests`, `pull_request_read`, `label_read`, …). Authenticated in-process; acts under its own token — check with `get_me`. Repo slug on the server is `gitmost`. |
 | Base branch | `develop` |
@@ -454,7 +466,7 @@ Two routes are mounted **outside** the `/api` prefix at the root, as raw Fastify
 - **Redis** backs caching, the BullMQ queues, the WebSocket Socket.IO adapter, and collaboration sync.
 
 ### The two AI subsystems (the main fork additions)
-1. **Embedded MCP server** (`integrations/mcp/` + `packages/mcp`). The standalone `@docmost/mcp` server (40 agent-native tools: per-block patch/insert/delete by id, scripted `(doc)=>doc` transforms with dry-run diff, table editing, version diff/restore, comments, images, shares) is bundled and served over HTTP at `/mcp`. It writes through Docmost's real-time-collaboration layer so concurrent human edits aren't clobbered. Each request authenticates an agent **exclusively** with a Bearer api_key via the `Authorization` header (`Authorization: Bearer <api_key>`, minted under Workspace settings → API keys, validated through `ApiKeyService`) — the session acts under that key owner's permissions, and revoking the key revokes access immediately. No other inbound credential is accepted (no HTTP Basic email:password, no human session token, no env service account). An admin enables MCP with a workspace toggle (Workspace settings → AI). Optionally protected by a shared `MCP_TOKEN`: when set, every `/mcp` request must carry a matching `X-MCP-Token` header (its own header, separate from `Authorization`, which carries the Bearer api_key). Note: this changed from the older `Authorization: Bearer <MCP_TOKEN>` scheme — see `.env.example` and the CHANGELOG Breaking Changes entry.
+1. **Embedded MCP server** (`integrations/mcp/` + `packages/mcp`). The standalone `@docmost/mcp` server (55 agent-native tools: per-block patch/insert/delete by id, scripted `(doc)=>doc` transforms with dry-run diff, table editing, version diff/restore, comments, images, shares) is bundled and served over HTTP at `/mcp`. It writes through Docmost's real-time-collaboration layer so concurrent human edits aren't clobbered. Each request authenticates an agent **exclusively** with a Bearer api_key via the `Authorization` header (`Authorization: Bearer <api_key>`, minted under Workspace settings → API keys, validated through `ApiKeyService`) — the session acts under that key owner's permissions, and revoking the key revokes access immediately. No other inbound credential is accepted (no HTTP Basic email:password, no human session token, no env service account). An admin enables MCP with a workspace toggle (Workspace settings → AI). Optionally protected by a shared `MCP_TOKEN`: when set, every `/mcp` request must carry a matching `X-MCP-Token` header (its own header, separate from `Authorization`, which carries the Bearer api_key). Note: this changed from the older `Authorization: Bearer <MCP_TOKEN>` scheme — see `.env.example` and the CHANGELOG Breaking Changes entry.
 2. **AI agent chat** (`core/ai-chat/` server + `apps/client/src/features/ai-chat/` client). A built-in agent over the wiki using the Vercel **AI SDK** (`ai`, `@ai-sdk/*`) against any OpenAI-compatible provider configured per workspace (`integrations/ai/` — credentials encrypted at rest via `integrations/crypto`, stored in `ai_provider_credentials`). Key pieces:
    - `core/ai-chat/tools/` — the agent's ~40 read+write tools. Every tool runs under the **calling user's** CASL permissions via a per-user loopback access token (`docmost-client.loader.ts`), so the agent can never exceed what the user could do. Only **reversible** operations are exposed (page history + trash; no permanent delete). Agent edits get an "AI agent" provenance badge in page history (`20260616T130000-agent-provenance` migration).
    - `core/ai-chat/embedding/` — RAG indexer + a BullMQ consumer on `AI_QUEUE` that embeds pages into `page_embeddings` (vector search), complementing Postgres full-text search. Pages are (re)indexed on edit; `AI_EMBEDDING_TIMEOUT_MS` bounds a hung embeddings endpoint.
