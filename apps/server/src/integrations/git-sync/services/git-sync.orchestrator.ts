@@ -127,7 +127,7 @@ function clip(text: string): string {
 }
 
 /**
- * The git-sync control plane. Drives the vendored engine in
+ * The git-sync control plane. Drives the `@docmost/git-sync` engine in
  * process: under a Redis leader lock (single-writer across replicas) plus an
  * in-process per-space mutex (no overlapping cycles on one instance), it runs a
  * PULL (Docmost -> vault) then a PUSH (vault -> Docmost) for a space.
@@ -210,22 +210,8 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
    * Build the engine `Settings` for a space. The datasource writes in-process,
    * so only `vaultPath`, `docmostSpaceId` and the tunables are load-bearing; the
    * dead REST-era fields (docmostApiUrl/email/password) were removed (review).
-   *
-   * `gitRemote` is NOT yet consumed: the vendored engine has no remote-push path
-   * (see engine/git.ts, engine/pull.ts, SPEC §7 — remote push is deferred), so
-   * the GIT_SYNC_REMOTE_TEMPLATE env -> validation -> getter -> this field chain
-   * is inert SCAFFOLDING kept in place for the future remote-push feature. It is
-   * harmless (the engine ignores it) and removing it would only churn; we still
-   * populate it so the wiring is ready when the engine grows a push path.
    */
   private async buildSettings(spaceId: string): Promise<Settings> {
-    // Scaffolding for the deferred remote-push feature — the engine does not read
-    // `gitRemote` yet (see the docstring above). Substitute {spaceId} per-space so
-    // the value is correct the moment the engine starts consuming it.
-    const remoteTemplate = this.environmentService.getGitSyncRemoteTemplate();
-    const gitRemote = remoteTemplate
-      ? remoteTemplate.replace(/\{spaceId\}/g, spaceId)
-      : undefined;
     // Per-space PUSH policy for still-conflicted page bodies (SPEC §9): read the
     // `gitSync.autoMergeConflicts` flag from the space's jsonb settings. STRICT
     // opt-in like `enabled` — anything other than the literal 'true' (absent, null,
@@ -242,7 +228,6 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
     return {
       docmostSpaceId: spaceId,
       vaultPath: this.vaultRegistry.vaultPath(spaceId),
-      gitRemote,
       pollIntervalMs: this.environmentService.getGitSyncPollIntervalMs(),
       debounceMs: this.environmentService.getGitSyncDebounceMs(),
       logLevel: 'info',
@@ -803,17 +788,6 @@ export class GitSyncOrchestrator implements OnModuleInit, OnModuleDestroy {
    */
   onModuleInit(): void {
     if (!this.environmentService.isGitSyncEnabled()) return;
-
-    // GIT_SYNC_REMOTE_TEMPLATE is inert scaffolding: the vendored engine has no
-    // remote-push path yet (SPEC §7), so setting it does nothing today. Warn once
-    // at startup so an operator who configured it isn't left with a silent no-op
-    // (review). Remove this warning when the engine grows a remote-push path.
-    if (this.environmentService.getGitSyncRemoteTemplate()) {
-      this.logger.warn(
-        'git-sync: GIT_SYNC_REMOTE_TEMPLATE is set but NOT yet consumed — ' +
-          'remote push is deferred (SPEC §7); this value currently has no effect.',
-      );
-    }
 
     const ms = this.environmentService.getGitSyncPollIntervalMs();
     const handle = setInterval(() => {

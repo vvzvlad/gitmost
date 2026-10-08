@@ -527,17 +527,6 @@ export class EnvironmentService {
   }
 
   /**
-   * Optional remote template, e.g. `git@host:vault-{spaceId}.git` (`{spaceId}` is
-   * substituted per-space in the orchestrator). SCAFFOLDING for the deferred
-   * remote-push feature: the vendored engine has no remote-push path yet (SPEC
-   * §7), so this value is currently inert — kept so the wiring is ready when the
-   * engine grows a push path.
-   */
-  getGitSyncRemoteTemplate(): string | undefined {
-    return this.configService.get<string>('GIT_SYNC_REMOTE_TEMPLATE');
-  }
-
-  /**
    * Poll-safety interval in ms (default 15000). A NaN / non-positive value falls
    * back to the default so a bad override can never disable or zero the poll loop.
    */

@@ -64,7 +64,6 @@ interface BuildOptions {
   /** Env tunables (only the load-bearing ones are surfaced as overrides). */
   enabled?: boolean;
   serviceUserId?: string | undefined;
-  remoteTemplate?: string | undefined;
   dataDir?: string;
   pollIntervalMs?: number;
   debounceMs?: number;
@@ -103,7 +102,6 @@ interface Built {
 function build(opts: BuildOptions = {}): Built {
   const {
     enabled = true,
-    remoteTemplate = undefined,
     dataDir = '/vaults',
     pollIntervalMs = 15000,
     debounceMs = 2000,
@@ -121,7 +119,6 @@ function build(opts: BuildOptions = {}): Built {
   const env: Record<string, AnyMock> = {
     isGitSyncEnabled: jest.fn(() => enabled),
     getGitSyncServiceUserId: jest.fn(() => serviceUserId),
-    getGitSyncRemoteTemplate: jest.fn(() => remoteTemplate),
     getGitSyncDataDir: jest.fn(() => dataDir),
     getGitSyncPollIntervalMs: jest.fn(() => pollIntervalMs),
     getGitSyncDebounceMs: jest.fn(() => debounceMs),
@@ -518,15 +515,6 @@ describe('GitSyncOrchestrator', () => {
       ).rejects.toBeInstanceOf(GitSyncLockHeldError);
       expect(runReceivePack).not.toHaveBeenCalled();
       expect(built.redis.set).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('remote template substitution', () => {
-    it('substitutes {spaceId} into the gitRemote settings handed to the engine', async () => {
-      const built = build({ remoteTemplate: 'git@h:vault-{spaceId}.git' });
-      await built.orchestrator.runOnce('space-42', 'ws-1');
-      const [deps] = runCycleMock.mock.calls[0];
-      expect(deps.settings.gitRemote).toBe('git@h:vault-space-42.git');
     });
   });
 

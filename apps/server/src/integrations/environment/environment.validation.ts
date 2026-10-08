@@ -191,13 +191,6 @@ export class EnvironmentVariables {
   @IsString()
   GIT_SYNC_DATA_DIR: string;
 
-  // SCAFFOLDING for the deferred remote-push feature: the vendored engine does
-  // not consume gitRemote yet (SPEC §7), so this is currently inert — validated
-  // here so the wiring is ready when remote push lands.
-  @IsOptional()
-  @IsString()
-  GIT_SYNC_REMOTE_TEMPLATE: string;
-
   @IsOptional()
   @IsString()
   GIT_SYNC_POLL_INTERVAL_MS: string;
