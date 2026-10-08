@@ -131,7 +131,8 @@ export function mapTurnStatusToRun(
 
 /** An in-flight run held in process memory: its AbortController is the ONLY thing
  *  that can stop the turn (an explicit user stop), independent of the browser
- *  socket. A mere disconnect never touches it, so the run keeps going. */
+ *  socket. A mere disconnect never touches it, so the run keeps going (except
+ *  #714: a new chat whose client left before the first frame). */
 interface ActiveRun {
   controller: AbortController;
   chatId: string;
@@ -157,7 +158,8 @@ export interface RunHandle {
  *    (the explicit-stop lever);
  *  - finalize the run row (succeeded / failed / aborted) and unregister it;
  *  - service an EXPLICIT user stop (`requestStop`) — the ONLY thing that aborts a
- *    run; a browser disconnect deliberately does NOT;
+ *    run; a browser disconnect deliberately does NOT (except #714: the stream
+ *    controller stops a new chat's run whose client left before the first frame);
  *  - crash-recovery sweep of dangling runs on startup; stale active runs are
  *    also reclaimed periodically (`reconcileStaleRuns`, driven by the
  *    AiChatService reconcile timer, #487).
@@ -752,7 +754,9 @@ export class AiChatRunService implements OnModuleInit {
   /**
    * Request an EXPLICIT stop of a run (the user pressed Stop). This is the ONLY
    * thing that aborts a run — distinct from a browser disconnect, which leaves
-   * the run going. Aborts the in-process controller FIRST (the only thing that
+   * the run going (except #714: a new chat's client that left before the first
+   * frame never learned the chat id, so the stream controller calls this
+   * itself). Aborts the in-process controller FIRST (the only thing that
    * actually stops the run, if this replica owns it), then makes a best-effort
    * attempt to stamp `stop_requested_at` — that audit write stamps only while the
    * row is active and may be skipped on a DB error or lost to the finalize race,

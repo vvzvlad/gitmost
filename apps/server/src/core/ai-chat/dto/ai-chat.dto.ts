@@ -95,7 +95,8 @@ export class GetRunDto {
 
 /**
  * Explicitly STOP an agent run (#184): the user pressed Stop — distinct from a
- * browser disconnect, which never stops a run. Either the run id (preferred, from
+ * browser disconnect, which never stops a run (except #714: a new chat whose
+ * client left before the first frame). Either the run id (preferred, from
  * the streamed start metadata) or the chat id (stop whatever run is active on it).
  */
 export class StopRunDto {

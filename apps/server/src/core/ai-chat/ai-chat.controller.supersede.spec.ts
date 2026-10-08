@@ -267,4 +267,58 @@ describe('#487 AiChatController.stream — gate + supersede', () => {
     expect(aiChatService.stream).toHaveBeenCalledTimes(1);
     expect(aiChatService.stream.mock.calls[0][0].superseded).toBe(false);
   });
+
+  // #714: a NEW chat learns its id only from the first frame. A client that leaves
+  // before it can never stop or reattach, so the server stops the run itself.
+  describe('#714 disconnect before the new chat id reached the client', () => {
+    type Drive = {
+      goneBeforeBegin?: boolean;
+      headersSent?: boolean;
+      close?: boolean;
+    };
+
+    // Run one turn: optionally mark the socket gone before begin, run begin, then
+    // (optionally) send headers and fire the response 'close'. Returns the
+    // requestStop mock.
+    async function runTurn(body: Record<string, unknown>, opts: Drive) {
+      const { controller, aiChatService, aiChatRunService } = makeController(
+        {},
+      );
+      const { req, res } = makeReqRes(body);
+      // Asserted outside the mock: the controller's catch would swallow a throw.
+      const onClose = () =>
+        res.raw.once.mock.calls.find(([event]) => event === 'close')?.[1];
+      aiChatService.stream.mockImplementation(async ({ runHooks }) => {
+        if (opts.goneBeforeBegin) (res.raw as any).destroyed = true;
+        await runHooks.begin('c-new');
+        if (opts.headersSent) res.raw.headersSent = true;
+        if (opts.close) onClose()();
+      });
+      await controller.stream(req as never, res as never, user, workspace);
+      expect(onClose()).toBeDefined();
+      return aiChatRunService.requestStop;
+    }
+
+    it('stops the run when the client leaves after begin, before any frame', async () => {
+      const requestStop = await runTurn({}, { close: true });
+      expect(requestStop).toHaveBeenCalledTimes(1);
+      expect(requestStop).toHaveBeenCalledWith('run-new', 'ws1');
+    });
+
+    it('stops the run at begin when the client was already gone', async () => {
+      const requestStop = await runTurn({}, { goneBeforeBegin: true });
+      expect(requestStop).toHaveBeenCalledTimes(1);
+      expect(requestStop).toHaveBeenCalledWith('run-new', 'ws1');
+    });
+
+    it('keeps the run when the first frame already went out', async () => {
+      const requestStop = await runTurn({}, { headersSent: true, close: true });
+      expect(requestStop).not.toHaveBeenCalled();
+    });
+
+    it('keeps the run of an existing chat (the client knows its id)', async () => {
+      const requestStop = await runTurn({ chatId: 'c1' }, { close: true });
+      expect(requestStop).not.toHaveBeenCalled();
+    });
+  });
 });

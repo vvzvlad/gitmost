@@ -419,8 +419,9 @@ export class AiChatController {
   /**
    * Explicitly STOP an agent run (#184 phase 1) — the user pressed Stop. This is
    * the ONLY thing that ends a detached run; a browser disconnect deliberately
-   * does not. Target by `runId` (from the streamed start metadata) or by `chatId`
-   * (stop whatever run is active on it). Owner-gated. Returns
+   * does not (except #714, see stream(): a new chat's client that left before
+   * the first frame). Target by `runId` (from the streamed start metadata) or
+   * by `chatId` (stop whatever run is active on it). Owner-gated. Returns
    * `{ stopped }` — false when there was nothing active to stop.
    */
   @HttpCode(HttpStatus.OK)
@@ -738,6 +739,19 @@ export class AiChatController {
     // #487: the turn is ALWAYS a first-class, detached RUN: a browser disconnect
     // does not stop it (onClose below); only an explicit stop (/ai-chat/stop or
     // a supersede) aborts it.
+    //
+    // #714 exception: a NEW chat learns its id only from the first stream frame
+    // (the `start` part, written right after the headers). If the client goes
+    // away before that, it can never address this run — not to stop it, not to
+    // reattach — so the server stops it itself.
+    const isNewChat = !body.chatId;
+    let newChatRun: { runId: string; chatId: string } | undefined;
+    const stopUnaddressableRun = (run: { runId: string; chatId: string }) => {
+      this.logger.warn(
+        `AI chat stream: client left before new chat ${run.chatId} reached it; stopping run ${run.runId}`,
+      );
+      void this.aiChatRunService.requestStop(run.runId, workspace.id);
+    };
     const runHooks: AiChatRunHooks = {
       begin: async (chatId) => {
         const handle = await this.aiChatRunService.beginRun({
@@ -751,6 +765,12 @@ export class AiChatController {
         // to wait on.
         if (handle?.runId) {
           this.streamRegistry?.open(chatId, handle.runId);
+          if (isNewChat) {
+            newChatRun = { runId: handle.runId, chatId };
+            // #714: the client left before the run existed (onClose had nothing
+            // to stop yet, or fired before its listener was attached).
+            if (res.raw.destroyed) stopUnaddressableRun(newChatRun);
+          }
         }
         return handle;
       },
@@ -766,24 +786,29 @@ export class AiChatController {
         this.aiChatRunService.finalizeRun(runId, workspace.id, status, error),
     };
 
-    // Handle a client disconnect. `close` also fires on normal completion, so only
-    // act when the response has not finished writing (a genuine disconnect). `once`
-    // fires at most once and self-removes; we also drop it on response `finish`.
+    // Handle a client disconnect. Listen on the RESPONSE: by the time this handler
+    // runs Fastify has consumed the POST body, so `req.raw` is already closed and
+    // its 'close' never fires on a later disconnect. `close` also fires on normal
+    // completion, so only act when the response has not finished writing.
     // `controller` is never aborted: the run-wrapped turn is governed by the run's
     // own signal (explicit Stop); it only fills the stream's required `signal` arg.
     const controller = new AbortController();
     const onClose = (): void => {
-      if (!res.raw.writableEnded) {
-        // #184: a DETACHED run — a disconnect must NOT stop it. The run keeps
-        // executing and persisting server-side; the client reconnects via
-        // /ai-chat/run (or re-stops via /ai-chat/stop). Log only.
-        this.logger.log(
-          'AI chat stream: client disconnected; run continues server-side',
-        );
+      if (res.raw.writableEnded) return;
+      if (isNewChat && !res.raw.headersSent) {
+        // #714: no frame went out, so the client never got the new chat id.
+        // Before begin there is no run yet — begin stops it (res.raw.destroyed).
+        if (newChatRun) stopUnaddressableRun(newChatRun);
+        return;
       }
+      // #184: a DETACHED run — a disconnect must NOT stop it. The run keeps
+      // executing and persisting server-side; the client reconnects via
+      // /ai-chat/run (or re-stops via /ai-chat/stop). Log only.
+      this.logger.log(
+        'AI chat stream: client disconnected; run continues server-side',
+      );
     };
-    req.raw.once('close', onClose);
-    res.raw.once('finish', () => req.raw.off('close', onClose));
+    res.raw.once('close', onClose);
 
     // #184/#487: the run/pipe outlives the socket (a disconnect does not stop it).
     // The SDK's pipe may then write to a dropped socket and emit an 'error' on the
