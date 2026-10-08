@@ -1991,8 +1991,10 @@ export class AiChatService implements OnModuleInit, OnModuleDestroy {
           },
           // #184: the RUN's signal (explicit-stop) when a run wraps this turn, else
           // the socket-bound signal (no run). A browser disconnect never aborts a
-          // run. #444: UNION it with the internal degeneration signal
-          // so a detected token-loop aborts the run too (AbortSignal.any — Node 20.3+).
+          // run by itself (#714: the controller stops a new chat's run via the run
+          // signal when its client left before the first frame). #444: UNION it
+          // with the internal degeneration signal so a detected token-loop aborts
+          // the run too (AbortSignal.any — Node 20.3+).
           abortSignal: AbortSignal.any([
             effectiveSignal,
             degenerationController.signal,

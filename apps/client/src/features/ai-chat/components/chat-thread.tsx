@@ -413,7 +413,9 @@ export default function ChatThread({
         case "stopRun":
           // Authoritative stop. When the chat id is not known yet (brand-new chat's
           // first moment), it is deferred: the chat-id adoption effect fires
-          // onServerStop the moment the id lands while still in `stopping`.
+          // onServerStop the moment the id lands while still in `stopping`. If it
+          // never lands (the POST was aborted before the first frame), the server
+          // stops the run itself (#714).
           if (chatIdRef.current)
             onServerStopRef.current?.(chatIdRef.current);
           break;
@@ -1116,8 +1118,9 @@ export default function ChatThread({
 
   // Stop the current turn. Abort the local SSE + the attach GET and request the
   // AUTHORITATIVE server stop (a local abort is only a client disconnect the server
-  // ignores). The FSM `stopping` exits by DATA (I4): the local turn's onFinish
-  // (FINISH_ABORT) or the poll reaching terminal.
+  // ignores — except a new chat's before its first frame, #714). The FSM
+  // `stopping` exits by DATA (I4): the local turn's onFinish (FINISH_ABORT) or
+  // the poll reaching terminal.
   const handleStop = useCallback(() => {
     stopFnRef.current?.();
     dispatch({ type: "STOP_REQUESTED" });
