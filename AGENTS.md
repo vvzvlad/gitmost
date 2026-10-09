@@ -171,7 +171,7 @@ root, sibling directories, or temp folders — is forbidden.
 This rule has no exceptions:
 
 - **Where:** the only remote for commits/pushes is **`gitea`** (its address:
-  `git remote get-url gitea`). **Never** push to `origin` (the GitHub mirror), and
+  `git remote get-url gitea`). **Never** push to `github` (the GitHub mirror), and
   especially not to `upstream` (the original Docmost). The GitHub mirror is
   updated by the owner's CI process, not by the agent.
 - **Who:** commit **only** as the agent identity. Any commit whose author or
@@ -248,7 +248,7 @@ the MCP authenticates in-process, so no keychain lookup or Basic-Auth is needed.
 Call `pull_request_write` with:
 
 - `method: "create"`
-- `owner: "vvzvlad"`, `repo: "gitmost"`
+- `owner: "projects"`, `repo: "gitmost"`
 - `base: "develop"`, `head: "<branch>"`
 - `title`, `body` — in the body: what was done, what is out of scope,
   verification results (tsc/lint/tests).
@@ -264,7 +264,7 @@ the MCP account; the commits themselves stay authored as `claude_code`.
 
 > If push fails with `User permission denied for writing`, then `claude_code`
 > lacks collaborator rights on the repo. Ask the owner to add them (once, via
-> the Gitea UI or `PUT /api/v1/repos/vvzvlad/gitmost/collaborators/claude_code`
+> the Gitea UI or `PUT /api/v1/repos/projects/gitmost/collaborators/claude_code`
 > with `{"permission":"write"}` from their account).
 
 ### 5. Merge and cleanup
@@ -307,9 +307,10 @@ below.
 | Agent user (Gitea/git) | `claude_code` |
 | Agent email | `git config --local user.email` of this clone (ask the owner if unset) |
 | Keychain password | `security find-generic-password -s gitea-claude-code -w` |
-| Forge API (PR / issue / review / reads) | **Gitea MCP** — server `gitea` (`pull_request_write`, `issue_write`, `list_pull_requests`, `pull_request_read`, `label_read`, …). Authenticated in-process; acts under its own token — check with `get_me`. Repo slug on the server is `gitmost`. |
+| Forge API (PR / issue / review / reads) | **Gitea MCP** — server `gitea` (`pull_request_write`, `issue_write`, `list_pull_requests`, `pull_request_read`, `label_read`, …). Authenticated in-process; acts under its own token — check with `get_me`. The repo on the server is owner `projects`, slug `gitmost`. |
 | Base branch | `develop` |
-| `origin` | GitHub mirror `vvzvlad/gitmost` — **do not push**, updated by the owner's CI |
+| `github` | GitHub mirror `vvzvlad/gitmost` — **do not push**, updated by the owner's CI |
+| `origin` | Points at Gitea in this clone, same as `gitea` — push to `gitea` by name |
 | `upstream` | The original Docmost — **never push** |
 
 ## Creating issues (Gitea MCP)
@@ -318,7 +319,7 @@ File issues through the **Gitea MCP** (server `gitea`), not a CLI — call
 `issue_write` with:
 
 - `method: "create"`
-- `owner: "vvzvlad"`, `repo: "gitmost"`
+- `owner: "projects"`, `repo: "gitmost"`
 - `title`, `body`
 - `labels` — an array of label **IDs** (numbers), *not* names. Resolve a name
   such as `feature` to its id first with `label_read` (`method: "list"`), then
@@ -468,7 +469,7 @@ Two routes are mounted **outside** the `/api` prefix at the root, as raw Fastify
 ### The two AI subsystems (the main fork additions)
 1. **Embedded MCP server** (`integrations/mcp/` + `packages/mcp`). The standalone `@docmost/mcp` server (55 agent-native tools: per-block patch/insert/delete by id, scripted `(doc)=>doc` transforms with dry-run diff, table editing, version diff/restore, comments, images, shares) is bundled and served over HTTP at `/mcp`. It writes through Docmost's real-time-collaboration layer so concurrent human edits aren't clobbered. Each request authenticates an agent **exclusively** with a Bearer api_key via the `Authorization` header (`Authorization: Bearer <api_key>`, minted under Workspace settings → API keys, validated through `ApiKeyService`) — the session acts under that key owner's permissions, and revoking the key revokes access immediately. No other inbound credential is accepted (no HTTP Basic email:password, no human session token, no env service account). An admin enables MCP with a workspace toggle (Workspace settings → AI). Optionally protected by a shared `MCP_TOKEN`: when set, every `/mcp` request must carry a matching `X-MCP-Token` header (its own header, separate from `Authorization`, which carries the Bearer api_key). Note: this changed from the older `Authorization: Bearer <MCP_TOKEN>` scheme — see `.env.example` and the CHANGELOG Breaking Changes entry.
 2. **AI agent chat** (`core/ai-chat/` server + `apps/client/src/features/ai-chat/` client). A built-in agent over the wiki using the Vercel **AI SDK** (`ai`, `@ai-sdk/*`) against any OpenAI-compatible provider configured per workspace (`integrations/ai/` — credentials encrypted at rest via `integrations/crypto`, stored in `ai_provider_credentials`). Key pieces:
-   - `core/ai-chat/tools/` — the agent's ~40 read+write tools. Every tool runs under the **calling user's** CASL permissions via a per-user loopback access token (`docmost-client.loader.ts`), so the agent can never exceed what the user could do. Only **reversible** operations are exposed (page history + trash; no permanent delete). Agent edits get an "AI agent" provenance badge in page history (`20260616T130000-agent-provenance` migration).
+   - `core/ai-chat/tools/` — the agent's 56 read+write tools. Every tool runs under the **calling user's** CASL permissions via a per-user loopback access token (`docmost-client.loader.ts`), so the agent can never exceed what the user could do. Only **reversible** operations are exposed (page history + trash; no permanent delete). Agent edits get an "AI agent" provenance badge in page history (`20260616T130000-agent-provenance` migration).
    - `core/ai-chat/embedding/` — RAG indexer + a BullMQ consumer on `AI_QUEUE` that embeds pages into `page_embeddings` (vector search), complementing Postgres full-text search. Pages are (re)indexed on edit; `AI_EMBEDDING_TIMEOUT_MS` bounds a hung embeddings endpoint.
    - `core/ai-chat/external-mcp/` — admins can attach external MCP servers (e.g. Tavily) to give the agent web access. **`ssrf-guard.ts` validates outbound MCP URLs against SSRF** — keep that guard in the path when touching external-MCP connection logic.
    - `core/ai-chat/ai-chat-run.service.ts` + `ai_chat_runs` — **every agent turn is now a first-class server-side RUN** (`#184`, universalized in `#487`): its lifecycle is tracked in `ai_chat_runs`, and the single-active-run-per-chat concurrency gate is enforced universally (a second tab gets a clean `409 A_RUN_ALREADY_ACTIVE` instead of a second parallel stream that interleaved history). Every run is *detached*: a browser disconnect leaves it executing server-side and only an explicit `POST /ai-chat/stop` ends it — with one exception (#714): a NEW chat whose client disconnects before the first stream frame (the one carrying the chat id) could never be addressed again, so the server stops that run itself. A reloaded tab learns of the active run via `POST /ai-chat/run` and live-follows it through the in-memory run-stream registry (`GET /ai-chat/runs/:chatId/stream`); a dropped live stream follows the run through the delta poll. (The former `settings.ai.autonomousRuns` toggle and the `AI_CHAT_RESUMABLE_STREAM` env flag are gone — this is the only mode.) `#487` also adds a server-side **supersede** CAS ("interrupt and send now") to `POST /ai-chat/stream` (`supersede: { runId }`): it atomically stops the chat's currently-active run and waits for it to settle before the new turn claims the slot, returning `SUPERSEDE_INVALID` / `SUPERSEDE_TARGET_MISMATCH` / `SUPERSEDE_TIMEOUT` on the non-proceed branches. **DEPLOY CONSTRAINT — single-instance only in phase 1:** Stop and the AbortController that backs it are process-local, so a Stop only aborts a run executing on the **same** replica that owns it (cross-instance pub/sub stop is phase 2). Do **not** run a horizontally-scaled deployment (multiple replicas behind a load balancer, or Docmost cloud `CLOUD=true`) — run a single instance instead. The server logs a startup WARNING when it detects a multi-instance deployment (`CLOUD=true`) so the constraint is visible. The startup sweep settles any run left dangling by a restart.
@@ -545,7 +546,7 @@ If you already tagged `main` (or `develop` still shows the old version), recover
 2. Make sure the tag exists on `github`: compare `git ls-remote --tags github` with `gitea`, and push the missing one (`git push github vX.Y.Z` / `git push gitea vX.Y.Z`). Pushing a `v*` tag to `github` also fires `release.yml` — expected, just be aware.
 3. Re-run the develop build (`gh workflow run Develop`, or push any commit to `develop`) so `git describe` re-resolves with the tag now in scope.
 
-(There is no `origin` remote here — push to `gitea` **and** `github` explicitly, and always push release tags to both.)
+(Do not push to `origin` — in this clone it points at Gitea, so a release pushed there never reaches GitHub. Push to `gitea` **and** `github` explicitly, and always push release tags to both.)
 
 ## Planning docs
 
