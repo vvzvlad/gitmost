@@ -13,7 +13,8 @@
 ## About this fork
 
 **Gitmost** is a community fork of [Docmost](https://github.com/docmost/docmost), an open-source
-collaborative wiki and documentation app.
+collaborative wiki and documentation app. It was forked from `docmost/docmost` on June 16, 2026
+and has been modified by the Gitmost contributors since then.
 
 The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Edition (EE) code**:
 
@@ -34,7 +35,7 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | --- | --- |
 | **EE code removed** | Stripped all client and server Enterprise-Edition code; ships as a clean community/AGPL build with no license checks. |
 | **Comment resolution** | Re-implemented from scratch as a community feature (resolve / re-open with Open/Resolved tabs). No EE code reused, available to anyone who can comment. |
-| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 40 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
+| **Embedded MCP server** | A community MCP server (`@docmost/mcp`, 55 tools) is served over HTTP at `/mcp` — no enterprise license required. Replaces the removed license-gated EE MCP. |
 | **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
@@ -43,9 +44,10 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 
 ### Embedded MCP server
 
-Gitmost has **our own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
-which we wrote — **built directly into the app** and served at `/mcp`. It exposes **40
-agent-native tools**: surgical per-block edits (patch / insert / delete by id),
+Gitmost has **its own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
+a fork of [MrMartiniMo/docmost-mcp](https://github.com/MrMartiniMo/docmost-mcp) (MIT) that we
+have substantially extended — **built directly into the app** and served at `/mcp`. It exposes
+**55 agent-native tools**: surgical per-block edits (patch / insert / delete by id),
 structure-preserving find/replace, scripted `(doc) => doc` transforms with a dry-run diff,
 structured table editing, version history with diff / restore, comments, images and share
 links — all applied through Docmost's real-time-collaboration layer, so a write never
@@ -60,7 +62,7 @@ every little fix. And it needs no enterprise license.
 | | **Gitmost `/mcp` (our docmost-mcp)** | Docmost's built-in MCP |
 | --- | :---: | :---: |
 | **Enterprise license** | Not required | Required |
-| **Tools** | 40, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
+| **Tools** | 55, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
 | **Per-block edits / find-replace / scripted transforms** | ✅ | — |
 | **Structured table editing, version diff / restore** | ✅ | — |
 | **Comments, images, share links** | ✅ | — |
@@ -365,11 +367,22 @@ curl -s https://embeddings.example.com/v1/embeddings \
 
 ### License
 
-Gitmost is licensed under the open-source AGPL 3.0 license.
+Gitmost is licensed under the open-source AGPL 3.0 license. It is a modified version of
+Docmost, forked on June 16, 2026.
 
 Unlike upstream Docmost, this fork contains **no Enterprise-Edition code** — the `apps/server/src/ee`,
 `apps/client/src/ee` and `packages/ee` directories have been removed, so there are no files governed
 by an enterprise license.
+
+The embedded MCP server in `packages/mcp` is based on
+[MrMartiniMo/docmost-mcp](https://github.com/MrMartiniMo/docmost-mcp) and keeps its MIT license
+(see [packages/mcp/LICENSE](packages/mcp/LICENSE)).
+
+### Trademark
+
+Gitmost is an independent community fork and is not affiliated with, endorsed by or sponsored by
+Docmost, Inc. "Docmost" is a trademark of Docmost, Inc.; it is used here only to describe where this
+project comes from.
 
 ### Credits
 

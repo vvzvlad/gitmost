@@ -6,6 +6,7 @@ import {
   useMantineColorScheme,
 } from "@mantine/core";
 import {
+  IconBrandGithub,
   IconBrightnessFilled,
   IconBrush,
   IconCheck,
@@ -173,6 +174,18 @@ export default function TopMenu() {
               </Menu.Item>
             </Menu.Sub.Dropdown>
           </Menu.Sub>
+
+          {/* AGPL-3.0 §13: every user of this network service is offered the
+              Corresponding Source of the running program. */}
+          <Menu.Item
+            component="a"
+            href="https://github.com/vvzvlad/gitmost"
+            target="_blank"
+            rel="noopener noreferrer"
+            leftSection={<IconBrandGithub size={16} />}
+          >
+            {t("Source code")}
+          </Menu.Item>
 
           <Menu.Divider />
 

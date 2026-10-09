@@ -16,7 +16,7 @@ license.
 > that interface. Other Docmost MCPs are human-shaped — they expose "open the page" and
 > "replace the page"; this one exposes the editing primitives a model is good at.
 
-It exposes **41 tools** built around three ideas that the other Docmost MCPs do not
+It exposes **55 tools** built around three ideas that the other Docmost MCPs do not
 combine:
 
 1. **Surgical, token-cheap edits.** Address a single block by id and patch it, or run
@@ -106,7 +106,7 @@ There are several Docmost MCPs. Here is a capability-by-capability comparison.
 
 ## Tools
 
-All 41 tools, grouped by what you'd reach for them.
+All 55 tools, grouped by what you'd reach for them.
 
 ### Exploration & retrieval
 
@@ -114,6 +114,11 @@ All 41 tools, grouped by what you'd reach for them.
 - **`listSpaces`** — All spaces in the workspace.
 - **`listPages`** — Recent pages in a space, ordered by `updatedAt` desc (default 50,
   max 100). Use `search` for lookups in large spaces.
+- **`getTree`** — A space's page hierarchy (or one subtree) as a nested tree in one request.
+- **`getPageContext`** — A page's breadcrumbs plus its direct children ("where am I") in
+  one call.
+- **`searchInPage`** — Find every occurrence of a string or regex inside one page, with
+  locations.
 - **`search`** — Full-text search across pages and content (bounded by `limit`, max 100).
 - **`getPage`** — A page's content as clean **Markdown** (canonical for text; drops only
   block ids, resolved-comment anchors, and a fixed no-Markdown-representation attr set —
@@ -157,6 +162,8 @@ All 41 tools, grouped by what you'd reach for them.
 - **`insertNode`** — Insert a block before/after another (by `attrs.id` or anchor text),
   or append at the end.
 - **`deleteNode`** — Remove a single block by its `attrs.id`.
+- **`insertFootnote`** — Attach a numbered footnote right after a snippet of existing body
+  text.
 - **`updatePageJson`** — Replace a page's entire content with a ProseMirror document
   (bulk rewrites, or when nodes lack ids). `content` is optional — omit it to update only
   the title. Keeps the block ids you pass in, so heading anchors and history stay stable.
@@ -189,6 +196,20 @@ All 41 tools, grouped by what you'd reach for them.
 - **`tableUpdateCell`** — Set the plain-text content of cell `[row, col]` (0-based). For
   rich formatting, `patchNode` the cell's paragraph id from `tableGet`.
 
+### Diagrams (draw.io)
+
+- **`drawioCreate`** — Create a draw.io diagram from mxGraph XML and insert it.
+- **`drawioFromGraph`** — Build a draw.io diagram from a semantic node/group/edge graph;
+  the server picks the layout and icons.
+- **`drawioFromMermaid`** — Turn Mermaid flowchart text into an editable draw.io diagram.
+- **`drawioGet`** — Read a draw.io diagram as mxGraph XML, plus a hash for updates.
+- **`drawioUpdate`** — Replace a draw.io diagram (optimistic-locked by `baseHash`).
+- **`drawioEditCells`** — Id-based add/update/delete edits to a draw.io diagram (cascade
+  delete).
+- **`drawioShapes`** — Look up verified draw.io stencil style strings.
+- **`drawioGuide`** — On-demand draw.io authoring reference (skeleton, layout, containers,
+  icons).
+
 ### Markdown round-trip
 
 - **`exportPageMarkdown`** — Export a page to a single self-contained
@@ -205,8 +226,12 @@ All 41 tools, grouped by what you'd reach for them.
 > To replace a page's body from Markdown, use **`updatePageMarkdown`** (plain Markdown
 > body replace). See the CHANGELOG for the migration note.
 
-### Images
+### Images & files
 
+- **`uploadFile`** — Upload a file of any type from base64 bytes as a page attachment and get a
+  ready-to-insert node; optionally insert it in the same call.
+- **`downloadFile`** — Download an internal Docmost attachment by its `/api/files` src, as
+  base64 (small files) or a short anonymous URL.
 - **`insertImage`** — Download an image from a web (http/https) URL and insert it in one
   step: append it, drop it in place of a text placeholder (`replaceText`), or put it after
   a given block (`afterText`). Preserves all other block ids.
@@ -251,6 +276,8 @@ All 41 tools, grouped by what you'd reach for them.
 - **`restorePageVersion`** — Write a saved version back as the current content. Docmost
   has no restore endpoint, so this creates a **new** snapshot — the restore is itself
   revertible.
+- **`savePageVersion`** — Pin the page's current content as a named version — a
+  restorable checkpoint.
 
 ### Sharing
 
