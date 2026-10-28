@@ -158,7 +158,7 @@ jobs:
   # is pushed only when unit tests AND both e2e suites pass (publish.needs
   # lists them all).
   e2e-server:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: re2 does not compile on 26.04
     # Hard cap: the full-AppModule e2e leaks open handles and hung jest to the 6h max.
     timeout-minutes: 15
     env:
@@ -244,7 +244,7 @@ jobs:
 
   # Gates the publish too — see the comment above e2e-server.
   e2e-mcp:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: re2 does not compile on 26.04
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
