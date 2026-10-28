@@ -85,7 +85,7 @@ jobs:
           exit $bad
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: re2 does not compile on 26.04
     timeout-minutes: 20
     # Real Postgres + Redis for the server integration suite (`*.int-spec.ts`,
     # behind `pnpm --filter server test:int`). Postgres uses the pgvector image
@@ -199,7 +199,7 @@ jobs:
   # coupling is explicit and no path filter can split it. No Postgres/Redis needed:
   # these specs mock the DB/loader.
   mcp-server-parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: re2 does not compile on 26.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -246,7 +246,7 @@ jobs:
   # apps/server/test (clone/push/pull/delete/3-way merge, the auth/authz gate,
   # the held-lock 503, rename/reparent/delete-cap).
   git-sync-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: re2 does not compile on 26.04
     timeout-minutes: 25
     env:
       DATABASE_URL: postgresql://docmost:docmost@localhost:5432/docmost
