@@ -1,5 +1,6 @@
 import { FC } from "react";
 import { ActionIcon, Group, Loader, Tooltip } from "@mantine/core";
+import { useHotkeys } from "@mantine/hooks";
 import {
   IconMicrophone,
   IconPlayerStopFilled,
@@ -34,6 +35,12 @@ interface MicButtonProps {
   // When the mic is disabled for an availability reason, this is the cause the
   // idle tooltip explains (e.g. pre-sync "connecting", "offline", "read-only").
   unavailableReason?: DictationUnavailableReason;
+  // Optional Mantine hotkey (e.g. "mod+shift+D") that does what a click does:
+  // starts recording when idle, stops it while recording.
+  hotkey?: string;
+  // Decides whether the hotkey may START recording from where it was pressed;
+  // stopping is always allowed. Absent = start from anywhere.
+  hotkeyGuard?: (event: KeyboardEvent) => boolean;
 }
 
 /**
@@ -52,6 +59,8 @@ export const MicButton: FC<MicButtonProps> = ({
   iconSize,
   streaming = false,
   unavailableReason,
+  hotkey,
+  hotkeyGuard,
 }) => {
   const { t } = useTranslation();
   // Call BOTH hooks unconditionally to respect the rules of hooks: which one is
@@ -63,6 +72,36 @@ export const MicButton: FC<MicButtonProps> = ({
   const ctl = streaming ? streamingCtl : batchCtl;
   const { status, start, stop, retry, discard, audioLevel, errorMessage } = ctl;
   const resolvedIconSize = iconSize ?? (size === "lg" ? 18 : 16);
+
+  // Registered before the status branches below so the hook runs every render.
+  // Physical keys make the shortcut work in any keyboard layout; an empty ignore
+  // list plus `triggerOnContentEditable` let it fire while typing in the editor.
+  useHotkeys(
+    hotkey
+      ? [
+          [
+            hotkey,
+            (event) => {
+              // A held-down combo auto-repeats; only the first press toggles.
+              if (event.repeat) return;
+              if (status === "recording") {
+                stop();
+              } else if (
+                status === "idle" &&
+                !disabled &&
+                isDictationSupported() &&
+                (hotkeyGuard?.(event) ?? true)
+              ) {
+                void start();
+              }
+            },
+            { preventDefault: true, usePhysicalKeys: true },
+          ],
+        ]
+      : [],
+    [],
+    true,
+  );
 
   if (status === "recording") {
     // Live volume-driven halo: the scale follows the current mic level.

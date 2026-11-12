@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Git sync names its commits by what changed in the wiki: `docmost: edit N page(s)`,
   `docmost: delete N page(s)` or both, instead of `docmost: export N page(s)`.
+- The editor's dictation mic moved from under the page title to the page header, so it stays on
+  screen on a long page, and Cmd/Ctrl+Shift+D pressed while typing in the page text starts
+  dictation at the caret and stops it.
 
 ### Fixed
 
