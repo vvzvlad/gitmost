@@ -3,39 +3,66 @@ import { renderHook, act } from "@testing-library/react";
 
 // Shared, hoisted test state the module mocks write into. `onSpeechEnd` is the
 // VAD callback the hook registers on MicVAD.new — capturing it lets us drive
-// "a speech segment ended" deterministically. `pending` collects the deferred
-// transcription promises so the test controls their resolution order, which is
+// "a speech segment ended" deterministically. `speaking` marks a segment that
+// is still being spoken. `pending` collects the deferred transcription promises
+// (with the audio sent) so the test controls their resolution order, which is
 // the whole point: out-of-order HTTP responses must NOT scramble the emitted
 // text (the in-order emitter under test).
 const h = vi.hoisted(() => {
   return {
     onSpeechEnd: null as null | ((audio: Float32Array) => void),
-    pending: [] as { resolve: (s: string) => void; reject: (e: unknown) => void }[],
-    notify: null as null | ReturnType<typeof Object>,
+    speaking: false,
+    vad: null as null | { pause: () => Promise<void> },
+    pending: [] as {
+      blob: Blob;
+      resolve: (s: string) => void;
+      reject: (e: unknown) => void;
+    }[],
   };
 });
 
-// Lazy-imported VAD: capture the onSpeechEnd handler and hand back a no-op
-// instance (start/pause/destroy all resolve).
+// Lazy-imported VAD: capture the onSpeechEnd handler. Like vad-web 0.0.30,
+// pause() hands the open segment to onSpeechEnd only with
+// submitUserSpeechOnPause, and destroy() pauses a listening VAD.
 vi.mock("@ricky0123/vad-web", () => ({
   MicVAD: {
-    new: vi.fn(async (opts: { onSpeechEnd: (a: Float32Array) => void }) => {
-      h.onSpeechEnd = opts.onSpeechEnd;
-      return {
-        start: vi.fn(async () => {}),
-        pause: vi.fn(async () => {}),
-        destroy: vi.fn(async () => {}),
-      };
-    }),
+    new: vi.fn(
+      async (opts: {
+        onSpeechEnd: (a: Float32Array) => void;
+        submitUserSpeechOnPause?: boolean;
+      }) => {
+        h.onSpeechEnd = opts.onSpeechEnd;
+        let listening = false;
+        const pause = vi.fn(async () => {
+          if (!listening) return;
+          listening = false;
+          if (opts.submitUserSpeechOnPause && h.speaking) {
+            h.speaking = false;
+            opts.onSpeechEnd(new Float32Array(8));
+          }
+        });
+        const vad = {
+          start: vi.fn(async () => {
+            listening = true;
+          }),
+          pause,
+          destroy: vi.fn(async () => {
+            if (listening) await pause();
+          }),
+        };
+        h.vad = vad;
+        return vad;
+      },
+    ),
   },
 }));
 
-// Each transcribeAudio call returns a promise we resolve/reject by index.
+// Each transcription call returns a promise we resolve/reject by index.
 vi.mock("@/features/dictation/services/dictation-service", () => ({
-  transcribeAudio: vi.fn(
-    () =>
+  transcribeWithRetry: vi.fn(
+    (blob: Blob) =>
       new Promise<string>((resolve, reject) => {
-        h.pending.push({ resolve, reject });
+        h.pending.push({ blob, resolve, reject });
       }),
   ),
 }));
@@ -55,6 +82,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 import { useStreamingDictation } from "./use-streaming-dictation";
+import { useDictation } from "./use-dictation";
 
 // jsdom has no AudioContext; the hook constructs one and calls resume(). A
 // trivial stub is enough — the real audio path is irrelevant to ordering.
@@ -91,6 +119,8 @@ describe("useStreamingDictation — in-order segment emitter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.onSpeechEnd = null;
+    h.speaking = false;
+    h.vad = null;
     h.pending = [];
     notifyShow.mockClear();
     (window as unknown as { AudioContext: unknown }).AudioContext =
@@ -137,53 +167,111 @@ describe("useStreamingDictation — in-order segment emitter", () => {
     expect(emitted).toEqual(["hello", "world"]);
   });
 
-  it("a failed segment shows one notification and is skipped so later segments still flush in order", async () => {
+  it("a failed segment is held and blocks later text; retry() resends its audio and flushes in order", async () => {
     const emitted: string[] = [];
-    await startRecording((t) => emitted.push(t));
-    await emitSegments(2);
-
-    // seq 0 fails: the user sees a notification and the emitter advances past it.
-    await act(async () => {
-      h.pending[0].reject({ message: "boom" });
-    });
-    expect(notifyShow).toHaveBeenCalledTimes(1);
-    expect(emitted).toEqual([]);
-
-    // seq 1 still flushes (it is now next), proving one failure did not stall.
-    await act(async () => {
-      h.pending[1].resolve("survivor");
-    });
-    expect(emitted).toEqual(["survivor"]);
-  });
-
-  it("an OUT-OF-ORDER failed segment is buffered as empty and skipped without stalling later text", async () => {
-    const emitted: string[] = [];
-    await startRecording((t) => emitted.push(t));
+    const hook = await startRecording((t) => emitted.push(t));
     await emitSegments(3);
 
-    // seq 1 (NOT next-to-emit) fails first: it takes the else branch — an empty
-    // placeholder is buffered (resultsRef.set(seq, "")) so the emitter can later
-    // skip it. One notification, nothing emitted yet (seq 0 still gates).
+    // seq 0 fails for good while seq 1 and 2 succeed: one notification, and the
+    // later text waits behind the held segment instead of skipping it.
+    await act(async () => {
+      h.pending[0].reject({ message: "boom" });
+      h.pending[1].resolve("second");
+      h.pending[2].resolve("third");
+    });
+    expect(emitted).toEqual([]);
+    expect(notifyShow).toHaveBeenCalledTimes(1);
+    expect(notifyShow.mock.calls[0][0].message).toContain(
+      "the recording is kept and can be transcribed again",
+    );
+    expect(hook.result.current.status).toBe("recording");
+
+    // Stopping with a held segment and nothing in flight ends in "failed".
+    await act(async () => {
+      hook.result.current.stop();
+    });
+    expect(hook.result.current.status).toBe("failed");
+
+    // retry() resends the held WAV; its text lands first, then the waiting text.
+    act(() => {
+      hook.result.current.retry();
+    });
+    expect(h.pending).toHaveLength(4);
+    expect(h.pending[3].blob).toBe(h.pending[0].blob);
+    expect(hook.result.current.status).toBe("transcribing");
+    await act(async () => {
+      h.pending[3].resolve("first");
+    });
+    expect(emitted).toEqual(["first", "second", "third"]);
+    expect(hook.result.current.status).toBe("idle");
+  });
+
+  it("discard() drops held segments and emits the later text that waited behind them", async () => {
+    const emitted: string[] = [];
+    const hook = await startRecording((t) => emitted.push(t));
+    await emitSegments(3);
+
+    // seq 1 (NOT next-to-emit) fails; only seq 0 may land, seq 2 waits.
     await act(async () => {
       h.pending[1].reject({ message: "boom" });
-    });
-    expect(notifyShow).toHaveBeenCalledTimes(1);
-    expect(emitted).toEqual([]);
-
-    // seq 0 flushes; the drain then reaches the buffered empty seq 1 and SKIPS
-    // past it to seq 2.
-    await act(async () => {
       h.pending[0].resolve("alpha");
+      h.pending[2].resolve("gamma");
     });
     expect(emitted).toEqual(["alpha"]);
 
-    // seq 2 emits — proving the empty placeholder let the emitter advance past
-    // the failed seq 1. Without the else branch's placeholder the drain would
-    // stall at the missing seq 1 and "gamma" would never flush.
     await act(async () => {
-      h.pending[2].resolve("gamma");
+      hook.result.current.stop();
+    });
+    expect(hook.result.current.status).toBe("failed");
+
+    act(() => {
+      hook.result.current.discard();
     });
     expect(emitted).toEqual(["alpha", "gamma"]);
+    expect(hook.result.current.status).toBe("idle");
+    expect(h.pending).toHaveLength(3);
+  });
+
+  it("stop() mid-speech transcribes the segment still being spoken; cancel() drops it", async () => {
+    const emitted: string[] = [];
+    const hook = await startRecording((t) => emitted.push(t));
+
+    h.speaking = true;
+    await act(async () => {
+      hook.result.current.stop();
+    });
+    expect(h.pending).toHaveLength(1);
+    expect(hook.result.current.status).toBe("transcribing");
+    await act(async () => {
+      h.pending[0].resolve("tail");
+    });
+    expect(emitted).toEqual(["tail"]);
+    expect(hook.result.current.status).toBe("idle");
+
+    await act(async () => {
+      await hook.result.current.start();
+    });
+    expect(hook.result.current.status).toBe("recording");
+    h.speaking = true;
+    await act(async () => {
+      hook.result.current.cancel();
+    });
+    expect(h.pending).toHaveLength(1);
+    expect(hook.result.current.status).toBe("idle");
+  });
+
+  it("keeps recording past two minutes (no duration cap)", async () => {
+    vi.useFakeTimers();
+    try {
+      const hook = await startRecording(() => {});
+      await act(async () => {
+        vi.advanceTimersByTime(10 * 60 * 1000);
+      });
+      expect(hook.result.current.status).toBe("recording");
+      expect(h.vad!.pause).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores a transcription that resolves AFTER cancel() (stale epoch — no emit)", async () => {
@@ -201,6 +289,142 @@ describe("useStreamingDictation — in-order segment emitter", () => {
     await act(async () => {
       h.pending[0].resolve("late");
     });
+    expect(emitted).toEqual([]);
+  });
+});
+
+// Minimal MediaRecorder: stop() delivers one chunk and fires onstop, as the
+// browser does.
+class FakeMediaRecorder {
+  static isTypeSupported() {
+    return true;
+  }
+  static last: FakeMediaRecorder | null = null;
+  state = "inactive";
+  mimeType = "audio/webm";
+  ondataavailable: ((e: { data: Blob }) => void) | null = null;
+  onstop: (() => void) | null = null;
+  stop = vi.fn(() => {
+    this.state = "inactive";
+    this.ondataavailable?.({ data: new Blob(["audio"]) });
+    this.onstop?.();
+  });
+  constructor() {
+    FakeMediaRecorder.last = this;
+  }
+  start() {
+    this.state = "recording";
+  }
+}
+
+describe("useDictation (batch)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.pending = [];
+    notifyShow.mockClear();
+    FakeMediaRecorder.last = null;
+    (globalThis as unknown as { MediaRecorder: unknown }).MediaRecorder =
+      FakeMediaRecorder;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [] })) },
+    });
+  });
+
+  async function startBatch(onText: (t: string) => void) {
+    const hook = renderHook(() => useDictation({ onText }));
+    await act(async () => {
+      await hook.result.current.start();
+    });
+    expect(hook.result.current.status).toBe("recording");
+    return hook;
+  }
+
+  it("a failed transcription ends in 'failed' and retry() resends the same audio", async () => {
+    const emitted: string[] = [];
+    const hook = await startBatch((t) => emitted.push(t));
+    act(() => {
+      hook.result.current.stop();
+    });
+    expect(hook.result.current.status).toBe("transcribing");
+
+    await act(async () => {
+      h.pending[0].reject({ message: "boom" });
+    });
+    expect(hook.result.current.status).toBe("failed");
+    expect(notifyShow).toHaveBeenCalledTimes(1);
+
+    // start() is a no-op while the recording waits for retry or discard.
+    await act(async () => {
+      await hook.result.current.start();
+    });
+    expect(hook.result.current.status).toBe("failed");
+
+    act(() => {
+      hook.result.current.retry();
+    });
+    expect(h.pending).toHaveLength(2);
+    expect(h.pending[1].blob).toBe(h.pending[0].blob);
+    await act(async () => {
+      h.pending[1].resolve(" hello ");
+    });
+    expect(emitted).toEqual(["hello"]);
+    expect(hook.result.current.status).toBe("idle");
+  });
+
+  it("keeps recording past two minutes (no duration cap)", async () => {
+    vi.useFakeTimers();
+    try {
+      const hook = await startBatch(() => {});
+      await act(async () => {
+        vi.advanceTimersByTime(10 * 60 * 1000);
+      });
+      expect(hook.result.current.status).toBe("recording");
+      expect(FakeMediaRecorder.last!.stop).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops and transcribes a recording at the 20-minute size budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const hook = await startBatch(() => {});
+      await act(async () => {
+        vi.advanceTimersByTime(20 * 60 * 1000);
+      });
+      expect(FakeMediaRecorder.last!.stop).toHaveBeenCalledTimes(1);
+      expect(h.pending).toHaveLength(1);
+      expect(hook.result.current.status).toBe("transcribing");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("useStreamingDictation — unmount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.onSpeechEnd = null;
+    h.speaking = false;
+    h.vad = null;
+    h.pending = [];
+    notifyShow.mockClear();
+    (window as unknown as { AudioContext: unknown }).AudioContext =
+      FakeAudioContext;
+  });
+
+  it("drops a segment that fails after unmount: no notification, no text", async () => {
+    const emitted: string[] = [];
+    const hook = await startRecording((t) => emitted.push(t));
+    await emitSegments(2);
+    hook.unmount();
+
+    await act(async () => {
+      h.pending[0].reject({ message: "boom" });
+      h.pending[1].resolve("late");
+    });
+    expect(notifyShow).not.toHaveBeenCalled();
     expect(emitted).toEqual([]);
   });
 });

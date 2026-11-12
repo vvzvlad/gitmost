@@ -1,5 +1,7 @@
-import { FC, useRef } from "react";
+import { FC, useEffect, useRef } from "react";
 import { Editor } from "@tiptap/react";
+import type { Transaction } from "@tiptap/pm/state";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { useAtomValue } from "jotai";
 import { workspaceAtom } from "@/features/user/atoms/current-user-atom.ts";
 import { dictationAvailabilityAtom } from "@/features/editor/atoms/editor-atoms.ts";
@@ -25,6 +27,33 @@ export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
   // end so the NEXT segment appends right after it, contiguously, regardless of
   // where the user's caret currently is. Null until the first segment lands.
   const insertPosRef = useRef<number | null>(null);
+
+  // Keep both positions on the same spot of the text while the user edits the
+  // page: a retried transcription can land minutes after the snapshot. Changes
+  // applied from Yjs (a collaborator, undo/redo) are skipped: y-tiptap applies
+  // them as one replacement of the whole document, whose mapping would move
+  // every position to the end of the page.
+  useEffect(() => {
+    const onTransaction = ({ transaction }: { transaction: Transaction }) => {
+      if (!transaction.docChanged || transaction.getMeta(ySyncPluginKey)) {
+        return;
+      }
+      const map = (pos: number) => transaction.mapping.map(pos);
+      if (rangeRef.current) {
+        rangeRef.current = {
+          from: map(rangeRef.current.from),
+          to: map(rangeRef.current.to),
+        };
+      }
+      if (insertPosRef.current !== null) {
+        insertPosRef.current = map(insertPosRef.current);
+      }
+    };
+    editor.on("transaction", onTransaction);
+    return () => {
+      editor.off("transaction", onTransaction);
+    };
+  }, [editor]);
 
   const handleStart = () => {
     const { from, to } = editor.state.selection;

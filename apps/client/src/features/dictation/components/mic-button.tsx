@@ -1,6 +1,11 @@
 import { FC } from "react";
-import { ActionIcon, Loader, Tooltip } from "@mantine/core";
-import { IconMicrophone, IconPlayerStopFilled } from "@tabler/icons-react";
+import { ActionIcon, Group, Loader, Tooltip } from "@mantine/core";
+import {
+  IconMicrophone,
+  IconPlayerStopFilled,
+  IconRefresh,
+  IconX,
+} from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useDictation } from "@/features/dictation/hooks/use-dictation";
 import { useStreamingDictation } from "@/features/dictation/hooks/use-streaming-dictation";
@@ -35,7 +40,8 @@ interface MicButtonProps {
  * Self-contained dictation toggle. Owns its own capture state machine: a click
  * starts recording (mic icon), a second click stops it (stop icon), and while
  * the audio is being transcribed it shows a spinner and is disabled to prevent
- * overlapping requests.
+ * overlapping requests. When transcription failed and the audio is kept, it
+ * shows retry and discard buttons instead.
  */
 export const MicButton: FC<MicButtonProps> = ({
   onText,
@@ -55,7 +61,7 @@ export const MicButton: FC<MicButtonProps> = ({
   const batchCtl = useDictation({ onText, onStart });
   const streamingCtl = useStreamingDictation({ onText, onStart });
   const ctl = streaming ? streamingCtl : batchCtl;
-  const { status, start, stop, audioLevel, errorMessage } = ctl;
+  const { status, start, stop, retry, discard, audioLevel, errorMessage } = ctl;
   const resolvedIconSize = iconSize ?? (size === "lg" ? 18 : 16);
 
   if (status === "recording") {
@@ -84,22 +90,46 @@ export const MicButton: FC<MicButtonProps> = ({
     );
   }
 
-  if (
-    status === "loading" ||
-    status === "transcribing" ||
-    status === "error"
-  ) {
+  if (status === "failed") {
+    // The recorded audio is kept by the hook. Both actions stay available even
+    // when the mic is `disabled`, so the recording can always be recovered or
+    // dropped. The retry tooltip carries the reason of the failure.
+    const retryLabel = errorMessage
+      ? `${t("Retry transcription")}: ${errorMessage}`
+      : t("Retry transcription");
+    return (
+      <Group gap={4} wrap="nowrap">
+        <Tooltip label={retryLabel} withArrow multiline maw={320}>
+          <ActionIcon
+            size={size}
+            color="red"
+            variant="light"
+            onClick={retry}
+            aria-label={t("Retry transcription")}
+          >
+            <IconRefresh size={resolvedIconSize} />
+          </ActionIcon>
+        </Tooltip>
+        <Tooltip label={t("Discard recording")} withArrow>
+          <ActionIcon
+            size={size}
+            variant="subtle"
+            color={color}
+            onClick={discard}
+            aria-label={t("Discard recording")}
+          >
+            <IconX size={resolvedIconSize} />
+          </ActionIcon>
+        </Tooltip>
+      </Group>
+    );
+  }
+
+  if (status === "loading" || status === "transcribing") {
     // "loading" (streaming hook fetching the VAD model on first use) shows the
     // same spinner+disabled state so the first click is visibly acknowledged and
-    // a confusing second click can't fire while the model loads. The error case
-    // explains the failure via the hook's resolved errorMessage instead of the
-    // transient "Transcribing…" label.
-    const label =
-      status === "error"
-        ? (errorMessage ?? t("Transcription failed"))
-        : status === "loading"
-          ? t("Preparing…")
-          : t("Transcribing…");
+    // a confusing second click can't fire while the model loads.
+    const label = status === "loading" ? t("Preparing…") : t("Transcribing…");
     return (
       <Tooltip label={label} withArrow>
         <ActionIcon
@@ -110,7 +140,7 @@ export const MicButton: FC<MicButtonProps> = ({
           // than the native `disabled` attribute: native `disabled` sets
           // `pointer-events:none`, which suppresses hover so the Tooltip never
           // fires. This is a status display with no click action to guard, so
-          // keeping it hoverable simply lets the error reason be read on hover.
+          // keeping it hoverable simply lets the status be read on hover.
           data-disabled
           aria-disabled
           aria-label={label}

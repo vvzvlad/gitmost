@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
-import { transcribeAudio } from "@/features/dictation/services/dictation-service";
+import { transcribeWithRetry } from "@/features/dictation/services/dictation-service";
+import { useScreenWakeLock } from "@/features/dictation/hooks/use-screen-wake-lock";
 import {
   classifyGetUserMediaError,
   classifyTranscriptionError,
@@ -11,17 +12,18 @@ import {
 // "loading" is set only by the streaming hook while it lazily loads the VAD
 // model on first use; the batch hook never sets it. It exists so the streaming
 // hook and the mic button can show immediate feedback during that load.
+// "failed" means recorded audio could not be transcribed and is kept until the
+// user retries or discards it; start() does nothing in that state.
 export type DictationStatus =
   | "idle"
   | "recording"
   | "transcribing"
-  | "error"
+  | "failed"
   | "loading";
 
 interface UseDictationOptions {
   onText: (text: string) => void;
   onStart?: () => void;
-  maxDurationMs?: number;
 }
 
 interface UseDictationResult {
@@ -29,11 +31,20 @@ interface UseDictationResult {
   start: () => Promise<void>;
   stop: () => void;
   cancel: () => void;
+  // Resend the audio kept after a failed transcription.
+  retry: () => void;
+  // Drop the audio kept after a failed transcription and return to idle.
+  discard: () => void;
   // Smoothed live microphone level in the 0..1 range while recording (0 when idle).
   audioLevel: number;
   // The last error shown to the user (null until one occurs / on a new start).
   errorMessage: string | null;
 }
+
+// Size budget of one recording. The transcription endpoint accepts uploads up
+// to 25 MB, and 20 minutes stay under that at any bitrate a browser picks for
+// speech (up to 160 kbps), so the recording is stopped and transcribed then.
+const MAX_RECORDING_MS = 20 * 60 * 1000;
 
 // Candidate container/codec combinations in preference order. The first one the
 // browser supports wins; if none do we let MediaRecorder pick its own default.
@@ -65,8 +76,9 @@ function pickMimeType(): string | undefined {
 /**
  * Encapsulates the browser audio-capture state machine: request the mic, record
  * with MediaRecorder, then POST the blob for transcription. Refs hold the live
- * recorder/stream/chunks/timer/cancel flag so component re-renders never lose
- * them, and every exit path stops the MediaStream tracks.
+ * recorder/stream/chunks/cancel flag so component re-renders never lose them,
+ * and every exit path stops the MediaStream tracks. Recording runs until the
+ * user stops it; audio whose transcription fails is kept for retry().
  */
 export function useDictation(
   options: UseDictationOptions,
@@ -85,10 +97,17 @@ export function useDictation(
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canceledRef = useRef(false);
   const startingRef = useRef(false);
+  // Audio whose transcription finally failed; set exactly while status is
+  // "failed".
+  const failedAudioRef = useRef<{ blob: Blob; filename: string } | null>(null);
+  // Bumped by cancel() and unmount. A transcription captures it when sent; once
+  // it has changed, retries stop and a failure is dropped silently.
+  const epochRef = useRef(0);
+
+  const { acquire: acquireWakeLock, release: releaseWakeLock } =
+    useScreenWakeLock();
 
   // Web Audio metering: derives a live input level from the captured stream.
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -98,13 +117,6 @@ export function useDictation(
   // Exponentially smoothed level, and the last value pushed to React state.
   const smoothedLevelRef = useRef(0);
   const emittedLevelRef = useRef(0);
-
-  const clearTimer = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
 
   const stopTracks = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -196,6 +208,48 @@ export function useDictation(
     }
   }, []);
 
+  // Transcribe recorded audio. On a final failure the audio is kept in
+  // failedAudioRef and the status becomes "failed" until retry() or discard().
+  const sendAudio = useCallback(
+    (blob: Blob, filename: string): void => {
+      const epoch = epochRef.current;
+      setStatus("transcribing");
+      void transcribeWithRetry(
+        blob,
+        filename,
+        () => epoch !== epochRef.current,
+      )
+        .then((text) => {
+          // Canceled or unmounted while transcribing: the text has no target.
+          if (epoch !== epochRef.current) return;
+          // Whisper often returns a leading space; insert the trimmed value.
+          const trimmed = text.trim();
+          if (trimmed.length > 0) optionsRef.current.onText(trimmed);
+          setStatus("idle");
+        })
+        .catch((err: unknown) => {
+          // Canceled or unmounted while transcribing: nobody waits for it.
+          if (epoch !== epochRef.current) return;
+          // Log the full error for diagnosis (status + body + stack).
+          console.error("[dictation] transcription failed", err);
+          const { code, serverMessage } = classifyTranscriptionError(err);
+          const detail = (err as { message?: string })?.message ?? String(err);
+          const message = dictationErrorMessage(code, t, {
+            serverMessage,
+            detail,
+          });
+          notifications.show({
+            color: "red",
+            message: `${message} — ${t("the recording is kept and can be transcribed again")}`,
+          });
+          setErrorMessage(message);
+          failedAudioRef.current = { blob, filename };
+          setStatus("failed");
+        });
+    },
+    [t],
+  );
+
   const start = useCallback(async (): Promise<void> => {
     // Synchronous live guard: status is stale between renders, so also block on
     // refs to prevent a double-click from opening two MediaStreams (the first
@@ -205,6 +259,9 @@ export function useDictation(
     startingRef.current = true;
     // Clear any stale error from a previous attempt.
     setErrorMessage(null);
+    // Request the wake lock now, inside the click: iOS Safari grants it only
+    // to a call made during a user gesture, which the awaits below end.
+    acquireWakeLock();
 
     if (!navigator.mediaDevices?.getUserMedia) {
       const reason =
@@ -213,6 +270,7 @@ export function useDictation(
       const message = dictationErrorMessage("no-media-devices", t);
       notifications.show({ color: "red", message });
       setErrorMessage(message);
+      releaseWakeLock();
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -235,6 +293,7 @@ export function useDictation(
       const message = dictationErrorMessage(code, t, { detail });
       notifications.show({ color: "red", message });
       setErrorMessage(message);
+      releaseWakeLock();
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -256,6 +315,7 @@ export function useDictation(
       // The stream was acquired but the recorder failed to construct; stop the
       // tracks so the MediaStream does not leak before bailing out.
       stopTracks();
+      releaseWakeLock();
       const detail = (err as { message?: string })?.message ?? String(err);
       const message = dictationErrorMessage("recorder-failed", t, { detail });
       notifications.show({ color: "red", message });
@@ -270,14 +330,20 @@ export function useDictation(
       if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
     };
 
+    // At the size budget, end the recording and transcribe it: the server
+    // rejects a larger file as a whole.
+    let budgetTimer: ReturnType<typeof setTimeout> | null = null;
+
     recorder.onstop = () => {
-      clearTimer();
+      if (budgetTimer !== null) clearTimeout(budgetTimer);
       const recordedMime = recorder.mimeType || mimeType || "audio/webm";
       const wasCanceled = canceledRef.current;
 
-      // Stop the mic tracks and the audio meter regardless of how we got here.
+      // Stop the mic tracks, the audio meter and the wake lock regardless of how
+      // we got here.
       stopTracks();
       stopMeter();
+      releaseWakeLock();
       recorderRef.current = null;
 
       if (wasCanceled) {
@@ -289,34 +355,7 @@ export function useDictation(
       const blob = new Blob(chunksRef.current, { type: recordedMime });
       chunksRef.current = [];
 
-      setStatus("transcribing");
-      void transcribeAudio(blob, filenameForMime(recordedMime))
-        .then((text) => {
-          // Whisper often returns a leading space; insert the trimmed value.
-          const trimmed = text.trim();
-          if (trimmed.length > 0) optionsRef.current.onText(trimmed);
-          setStatus("idle");
-        })
-        .catch((err: unknown) => {
-          // Log the full error for diagnosis (status + body + stack).
-          console.error("[dictation] transcription failed", err);
-          const { code, serverMessage } = classifyTranscriptionError(err);
-          const detail = (err as { message?: string })?.message ?? String(err);
-          const message = dictationErrorMessage(code, t, {
-            serverMessage,
-            detail,
-          });
-          notifications.show({ color: "red", message });
-          setErrorMessage(message);
-          setStatus("error");
-          if (errorTimerRef.current !== null) {
-            clearTimeout(errorTimerRef.current);
-          }
-          errorTimerRef.current = setTimeout(() => {
-            errorTimerRef.current = null;
-            setStatus("idle");
-          }, 1500);
-        });
+      sendAudio(blob, filenameForMime(recordedMime));
     };
 
     // Notify the caller right when recording begins (before any async work) so
@@ -330,6 +369,7 @@ export function useDictation(
       // NotSupportedError); clean up so the button is not left stuck and the
       // MediaStream does not leak.
       stopTracks();
+      releaseWakeLock();
       recorderRef.current = null;
       startingRef.current = false;
       const detail = (err as { message?: string })?.message ?? String(err);
@@ -345,17 +385,21 @@ export function useDictation(
 
     // Start the live audio meter on the stream we already acquired.
     startMeter(stream);
-
-    const maxDurationMs = optionsRef.current.maxDurationMs ?? 120000;
-    timerRef.current = setTimeout(() => {
-      if (recorderRef.current?.state === "recording") {
-        recorderRef.current.stop();
-      }
-    }, maxDurationMs);
-  }, [status, t, clearTimer, stopTracks, startMeter, stopMeter]);
+    budgetTimer = setTimeout(() => {
+      if (recorder.state === "recording") recorder.stop();
+    }, MAX_RECORDING_MS);
+  }, [
+    status,
+    t,
+    stopTracks,
+    startMeter,
+    stopMeter,
+    acquireWakeLock,
+    releaseWakeLock,
+    sendAudio,
+  ]);
 
   const stop = useCallback((): void => {
-    clearTimer();
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
       // Normal path: onstop tears down tracks + meter and runs transcription.
@@ -366,35 +410,47 @@ export function useDictation(
       // recover the UI to idle.
       stopTracks();
       stopMeter();
+      releaseWakeLock();
       recorderRef.current = null;
       chunksRef.current = [];
       setStatus("idle");
     }
-  }, [clearTimer, stopTracks, stopMeter]);
+  }, [stopTracks, stopMeter, releaseWakeLock]);
 
   const cancel = useCallback((): void => {
-    clearTimer();
     canceledRef.current = true;
+    epochRef.current += 1;
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
-      // onstop sees canceledRef and skips transcription; it also stops tracks
-      // and the meter.
+      // onstop sees canceledRef and skips transcription; it also stops tracks,
+      // the meter and the wake lock.
       recorder.stop();
     } else {
       stopTracks();
       stopMeter();
+      releaseWakeLock();
     }
     setStatus("idle");
-  }, [clearTimer, stopTracks, stopMeter]);
+  }, [stopTracks, stopMeter, releaseWakeLock]);
 
-  // Clean up on unmount: stop any live recorder/stream and clear the timers.
+  const retry = useCallback((): void => {
+    const held = failedAudioRef.current;
+    if (!held) return;
+    failedAudioRef.current = null;
+    sendAudio(held.blob, held.filename);
+  }, [sendAudio]);
+
+  const discard = useCallback((): void => {
+    if (!failedAudioRef.current) return;
+    failedAudioRef.current = null;
+    setStatus("idle");
+  }, []);
+
+  // Clean up on unmount: stop any live recorder/stream; the wake lock hook
+  // releases its lock on its own unmount.
   useEffect(() => {
     return () => {
-      clearTimer();
-      if (errorTimerRef.current !== null) {
-        clearTimeout(errorTimerRef.current);
-        errorTimerRef.current = null;
-      }
+      epochRef.current += 1;
       const recorder = recorderRef.current;
       if (recorder && recorder.state === "recording") {
         canceledRef.current = true;
@@ -403,7 +459,16 @@ export function useDictation(
       stopTracks();
       stopMeter();
     };
-  }, [clearTimer, stopTracks, stopMeter]);
+  }, [stopTracks, stopMeter]);
 
-  return { status, start, stop, cancel, audioLevel, errorMessage };
+  return {
+    status,
+    start,
+    stop,
+    cancel,
+    retry,
+    discard,
+    audioLevel,
+    errorMessage,
+  };
 }
