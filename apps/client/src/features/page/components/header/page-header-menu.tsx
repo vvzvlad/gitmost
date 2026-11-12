@@ -12,6 +12,7 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
+  IconMessageCircle,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -178,10 +179,21 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
         variant="subtle"
         color="dark"
         size="compact-sm"
+        visibleFrom="sm"
         {...commentsTriggerProps}
       >
         {t("Comments")}
       </Button>
+      {/* Below sm the header does not fit a phone's width with text labels. */}
+      <ActionIcon
+        variant="subtle"
+        color="dark"
+        hiddenFrom="sm"
+        aria-label={t("Comments")}
+        {...commentsTriggerProps}
+      >
+        <IconMessageCircle size={20} stroke={2} />
+      </ActionIcon>
 
       <Tooltip label={t("Table of contents")} openDelay={250} withArrow>
         <ActionIcon

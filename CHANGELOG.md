@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The editor's dictation mic moved from under the page title to the page header, so it stays on
   screen on a long page, and Cmd/Ctrl+Shift+D pressed while typing in the page text starts
   dictation at the caret and stops it.
+- On a phone-width screen the page header shows Share and Comments as icons without labels, so
+  the table of contents and the page menu fit on screen.
 
 ### Fixed
 

@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Anchor,
+  Box,
   Button,
   Group,
   Indicator,
@@ -189,20 +190,23 @@ export default function ShareModal({ readOnly }: ShareModalProps) {
       <Popover.Target>
         <Button
           size="compact-sm"
-          leftSection={
-            <Indicator
-              color="green"
-              offset={5}
-              disabled={!isPagePublic}
-              withBorder
-            >
-              <IconWorld size={20} stroke={1.5} />
-            </Indicator>
-          }
           color="dark"
           variant="subtle"
+          aria-label={t("Share")}
         >
-          {t("Share")}
+          <Indicator
+            color="green"
+            offset={5}
+            disabled={!isPagePublic}
+            withBorder
+          >
+            <IconWorld size={20} stroke={1.5} />
+          </Indicator>
+          {/* Below sm the page header does not fit a phone's width with the
+              label, so the button shrinks to the icon. */}
+          <Box component="span" visibleFrom="sm" ml="xs">
+            {t("Share")}
+          </Box>
         </Button>
       </Popover.Target>
       <Popover.Dropdown style={{ userSelect: "none" }}>
