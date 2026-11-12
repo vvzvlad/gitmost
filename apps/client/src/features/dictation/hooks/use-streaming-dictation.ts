@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import { useTranslation } from "react-i18next";
-import { transcribeAudio } from "@/features/dictation/services/dictation-service";
+import { transcribeWithRetry } from "@/features/dictation/services/dictation-service";
 import { encodeWavPcm16 } from "@/features/dictation/utils/encode-wav";
 import type { DictationStatus } from "@/features/dictation/hooks/use-dictation";
+import { useScreenWakeLock } from "@/features/dictation/hooks/use-screen-wake-lock";
 import {
   classifyGetUserMediaError,
   classifyTranscriptionError,
@@ -22,7 +23,6 @@ type MicVADInstance = {
 interface UseStreamingDictationOptions {
   onText: (text: string) => void;
   onStart?: () => void;
-  maxDurationMs?: number;
 }
 
 interface UseStreamingDictationResult {
@@ -30,6 +30,10 @@ interface UseStreamingDictationResult {
   start: () => Promise<void>;
   stop: () => void;
   cancel: () => void;
+  // Resend every held (failed) segment in segment order.
+  retry: () => void;
+  // Drop every held segment and emit the later text that waited behind them.
+  discard: () => void;
   // Smoothed live speech level in the 0..1 range while recording (0 when idle).
   audioLevel: number;
   // The last error shown to the user (null until one occurs / on a new start).
@@ -56,10 +60,13 @@ const VAD_ONNX_WASM_BASE_PATH: string | undefined = "/vad/";
  * each time the speaker pauses, cuts that speech segment and POSTs it to the same
  * batch transcription endpoint, so text appears progressively as the user speaks.
  *
- * Returns the SAME shape as useDictation ({ status, start, stop, cancel,
- * audioLevel }) so MicButton can use either interchangeably. Refs hold the live
- * VAD instance / counters / timer so component re-renders never lose them, and
- * every exit path destroys the VAD and stops the MediaStream.
+ * Returns the SAME shape as useDictation ({ status, start, stop, cancel, retry,
+ * discard, audioLevel }) so MicButton can use either interchangeably. Refs hold
+ * the live VAD instance / counters so component re-renders never lose them, and
+ * every exit path destroys the VAD and stops the MediaStream. Recording runs
+ * until the user stops it. A segment whose transcription finally fails is held
+ * with its audio and blocks the text of later segments until retry() or
+ * discard(), so the text always lands in spoken order.
  */
 export function useStreamingDictation(
   options: UseStreamingDictationOptions,
@@ -79,12 +86,14 @@ export function useStreamingDictation(
   // AudioContext we create+resume inside the click gesture and inject into
   // MicVAD (see start()). We own it; MicVAD does not close an injected context.
   const audioContextRef = useRef<AudioContext | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canceledRef = useRef(false);
   const startingRef = useRef(false);
   // True while a recording session is active (VAD listening). Used to ignore late
-  // VAD callbacks that fire after stop()/cancel().
+  // VAD callbacks that fire after stop()/cancel(). stop() keeps it true while the
+  // VAD flushes the segment still being spoken.
   const activeRef = useRef(false);
+  // True while stop() waits for that flush; a second stop() is ignored.
+  const stoppingRef = useRef(false);
 
   // In-order emission: each segment gets a monotonically increasing seq when its
   // speech ends; completed transcriptions are buffered by seq and flushed in
@@ -92,6 +101,9 @@ export function useStreamingDictation(
   const nextSeqRef = useRef(0);
   const nextEmitSeqRef = useRef(0);
   const resultsRef = useRef<Map<number, string>>(new Map());
+  // Segments whose transcription finally failed, by seq, with their WAV audio.
+  // A held seq has no entry in resultsRef, so it stops the drain there.
+  const heldRef = useRef<Map<number, Blob>>(new Map());
   // Number of transcription requests still in flight.
   const inFlightRef = useRef(0);
   // Session epoch: bumped when a NEW session starts (start) or everything is
@@ -105,12 +117,8 @@ export function useStreamingDictation(
   const smoothedLevelRef = useRef(0);
   const emittedLevelRef = useRef(0);
 
-  const clearTimer = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
+  const { acquire: acquireWakeLock, release: releaseWakeLock } =
+    useScreenWakeLock();
 
   // Reset the level meter back to zero (refs + React state).
   const resetLevel = useCallback(() => {
@@ -144,10 +152,13 @@ export function useStreamingDictation(
   }, []);
 
   // Decide the status once recording has ended: stay "transcribing" while
-  // requests are in flight, otherwise return to "idle".
+  // requests are in flight, then "failed" while a segment is held, otherwise
+  // return to "idle".
   const settleAfterStop = useCallback(() => {
     if (inFlightRef.current > 0) {
       setStatus("transcribing");
+    } else if (heldRef.current.size > 0) {
+      setStatus("failed");
     } else {
       setStatus("idle");
     }
@@ -167,20 +178,21 @@ export function useStreamingDictation(
     }
   }, []);
 
-  // Handle one ended speech segment: encode to WAV and transcribe. Results are
-  // buffered by seq and flushed in order. A single failed segment does NOT kill
-  // the session: log + one notification, then advance past that seq so later
-  // segments still flush.
-  const handleSegment = useCallback(
-    (audio: Float32Array) => {
-      const seq = nextSeqRef.current;
-      nextSeqRef.current += 1;
+  // Transcribe one segment's WAV audio. Results are buffered by seq and flushed
+  // in order. A segment that finally fails does NOT kill the session: log + one
+  // notification, then hold its audio in heldRef, which stops the drain at its
+  // seq until retry() or discard().
+  const sendSegment = useCallback(
+    (seq: number, wavBlob: Blob) => {
       inFlightRef.current += 1;
       // Capture the epoch for this request synchronously at send time.
       const epoch = epochRef.current;
 
-      const wavBlob = encodeWavPcm16(audio, VAD_SAMPLE_RATE);
-      void transcribeAudio(wavBlob, "speech.wav")
+      void transcribeWithRetry(
+        wavBlob,
+        "speech.wav",
+        () => epoch !== epochRef.current,
+      )
         .then((text) => {
           // Stale request from a previous session: drop it without touching any
           // current-session state.
@@ -199,27 +211,34 @@ export function useStreamingDictation(
             serverMessage,
             detail,
           });
-          notifications.show({ color: "red", message });
+          notifications.show({
+            color: "red",
+            message: `${message} — ${t("the recording is kept and can be transcribed again")}`,
+          });
           setErrorMessage(message);
-          // Skip this seq so later segments can still flush in order.
-          if (nextEmitSeqRef.current === seq) {
-            nextEmitSeqRef.current += 1;
-            drainResults();
-          } else {
-            resultsRef.current.set(seq, "");
-            drainResults();
-          }
+          heldRef.current.set(seq, wavBlob);
         })
         .finally(() => {
           if (epoch !== epochRef.current) return;
           inFlightRef.current -= 1;
-          // If recording already stopped, flip to idle once everything drained.
+          // If recording already stopped, settle once nothing is in flight.
           if (!activeRef.current && inFlightRef.current === 0) {
-            setStatus("idle");
+            settleAfterStop();
           }
         });
     },
-    [drainResults, t],
+    [drainResults, settleAfterStop, t],
+  );
+
+  // Handle one ended speech segment: give it the next seq, encode it to WAV and
+  // transcribe it.
+  const handleSegment = useCallback(
+    (audio: Float32Array) => {
+      const seq = nextSeqRef.current;
+      nextSeqRef.current += 1;
+      sendSegment(seq, encodeWavPcm16(audio, VAD_SAMPLE_RATE));
+    },
+    [sendSegment],
   );
 
   const start = useCallback(async (): Promise<void> => {
@@ -231,6 +250,9 @@ export function useStreamingDictation(
     startingRef.current = true;
     // Clear any stale error from a previous attempt.
     setErrorMessage(null);
+    // Request the wake lock now, inside the click: iOS Safari grants it only
+    // to a call made during a user gesture, which the awaits below end.
+    acquireWakeLock();
 
     // Notify the caller right when dictation begins (before any async work) so the
     // editor can snapshot the caret position.
@@ -245,6 +267,7 @@ export function useStreamingDictation(
     nextSeqRef.current = 0;
     nextEmitSeqRef.current = 0;
     resultsRef.current = new Map();
+    heldRef.current = new Map();
     inFlightRef.current = 0;
     resetLevel();
 
@@ -314,6 +337,11 @@ export function useStreamingDictation(
         preSpeechPadMs: 320,
         // Ignore sub-100ms blips like clicks.
         minSpeechMs: 96,
+        // Make pause() end the segment still being spoken with onSpeechEnd
+        // instead of dropping it, so stop() mid-sentence transcribes the tail.
+        // destroy() pauses too, which is why cancel() and unmount mark the
+        // session inactive first: onSpeechEnd then ignores that tail.
+        submitUserSpeechOnPause: true,
         onFrameProcessed: (probabilities: { isSpeech: number }) => {
           // Drive the level meter from the speech probability. Light exponential
           // smoothing + a throttle so React state isn't updated every frame; this
@@ -352,6 +380,7 @@ export function useStreamingDictation(
       // Defensive: if MicVAD.new partially succeeded before throwing, make sure we
       // don't leak it.
       destroyVad();
+      releaseWakeLock();
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -377,6 +406,7 @@ export function useStreamingDictation(
       setErrorMessage(message);
       activeRef.current = false;
       destroyVad();
+      releaseWakeLock();
       setStatus("idle");
       startingRef.current = false;
       return;
@@ -385,62 +415,90 @@ export function useStreamingDictation(
     setStatus("recording");
     // Recording has truly begun; release the synchronous start guard.
     startingRef.current = false;
+  }, [
+    status,
+    t,
+    resetLevel,
+    destroyVad,
+    handleSegment,
+    acquireWakeLock,
+    releaseWakeLock,
+  ]);
 
-    // Optional overall safety cap: auto-stop after maxDurationMs like the batch
-    // hook does.
-    const maxDurationMs = optionsRef.current.maxDurationMs ?? 120000;
-    timerRef.current = setTimeout(() => {
-      if (activeRef.current) stopRef.current();
-    }, maxDurationMs);
-  }, [status, t, resetLevel, destroyVad, handleSegment]);
-
-  const stop = useCallback((): void => {
-    clearTimer();
+  const stop = useCallback(async (): Promise<void> => {
+    if (stoppingRef.current) return;
     if (!activeRef.current && !vadRef.current) {
       // Nothing is running; make sure the UI is idle.
       setStatus("idle");
       return;
     }
-    // Mark inactive first so late onSpeechEnd/onFrameProcessed callbacks are
-    // ignored. Any speech segment that has NOT yet ended (user clicks Stop
-    // mid-utterance) is dropped — acceptable for v1; users normally pause before
-    // stopping.
+    // Flush the segment still being spoken: with submitUserSpeechOnPause,
+    // pause() hands it to onSpeechEnd, which still accepts it because the
+    // session stays active until the pause has finished.
+    stoppingRef.current = true;
+    const vad = vadRef.current;
+    try {
+      await vad?.pause();
+    } catch (err) {
+      console.warn("[dictation] VAD pause failed", err);
+    }
+    stoppingRef.current = false;
+    // cancel(), unmount or a new session took over during the flush and owns
+    // the teardown.
+    if (vadRef.current !== vad) return;
+    // Mark inactive so late onSpeechEnd/onFrameProcessed callbacks are ignored.
     activeRef.current = false;
     destroyVad();
+    releaseWakeLock();
     resetLevel();
     settleAfterStop();
-  }, [clearTimer, destroyVad, resetLevel, settleAfterStop]);
-
-  // Keep stop() reachable from the maxDuration timer closure (which is created
-  // before stop is defined) without re-creating the VAD.
-  const stopRef = useRef(stop);
-  stopRef.current = stop;
+  }, [destroyVad, releaseWakeLock, resetLevel, settleAfterStop]);
 
   const cancel = useCallback((): void => {
-    clearTimer();
     canceledRef.current = true;
     activeRef.current = false;
     // Hard discard: bump the epoch so any in-flight request becomes stale and is
     // ignored the moment it resolves (no emit, no counter touch).
     epochRef.current += 1;
-    // Drop pending results / queue; in-flight requests will resolve into a now-
-    // empty buffer and be ignored.
+    // Drop pending results / queue / held segments; in-flight requests will
+    // resolve into a now-empty buffer and be ignored.
     resultsRef.current = new Map();
+    heldRef.current = new Map();
     nextSeqRef.current = 0;
     nextEmitSeqRef.current = 0;
     inFlightRef.current = 0;
     destroyVad();
+    releaseWakeLock();
     resetLevel();
     setStatus("idle");
-  }, [clearTimer, destroyVad, resetLevel]);
+  }, [destroyVad, releaseWakeLock, resetLevel]);
 
-  // Clean up on unmount: destroy the VAD, stop the mic stream, clear the timer.
-  // Defensive try/catch lives inside destroyVad so teardown never throws.
+  const retry = useCallback((): void => {
+    const held = [...heldRef.current.entries()].sort((a, b) => a[0] - b[0]);
+    if (held.length === 0) return;
+    heldRef.current = new Map();
+    for (const [seq, wavBlob] of held) sendSegment(seq, wavBlob);
+    if (!activeRef.current) settleAfterStop();
+  }, [sendSegment, settleAfterStop]);
+
+  const discard = useCallback((): void => {
+    if (heldRef.current.size === 0) return;
+    // An empty result lets the drain step over each dropped seq.
+    for (const seq of heldRef.current.keys()) resultsRef.current.set(seq, "");
+    heldRef.current = new Map();
+    drainResults();
+    if (!activeRef.current) settleAfterStop();
+  }, [drainResults, settleAfterStop]);
+
+  // Clean up on unmount: destroy the VAD and stop the mic stream; the wake lock
+  // hook releases its lock on its own unmount. Defensive try/catch lives inside
+  // destroyVad so teardown never throws.
   useEffect(() => {
     return () => {
-      clearTimer();
       activeRef.current = false;
       canceledRef.current = true;
+      // Stale every in-flight request: no more retries, no text, no toast.
+      epochRef.current += 1;
       destroyVad();
       // Close the AudioContext we own (MicVAD never closes an injected one).
       if (
@@ -451,7 +509,16 @@ export function useStreamingDictation(
       }
       audioContextRef.current = null;
     };
-  }, [clearTimer, destroyVad]);
+  }, [destroyVad]);
 
-  return { status, start, stop, cancel, audioLevel, errorMessage };
+  return {
+    status,
+    start,
+    stop,
+    cancel,
+    retry,
+    discard,
+    audioLevel,
+    errorMessage,
+  };
 }
