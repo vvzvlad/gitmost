@@ -12,6 +12,7 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
+  IconMessageCircle,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -41,9 +42,12 @@ import ExportModal from "@/components/common/export-modal";
 import { convertProseMirrorToMarkdown } from "@docmost/prosemirror-markdown/browser";
 import {
   collabProviderAtom,
+  currentPageEditModeAtom,
   pageEditorAtom,
   yjsConnectionStatusAtom,
 } from "@/features/editor/atoms/editor-atoms.ts";
+import { PageEditMode } from "@/features/user/types/user.types.ts";
+import { DictationGroup } from "@/features/editor/components/fixed-toolbar/groups/dictation-group";
 import {
   SAVE_VERSION_MESSAGE_TYPE,
   saveVersionPending,
@@ -87,6 +91,15 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const collabProvider = useAtomValue(collabProviderAtom);
   // Community public-sharing entry point (replaces the removed EE PageShareModal)
   const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
+  const pageEditor = useAtomValue(pageEditorAtom);
+  const isEditMode =
+    useAtomValue(currentPageEditModeAtom) === PageEditMode.Edit;
+  const showDictation = Boolean(
+    workspace?.settings?.ai?.dictation === true &&
+      !readOnly &&
+      isEditMode &&
+      pageEditor,
+  );
 
   // #370 — explicit "save a version" (Cmd+S / Save button). One path for the
   // human; the server derives the tier from the signed actor. Readers can't save
@@ -143,6 +156,18 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
 
       {isPageLoaded && !readOnly && <PageEditModeToggle size="xs" />}
 
+      {/* The header stays on screen, so dictation can be started wherever the
+          caret is on a long page. Keyed by page: navigating away remounts it,
+          which cancels a recording bound to the previous page's editor. */}
+      {showDictation && (
+        <DictationGroup
+          key={extractPageSlugId(pageSlug)}
+          editor={pageEditor}
+          color="dark"
+          iconSize={20}
+        />
+      )}
+
       {/* Hide the Share entry point for readers; the toggle inside is inert
           without edit permission, so gate it like other edit-only actions
           (issue #133) */}
@@ -154,10 +179,21 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
         variant="subtle"
         color="dark"
         size="compact-sm"
+        visibleFrom="sm"
         {...commentsTriggerProps}
       >
         {t("Comments")}
       </Button>
+      {/* Below sm the header does not fit a phone's width with text labels. */}
+      <ActionIcon
+        variant="subtle"
+        color="dark"
+        hiddenFrom="sm"
+        aria-label={t("Comments")}
+        {...commentsTriggerProps}
+      >
+        <IconMessageCircle size={20} stroke={2} />
+      </ActionIcon>
 
       <Tooltip label={t("Table of contents")} openDelay={250} withArrow>
         <ActionIcon

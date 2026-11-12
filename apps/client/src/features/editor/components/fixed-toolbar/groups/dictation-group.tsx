@@ -116,6 +116,14 @@ export const DictationGroup: FC<Props> = ({ editor, color, iconSize }) => {
       unavailableReason={dictationAvailability.reason ?? undefined}
       color={color}
       iconSize={iconSize}
+      hotkey="mod+shift+D"
+      // Start only from the page body: pressed in a comment, the AI chat or the
+      // title, the text would still land in the body at its last selection.
+      hotkeyGuard={(event) =>
+        !editor.isDestroyed &&
+        event.target instanceof Node &&
+        editor.view.dom.contains(event.target)
+      }
     />
   );
 };

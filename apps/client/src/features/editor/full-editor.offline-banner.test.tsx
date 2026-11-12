@@ -31,12 +31,6 @@ vi.mock("@/features/page/components/temporary-note-banner.tsx", () => ({
   TemporaryNoteBanner: () => null,
 }));
 vi.mock(
-  "@/features/editor/components/fixed-toolbar/groups/dictation-group",
-  () => ({
-    DictationGroup: () => null,
-  }),
-);
-vi.mock(
   "@/features/editor/components/fixed-toolbar/groups/generate-title-group",
   () => ({ GenerateTitleGroup: () => null }),
 );

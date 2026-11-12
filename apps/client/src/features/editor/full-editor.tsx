@@ -37,7 +37,6 @@ import {
   currentPageEditModeAtom,
   pageEditorAtom,
 } from "@/features/editor/atoms/editor-atoms.ts";
-import { DictationGroup } from "@/features/editor/components/fixed-toolbar/groups/dictation-group";
 import { GenerateTitleGroup } from "@/features/editor/components/fixed-toolbar/groups/generate-title-group";
 
 const MemoizedTitleEditor = React.memo(TitleEditor);
@@ -121,7 +120,6 @@ export function FullEditor({
   const { t } = useTranslation();
   const [user] = useAtom(userAtom);
   const workspace = useAtomValue(workspaceAtom);
-  const isDictationEnabled = workspace?.settings?.ai?.dictation === true;
   // AI title generation is gated by the general AI chat flag (the same toggle
   // that enables the chat agent); the server enforces it too (#199).
   const isTitleGenEnabled = workspace?.settings?.ai?.chat === true;
@@ -276,7 +274,6 @@ export function FullEditor({
         contributors={contributors}
         editable={editable}
         isEditMode={isEditMode}
-        isDictationEnabled={isDictationEnabled}
         isTitleGenEnabled={isTitleGenEnabled}
       />
       <MemoizedPageEditor
@@ -296,7 +293,6 @@ type PageBylineProps = {
   contributors?: IContributor[];
   editable?: boolean;
   isEditMode?: boolean;
-  isDictationEnabled?: boolean;
   isTitleGenEnabled?: boolean;
 };
 
@@ -306,15 +302,11 @@ function PageByline({
   contributors,
   editable,
   isEditMode,
-  isDictationEnabled,
   isTitleGenEnabled,
 }: PageBylineProps) {
   const { t } = useTranslation();
   const detailsTriggerProps = useAsideTriggerProps("details");
   const editor = useAtomValue(pageEditorAtom);
-  const showDictation = Boolean(
-    isDictationEnabled && editable && isEditMode && editor,
-  );
   const showTitleGen = Boolean(
     isTitleGenEnabled && editable && isEditMode && editor,
   );
@@ -403,11 +395,6 @@ function PageByline({
             <IconInfoCircle size={20} stroke={1.5} />
           </ActionIcon>
         </Tooltip>
-        {/* Shown only in edit mode when workspace dictation is enabled, so
-            dictation stays reachable even when the fixed toolbar is hidden. */}
-        {showDictation && editor && (
-          <DictationGroup editor={editor} color="gray" iconSize={20} />
-        )}
         {/* Shown only in edit mode when the workspace's AI chat flag is on,
             so AI title generation stays reachable from the byline (#199). */}
         {showTitleGen && (
