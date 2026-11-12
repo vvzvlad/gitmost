@@ -906,7 +906,9 @@ export class AiChatController {
    */
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 20, ttl: 60000 } })
+  // Streaming dictation sends one request per spoken phrase, so the limit has
+  // room for a fast speaker; a 429 blocks the user for the whole ttl.
+  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 60, ttl: 60000 } })
   @Post('transcribe')
   @UseInterceptors(FileInterceptor)
   async transcribe(
