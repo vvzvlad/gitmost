@@ -12,7 +12,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { ThrottleOnly } from '../../integrations/throttle/throttle-only.decorator';
 import { FastifyRequest } from 'fastify';
 import { ApiKeyService } from './api-key.service';
 import { ApiKeyRepo } from '@docmost/db/repos/api-key/api-key.repo';
@@ -68,7 +68,7 @@ export class ApiKeyController {
 
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AUTH_THROTTLER]: { limit: 10, ttl: 60_000 } })
+  @ThrottleOnly(AUTH_THROTTLER, { limit: 10, ttl: 60_000 })
   @Post('create')
   async create(
     @Body() dto: CreateApiKeyDto,
@@ -216,7 +216,7 @@ export class ApiKeyController {
    */
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AUTH_THROTTLER]: { limit: 10, ttl: 60_000 } })
+  @ThrottleOnly(AUTH_THROTTLER, { limit: 10, ttl: 60_000 })
   @Post('reveal')
   async reveal(
     @Body() dto: RevealApiKeyDto,

@@ -10,7 +10,8 @@ import {
   ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottleOnly } from '../../integrations/throttle/throttle-only.decorator';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { Workspace, AiAgentRole } from '@docmost/db/types/entity.types';
 import { Public } from '../../common/decorators/public.decorator';
@@ -65,7 +66,7 @@ export class PublicShareChatController {
   // an attacker rotates XFF to evade it. The cluster-wide per-workspace cap
   // below is the backstop that holds even when this layer is fully evaded.
   @UseGuards(ThrottlerGuard)
-  @Throttle({ [PUBLIC_SHARE_AI_THROTTLER]: { limit: 5, ttl: 60000 } })
+  @ThrottleOnly(PUBLIC_SHARE_AI_THROTTLER, { limit: 5, ttl: 60000 })
   @Post('stream')
   async stream(
     @Req() req: FastifyRequest,

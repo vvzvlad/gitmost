@@ -31,11 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phone screen on while recording. Audio that the server failed to transcribe is retried and then
   kept: the mic turns into "Retry transcription" and "Discard recording" buttons instead of losing
   the recording, and the retried text lands where dictation started even if you edited the page
-  above it meanwhile. In streaming
-  dictation, Stop pressed mid-sentence transcribes that last phrase, and a fragment that failed to
-  transcribe holds its place in the text until it is retried or discarded. The transcription
-  endpoint allows 60 requests per minute per user instead of 20, so streaming dictation of a fast
-  speaker is not blocked for a minute.
+  above it meanwhile. In streaming dictation, Stop pressed mid-sentence transcribes that last
+  phrase, and a fragment that failed to transcribe holds its place in the text until it is retried
+  or discarded.
+- Rate-limited routes are no longer all capped at 5 requests per minute: every limit applied to
+  every limited route at once, so the strictest one (the public-share assistant's 5 per minute)
+  cut voice transcription with "Too many requests" after five phrases and blocked it for a minute,
+  and capped the AI chat, page template lookups, API keys and sign-in the same way. Each route now
+  counts only its own limit; voice transcription allows 60 requests per minute per user.
 - Git sync no longer stalls the server's HTTP and MCP requests for seconds at a time: a check of a
   space where nothing changed runs no git at all, and the sync's own git commands now run in a
   small helper process instead of being started by the server process itself.

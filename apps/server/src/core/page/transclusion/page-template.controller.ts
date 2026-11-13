@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { ThrottleOnly } from '../../../integrations/throttle/throttle-only.decorator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../../common/decorators/auth-user.decorator';
 import { User } from '@docmost/db/types/entity.types';
@@ -43,7 +43,7 @@ export class PageTemplateController {
    * DTO's ArrayMaxSize(50) cap; server-side recursive expansion is out of scope.
    */
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [PAGE_TEMPLATE_THROTTLER]: { limit: 30, ttl: 60000 } })
+  @ThrottleOnly(PAGE_TEMPLATE_THROTTLER, { limit: 30, ttl: 60000 })
   @HttpCode(HttpStatus.OK)
   @Post('template/lookup')
   async lookup(@Body() dto: TemplateLookupDto, @AuthUser() user: User) {
@@ -60,7 +60,7 @@ export class PageTemplateController {
    * it does not restrict editing or embedding.
    */
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [PAGE_TEMPLATE_THROTTLER]: { limit: 30, ttl: 60000 } })
+  @ThrottleOnly(PAGE_TEMPLATE_THROTTLER, { limit: 30, ttl: 60000 })
   @HttpCode(HttpStatus.OK)
   @Post('toggle-template')
   async toggleTemplate(
@@ -96,7 +96,7 @@ export class PageTemplateController {
    * defense-in-depth as toggle-template (NotFound, never Forbidden, on mismatch).
    */
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [PAGE_TEMPLATE_THROTTLER]: { limit: 30, ttl: 60000 } })
+  @ThrottleOnly(PAGE_TEMPLATE_THROTTLER, { limit: 30, ttl: 60000 })
   @HttpCode(HttpStatus.OK)
   @Post('toggle-temporary')
   async toggleTemporary(

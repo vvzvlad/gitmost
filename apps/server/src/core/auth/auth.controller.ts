@@ -11,6 +11,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottleOnly } from '../../integrations/throttle/throttle-only.decorator';
 import {
   AI_CHAT_THROTTLER,
   AUTH_THROTTLER,
@@ -41,7 +42,7 @@ import {
   IAuditService,
 } from '../../integrations/audit/audit.service';
 
-@SkipThrottle({ [AI_CHAT_THROTTLER]: true })
+@ThrottleOnly(AUTH_THROTTLER, { limit: 10, ttl: 60_000 })
 @UseGuards(ThrottlerGuard)
 @Controller('auth')
 export class AuthController {
@@ -184,16 +185,11 @@ export class AuthController {
     return this.authService.verifyUserToken(verifyUserTokenDto, workspace.id);
   }
 
-  // The global ThrottlerGuard applies ALL named throttlers to every route by
-  // default, so each non-AUTH bucket (AI chat, page template, public-share AI,
-  // client vitals) is explicitly skipped here. collab-token is auth-guarded
-  // (JwtAuthGuard), per-user and client-cached, so those feature buckets are
-  // irrelevant to it; skipping them avoids spurious 429s when a user opens many
-  // pages in a short window. The VITALS bucket must be skipped too: it is a
-  // process-wide named throttler, so without this skip its per-IP limit would
-  // silently cap collab-token (the one route that opts out of every other
-  // bucket) and break editing behind shared/NAT IPs. The AUTH bucket is skipped
-  // for the same per-user, cached reason.
+  // collab-token is unthrottled: it is auth-guarded (JwtAuthGuard), per-user and
+  // client-cached, and a user opening many pages in a short window, or many
+  // users behind one shared/NAT IP, must not get 429s that break editing. The
+  // class already skips every bucket but AUTH; all are listed so the route stays
+  // unthrottled whatever the class sets.
   @SkipThrottle({
     [AUTH_THROTTLER]: true,
     [AI_CHAT_THROTTLER]: true,
