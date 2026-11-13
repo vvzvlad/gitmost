@@ -19,7 +19,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { ThrottleOnly } from '../../integrations/throttle/throttle-only.decorator';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
@@ -489,7 +489,7 @@ export class AiChatController {
    */
   @SkipTransform()
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 60, ttl: 60000 } })
+  @ThrottleOnly(AI_CHAT_THROTTLER, { limit: 60, ttl: 60000 })
   @Get('runs/:chatId/stream')
   async attachRunStream(
     @Param('chatId', new ParseUUIDPipe()) chatId: string,
@@ -639,7 +639,7 @@ export class AiChatController {
    */
   @SkipTransform()
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 25, ttl: 60000 } })
+  @ThrottleOnly(AI_CHAT_THROTTLER, { limit: 25, ttl: 60000 })
   @Post('stream')
   async stream(
     @Req() req: FastifyRequest,
@@ -908,7 +908,7 @@ export class AiChatController {
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
   // Streaming dictation sends one request per spoken phrase, so the limit has
   // room for a fast speaker; a 429 blocks the user for the whole ttl.
-  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 60, ttl: 60000 } })
+  @ThrottleOnly(AI_CHAT_THROTTLER, { limit: 60, ttl: 60000 })
   @Post('transcribe')
   @UseInterceptors(FileInterceptor)
   async transcribe(
@@ -979,7 +979,7 @@ export class AiChatController {
    */
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, UserThrottlerGuard)
-  @Throttle({ [AI_CHAT_THROTTLER]: { limit: 20, ttl: 60000 } })
+  @ThrottleOnly(AI_CHAT_THROTTLER, { limit: 20, ttl: 60000 })
   @Post('generate-page-title')
   async generatePageTitle(
     @Body() dto: GeneratePageTitleDto,
