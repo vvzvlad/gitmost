@@ -17,7 +17,7 @@ export default function PageRedirect() {
   useEffect(() => {
     if (page) {
       const pageUrl = buildPageUrl(page.space.slug, page.slugId, page.title);
-      navigate(pageUrl);
+      navigate(pageUrl, { replace: true });
     }
   }, [page]);
 
