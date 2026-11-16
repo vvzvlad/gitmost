@@ -1024,7 +1024,8 @@ export const SHARED_TOOL_SPECS = {
       '(pinned by a snapshot test); use it to diff a config/prose you wrote ' +
       'against what was stored (an empty diff means it was stored verbatim). ' +
       'Also returns a `baseHash`: pass it to updatePageMarkdown/updatePageJson ' +
-      'when you overwrite the whole body so a concurrent edit cannot be clobbered.',
+      'when you overwrite the whole body so a concurrent edit cannot be clobbered. ' +
+      'Also returns `url`, the page\'s web link: give it to a person as is, never build links yourself.',
     tier: 'core',
     catalogLine:
       'getPage — fetch a page by its id (format:"markdown" default, or "text" for a flat machine-diffable read).',
@@ -1041,20 +1042,21 @@ export const SHARED_TOOL_SPECS = {
         ),
     }),
     // MCP wraps the raw `{ data, success }` as JSON. The in-app host instead
-    // projects a token-efficient `{ title, markdown }` (its long-standing shape).
+    // projects a token-efficient `{ title, url, markdown, baseHash }`.
     execute: (client, { pageId, format }) =>
       client.getPage(
         pageId as string,
         (format as 'markdown' | 'text' | undefined) ?? 'markdown',
       ),
     inAppExecute: async (client, { pageId }) => {
-      // getPage(pageId) -> { data: filterPage(page, markdown) + baseHash, success }.
+      // getPage(pageId) -> { data: filterPage(page, markdown) + url + baseHash, success }.
       const result = (await client.getPage(pageId as string)) as {
-        data?: { title?: string; content?: string; baseHash?: string };
+        data?: { title?: string; content?: string; baseHash?: string; url?: string };
       };
       const data = result?.data ?? {};
       return {
         title: data.title ?? '',
+        url: data.url,
         markdown: typeof data.content === 'string' ? data.content : '',
         // #647 §F/B3-crit (§14): the in-app agent MUST receive baseHash here or
         // it cannot perform a guarded write (updatePageMarkdown/updatePageJson).
@@ -1074,7 +1076,8 @@ export const SHARED_TOOL_SPECS = {
       "spaceId) returns { tree, truncated } — the space's full page hierarchy " +
       'as a nested tree, plus a `truncated` flag that is true when the tree was ' +
       'capped and is INCOMPLETE — but is DEPRECATED, use getTree instead ' +
-      '(leaner nodes, plus rootPageId / maxDepth).',
+      '(leaner nodes, plus rootPageId / maxDepth). ' +
+      'Each recent-pages item carries `url`, the page\'s web link: give it to a person as is, never build links yourself.',
     tier: 'core',
     catalogLine:
       "listPages — list recent pages (tree:true is deprecated; use getTree for the hierarchy).",
@@ -1162,14 +1165,15 @@ export const SHARED_TOOL_SPECS = {
     description:
       'Given a pageId, get its LOCATION and immediate surroundings (metadata ' +
       'only, no page content) in one call — answers "where am I / what is ' +
-      "around this page\". Returns `{ page: { pageId, title, spaceId }, " +
+      "around this page\". Returns `{ page: { pageId, title, spaceId, url }, " +
       'breadcrumbs: [{ pageId, title }], children: [{ pageId, title, ' +
       'hasChildren }] }`. `breadcrumbs` is the ancestor chain from the space ' +
       'root down to the PARENT (the parent is its last element; a root page ' +
       'has `breadcrumbs: []`). `children` are the direct children in sidebar ' +
       'order, each flagged `hasChildren` so you know which can be expanded ' +
       '(descend with getTree(rootPageId=that child) or another getPageContext). ' +
-      'Ids, titles and child order are consistent with getTree.',
+      'Ids, titles and child order are consistent with getTree. ' +
+      '`page.url` is the page\'s web link: give it to a person as is, never build links yourself.',
     tier: 'core',
     catalogLine:
       'getPageContext — a page’s breadcrumbs + direct children (where-am-I) in one call.',
@@ -1192,7 +1196,7 @@ export const SHARED_TOOL_SPECS = {
     description:
       'Create a new page with a Markdown body in a space, optionally under a ' +
       'parent page (omit parentPageId to create at the space root). Returns ' +
-      'the new page id and title. Body text is taken LITERALLY — ' +
+      'the new page id and title, plus `url`, the page\'s web link: give it to a person as is, never build links yourself. Body text is taken LITERALLY — ' +
       '`$...$`/`$$...$$` are NOT parsed into a math formula and schemeless ' +
       '`www.host` / bare emails are NOT auto-linked (an explicit `https://` URL ' +
       'still links); for a real formula use updatePageJson with ' +
@@ -1212,7 +1216,7 @@ export const SHARED_TOOL_SPECS = {
         .optional()
         .describe('Optional parent page id to nest the new page under.'),
     }),
-    // MCP wraps the raw create response as JSON. In-app projects `{ id, title }`
+    // MCP wraps the raw create response as JSON. In-app projects `{ id, title, url }`
     // and defensively coerces a missing body to '' (the schema makes content a
     // required string, so `?? ''` only guards an absent field — preserved).
     execute: (client, { title, content, spaceId, parentPageId }) =>
@@ -1224,15 +1228,19 @@ export const SHARED_TOOL_SPECS = {
       ),
     inAppExecute: async (client, { title, content, spaceId, parentPageId }) => {
       // createPage(title, content, spaceId, parentPageId?) ->
-      // { data: filterPage(page, markdown), success }.
+      // { data: filterPage(page, markdown) + url, success }.
       const result = (await client.createPage(
         title as string,
         (content as string | undefined) ?? '',
         spaceId as string,
         parentPageId as string | undefined,
-      )) as { data?: { id?: string; slugId?: string; title?: string } };
+      )) as { data?: { id?: string; slugId?: string; title?: string; url?: string } };
       const data = result?.data ?? {};
-      return { id: data.id ?? data.slugId, title: data.title ?? (title as string) };
+      return {
+        id: data.id ?? data.slugId,
+        title: data.title ?? (title as string),
+        url: data.url,
+      };
     },
   },
 

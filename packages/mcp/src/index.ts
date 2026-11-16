@@ -461,7 +461,8 @@ server.registerTool(
       "semantically similar pages that do NOT match the query (operators are " +
       "not applied to them; they may still mention some terms) — not proof " +
       "the topic is covered, but check them as possible duplicates before " +
-      "creating a page.",
+      "creating a page. Each item and related page carries `url`, the page's " +
+      "web link: give it to a person as is, never build links yourself.",
     inputSchema: {
       query: z.string().min(1).describe("Search query (supports \"phrase\", +require, -exclude)"),
       spaceId: z

@@ -656,6 +656,7 @@ export class AiChatToolsService {
     const { DocmostClient } = await loadDocmostMcp();
     return new DocmostClient({
       apiUrl,
+      appUrl: this.environmentService.getAppUrl(),
       getToken,
       getCollabToken,
       sandbox: this.sandboxStore.asSink(),

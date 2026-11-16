@@ -62,7 +62,13 @@ export type SandboxPut = (
   mime: string,
 ) => { uri: string; sha256: string; size: number };
 
-export type DocmostMcpConfig = { apiUrl: string } & (
+export type DocmostMcpConfig = {
+  apiUrl: string;
+  // Public base URL of the web app (no /api suffix) used to build links handed
+  // to people. Omit it where `apiUrl` is itself public (standalone stdio); a
+  // host that talks to the API over an internal address must pass it.
+  appUrl?: string;
+} & (
   | { email: string; password: string }
   | { getToken: () => Promise<string> } // returns a BARE JWT; the client adds "Bearer "
 ) & {
@@ -176,6 +182,7 @@ export abstract class DocmostClientContext {
   protected client: AxiosInstance;
   protected token: string | null = null;
   protected apiUrl: string;
+  private configuredAppUrl?: string;
   // email/password are only set on the service-account (credentials) variant;
   // null on the getToken variant (where there are no credentials to log in with).
   protected email: string | null = null;
@@ -319,6 +326,7 @@ export abstract class DocmostClientContext {
         : configOrBaseURL;
 
     this.apiUrl = config.apiUrl;
+    this.configuredAppUrl = config.appUrl;
     if ("getToken" in config) {
       // Token variant: carry the user's JWT via getToken; no credentials, so
       // login() must never call performLogin (there is nothing to log in with).
@@ -498,9 +506,14 @@ export abstract class DocmostClientContext {
     throw new Error("listPageHistory not wired (missing PagesMixin)");
   }
 
-  /** Application base URL (API URL without the /api suffix). */
+  /** Public application base URL: the configured `appUrl`, else the API URL without the /api suffix. */
   get appUrl(): string {
-    return this.apiUrl.replace(/\/api\/?$/, "");
+    return (this.configuredAppUrl ?? this.apiUrl.replace(/\/api\/?$/, "")).replace(/\/+$/, "");
+  }
+
+  /** Web link to a page by its UUID; the client route /p/:id redirects to the canonical slug URL. */
+  protected pageUrl(pageId: string): string {
+    return `${this.appUrl}/p/${pageId}`;
   }
 
 

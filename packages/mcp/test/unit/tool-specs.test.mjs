@@ -177,6 +177,18 @@ test("#494: an inlineBothHosts spec is exempt from the execute requirement", () 
   assert.doesNotThrow(() => assertEverySpecIsRegisterable(inline));
 });
 
+test("in-app getPage and createPage projections carry the page url", async () => {
+  const url = "https://wiki.example/p/00000000-0000-4000-8000-00000000000a";
+  const page = { data: { id: "p1", title: "T", content: "body", url }, success: true };
+  const client = { getPage: async () => page, createPage: async () => page };
+  const read = await SHARED_TOOL_SPECS.getPage.inAppExecute(client, { pageId: "p1" });
+  assert.equal(read.url, url);
+  const created = await SHARED_TOOL_SPECS.createPage.inAppExecute(client, {
+    title: "T", content: "body", spaceId: "s1",
+  });
+  assert.equal(created.url, url);
+});
+
 test("buildShape (when present) returns a usable ZodRawShape with a real zod", () => {
   for (const [key, spec] of Object.entries(SHARED_TOOL_SPECS)) {
     if (!spec.buildShape) continue;

@@ -148,7 +148,10 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       const response = await this.client.post("/pages/recent", payload);
       const data = response.data;
       const items = data.data?.items || data.items || [];
-      return items.map((page: any) => filterPage(page));
+      return items.map((page: any) => ({
+        ...filterPage(page),
+        url: this.pageUrl(page.id),
+      }));
     };
     return spaceId
       ? this.withSpaceAccessDiagnostics(spaceId, "listPages", runRecent)
@@ -247,6 +250,7 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       pageId: self.id,
       title: self.title,
       spaceId: self.spaceId,
+      url: this.pageUrl(self.id),
     };
     const breadcrumbs = ancestors.map((n: any) => ({
       pageId: n.id,
@@ -459,7 +463,11 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       const textContent =
         typeof textData.content === "string" ? textData.content : "";
       return {
-        data: { ...filterPage(textData, textContent, subpages), baseHash: textData.contentHash },
+        data: {
+          ...filterPage(textData, textContent, subpages),
+          url: this.pageUrl(textData.id),
+          baseHash: textData.contentHash,
+        },
         success: true,
       };
     }
@@ -556,7 +564,11 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       // #647 §F — surface the coherent contentHash as `baseHash` so the agent can
       // read → hash → write (updatePageJson / updatePageMarkdown). The in-app
       // projection in tool-specs must carry it through too (B3-crit, §14).
-      data: { ...filterPage(resultData, content, subpages), baseHash: resultData.contentHash },
+      data: {
+        ...filterPage(resultData, content, subpages),
+        url: this.pageUrl(resultData.id),
+        baseHash: resultData.contentHash,
+      },
       success: true,
     };
   }
@@ -789,7 +801,11 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       // Normalize both response shapes: bare array and paginated { items: [...] }.
       const data = response.data?.data;
       const items = Array.isArray(data) ? data : data?.items || [];
-      const filteredItems = items.map((item: any) => filterSearchResult(item));
+      const withUrl = (item: any) => ({
+        ...filterSearchResult(item),
+        url: this.pageUrl(item.id),
+      });
+      const filteredItems = items.map(withUrl);
 
       // Surface the #529 pagination envelope when present (a stock upstream has
       // none — the fields are simply undefined and the caller sees just `items`).
@@ -797,7 +813,7 @@ export function ReadMixin<TBase extends GConstructor<DocmostClientContext>>(Base
       return {
         items: filteredItems,
         related: (Array.isArray(envelope?.related) ? envelope.related : []).map(
-          filterSearchResult,
+          withUrl,
         ),
         total: envelope?.total,
         hasMore: envelope?.hasMore,

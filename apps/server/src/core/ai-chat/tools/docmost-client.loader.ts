@@ -99,6 +99,8 @@ export type DocmostClientLike = Pick<DocmostClient, DocmostClientMethod>;
 
 export type DocmostClientConfig = {
   apiUrl: string;
+  // Public base URL for links handed to people (apiUrl is a loopback address).
+  appUrl: string;
   getToken: () => Promise<string>;
   // Provenance collab-token provider for content mutations (signed agent claim).
   getCollabToken?: () => Promise<string>;

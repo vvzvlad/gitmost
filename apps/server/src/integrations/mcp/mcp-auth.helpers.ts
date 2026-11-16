@@ -17,6 +17,7 @@ import { JwtType } from '../../core/auth/dto/jwt-payload';
 // injected by McpService after the auth decision.
 export type DocmostMcpConfig = {
   apiUrl: string;
+  appUrl?: string;
   getToken: () => Promise<string>;
 } & {
   sandbox?: {
@@ -61,6 +62,9 @@ export interface ResolvedMcpAuth {
 // testable decision logic from Nest DI wiring.
 export interface McpAuthDeps {
   apiUrl: string;
+  // Public base URL (APP_URL) the MCP client builds page links from; apiUrl is
+  // an internal loopback address.
+  appUrl: string;
   findWorkspace: () => Promise<{ id: string } | undefined>;
   // Bearer api_key verification. Verifies signature/exp/type AND (in the
   // McpService wiring) the api_key row-check + workspace binding, mirroring
@@ -386,7 +390,7 @@ export async function resolveMcpSessionConfig(
   authHeader: string | undefined,
   deps: McpAuthDeps,
 ): Promise<ResolvedMcpAuth> {
-  const { apiUrl } = deps;
+  const { apiUrl, appUrl } = deps;
 
   const bearer = extractBearer(authHeader);
   if (bearer) {
@@ -407,7 +411,7 @@ export async function resolveMcpSessionConfig(
       throw err;
     }
     return {
-      config: { apiUrl, getToken: async () => bearer },
+      config: { apiUrl, appUrl, getToken: async () => bearer },
       identity: `bearer:${payload.sub ?? payload.email ?? 'unknown'}`,
     };
   }
