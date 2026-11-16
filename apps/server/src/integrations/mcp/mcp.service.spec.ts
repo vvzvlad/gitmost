@@ -52,6 +52,7 @@ function basicHeader(email: string, password: string): string {
 function makeDeps(over: Partial<McpAuthDeps> = {}): McpAuthDeps {
   return {
     apiUrl: 'http://127.0.0.1:3000/api',
+    appUrl: 'https://wiki.example',
     findWorkspace:
       over.findWorkspace ?? jest.fn().mockResolvedValue({ id: 'ws-1' }),
     // Default: a valid api_key verification returning a principal.
@@ -134,6 +135,19 @@ describe('resolveMcpSessionConfig (Bearer api_key ONLY)', () => {
     const cfg = resolved.config as { getToken: () => Promise<string> };
     await expect(cfg.getToken()).resolves.toBe('some.api.key');
     expect(resolved.identity).toBe('bearer:svc-9');
+  });
+
+  it('passes the public appUrl from deps into the session config', async () => {
+    const resolved = await resolveMcpSessionConfig(
+      'Bearer some.api.key',
+      makeDeps({
+        verifyAccessJwt: jest.fn().mockResolvedValue({ sub: 'svc-9' }),
+      }),
+    );
+    expect(resolved.config).toMatchObject({
+      apiUrl: 'http://127.0.0.1:3000/api',
+      appUrl: 'https://wiki.example',
+    });
   });
 
   it('HTTP Basic email:password -> 401 (api_key only), verify NOT called', async () => {
@@ -781,7 +795,7 @@ describe('McpService.handle applies the WWW-Authenticate challenge (#636)', () =
 
   function makeService(): McpService {
     // The constructor only stores its deps, so bare stubs suffice.
-    const svc = new McpService({} as any, {} as any, {} as any, {} as any);
+    const svc = new McpService({} as any, {} as any, {} as any, {} as any, {} as any);
     (svc as any).isEnabled = jest.fn().mockResolvedValue(true);
     return svc;
   }
@@ -978,7 +992,7 @@ describe('McpService.handle applies the WWW-Authenticate challenge (#636)', () =
 describe('McpService.onModuleDestroy — CollabSession teardown (#486)', () => {
   function makeService(): McpService {
     // The constructor only stores its deps, so bare stubs suffice.
-    return new McpService({} as any, {} as any, {} as any, {} as any);
+    return new McpService({} as any, {} as any, {} as any, {} as any, {} as any);
   }
 
   it('destroys all sessions on shutdown', async () => {

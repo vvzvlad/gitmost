@@ -147,7 +147,10 @@ describe('deferred catalog ↔ live forUser() toolset partition (#332, F3)', () 
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
     const tools = await service.forUser(
       { id: 'user-1', email: 'u@example.com', workspaceId: 'ws-1' } as never,

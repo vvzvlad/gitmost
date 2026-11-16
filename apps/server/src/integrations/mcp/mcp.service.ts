@@ -23,6 +23,7 @@ import {
   ResolvedMcpAuth,
 } from './mcp-auth.helpers';
 import { SandboxStore } from '../sandbox/sandbox.store';
+import { EnvironmentService } from '../environment/environment.service';
 import {
   isMetricsEnabled,
   observeMcpTool,
@@ -124,6 +125,8 @@ export class McpService implements OnModuleDestroy {
     private readonly apiKeyService: ApiKeyService,
     // Shared singleton in-RAM blob store backing the stash tool.
     private readonly sandboxStore: SandboxStore,
+    // Source of the public APP_URL used for page links in MCP results.
+    private readonly environmentService: EnvironmentService,
   ) {}
 
   async onModuleDestroy(): Promise<void> {
@@ -234,6 +237,7 @@ export class McpService implements OnModuleDestroy {
     const authHeader = req.headers['authorization'] as string | undefined;
     return resolveMcpSessionConfig(authHeader, {
       apiUrl: this.getApiUrl(),
+      appUrl: this.environmentService.getAppUrl(),
       findWorkspace: () => this.workspaceRepo.findFirst(),
       verifyAccessJwt: (token) => this.verifyMcpBearer(token),
     });

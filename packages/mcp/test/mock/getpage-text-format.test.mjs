@@ -85,7 +85,11 @@ function spawn(state) {
 }
 
 function makeClient(baseURL) {
-  return new DocmostClient({ apiUrl: baseURL, getToken: async () => "access" });
+  return new DocmostClient({
+    apiUrl: baseURL,
+    appUrl: "https://wiki.example",
+    getToken: async () => "access",
+  });
 }
 
 test('getPage(format:"text") requests text and returns the server text verbatim', async () => {
@@ -113,4 +117,12 @@ test('getPage default (no format) still returns markdown, not text', async () =>
   assert.equal(state.lastInfoBody.format, undefined, "default read sends no format");
   assert.ok(result.data.content.includes("Title line"), "markdown content converted client-side");
   assert.notEqual(result.data.content, SERVER_TEXT);
+});
+
+test("getPage returns the public web link in both formats, built from appUrl not apiUrl", async () => {
+  const client = makeClient(await spawn({}));
+  const expected = `https://wiki.example/p/${PAGE_UUID}`;
+
+  assert.equal((await client.getPage(PAGE_UUID)).data.url, expected);
+  assert.equal((await client.getPage(PAGE_UUID, "text")).data.url, expected);
 });

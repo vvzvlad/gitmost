@@ -87,7 +87,10 @@ describe('AiChatToolsService deletePage guardrail (H4)', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -206,7 +209,10 @@ describe('AiChatToolsService expanded toolset guardrails', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -335,7 +341,10 @@ describe('AiChatToolsService node-arg JSON-string coercion', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -555,7 +564,10 @@ describe('AiChatToolsService model-friendly input validation (#190)', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -689,7 +701,10 @@ describe('AiChatToolsService #294 changed execute wirings', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
   afterEach(() => jest.restoreAllMocks());
@@ -795,7 +810,10 @@ describe('AiChatToolsService #410 footnote + image tools', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
   afterEach(() => jest.restoreAllMocks());
@@ -894,7 +912,10 @@ describe('AiChatToolsService getCurrentPage selection (#388)', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -982,7 +1003,10 @@ describe('AiChatToolsService drawio layout passthrough (#440)', () => {
       } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 
@@ -1068,7 +1092,10 @@ describe('AiChatToolsService searchPages (shared SearchService)', () => {
       {
         asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }),
       } as never,
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   });
 

@@ -312,7 +312,10 @@ describe('AiChatToolsService forUser + comment signal (real tracker)', () => {
       { asSink: () => ({ put: jest.fn(), has: jest.fn(), evict: jest.fn() }) } as never,
       // #629: EnvironmentService (DRAWIO_RASTER_ENABLED mirror). Flag OFF here
       // so viewImage's drawio no-raster path stays inert (resvg fallback).
-      { isDrawioRasterEnabled: () => false } as never,
+      {
+        isDrawioRasterEnabled: () => false,
+        getAppUrl: () => 'https://wiki.example',
+      } as never,
     );
   }
 

@@ -136,7 +136,12 @@ test("getPageContext: 3rd-level page splits chain, maps children, no slugId leak
     sendJson(res, 404, {});
   });
 
-  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+  const client = new DocmostClient({
+    apiUrl: baseURL,
+    appUrl: "https://wiki.example/",
+    email: "user@example.com",
+    password: "pw",
+  });
   const result = await client.getPageContext(PAGE_UUID);
 
   assert.equal(infoReqs, 0, "UUID input short-circuits resolvePageId (no /pages/info)");
@@ -149,6 +154,7 @@ test("getPageContext: 3rd-level page splits chain, maps children, no slugId leak
     pageId: PAGE_UUID,
     title: "Rack 12",
     spaceId: "sp1",
+    url: `https://wiki.example/p/${PAGE_UUID}`,
   });
   // breadcrumbs = root->parent (the chain minus the page itself).
   assert.deepEqual(result.breadcrumbs, [
@@ -195,13 +201,19 @@ test("getPageContext: a root page has breadcrumbs: []", async () => {
     sendJson(res, 404, {});
   });
 
-  const client = new DocmostClient(baseURL, "user@example.com", "pw");
+  const client = new DocmostClient({
+    apiUrl: baseURL,
+    appUrl: "https://wiki.example/",
+    email: "user@example.com",
+    password: "pw",
+  });
   const result = await client.getPageContext(ROOT_UUID);
 
   assert.deepEqual(result.page, {
     pageId: ROOT_UUID,
     title: "Infrastructure",
     spaceId: "sp1",
+    url: `https://wiki.example/p/${ROOT_UUID}`,
   });
   assert.deepEqual(result.breadcrumbs, [], "root page: no ancestors");
   assert.deepEqual(result.children, [], "no children");

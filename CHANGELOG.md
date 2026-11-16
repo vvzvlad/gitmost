@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP page results (`getPage`, `createPage`, `getPageContext`, `search`, `listPages`) include
+  `url`, a working link to the page, so an agent can hand it to a person as is.
 - Metric `git_sync_cycle_duration_seconds{result}`: how long each git sync cycle takes, ok or failed.
 
 ### Changed
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sharePage` and `listShares` in the server MCP and the in-app agent returned public links to the
+  internal `http://127.0.0.1:3000` instead of `APP_URL`.
 - Voice dictation no longer stops on its own after two minutes (a non-streaming recording is
   stopped and transcribed after 20 minutes, to stay under the 25 MB upload limit) and keeps the
   phone screen on while recording. Audio that the server failed to transcribe is retried and then
