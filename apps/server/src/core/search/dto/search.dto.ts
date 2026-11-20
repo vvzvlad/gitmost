@@ -43,6 +43,10 @@ export class SearchDTO {
   labelId?: string;
 
   @IsOptional()
+  @IsBoolean()
+  includeAttachments?: boolean;
+
+  @IsOptional()
   @IsNumber()
   limit?: number;
 

@@ -21,6 +21,7 @@ import pLimit from 'p-limit';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QueueJob, QueueName } from '../../queue/constants';
+import { INDEXABLE_DOCUMENT_EXTENSIONS } from '../../documents/document-extract';
 
 interface AttachmentInfo {
   href: string;
@@ -210,7 +211,10 @@ export class ImportAttachmentService {
         const dir = path.posix.dirname(relPath);
         const aliasKey = `${dir}/${attachment.fileName}`;
         if (!attachmentCandidates.has(aliasKey)) {
-          attachmentCandidates.set(aliasKey, attachmentCandidates.get(relPath)!);
+          attachmentCandidates.set(
+            aliasKey,
+            attachmentCandidates.get(relPath)!,
+          );
           attachmentNameByRelPath.set(aliasKey, attachment.fileName);
         }
       }
@@ -378,9 +382,7 @@ export class ImportAttachmentService {
 
       const { attachmentId, apiFilePath } = processFile(relPath);
 
-      $aud
-        .attr('src', apiFilePath)
-        .attr('data-attachment-id', attachmentId);
+      $aud.attr('src', apiFilePath).attr('data-attachment-id', attachmentId);
 
       unwrapFromParagraph($, $aud);
     }
@@ -451,7 +453,15 @@ export class ImportAttachmentService {
       const { attachmentId, apiFilePath, abs } = processFile(relPath);
       const ext = path.extname(relPath).toLowerCase();
 
-      const audioExtensions = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.webm', '.flac', '.aac']);
+      const audioExtensions = new Set([
+        '.mp3',
+        '.wav',
+        '.ogg',
+        '.m4a',
+        '.webm',
+        '.flac',
+        '.aac',
+      ]);
 
       if (ext === '.pdf') {
         const $pdf = $('<div>')
@@ -962,18 +972,16 @@ export class ImportAttachmentService {
           })
           .execute();
 
-        // Queue PDF and DOCX files for indexing
-        const supportedExtensions = ['.pdf', '.docx'];
-        if (supportedExtensions.includes(ext.toLowerCase())) {
+        if (INDEXABLE_DOCUMENT_EXTENSIONS.includes(ext.toLowerCase())) {
           try {
             await this.attachmentQueue.add(
               QueueJob.ATTACHMENT_INDEX_CONTENT,
               { attachmentId },
               {
-                attempts: 1,
+                attempts: 3,
                 backoff: {
                   type: 'exponential',
-                  delay: 3 * 60 * 1000,
+                  delay: 10_000,
                 },
                 deduplication: {
                   id: attachmentId,

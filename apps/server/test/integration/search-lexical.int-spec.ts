@@ -10,6 +10,8 @@ import {
   destroyTestDb,
   createWorkspace,
   createSpace,
+  createUser,
+  createIndexedAttachment,
 } from './db';
 
 /**
@@ -190,6 +192,47 @@ describe('SearchService #529 lexical overhaul [integration]', () => {
 
   afterAll(async () => {
     await destroyTestDb();
+  });
+
+  it('searches attachment text, applies query operators and hides restricted page matches', async () => {
+    const { id: creatorId } = await createUser(db, workspaceId);
+    const pageId = await insertPage({ title: 'Public record' });
+    const restrictedPageId = await insertPage({ title: 'Restricted record' });
+    const base = { workspaceId, spaceId, creatorId };
+    const id = await createIndexedAttachment(db, {
+      ...base,
+      pageId,
+      fileName: 'record.txt',
+      textContent: 'A unique finding contained in the archive.',
+    });
+    await createIndexedAttachment(db, {
+      ...base,
+      pageId,
+      fileName: 'draft.txt',
+      textContent: 'A unique finding contained in a draft.',
+    });
+    await createIndexedAttachment(db, {
+      ...base,
+      pageId: restrictedPageId,
+      fileName: 'restricted.txt',
+      textContent: 'A unique finding.',
+    });
+
+    const results = await buildService({
+      accessibleIds: [pageId],
+    }).searchAttachments(
+      { query: '"unique finding" -draft', spaceId },
+      { userId: creatorId, workspaceId },
+    );
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        id,
+        fileName: 'record.txt',
+        pageId,
+        snippet: expect.stringContaining('unique finding'),
+      }),
+    ]);
   });
 
   // 1. RU morphology + OR: «ресторанов москвы» finds «ресторан в москве».

@@ -426,6 +426,12 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
               <Menu.Item onClick={() => setExportFormat(ExportFormat.HTML)}>
                 HTML
               </Menu.Item>
+              <Menu.Item onClick={() => setExportFormat(ExportFormat.DOCX)}>
+                DOCX
+              </Menu.Item>
+              <Menu.Item onClick={() => setExportFormat(ExportFormat.PDF)}>
+                PDF
+              </Menu.Item>
             </Menu.Sub.Dropdown>
           </Menu.Sub>
 

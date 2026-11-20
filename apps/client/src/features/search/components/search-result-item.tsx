@@ -1,4 +1,3 @@
-import React from "react";
 import {
   Group,
   Center,
@@ -33,60 +32,57 @@ export function SearchResultItem({
   if (isAttachmentResult) {
     const attachmentResult = result as IAttachmentSearch;
 
-    const handleDownload = (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const downloadUrl = `/api/files/${attachmentResult.id}/${attachmentResult.fileName}`;
-      window.open(downloadUrl, "_blank");
-    };
+    const downloadUrl = `/api/files/${attachmentResult.id}/${encodeURIComponent(attachmentResult.fileName)}`;
 
     return (
-      <Spotlight.Action
-        component={Link}
-        //@ts-ignore
-        to={buildPageUrl(
-          attachmentResult.space.slug,
-          attachmentResult.page.slugId,
-          attachmentResult.page.title,
-        )}
-        style={{ userSelect: "none" }}
-      >
-        <Group wrap="nowrap" w="100%">
-          <Center>
-            <IconFile size={16} />
-          </Center>
+      <Group wrap="nowrap" gap="xs" pr="sm">
+        <Spotlight.Action
+          component={Link}
+          // @ts-ignore
+          to={buildPageUrl(
+            attachmentResult.space.slug,
+            attachmentResult.page.slugId,
+            attachmentResult.page.title ?? undefined,
+          )}
+          style={{ flex: 1, minWidth: 0, userSelect: "none" }}
+        >
+          <Group wrap="nowrap" w="100%">
+            <Center>
+              <IconFile size={16} />
+            </Center>
 
-          <div style={{ flex: 1 }}>
-            <Text>{attachmentResult.fileName}</Text>
-            <Text size="xs" opacity={0.6}>
-              {attachmentResult.space.name} • {attachmentResult.page.title}
-            </Text>
-
-            {attachmentResult?.highlight && (
-              <Text
-                opacity={0.6}
-                size="xs"
-                dangerouslySetInnerHTML={{
-                  __html: DOMPurify.sanitize(attachmentResult.highlight, {
-                    ALLOWED_TAGS: ["mark", "em", "strong", "b"],
-                    ALLOWED_ATTR: [],
-                  }),
-                }}
-              />
-            )}
-          </div>
-
-          <Tooltip
-            label={t("Download attachment")}
-            zIndex={getDefaultZIndex("max")}
-            withArrow
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Text truncate>{attachmentResult.fileName}</Text>
+              <Text size="xs" c="dimmed" truncate>
+                {attachmentResult.space.name} •{" "}
+                {attachmentResult.page.title || t("Untitled")}
+              </Text>
+              {attachmentResult.snippet && (
+                <Text c="dimmed" size="xs" lineClamp={2}>
+                  {attachmentResult.snippet}
+                </Text>
+              )}
+            </div>
+          </Group>
+        </Spotlight.Action>
+        <Tooltip
+          label={t("Download attachment")}
+          zIndex={getDefaultZIndex("max")}
+          withArrow
+        >
+          <ActionIcon
+            component="a"
+            href={downloadUrl}
+            target="_blank"
+            rel="noopener"
+            variant="subtle"
+            color="gray"
+            aria-label={t("Download attachment")}
           >
-            <ActionIcon variant="subtle" color="gray" onClick={handleDownload}>
-              <IconDownload size={18} />
-            </ActionIcon>
-          </Tooltip>
-        </Group>
-      </Spotlight.Action>
+            <IconDownload size={18} />
+          </ActionIcon>
+        </Tooltip>
+      </Group>
     );
   } else {
     const pageResult = result as IPageSearch;
@@ -111,7 +107,11 @@ export function SearchResultItem({
           <div style={{ flex: 1 }}>
             <Text>{pageResult.title}</Text>
 
-            {path && <Text size="xs" c="dimmed" lineClamp={1} title={path}>{path}</Text>}
+            {path && (
+              <Text size="xs" c="dimmed" lineClamp={1} title={path}>
+                {path}
+              </Text>
+            )}
 
             {pageResult?.highlight && (
               <Text

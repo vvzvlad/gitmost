@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CamelCasePlugin, Kysely } from 'kysely';
+import { CamelCasePlugin, Kysely, sql } from 'kysely';
 import { PostgresJSDialect } from 'kysely-postgres-js';
 import * as postgres from 'postgres';
 
@@ -110,6 +110,32 @@ export async function destroyTestDb(): Promise<void> {
 // Short, human-readable suffix derived from a row's uuid. Used to build unique
 // names/slugs/hostnames for seeded rows so unique constraints never collide.
 const shortId = (id: string): string => id.slice(0, 8);
+
+export async function createIndexedAttachment(
+  db: Kysely<any>,
+  attachment: {
+    workspaceId: string;
+    spaceId: string;
+    pageId: string;
+    creatorId: string;
+    fileName: string;
+    textContent: string;
+  },
+): Promise<string> {
+  const id = randomUUID();
+  await db
+    .insertInto('attachments')
+    .values({
+      ...attachment,
+      id,
+      filePath: id,
+      fileExt: '.txt',
+      type: 'file',
+      tsv: sql`to_tsvector('simple', f_unaccent(${attachment.textContent}))`,
+    })
+    .execute();
+  return id;
+}
 
 export async function createWorkspace(
   db: Kysely<any>,

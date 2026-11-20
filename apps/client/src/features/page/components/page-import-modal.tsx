@@ -84,6 +84,7 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
   const markdownFileRef = useRef<() => void>(null);
   const htmlFileRef = useRef<() => void>(null);
   const notionFileRef = useRef<() => void>(null);
+  const confluenceFileRef = useRef<() => void>(null);
   const zipFileRef = useRef<() => void>(null);
 
   const handleZipUpload = async (selectedFile: File, source: string) => {
@@ -131,6 +132,8 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
       // Reset file input after successful upload
       if (source === "notion" && notionFileRef.current) {
         notionFileRef.current();
+      } else if (source === "confluence" && confluenceFileRef.current) {
+        confluenceFileRef.current();
       } else if (source === "generic" && zipFileRef.current) {
         zipFileRef.current();
       }
@@ -260,19 +263,23 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
     });
 
     const pages: IPage[] = [];
-    let pageCount = 0;
+    const failures: string[] = [];
 
     for (const file of selectedFiles) {
       try {
         const page = await importPage(file, spaceId);
         pages.push(page);
-        pageCount += 1;
       } catch (err) {
-        console.log("Failed to import page", err);
+        const reason = err?.response?.data?.message;
+        failures.push(
+          typeof reason === "string" ? `${file.name}: ${reason}` : file.name,
+        );
       }
     }
 
-    if (pages?.length > 0 && pageCount > 0) {
+    const pageCount = pages.length;
+    const failureMessage = failures.slice(0, 3).join(" · ");
+    if (pageCount > 0) {
       const newTreeNodes = buildTree(pages);
       const fullTree = treeData.concat(newTreeNodes);
 
@@ -289,9 +296,9 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
 
       notifications.update({
         id: alert,
-        color: "teal",
+        color: failures.length ? "orange" : "teal",
         title: `${t("Successfully imported")} ${pageCountText}`,
-        message: t("Your import is complete."),
+        message: failureMessage || t("Your import is complete."),
         icon: <IconCheck size={18} />,
         loading: false,
         autoClose: 5000,
@@ -301,7 +308,8 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
         id: alert,
         color: "red",
         title: t("Failed to import pages"),
-        message: t("Unable to import pages. Please try again."),
+        message:
+          failureMessage || t("Unable to import pages. Please try again."),
         icon: <IconX size={18} />,
         loading: false,
         autoClose: 5000,
@@ -371,6 +379,47 @@ function ImportFormatSelection({ spaceId, onClose }: ImportFormatSelection) {
               {...props}
             >
               Notion
+            </Button>
+          )}
+        </FileButton>
+        {[
+          { extension: ".docx", label: "DOCX" },
+          { extension: ".pdf", label: "PDF" },
+        ].map(({ extension, label }) => (
+          <FileButton
+            key={extension}
+            onChange={handleFileUpload}
+            accept={extension}
+            multiple
+            inputProps={{
+              "aria-label": t("Choose {{format}} file", { format: label }),
+            }}
+          >
+            {(props) => (
+              <Button justify="start" variant="default" {...props}>
+                {label}
+              </Button>
+            )}
+          </FileButton>
+        ))}
+        <FileButton
+          onChange={(file) => handleZipUpload(file, "confluence")}
+          accept=".zip"
+          resetRef={confluenceFileRef}
+          inputProps={{
+            "aria-label": t("Choose {{format}} file", {
+              format: "Confluence HTML ZIP",
+            }),
+          }}
+        >
+          {(props) => (
+            <Button
+              justify="start"
+              variant="default"
+              leftSection={<IconFileTypeZip size={18} />}
+              {...props}
+            >
+              Confluence HTML ZIP
             </Button>
           )}
         </FileButton>

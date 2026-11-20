@@ -3,10 +3,7 @@ import { IconSearch } from "@tabler/icons-react";
 import { Group, Text, VisuallyHidden } from "@mantine/core";
 import { useState, useEffect } from "react";
 import { useDebouncedValue } from "@mantine/hooks";
-import {
-  markOperationStart,
-  measureOperation,
-} from "@/lib/telemetry/vitals";
+import { markOperationStart, measureOperation } from "@/lib/telemetry/vitals";
 import { useTranslation } from "react-i18next";
 import { searchSpotlightStore } from "../constants.ts";
 import { SearchSpotlightFilters } from "./search-spotlight-filters.tsx";
@@ -20,13 +17,24 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [debouncedSearchQuery] = useDebouncedValue(query, 300);
-  const [spaceFilter, setSpaceFilter] = useState<{ context?: string; value: string | null }>();
-  const selectedSpaceId = spaceFilter && spaceFilter.context === spaceId ? spaceFilter.value : spaceId;
+  const [spaceFilter, setSpaceFilter] = useState<{
+    context?: string;
+    value: string | null;
+  }>();
+  const selectedSpaceId =
+    spaceFilter && spaceFilter.context === spaceId
+      ? spaceFilter.value
+      : spaceId;
   const [labelId, setLabelId] = useState<string | null>(null);
-  const { data: searchResults, isLoading, isError } = useUnifiedSearch({
+  const {
+    data: searchResults,
+    isLoading,
+    isError,
+  } = useUnifiedSearch({
     query: debouncedSearchQuery,
     spaceId: selectedSpaceId || undefined,
     labelId: labelId || undefined,
+    includeAttachments: true,
   });
 
   // `search_full` — the user's search round-trip: a new non-empty debounced
@@ -56,6 +64,11 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
       isAttachmentResult={false}
     />
   ));
+
+  const fileItems = (searchResults?.attachments ?? []).map((result) => (
+    <SearchResultItem key={result.id} result={result} isAttachmentResult />
+  ));
+  const matchCount = resultItems.length + fileItems.length;
 
   // #701: semantically similar pages that do NOT match the query — shown apart
   // from the matches and never counted as results.
@@ -96,7 +109,9 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
         >
           <SearchSpotlightFilters
             spaceId={selectedSpaceId}
-            onSpaceChange={(value) => setSpaceFilter({ context: spaceId, value })}
+            onSpaceChange={(value) =>
+              setSpaceFilter({ context: spaceId, value })
+            }
             labelId={labelId}
             onLabelChange={setLabelId}
           />
@@ -109,24 +124,33 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
 
         <VisuallyHidden role="status" aria-live="polite">
           {query.length > 0 && !isLoading
-            ? resultItems.length === 0
+            ? matchCount === 0
               ? t("No results found")
               : // Singular/plural handling so 1 result is not announced as
                 // "1 results found".
-                t("{{count}} result found", { count: resultItems.length })
+                t("{{count}} result found", { count: matchCount })
             : ""}
         </VisuallyHidden>
 
         <Spotlight.ActionsList>
-          {query.length === 0 && resultItems.length === 0 && (
+          {query.length === 0 && matchCount === 0 && (
             <Spotlight.Empty>{t("Start typing to search...")}</Spotlight.Empty>
           )}
 
-          {query.length > 0 && !isLoading && resultItems.length === 0 && (
+          {query.length > 0 && !isLoading && matchCount === 0 && (
             <Spotlight.Empty>{t("No results found...")}</Spotlight.Empty>
           )}
 
           {resultItems.length > 0 && <>{resultItems}</>}
+
+          {fileItems.length > 0 && (
+            <>
+              <Text size="xs" c="dimmed" px="sm" pt="sm" pb={4}>
+                {t("Attachments")}
+              </Text>
+              {fileItems}
+            </>
+          )}
 
           {relatedItems.length > 0 && (
             <>

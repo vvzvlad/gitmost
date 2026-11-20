@@ -182,6 +182,8 @@ function ExportFormatSelection({ format, onChange }: ExportFormatSelection) {
       data={[
         { value: "markdown", label: "Markdown" },
         { value: "html", label: "HTML" },
+        { value: "docx", label: "DOCX" },
+        { value: "pdf", label: "PDF" },
       ]}
       defaultValue={format}
       onChange={onChange}

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Space home pages, account-synced page pins, search by label with result paths, and starter templates for new notes.
+- Import Confluence HTML archives, Word documents, and text-based PDFs. Export pages and spaces as DOCX or server-generated PDF.
+- Search the text of PDF, DOCX, Markdown, and plain-text attachments within accessible pages.
 
 ### Fixed
 

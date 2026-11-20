@@ -150,11 +150,14 @@ export class SearchService {
   // words are joined with `&` and given a `:*` suffix for the prefix branch. The
   // whole lexeme string is a BOUND parameter to to_tsquery — no user operator can
   // reach the parser.
-  private ftsTermTsq(term: ParsedTerm): RawBuilder<unknown> {
+  private ftsTermTsq(
+    term: ParsedTerm,
+    config = TS_CONFIG,
+  ): RawBuilder<unknown> {
     const words = term.text.split(/\s+/).filter(Boolean);
     const suffix = term.branch === 'ftsPrefix' ? ':*' : '';
     const lexeme = words.map((w) => w + suffix).join(' & ');
-    return sql`to_tsquery(${TS_CONFIG}, f_unaccent(${lexeme}))`;
+    return sql`to_tsquery(${config}, f_unaccent(${lexeme}))`;
   }
 
   private phraseTermTsq(term: ParsedTerm): RawBuilder<unknown> {
@@ -786,6 +789,108 @@ export class SearchService {
           id ASC
       `.execute(trx);
       return rankedRows.rows.map((r) => ({ id: r.id, lexical: r.lexical }));
+    });
+  }
+
+  async searchAttachments(
+    params: SearchDTO,
+    { userId, workspaceId }: { userId: string; workspaceId: string },
+  ) {
+    if (!userId || params.parentPageId || params.titleOnly) return [];
+    const parsed = parseSearchQuery(params.query.trim(), {
+      match: params.match ?? 'auto',
+      mode: defaultBooleanMode(),
+    });
+    if (!hasPositiveRecall(parsed)) return [];
+
+    const scope = await this.resolveScope(params, workspaceId, userId);
+    if (scope.kind !== 'spaces') return [];
+    const attachmentTerm = (term: ParsedTerm) =>
+      term.branch === 'phrase' || term.branch === 'substring'
+        ? sql`phraseto_tsquery('simple', f_unaccent(${term.text}))`
+        : this.ftsTermTsq(term, 'simple');
+    const tsquery = sql`(${sql.join(
+      parsed.positive.map(attachmentTerm),
+      parsed.mode === 'and' ? sql` && ` : sql` || `,
+    )})`;
+    const qualifiers = [
+      ...parsed.required.map(
+        (term) => sql`AND attachments.tsv @@ ${attachmentTerm(term)}`,
+      ),
+      ...parsed.excluded.map(
+        (term) => sql`AND NOT (attachments.tsv @@ ${attachmentTerm(term)})`,
+      ),
+    ];
+    const rows = await sql<{
+      id: string;
+      fileName: string;
+      pageId: string;
+      space: { id: string; name: string; slug: string };
+      page: { id: string; title: string | null; slugId: string };
+    }>`
+      SELECT attachments.id,
+             attachments.file_name AS "fileName",
+             pages.id AS "pageId",
+             json_build_object('id', spaces.id, 'name', spaces.name, 'slug', spaces.slug) AS space,
+             json_build_object('id', pages.id, 'title', pages.title, 'slugId', pages.slug_id) AS page
+        FROM attachments
+        JOIN pages ON pages.id = attachments.page_id AND pages.workspace_id = attachments.workspace_id
+        JOIN spaces ON spaces.id = pages.space_id AND spaces.workspace_id = pages.workspace_id
+       WHERE attachments.workspace_id = ${workspaceId}
+         AND attachments.deleted_at IS NULL AND pages.deleted_at IS NULL
+         AND pages.space_id = ANY(${scope.spaceIds}::uuid[])
+         AND attachments.type = 'file'
+         AND attachments.tsv @@ ${tsquery}
+         ${sql.join(qualifiers, sql` `)}
+         ${params.creatorId ? sql`AND pages.creator_id = ${params.creatorId}` : sql``}
+         ${
+           params.labelId
+             ? sql`AND EXISTS (
+           SELECT 1 FROM page_labels WHERE page_labels.page_id = pages.id
+            AND page_labels.label_id = ${params.labelId}::uuid
+         )`
+             : sql``
+         }
+       ORDER BY ts_rank_cd(attachments.tsv, ${tsquery}) DESC, attachments.id
+       LIMIT 250
+    `.execute(this.db);
+    if (!rows.rows.length) return [];
+
+    const accessible = new Set(
+      await this.pagePermissionRepo.filterAccessiblePageIds({
+        pageIds: [...new Set(rows.rows.map((row) => row.pageId))],
+        userId,
+        spaceId: params.spaceId,
+        workspaceId,
+      }),
+    );
+    const matched = rows.rows
+      .filter((row) => accessible.has(row.pageId))
+      .slice(0, 20);
+    if (!matched.length) return [];
+
+    const snippets = await this.db
+      .selectFrom('attachments')
+      .select([
+        'id',
+        'pageId',
+        sql<string>`left(replace(replace(ts_headline('simple', text_content, ${tsquery},
+          'StartSel=' || chr(1) || ', StopSel=' || chr(2) || ', MinWords=6, MaxWords=18, MaxFragments=1'),
+          chr(1), ''), chr(2), ''), 360)`.as('snippet'),
+      ])
+      .where(
+        'id',
+        'in',
+        matched.map((row) => row.id),
+      )
+      .where('deletedAt', 'is', null)
+      .execute();
+    const snippetById = new Map(snippets.map((item) => [item.id, item]));
+    return matched.flatMap((row) => {
+      const item = snippetById.get(row.id);
+      return item?.pageId === row.pageId
+        ? [{ ...row, snippet: item.snippet }]
+        : [];
     });
   }
 

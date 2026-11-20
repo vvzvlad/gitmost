@@ -27,6 +27,10 @@ import {
   normalizeForeignMarkdown,
 } from '@docmost/prosemirror-markdown';
 import { getProsemirrorContent } from '../../../common/helpers/prosemirror/utils';
+import {
+  extractConfluencePage,
+  getConfluenceParents,
+} from '../utils/confluence-html';
 import { formatImportHtml } from '../utils/import-formatter';
 import {
   buildAttachmentCandidates,
@@ -101,7 +105,17 @@ export class FileImportTaskService {
         fileTask.filePath,
       );
       await pipeline(fileStream, createWriteStream(tmpZipPath));
-      await extractZip(tmpZipPath, tmpExtractDir);
+      await extractZip(
+        tmpZipPath,
+        tmpExtractDir,
+        fileTask.source === FileImportSource.Confluence
+          ? {
+              expandedBytes: 512 * 1024 * 1024,
+              entries: 20_000,
+              markupBytes: 4 * 1024 * 1024,
+            }
+          : undefined,
+      );
     } catch (err) {
       await cleanupTmpFile();
       await cleanupTmpDir();
@@ -112,7 +126,8 @@ export class FileImportTaskService {
     try {
       if (
         fileTask.source === FileImportSource.Generic ||
-        fileTask.source === FileImportSource.Notion
+        fileTask.source === FileImportSource.Notion ||
+        fileTask.source === FileImportSource.Confluence
       ) {
         await this.processGenericImport({
           extractDir: tmpExtractDir,
@@ -146,9 +161,36 @@ export class FileImportTaskService {
   }): Promise<void> {
     const { extractDir, fileTask } = opts;
     const isNotion = fileTask.source === FileImportSource.Notion;
-    const allFiles = await collectMarkdownAndHtmlFiles(extractDir);
+    const isConfluence = fileTask.source === FileImportSource.Confluence;
+    const collectedFiles = await collectMarkdownAndHtmlFiles(extractDir);
+    const allFiles = isConfluence
+      ? collectedFiles.filter(
+          (file) =>
+            path.extname(file).toLowerCase() === '.html' &&
+            !path
+              .relative(extractDir, file)
+              .split(path.sep)
+              .some((part) =>
+                ['attachments', 'images', 'styles'].includes(
+                  part.toLowerCase(),
+                ),
+              ),
+        )
+      : collectedFiles;
+    const confluenceIndex = isConfluence
+      ? allFiles
+          .filter((file) => path.basename(file).toLowerCase() === 'index.html')
+          .sort((a, b) => a.length - b.length)[0]
+      : undefined;
+    if (isConfluence && (!confluenceIndex || allFiles.length < 2)) {
+      throw new Error(
+        'Choose a Confluence HTML space export ZIP containing index.html and page files',
+      );
+    }
     const attachmentCandidates = await buildAttachmentCandidates(extractDir);
-    const docmostMetadata = await readDocmostMetadata(extractDir);
+    const docmostMetadata = isConfluence
+      ? null
+      : await readDocmostMetadata(extractDir);
 
     const space = await this.db
       .selectFrom('spaces')
@@ -159,6 +201,7 @@ export class FileImportTaskService {
     const pagesMap = new Map<string, ImportPageNode>();
 
     for (const absPath of allFiles) {
+      if (absPath === confluenceIndex) continue;
       const relPath = path
         .relative(extractDir, absPath)
         .split(path.sep)
@@ -248,7 +291,8 @@ export class FileImportTaskService {
           const partialId = extractNotionPartialId(folderName);
           const strippedFolderName = stripNotionID(folderName);
           const isSameDir = (fileDir: string) =>
-            fileDir === parentDir || (parentDir === '.' && !fileDir.includes('/'));
+            fileDir === parentDir ||
+            (parentDir === '.' && !fileDir.includes('/'));
 
           for (const [filePath, page] of pagesMap.entries()) {
             if (!isSameDir(path.dirname(filePath))) continue;
@@ -260,7 +304,10 @@ export class FileImportTaskService {
               const fullIdMatch = fileBase.match(/[a-f0-9]{32}$/i);
               if (!fullIdMatch) continue;
               const fullId = fullIdMatch[0].toLowerCase();
-              if (!fullId.startsWith(partialId.prefix) || !fullId.endsWith(partialId.suffix)) {
+              if (
+                !fullId.startsWith(partialId.prefix) ||
+                !fullId.endsWith(partialId.suffix)
+              ) {
                 continue;
               }
             }
@@ -310,6 +357,22 @@ export class FileImportTaskService {
       }
       if (parentPage) page.parentPageId = parentPage.id;
     });
+
+    if (confluenceIndex) {
+      const parentPaths = getConfluenceParents(
+        await fs.readFile(confluenceIndex, 'utf8'),
+        path.relative(extractDir, confluenceIndex).split(path.sep).join('/'),
+        new Set(pagesMap.keys()),
+      );
+      if (parentPaths.size) {
+        // Rebuild the hierarchy from the Confluence index instead of mixing
+        // two parent graphs, which could introduce a cycle.
+        for (const page of pagesMap.values()) {
+          page.parentPageId =
+            pagesMap.get(parentPaths.get(page.filePath))?.id ?? null;
+        }
+      }
+    }
 
     // generate position keys
     const siblingsMap = new Map<string | null, ImportPageNode[]>();
@@ -461,11 +524,24 @@ export class FileImportTaskService {
           for (const [filePath, page] of levelPages) {
             const absPath = path.join(extractDir, filePath);
             let content = '';
+            let confluenceTitle = '';
+            let confluenceAttachments: ReturnType<
+              typeof extractConfluencePage
+            >['attachments'];
 
             // Check if file exists (placeholder pages won't have physical files)
             try {
               await fs.access(absPath);
               content = await fs.readFile(absPath, 'utf-8');
+              if (
+                isConfluence &&
+                page.fileExtension.toLowerCase() === '.html'
+              ) {
+                const document = extractConfluencePage(content);
+                confluenceTitle = document.title;
+                confluenceAttachments = document.attachments;
+                content = document.html;
+              }
 
               if (page.fileExtension.toLowerCase() === '.md') {
                 // Parse markdown with the single canonical converter
@@ -478,7 +554,9 @@ export class FileImportTaskService {
                 // follows is lossless plumbing for attachment/link resolution,
                 // NOT a second parse.
                 content = jsonToHtml(
-                  await markdownToProseMirror(normalizeForeignMarkdown(content)),
+                  await markdownToProseMirror(
+                    normalizeForeignMarkdown(content),
+                  ),
                 );
               }
             } catch (err: any) {
@@ -498,6 +576,8 @@ export class FileImportTaskService {
                 pageId: page.id,
                 fileTask,
                 attachmentCandidates,
+                isConfluenceImport: isConfluence,
+                pageAttachments: confluenceAttachments,
               });
 
             const { html, backlinks, pageIcon } = await formatImportHtml({
@@ -532,7 +612,7 @@ export class FileImportTaskService {
             const insertablePage: InsertablePage = {
               id: page.id,
               slugId: page.slugId,
-              title: title || page.name,
+              title: confluenceTitle || title || page.name,
               icon: page.icon || pageIcon || null,
               content: prosemirrorJson,
               textContent: jsonToText(prosemirrorJson),

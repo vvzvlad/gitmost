@@ -33,6 +33,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QueueJob, QueueName } from '../../queue/constants';
 import { load } from 'cheerio';
+import { extractDocument } from '../../documents/document-extract';
 import { normalizeImportHtml } from '../utils/import-formatter';
 
 @Injectable()
@@ -65,7 +66,6 @@ export class ImportService {
     const fileName = sanitizeFileName(
       path.basename(file.filename, fileExtension),
     );
-    const fileContent = fileBuffer.toString();
 
     let prosemirrorState = null;
     let createdPage = null;
@@ -73,11 +73,19 @@ export class ImportService {
     try {
       if (fileExtension.endsWith('.md')) {
         prosemirrorState = await this.processMarkdown(
-          fileContent,
+          fileBuffer.toString(),
           disableMarkdownExtensions,
         );
       } else if (fileExtension.endsWith('.html')) {
-        prosemirrorState = await this.processHTML(fileContent);
+        prosemirrorState = await this.processHTML(fileBuffer.toString());
+      } else if (fileExtension === '.docx') {
+        const html = await extractDocument('docx', fileBuffer, 'import');
+        const $ = load(html);
+        $('img[src=""], img:not([src])').remove();
+        prosemirrorState = await this.processHTML($.html());
+      } else if (fileExtension === '.pdf') {
+        const html = await extractDocument('pdf', fileBuffer, 'import');
+        prosemirrorState = await this.processHTML(html);
       }
     } catch (err) {
       // Surface the real cause instead of a generic mask, so the failure is
@@ -85,9 +93,7 @@ export class ImportService {
       const reason =
         err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       this.logger.error(`Error processing file content: ${reason}`, err);
-      throw new BadRequestException(
-        `Error processing file content: ${reason}`,
-      );
+      throw new BadRequestException(`Error processing file content: ${reason}`);
     }
 
     if (!prosemirrorState) {
