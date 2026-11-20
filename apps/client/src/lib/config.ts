@@ -10,7 +10,7 @@ declare global {
 }
 
 export function getAppName(): string {
-  return "DozoR-WIKI";
+  return "DozoR WIKI";
 }
 
 export function getAppUrl(): string {

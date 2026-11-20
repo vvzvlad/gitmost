@@ -23,7 +23,7 @@ export default function CalloutView(props: NodeViewProps) {
         title=""
         color={getCalloutColor(type)}
         icon={getCalloutIcon(type, icon)}
-        p={isInfo ? "md" : "xs"}
+        p={isInfo ? 14 : "xs"}
         classNames={{
           root: clsx(classes.root, isInfo && classes.info),
           message: classes.message,

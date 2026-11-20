@@ -18,9 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Localized the main menus in Ukrainian and Russian, removed duplicate account and space settings entries, and unified application branding as DozoR WIKI.
+
 - Registered audit services in the collaboration server so it can start.
 
 ### Changed
+
+- Rebuilt document screens around the DozoR design with a panoramic cover, editable page icon, author byline, contributor avatars, complete sidebar navigation and account footer, responsive contents panel, and persistent file actions in light and dark themes.
 
 - Applied the DozoR-WIKI branding to application logos, browser metadata, and install icons.
 - Rebuilt the document header, space tree, and page actions in light and dark mode with a blue accent.

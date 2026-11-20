@@ -8,7 +8,7 @@
     var(--mantine-color-white)
   );
   font-size: var(--wiki-document-font-size, var(--mantine-font-size-md));
-  line-height: 1.48;
+  line-height: 1.5;
   font-weight: 400;
   width: 100%;
 
@@ -79,12 +79,11 @@
 
   h2 {
     font-size: 1.875rem;
-    margin-top: 1.75rem;
+    margin-top: 2rem;
   }
 
   > h2 {
-    padding-bottom: 0.25em;
-    border-bottom: 1px solid var(--wiki-border);
+    padding-bottom: 0.15em;
   }
 
   h3 {
@@ -294,9 +293,9 @@
 }
 
 .page-title .ProseMirror h1 {
-  font-size: clamp(2rem, 4vw, 3.25rem);
-  font-weight: 750;
-  letter-spacing: -0.036em;
+  font-size: clamp(1.875rem, 3vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
   overflow-wrap: anywhere;
   margin-top: 0;
   margin-bottom: 0.28em;

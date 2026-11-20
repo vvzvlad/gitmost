@@ -2,8 +2,8 @@ import classes from "@/features/editor/styles/editor.module.css";
 import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { TitleEditor } from "@/features/editor/title-editor";
 import PageEditor from "@/features/editor/page-editor";
-import { Alert, Container, Group } from "@mantine/core";
-import { IconWifiOff } from "@tabler/icons-react";
+import { Alert, Container, Group, Text } from "@mantine/core";
+import { IconUser, IconWifiOff } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
 import {
   userAtom,
@@ -26,6 +26,13 @@ import {
 import { DictationGroup } from "@/features/editor/components/fixed-toolbar/groups/dictation-group";
 import { GenerateTitleGroup } from "@/features/editor/components/fixed-toolbar/groups/generate-title-group";
 
+import WorkTimeStat from "@/features/page-history/work-time/work-time-stat";
+import { PageIconPicker } from "@/components/ui/page-icon";
+import {
+  usePageMetaQuery,
+  useUpdatePageMutation,
+} from "@/features/page/queries/page-query";
+
 const MemoizedTitleEditor = React.memo(TitleEditor);
 const MemoizedPageEditor = React.memo(PageEditor);
 const MemoizedFixedToolbar = React.memo(FixedToolbar);
@@ -38,9 +45,9 @@ let defaultEditModeApplied = false;
 
 // Max width of the non-fluid editor column. Single source of truth used for BOTH
 // the Container `size` and the left-edge-pinning layout math below (#570).
-const COL_MAX = 936;
+const COL_MAX = 840;
 // Gutter kept between the column's right edge and the aside panel when it opens.
-const ASIDE_GAP = 16;
+const ASIDE_GAP = 8;
 
 // Resolve Main's `--app-shell-aside-offset` (the px the open aside removes from
 // Main's content box) to real px. We must NOT read the raw var with
@@ -182,10 +189,10 @@ export function FullEditor({
         asideOffset,
         COL_MAX,
         ASIDE_GAP,
+        18,
       );
 
-      // Inline styles override the `.editor` class centering; vertical margin
-      // (48px) still comes from the class. marginInline:0 first, then marginLeft.
+      // Keep vertical spacing in CSS while anchoring the article horizontally.
       el.style.marginInline = "0";
       el.style.marginLeft = `${left}px`;
       el.style.width = `${width}px`;
@@ -238,6 +245,7 @@ export function FullEditor({
       )}
       <MemoizedDeletedPageBanner slugId={slugId} />
       <MemoizedTemporaryNoteBanner slugId={slugId} />
+      <DocumentIcon pageId={pageId} editable={editable} />
       <MemoizedTitleEditor
         pageId={pageId}
         slugId={slugId}
@@ -246,6 +254,7 @@ export function FullEditor({
         editable={editable}
         pageResolved={pageResolved}
       />
+      <DocumentByline pageId={pageId} />
       <PageWritingActions
         pageId={pageId}
         editable={editable}
@@ -303,5 +312,68 @@ function PageWritingActions({
         <GenerateTitleGroup pageId={pageId} color="gray" iconSize={20} />
       )}
     </Group>
+  );
+}
+
+function DocumentByline({ pageId }: { pageId: string }) {
+  const { data: page } = usePageMetaQuery({ pageId });
+  const { t, i18n } = useTranslation();
+  if (!page || page.id !== pageId || !page.updatedAt) return null;
+
+  const date = new Date(page.updatedAt);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return (
+    <Group gap="xs" className={classes.documentByline} c="dimmed">
+      {page.lastUpdatedBy?.name && (
+        <Group gap={6}>
+          <IconUser size={15} aria-hidden="true" />
+          <Text size="sm">{page.lastUpdatedBy.name}</Text>
+        </Group>
+      )}
+      {page.lastUpdatedBy?.name && <span aria-hidden="true">·</span>}
+      <Text component="time" dateTime={date.toISOString()} size="sm">
+        {t("Updated {{date}}", {
+          date: new Intl.DateTimeFormat(i18n.language || "en", {
+            day: "numeric",
+            month: "long",
+          }).format(date),
+        })}
+      </Text>
+      <WorkTimeStat pageId={page.id} />
+    </Group>
+  );
+}
+
+function DocumentIcon({
+  pageId,
+  editable,
+}: {
+  pageId: string;
+  editable: boolean;
+}) {
+  const { data: page } = usePageMetaQuery({ pageId });
+  const updatePage = useUpdatePageMutation();
+  const { t } = useTranslation();
+
+  if (!page || page.id !== pageId) return null;
+  const setIcon = (icon: string | null) => updatePage.mutate({ pageId, icon });
+
+  return (
+    <div className={classes.documentIcon}>
+      <PageIconPicker
+        value={page.icon}
+        size={24}
+        readOnly={!editable || updatePage.isPending}
+        onChange={setIcon}
+        onRemove={() => setIcon(null)}
+        actionIconProps={{ size: 44, variant: "light" }}
+      />
+      {updatePage.isError && (
+        <Text size="xs" c="red" role="alert">
+          {t("Failed to update page")}
+        </Text>
+      )}
+    </div>
   );
 }

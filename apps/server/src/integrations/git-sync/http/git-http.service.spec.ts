@@ -296,7 +296,7 @@ describe('GitHttpService.handle', () => {
     await built.service.handle(req, reply);
 
     expect(state.statusCode).toBe(401);
-    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="gitmost"');
+    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="DozoR WIKI"');
     expect(built.backend.run).not.toHaveBeenCalled();
     expect(built.authService.verifyUserCredentials).not.toHaveBeenCalled();
   });
@@ -313,7 +313,7 @@ describe('GitHttpService.handle', () => {
     await built.service.handle(req, reply);
 
     expect(state.statusCode).toBe(401);
-    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="gitmost"');
+    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="DozoR WIKI"');
     expect(built.backend.run).not.toHaveBeenCalled();
   });
 
@@ -527,7 +527,7 @@ describe('GitHttpService.handle', () => {
     expect(built.workspaceRepo.findFirst).toHaveBeenCalledTimes(1);
     expect(built.authService.verifyUserCredentials).not.toHaveBeenCalled();
     expect(state.statusCode).toBe(401);
-    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="gitmost"');
+    expect(state.headers['WWW-Authenticate']).toBe('Basic realm="DozoR WIKI"');
     expect(built.backend.run).not.toHaveBeenCalled();
   });
 
@@ -563,7 +563,7 @@ describe('GitHttpService.handle', () => {
       await built.service.handle(wrongCredReq(), reply);
       expect(state.statusCode).toBe(429);
       expect(state.headers['Retry-After']).toBe('60');
-      expect(state.headers['WWW-Authenticate']).toBe('Basic realm="gitmost"');
+      expect(state.headers['WWW-Authenticate']).toBe('Basic realm="DozoR WIKI"');
       // Still 5 — the 6th never reached verifyUserCredentials (pre-bcrypt reject).
       expect(built.authService.verifyUserCredentials).toHaveBeenCalledTimes(5);
       expect(built.backend.run).not.toHaveBeenCalled();

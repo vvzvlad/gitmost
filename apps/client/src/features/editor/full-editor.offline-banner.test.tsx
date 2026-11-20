@@ -15,6 +15,10 @@ import { Provider, createStore } from "jotai";
  * title, not what those children do.
  */
 
+vi.mock("@/features/page/queries/page-query", () => ({
+  usePageMetaQuery: () => ({ data: undefined }),
+  useUpdatePageMutation: () => ({ mutate: vi.fn() }),
+}));
 vi.mock("@/features/editor/page-editor", () => ({
   default: () => <div data-testid="page-editor" />,
 }));

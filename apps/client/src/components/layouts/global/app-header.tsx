@@ -1,11 +1,5 @@
 import { getAppName } from "@/lib/config";
-import {
-  ActionIcon,
-  Box,
-  Group,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { ActionIcon, Box, Group, Text, Tooltip } from "@mantine/core";
 import { IconMessage } from "@tabler/icons-react";
 import classes from "./app-header.module.css";
 import { BrandLogo } from "@/components/ui/brand-logo";
@@ -26,14 +20,17 @@ import {
   SearchControl,
   SearchMobileControl,
 } from "@/features/search/components/search-control.tsx";
-import {
-  openSearchSpotlight,
-} from "@/features/search/constants.ts";
+import { openSearchSpotlight } from "@/features/search/constants.ts";
 import { NotificationPopover } from "@/features/notification/components/notification-popover.tsx";
 
-export function AppHeader() {
+export function AppHeader({
+  isSpaceRoute = false,
+}: {
+  isSpaceRoute?: boolean;
+}) {
   const { t } = useTranslation();
   const [mobileOpened] = useAtom(mobileSidebarAtom);
+  const hideDrawerControls = mobileOpened && isSpaceRoute;
   const toggleMobile = useToggleSidebar(mobileSidebarAtom);
 
   const [desktopOpened] = useAtom(desktopSidebarAtom);
@@ -74,7 +71,11 @@ export function AppHeader() {
           </Tooltip>
 
           <Group gap={6} align="flex-end" wrap="nowrap">
-            <Link to="/home" className={classes.brand} aria-label={getAppName()}>
+            <Link
+              to="/home"
+              className={classes.brand}
+              aria-label={getAppName()}
+            >
               <Box hiddenFrom="sm" className={classes.brandIcon}>
                 <BrandLogo markOnly height={26} />
               </Box>
@@ -95,16 +96,20 @@ export function AppHeader() {
           </Group>
         </Group>
 
-        <div>
+        <Box
+          visibleFrom={
+            hideDrawerControls ? NAVBAR_COLLAPSE_BREAKPOINT : undefined
+          }
+        >
           <Group visibleFrom="sm">
             <SearchControl onClick={openSearchSpotlight} />
           </Group>
           <Group hiddenFrom="sm">
             <SearchMobileControl onSearch={openSearchSpotlight} />
           </Group>
-        </div>
+        </Box>
 
-        <Group px={"xl"} wrap="nowrap">
+        <Group px={{ base: 0, sm: "xl" }} wrap="nowrap">
           {aiChatEnabled && (
             <Tooltip label={t("AI chat")} withArrow>
               <ActionIcon
@@ -119,7 +124,13 @@ export function AppHeader() {
             </Tooltip>
           )}
           <NotificationPopover />
-          <TopMenu />
+          <Box
+            visibleFrom={
+              hideDrawerControls ? NAVBAR_COLLAPSE_BREAKPOINT : undefined
+            }
+          >
+            <TopMenu />
+          </Box>
         </Group>
       </Group>
     </>

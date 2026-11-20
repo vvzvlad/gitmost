@@ -3,7 +3,7 @@
     --wiki-document-font-size: 1.125rem;
     height: 100%;
     padding: 8px 0;
-    margin: 35px auto;
+    margin: 20px auto;
 
     @media (max-width: $mantine-breakpoint-sm) {
         --wiki-document-gutter: 1rem;
@@ -35,4 +35,27 @@
     background: var(--wiki-rail);
     color: var(--mantine-color-dimmed);
     font-size: var(--mantine-font-size-xs);
+}
+
+.documentByline {
+    padding-inline: var(--wiki-document-gutter);
+    margin-block: 4px 24px;
+
+    @media print {
+        display: none;
+    }
+}
+
+
+.documentIcon {
+    margin-inline-start: var(--wiki-document-gutter);
+    margin-bottom: 10px;
+
+    @media print {
+        display: none;
+    }
+}
+
+.documentIcon svg[color="var(--mantine-color-gray-6)"] {
+    color: var(--wiki-accent);
 }

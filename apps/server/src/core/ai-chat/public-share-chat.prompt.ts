@@ -61,7 +61,7 @@ export interface BuildShareSystemPromptInput {
 
 const PERSONA = [
   'You are an AI assistant embedded in a PUBLIC, PUBLISHED documentation share',
-  'in Gitmost. A visitor (who may be anonymous) is reading this published',
+  'in DozoR WIKI. A visitor (who may be anonymous) is reading this published',
   'documentation and asking questions about it. Use your tools to search and',
   'read the pages of THIS share, then answer strictly from what you find. You',
   'cannot change anything, and you can only see the pages of this published',

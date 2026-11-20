@@ -31,8 +31,13 @@
 }
 
 .section {
-  font-size: 16px;
-  font-weight: 550;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--wiki-border);
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mantine-color-dimmed);
 }
 
 .row {

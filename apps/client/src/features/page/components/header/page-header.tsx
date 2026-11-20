@@ -5,14 +5,29 @@ import { useTranslation } from "react-i18next";
 import SidebarToggle from "@/components/ui/sidebar-toggle-button";
 import { desktopSidebarAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar";
-import { Group } from "@mantine/core";
+import { Group, Tooltip } from "@mantine/core";
 import Breadcrumb from "@/features/page/components/breadcrumbs/breadcrumb.tsx";
+
+import { useParams } from "react-router-dom";
+import { usePageMetaQuery } from "@/features/page/queries/page-query";
+import { extractPageSlugId } from "@/lib";
+import { CustomAvatar } from "@/components/ui/custom-avatar";
 
 interface Props {
   readOnly?: boolean;
 }
 export default function PageHeader({ readOnly }: Props) {
   const { t } = useTranslation();
+  const { pageSlug } = useParams();
+  const pageId = extractPageSlugId(pageSlug);
+  const { data } = usePageMetaQuery({ pageId });
+  const page =
+    data?.id === pageId || data?.slugId === pageId ? data : undefined;
+  const contributors = page?.contributors?.length
+    ? page.contributors
+    : page?.creator
+      ? [page.creator]
+      : [];
   const sidebarOpen = useAtomValue(desktopSidebarAtom);
   const toggleSidebar = useToggleSidebar(desktopSidebarAtom);
 
@@ -41,6 +56,24 @@ export default function PageHeader({ readOnly }: Props) {
           wrap="nowrap"
           className={classes.actions}
         >
+          <Group
+            gap={6}
+            wrap="nowrap"
+            visibleFrom="sm"
+            aria-label={t("Contributors")}
+          >
+            {contributors.slice(0, 3).map((person) => (
+              <Tooltip key={person.id} label={person.name}>
+                <span>
+                  <CustomAvatar
+                    name={person.name}
+                    avatarUrl={person.avatarUrl}
+                    size={30}
+                  />
+                </span>
+              </Tooltip>
+            ))}
+          </Group>
           <PageHeaderMenu readOnly={readOnly} />
         </Group>
       </Group>

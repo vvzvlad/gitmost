@@ -18,19 +18,21 @@ export interface ColumnLayout {
  *                    panel is closed or is a mobile overlay that reserves no space.
  * @param colMax      Max column width (matches the non-fluid Container `size`).
  * @param asideGap    Gutter (px) kept between the column's right edge and the panel.
+ * @param maxLeft     Optional cap for the article inset in the document layout.
  */
 export function computeColumnLayout(
   W: number,
   asideOffset: number,
   colMax: number,
   asideGap: number,
+  maxLeft = Number.POSITIVE_INFINITY,
 ): ColumnLayout {
   // Width Main would have if the panel were closed — the reference frame for the
   // "centered" left edge. Because `left` is computed from this closed width, it
   // is identical whether the panel is open or closed: that is why the left edge
   // never moves.
   const wFull = W + asideOffset;
-  const left = Math.max(0, (wFull - colMax) / 2);
+  const left = Math.min(maxLeft, Math.max(0, (wFull - colMax) / 2));
   // The column surrenders width on the RIGHT: capped at colMax and kept a gap
   // clear of the panel so its right edge never slides under the aside.
   const width = Math.max(

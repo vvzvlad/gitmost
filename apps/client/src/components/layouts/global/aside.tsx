@@ -83,8 +83,8 @@ export default function Aside() {
         ) : (
           <>
             <Group justify="space-between" wrap="nowrap" mb="sm">
-              <Title order={2} size="h6" fw={500}>
-                {t(title)}
+              <Title order={2} size="h6" fw={600}>
+                {t(tab === "toc" ? "On this page" : title)}
               </Title>
               <Tooltip label={t("Close")} withArrow>
                 <ActionIcon
@@ -98,11 +98,11 @@ export default function Aside() {
               </Tooltip>
             </Group>
             <ScrollArea
-              style={{ height: "85vh" }}
+              style={{ flex: 1, minHeight: 0 }}
               scrollbarSize={5}
               type="scroll"
             >
-              <div style={{ paddingBottom: "200px" }}>{component}</div>
+              <div style={{ paddingBottom: tab === "toc" ? 24 : 200 }}>{component}</div>
             </ScrollArea>
           </>
         ))}

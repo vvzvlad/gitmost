@@ -78,7 +78,6 @@ import { PageEditMode } from "@/features/user/types/user.types";
 import CopyPageModal from "@/features/page/components/copy-page-modal";
 import { useSpacePin } from "@/features/page/atoms/space-pin-atom";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
-import WorkTimeStat from "@/features/page-history/work-time/work-time-stat.tsx";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
 import {
   useFavoriteIds,
@@ -311,7 +310,6 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
 
   return (
     <>
-      <WorkTimeStat pageId={page.id} />
       <Menu
         shadow="xl"
         position="bottom-end"

@@ -51,6 +51,7 @@ export const theme = createTheme({
   primaryColor: "ocean",
   primaryShade: { light: 7, dark: 6 },
   defaultRadius: "md",
+  respectReducedMotion: true,
   colors: {
     ocean,
     blue,
@@ -58,6 +59,7 @@ export const theme = createTheme({
   },
   components: {
     Menu: Menu.extend({
+      defaultProps: { transitionProps: { transition: "fade", duration: 120 } },
       classNames: { dropdown: classes.dropdown, item: classes.menuItem },
     }),
     Tabs: Tabs.extend({
@@ -91,11 +93,11 @@ export const theme = createTheme({
 
 export const mantineCssResolver: CSSVariablesResolver = (theme) => ({
   variables: {
-    "--wiki-rail": "light-dark(#f0eef9, #211e2d)",
-    "--wiki-border": "light-dark(#dedbea, #3b354a)",
-    "--wiki-ink": "light-dark(#19172d, #f2effb)",
-    "--wiki-hover": "light-dark(#e4eaf4, #263747)",
-    "--wiki-selected": "light-dark(#dcebf6, #2a4156)",
+    "--wiki-rail": "light-dark(#f3f6f8, #1c2229)",
+    "--wiki-border": "light-dark(#dce3e9, #343e49)",
+    "--wiki-ink": "light-dark(#202a35, #edf2f7)",
+    "--wiki-hover": "light-dark(#e8eef3, #293541)",
+    "--wiki-selected": "light-dark(#e1eff7, #243f52)",
     "--wiki-selected-ink": "light-dark(#115782, #c2e7ff)",
     "--wiki-accent": "light-dark(#166c9d, #83c8ee)",
     "--input-error-size": theme.fontSizes.sm,
@@ -135,6 +137,8 @@ export const mantineCssResolver: CSSVariablesResolver = (theme) => ({
     "--mantine-color-green-light-color": "#1B5E20",
   },
   dark: {
+    "--mantine-color-dimmed": "#a8b4c1",
+    "--mantine-color-placeholder": "#a8b4c1",
     "--mantine-color-dark-light-color": "var(--mantine-color-gray-4)",
     "--mantine-color-dark-light-hover": "var(--mantine-color-default-hover)",
   },

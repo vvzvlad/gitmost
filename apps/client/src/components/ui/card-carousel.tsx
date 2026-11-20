@@ -39,7 +39,7 @@ export default function CardCarousel({ children, ariaLabel }: Props) {
   const scrollBy = (direction: 1 | -1) => {
     const el = trackRef.current;
     if (!el) return;
-    el.scrollBy({ left: direction * el.clientWidth * 0.85, behavior: "smooth" });
+    el.scrollBy({ left: direction * el.clientWidth * 0.85 });
   };
 
   return (

@@ -5,18 +5,28 @@ import FavoritesPages from "./favorites-pages";
 import CreatedByMe from "./created-by-me";
 import { useTranslation } from "react-i18next";
 import { useAtom } from "jotai";
+import { useSearchParams } from "react-router-dom";
 import { homeTabAtom } from "@/features/home/atoms/home-tab-atom";
 
 export default function HomeTabs() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useAtom(homeTabAtom);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const showRecent = searchParams.get("tab") === "recent";
+
   return (
     <Tabs
       color="dark"
-      value={activeTab}
+      value={showRecent ? "recent" : activeTab}
       onChange={(value) => {
-        if (value) setActiveTab(value);
+        if (!value) return;
+        setActiveTab(value);
+        if (showRecent) {
+          const next = new URLSearchParams(searchParams);
+          next.delete("tab");
+          setSearchParams(next, { replace: true });
+        }
       }}
     >
       <Tabs.List style={{ flexWrap: "nowrap", overflowX: "auto" }}>

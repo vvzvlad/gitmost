@@ -89,8 +89,8 @@ export const TextAlignmentSelector: FC<TextAlignmentProps> = ({
       opened={isOpen}
       onChange={setIsOpen}
     >
-      <Menu.Target>
-        <Tooltip label={t("Text align")} withArrow disabled={isOpen}>
+      <Tooltip label={t("Text align")} withArrow disabled={isOpen}>
+        <Menu.Target>
           <Button
             variant="default"
             style={{ border: "none", height: "34px" }}
@@ -105,8 +105,8 @@ export const TextAlignmentSelector: FC<TextAlignmentProps> = ({
           >
             <activeItem.icon style={{ width: rem(16) }} stroke={2} />
           </Button>
-        </Tooltip>
-      </Menu.Target>
+        </Menu.Target>
+      </Tooltip>
 
       <Menu.Dropdown>
         {items.map((item, index) => (

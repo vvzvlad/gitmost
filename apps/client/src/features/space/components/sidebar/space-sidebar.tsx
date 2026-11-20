@@ -3,6 +3,7 @@ import {
   IconArrowDown,
   IconMessage,
   IconHome,
+  IconClockHour3,
   IconChevronsDown,
   IconChevronsUp,
   IconDots,
@@ -45,7 +46,10 @@ import { workspaceAtom } from "@/features/user/atoms/current-user-atom";
 import { NotificationPopover } from "@/features/notification/components/notification-popover";
 import { useOpenAiChatForCurrentPage } from "@/features/ai-chat/hooks/use-open-ai-chat";
 import SidebarToggle from "@/components/ui/sidebar-toggle-button";
-import { desktopSidebarAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom";
+import {
+  desktopSidebarAtom,
+  mobileSidebarAtom,
+} from "@/components/layouts/global/hooks/atoms/sidebar-atom";
 import { useToggleSidebar } from "@/components/layouts/global/hooks/hooks/use-toggle-sidebar";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import TopMenu from "@/components/layouts/global/top-menu.tsx";
@@ -67,6 +71,11 @@ export function SpaceSidebar() {
   const [opened, { open: openSettings, close: closeSettings }] =
     useDisclosure(false);
 
+  const mobileOpened = useAtomValue(mobileSidebarAtom);
+  const toggleMobile = useToggleSidebar(mobileSidebarAtom);
+  const closeMobileNavigation = () => {
+    if (mobileOpened) toggleMobile();
+  };
   const { spaceSlug } = useParams();
   const { data: space } = useGetSpaceBySlugQuery(spaceSlug);
 
@@ -109,99 +118,131 @@ export function SpaceSidebar() {
         </Text>
         <TopMenu inSidebar className={classes.workspaceButton} />
         <SearchControl
-          workspaceSearch
           className={classes.workspaceSearch}
           onClick={openSearchSpotlight}
         />
 
-        <Link to="/home" className={classes.navigationLink}>
-          <IconHome size={20} stroke={1.7} />
-          {t("Home")}
-        </Link>
-        <SwitchSpace spaceId={space.id} spaceName={space.name}>
-          <div className={classes.sectionPages}>
-            <Group className={classes.pagesHeader} justify="space-between">
-              <Group gap="xs">
-                <SpaceMenu
+        <div className={classes.navigationBody}>
+          <Link
+            to="/home"
+            className={classes.navigationLink}
+            onClick={closeMobileNavigation}
+          >
+            <IconHome size={20} stroke={1.7} />
+            {t("Home")}
+          </Link>
+          <Link
+            to="/favorites"
+            className={classes.navigationLink}
+            onClick={closeMobileNavigation}
+          >
+            <IconStar size={20} stroke={1.7} />
+            {t("Favorites")}
+          </Link>
+          <Link
+            to="/home?tab=recent"
+            className={classes.navigationLink}
+            onClick={closeMobileNavigation}
+          >
+            <IconClockHour3 size={20} stroke={1.7} />
+            {t("Recent")}
+          </Link>
+          <SwitchSpace spaceId={space.id} spaceName={space.name}>
+            <div className={classes.sectionPages}>
+              <Group className={classes.pagesHeader} justify="space-between">
+                <Group gap="xs">
+                  <SpaceMenu
+                    spaceId={space.id}
+                    canManagePages={spaceAbility.can(
+                      SpaceCaslAction.Manage,
+                      SpaceCaslSubject.Page,
+                    )}
+                    onSpaceSettings={openSettings}
+                    treeRef={treeRef}
+                  />
+
+                  {spaceAbility.can(
+                    SpaceCaslAction.Manage,
+                    SpaceCaslSubject.Page,
+                  ) && (
+                    <>
+                      <Tooltip
+                        label={t("Create page")}
+                        withArrow
+                        position="right"
+                      >
+                        <ActionIcon
+                          variant="default"
+                          size={18}
+                          onClick={handleCreatePage}
+                          aria-label={t("Create page")}
+                        >
+                          <IconPlus />
+                        </ActionIcon>
+                      </Tooltip>
+
+                      {/* Standalone second button: a "temporary note" auto-moves to
+                      trash after the workspace lifetime unless made permanent. */}
+                      <Tooltip
+                        label={t("New temporary note")}
+                        withArrow
+                        position="right"
+                      >
+                        <ActionIcon
+                          variant="default"
+                          size={18}
+                          onClick={handleCreateTemporaryPage}
+                          aria-label={t("New temporary note")}
+                        >
+                          <IconHourglass />
+                        </ActionIcon>
+                      </Tooltip>
+                    </>
+                  )}
+                </Group>
+              </Group>
+
+              <div className={classes.pages}>
+                {pinnedPage?.id === pinnedId &&
+                  pinnedPage &&
+                  !pinnedPage.deletedAt &&
+                  pinnedPage.spaceId === space.id && (
+                    <Link
+                      to={buildPageUrl(
+                        space.slug,
+                        pinnedPage.slugId,
+                        pinnedPage.title,
+                      )}
+                      className={classes.pinnedPage}
+                    >
+                      <IconPin size={17} />
+                      <span>{pinnedPage.title || t("Untitled")}</span>
+                    </Link>
+                  )}
+                <SpaceTree
+                  ref={treeRef}
+                  rowHeight={36}
                   spaceId={space.id}
-                  canManagePages={spaceAbility.can(
+                  readOnly={spaceAbility.cannot(
                     SpaceCaslAction.Manage,
                     SpaceCaslSubject.Page,
                   )}
-                  onSpaceSettings={openSettings}
-                  treeRef={treeRef}
                 />
-
-                {spaceAbility.can(
-                  SpaceCaslAction.Manage,
-                  SpaceCaslSubject.Page,
-                ) && (
-                  <>
-                    <Tooltip
-                      label={t("Create page")}
-                      withArrow
-                      position="right"
-                    >
-                      <ActionIcon
-                        variant="default"
-                        size={18}
-                        onClick={handleCreatePage}
-                        aria-label={t("Create page")}
-                      >
-                        <IconPlus />
-                      </ActionIcon>
-                    </Tooltip>
-
-                    {/* Standalone second button: a "temporary note" auto-moves to
-                      trash after the workspace lifetime unless made permanent. */}
-                    <Tooltip
-                      label={t("New temporary note")}
-                      withArrow
-                      position="right"
-                    >
-                      <ActionIcon
-                        variant="default"
-                        size={18}
-                        onClick={handleCreateTemporaryPage}
-                        aria-label={t("New temporary note")}
-                      >
-                        <IconHourglass />
-                      </ActionIcon>
-                    </Tooltip>
-                  </>
-                )}
-              </Group>
-            </Group>
-
-            <div className={classes.pages}>
-              {pinnedPage?.id === pinnedId &&
-                pinnedPage &&
-                !pinnedPage.deletedAt &&
-                pinnedPage.spaceId === space.id && (
-                  <Link
-                    to={buildPageUrl(
-                      space.slug,
-                      pinnedPage.slugId,
-                      pinnedPage.title,
-                    )}
-                    className={classes.pinnedPage}
-                  >
-                    <IconPin size={17} />
-                    <span>{pinnedPage.title || t("Untitled")}</span>
-                  </Link>
-                )}
-              <SpaceTree
-                ref={treeRef}
-                rowHeight={36}
-                spaceId={space.id}
-                readOnly={spaceAbility.cannot(
-                  SpaceCaslAction.Manage,
-                  SpaceCaslSubject.Page,
-                )}
-              />
+              </div>
             </div>
-          </div>
-        </SwitchSpace>
+          </SwitchSpace>
+        </div>
+        <div className={classes.footer}>
+          <Link
+            to="/settings/workspace"
+            className={classes.navigationLink}
+            onClick={closeMobileNavigation}
+          >
+            <IconSettings size={20} stroke={1.7} />
+            {t("Settings")}
+          </Link>
+          <TopMenu accountOnly className={classes.account} />
+        </div>
       </div>
 
       <SpaceSettingsModal
@@ -305,27 +346,34 @@ function SpaceMenu({
     <>
       <Menu width={200} shadow="md" withArrow>
         <Menu.Target>
-          <Tooltip label={t("Space menu")} withArrow position="top">
-            <ActionIcon
-              variant="default"
-              size={18}
-              aria-label={t("Space menu")}
-            >
-              <IconDots />
-            </ActionIcon>
-          </Tooltip>
+          <ActionIcon
+            variant="default"
+            size={18}
+            aria-label={t("Space menu")}
+            title={t("Space menu")}
+          >
+            <IconDots />
+          </ActionIcon>
         </Menu.Target>
 
         <Menu.Dropdown>
-          <Menu.Item component={Link} to={`/s/${encodeURIComponent(spaceSlug)}?overview=1`} leftSection={<IconHome size={16} />}>
+          <Menu.Item
+            component={Link}
+            to={`/s/${encodeURIComponent(spaceSlug)}?overview=1`}
+            leftSection={<IconHome size={16} />}
+          >
             {t("Space overview")}
           </Menu.Item>
 
-          {space?.settings?.homePageId && ability.can(SpaceCaslAction.Manage, SpaceCaslSubject.Settings) && (
-            <Menu.Item disabled={setSpaceHome.isPending} onClick={() => setSpaceHome.mutate(null)}>
-              {t("Clear space home page")}
-            </Menu.Item>
-          )}
+          {space?.settings?.homePageId &&
+            ability.can(SpaceCaslAction.Manage, SpaceCaslSubject.Settings) && (
+              <Menu.Item
+                disabled={setSpaceHome.isPending}
+                onClick={() => setSpaceHome.mutate(null)}
+              >
+                {t("Clear space home page")}
+              </Menu.Item>
+            )}
           <Menu.Item
             onClick={handleExpandAll}
             leftSection={<IconChevronsDown size={16} />}

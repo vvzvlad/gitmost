@@ -8,7 +8,7 @@
   z-index: 99;
   top: var(--app-shell-header-offset, 0rem);
   inset-inline-start: var(--app-shell-navbar-offset, 0rem);
-  inset-inline-end: var(--app-shell-aside-offset, 0rem);
+  inset-inline-end: 0;
 
   @media (max-width: $mantine-breakpoint-sm) {
     padding-left: var(--mantine-spacing-xs);
@@ -63,6 +63,11 @@
   padding: 8px 12px;
   max-height: calc(100dvh - 70px);
   overflow-y: auto;
+
+  /* Mantine renders submenus inside the dropdown so parent and child share focus. */
+  &:has([aria-haspopup="menu"][aria-expanded="true"]) {
+    overflow: visible;
+  }
 
   [role="menuitem"] {
     font-size: 15px;

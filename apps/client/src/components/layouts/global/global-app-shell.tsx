@@ -49,7 +49,7 @@ export default function GlobalAppShell({
   const [mobileOpened] = useAtom(mobileSidebarAtom);
   const toggleMobile = useToggleSidebar(mobileSidebarAtom);
   const [desktopOpened] = useAtom(desktopSidebarAtom);
-  const [{ isAsideOpen, tab: asideTab }] = useAtom(asideStateAtom);
+  const [{ isAsideOpen, tab: asideTab }, setAsideState] = useAtom(asideStateAtom);
   const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom);
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef(null);
@@ -124,6 +124,13 @@ export default function GlobalAppShell({
   const isPageRoute = location.pathname.includes("/p/");
   const showGlobalSidebar = !isSpaceRoute && !isSettingsRoute;
 
+  useEffect(() => {
+    if (isPageRoute && asideTab === "" && window.matchMedia("(min-width: 1200px)").matches) {
+      setAsideState({ tab: "toc", isAsideOpen: true });
+    }
+  }, [isPageRoute, asideTab, setAsideState]);
+
+
   return (
     <>
       <SkipToMain />
@@ -146,15 +153,15 @@ export default function GlobalAppShell({
       }}
       aside={
         isPageRoute && {
-          width: 420,
+          width: asideTab === "toc" ? 294 : 420,
           breakpoint: "md",
-          collapsed: { mobile: !isAsideOpen, desktop: !isAsideOpen },
+          collapsed: { mobile: !isAsideOpen || mobileOpened, desktop: !isAsideOpen },
         }
       }
       padding={{ base: "xs", sm: "md" }}
     >
       <AppShell.Header px="md" className={classes.header} hiddenFrom={isPageRoute ? "md" : undefined}>
-        <AppHeader />
+        <AppHeader isSpaceRoute={isSpaceRoute} />
       </AppShell.Header>
       <AppShell.Navbar
         id={APP_NAVBAR_ID}
@@ -186,7 +193,14 @@ export default function GlobalAppShell({
             {children}
           </Container>
         ) : (
-          children
+          <>
+            {isPageRoute && (
+              <div className={classes.documentCover} aria-hidden="true">
+                <img src="/brand/wiki-cover.jpg" alt="" />
+              </div>
+            )}
+            {children}
+          </>
         )}
       </AppShell.Main>
 
@@ -194,8 +208,10 @@ export default function GlobalAppShell({
         <AppShell.Aside
           id={ASIDE_PANEL_ID}
           tabIndex={-1}
-          className={classes.aside}
-          p="sm"
+          className={asideTab === "toc" ? `${classes.aside} ${classes.contentsAside}` : classes.aside}
+          p={asideTab === "toc" ? 0 : "sm"}
+          px={asideTab === "toc" ? 24 : undefined}
+          pt={asideTab === "toc" ? { base: "sm", md: 4 } : undefined}
           withBorder={false}
           aria-label={
             asideTab === "comments"

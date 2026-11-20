@@ -23,9 +23,11 @@
 
 .info {
   border-radius: 8px;
-  background: var(--wiki-rail);
+  background: light-dark(#e8f3fa, #20394a);
 
   .message {
     font-size: var(--wiki-document-font-size, var(--mantine-font-size-md));
+    font-weight: 500;
+    color: var(--wiki-selected-ink);
   }
 }
