@@ -1,3 +1,4 @@
+import { getAppName } from "@/lib/config";
 import {
   ActionIcon,
   Box,
@@ -73,7 +74,7 @@ export function AppHeader() {
           </Tooltip>
 
           <Group gap={6} align="flex-end" wrap="nowrap">
-            <Link to="/home" className={classes.brand} aria-label="Gitmost">
+            <Link to="/home" className={classes.brand} aria-label={getAppName()}>
               <Box hiddenFrom="sm" className={classes.brandIcon}>
                 <BrandLogo markOnly height={26} />
               </Box>

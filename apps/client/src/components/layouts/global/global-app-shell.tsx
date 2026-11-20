@@ -128,7 +128,8 @@ export default function GlobalAppShell({
     <>
       <SkipToMain />
       <AppShell
-      header={{ height: 45 }}
+      className={isPageRoute ? classes.documentShell : undefined}
+      header={{ height: isPageRoute ? { base: 45, md: 0 } : 45 }}
       navbar={{
         width: isSpaceRoute ? sidebarWidth : 300,
         // `md` (not `sm`): below 992px the fixed ~300px sidebar leaves too little
@@ -152,7 +153,7 @@ export default function GlobalAppShell({
       }
       padding={{ base: "xs", sm: "md" }}
     >
-      <AppShell.Header px="md" className={classes.header}>
+      <AppShell.Header px="md" className={classes.header} hiddenFrom={isPageRoute ? "md" : undefined}>
         <AppHeader />
       </AppShell.Header>
       <AppShell.Navbar
@@ -175,7 +176,11 @@ export default function GlobalAppShell({
         {isSettingsRoute && <SettingsSidebar />}
         {showGlobalSidebar && <GlobalSidebar />}
       </AppShell.Navbar>
-      <AppShell.Main id={MAIN_CONTENT_ID} tabIndex={-1}>
+      <AppShell.Main
+        id={MAIN_CONTENT_ID}
+        tabIndex={-1}
+        className={isPageRoute ? classes.documentMain : undefined}
+      >
         {isSettingsRoute ? (
           <Container size={900} pb={80}>
             {children}

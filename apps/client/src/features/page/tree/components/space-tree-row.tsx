@@ -14,7 +14,6 @@ import {
   IconClockHour4,
   IconLink,
   IconPlus,
-  IconPointFilled,
   IconTemplate,
   IconTrash,
 } from "@tabler/icons-react";
@@ -287,20 +286,7 @@ function PageArrow({ isOpen, hasChildren, onToggle }: PageArrowProps) {
 
   if (!hasChildren) {
     return (
-      <span
-        aria-hidden
-        className={classes.actionIcon}
-        style={{
-          width: 20,
-          height: 20,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-        }}
-      >
-        <IconPointFilled size={8} />
-      </span>
+      <span aria-hidden className={classes.leafSpacer} />
     );
   }
 

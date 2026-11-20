@@ -1,6 +1,7 @@
 .header {
   height: 45px;
   background-color: var(--mantine-color-body);
+  border-bottom: 1px solid var(--wiki-border);
   padding-left: var(--mantine-spacing-md);
   padding-right: var(--mantine-spacing-md);
   position: fixed;
@@ -20,8 +21,62 @@
 }
 
 .group {
-  @media (max-width: $mantine-breakpoint-sm) {
-    gap: var(--mantine-spacing-sm);
-    padding-inline: 0 !important;
+  padding-inline: var(--mantine-spacing-md);
+}
+
+.actions {
+  flex-shrink: 0;
+  gap: var(--mantine-spacing-xs);
+  padding-inline-end: var(--mantine-spacing-md);
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .group,
+  .actions {
+    gap: 4px;
+    padding-inline: 0;
+  }
+}
+
+.trail {
+  min-width: 0;
+
+  > nav {
+    min-width: 0;
+  }
+}
+
+.actionTrigger {
+  width: 48px;
+  height: 38px;
+  color: var(--wiki-selected-ink);
+  background: var(--wiki-selected);
+
+  &:hover,
+  &[data-expanded] {
+    color: var(--wiki-selected-ink);
+    background: var(--wiki-hover);
+  }
+}
+
+.dropdown {
+  padding: 8px 12px;
+  max-height: calc(100dvh - 70px);
+  overflow-y: auto;
+
+  [role="menuitem"] {
+    font-size: 15px;
+  }
+}
+
+@media (min-width: $mantine-breakpoint-md) {
+  .header {
+    height: var(--wiki-page-header-height, 45px);
+    padding-inline: 34px 16px;
+  }
+
+  .group,
+  .actions {
+    padding-inline: 0;
   }
 }

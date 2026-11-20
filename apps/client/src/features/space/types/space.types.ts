@@ -18,6 +18,7 @@ export interface ISpaceGitSyncSettings {
 }
 
 export interface ISpaceSettings {
+  homePageId?: string | null;
   sharing?: ISpaceSharingSettings;
   comments?: ISpaceCommentsSettings;
   gitSync?: ISpaceGitSyncSettings;

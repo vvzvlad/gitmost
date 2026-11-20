@@ -30,7 +30,13 @@ import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts
 import { useDisclosure } from "@mantine/hooks";
 import SpaceSettingsModal from "@/features/space/components/settings-modal.tsx";
 
-export default function TopMenu() {
+export default function TopMenu({
+  className,
+  inSidebar = false,
+}: {
+  className?: string;
+  inSidebar?: boolean;
+}) {
   const { t } = useTranslation();
   const [currentUser] = useAtom(currentUserAtom);
   const { logout } = useAuth();
@@ -56,16 +62,27 @@ export default function TopMenu() {
     <>
       <Menu width={250} position="bottom-end" withArrow shadow={"lg"}>
         <Menu.Target>
-          <UnstyledButton>
+          <UnstyledButton className={className}>
             <Group gap={7} wrap={"nowrap"}>
-              <CustomAvatar
-                avatarUrl={workspace?.logo}
-                name={workspace?.name}
-                variant="filled"
+              {inSidebar && !workspace.logo ? (
+                <IconUsers size={20} stroke={1.7} />
+              ) : (
+                <CustomAvatar
+                  avatarUrl={workspace?.logo}
+                  name={workspace?.name}
+                  variant="filled"
+                  size="sm"
+                  type={AvatarIconType.WORKSPACE_ICON}
+                />
+              )}
+              <Text
+                fw={500}
                 size="sm"
-                type={AvatarIconType.WORKSPACE_ICON}
-              />
-              <Text fw={500} size="sm" lh={1} mr={3} lineClamp={1}>
+                lh={1}
+                mr={3}
+                lineClamp={1}
+                flex={inSidebar ? 1 : undefined}
+              >
                 {workspace?.name}
               </Text>
               <IconChevronDown size={16} />

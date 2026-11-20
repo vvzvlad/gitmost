@@ -1,10 +1,11 @@
 .card {
   background-color: var(--mantine-color-body);
   width: 220px;
+  border-color: var(--wiki-border);
 
   @mixin hover {
     box-shadow: var(--mantine-shadow-xs);
-    transform: scale(1.02);
+    border-color: var(--wiki-accent);
   }
 
   &:focus-visible {
@@ -14,7 +15,7 @@
 }
 
 .cardSection {
-  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+  background: var(--wiki-rail);
 }
 
 .title {

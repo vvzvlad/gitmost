@@ -28,3 +28,13 @@
     overflow: visible;
   }
 }
+
+.home {
+  display: flex;
+  align-items: center;
+}
+
+.breadcrumbs a[aria-current="page"] {
+  color: var(--wiki-ink);
+  font-weight: 700;
+}

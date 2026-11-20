@@ -3,7 +3,6 @@ import {
   Group,
   Center,
   Text,
-  Badge,
   ActionIcon,
   Tooltip,
   getDefaultZIndex,
@@ -23,13 +22,11 @@ import { useTranslation } from "react-i18next";
 interface SearchResultItemProps {
   result: IPageSearch | IAttachmentSearch;
   isAttachmentResult: boolean;
-  showSpace?: boolean;
 }
 
 export function SearchResultItem({
   result,
   isAttachmentResult,
-  showSpace,
 }: SearchResultItemProps) {
   const { t } = useTranslation();
 
@@ -93,6 +90,10 @@ export function SearchResultItem({
     );
   } else {
     const pageResult = result as IPageSearch;
+    const path = [
+      ...(pageResult.space ? [pageResult.space.name] : []),
+      ...(pageResult.path ?? []).map((title) => title || t("Untitled")),
+    ].join(" / ");
     return (
       <Spotlight.Action
         component={Link}
@@ -110,11 +111,7 @@ export function SearchResultItem({
           <div style={{ flex: 1 }}>
             <Text>{pageResult.title}</Text>
 
-            {showSpace && pageResult.space && (
-              <Badge variant="light" size="xs" color="gray">
-                {pageResult.space.name}
-              </Badge>
-            )}
+            {path && <Text size="xs" c="dimmed" lineClamp={1} title={path}>{path}</Text>}
 
             {pageResult?.highlight && (
               <Text

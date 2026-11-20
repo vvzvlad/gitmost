@@ -1,7 +1,15 @@
 .editor {
+    --wiki-document-gutter: 2rem;
+    --wiki-document-font-size: 1.125rem;
     height: 100%;
     padding: 8px 0;
-    margin: 48px auto;
+    margin: 35px auto;
+
+    @media (max-width: $mantine-breakpoint-sm) {
+        --wiki-document-gutter: 1rem;
+        --wiki-document-font-size: 1rem;
+        margin-block: 48px;
+    }
 
     @media print {
         padding: 0;
@@ -10,14 +18,21 @@
 }
 
 .byline {
-    padding-left: 3rem;
-
-    @media (max-width: $mantine-breakpoint-sm) {
-        padding-left: 1rem;
-    }
+    padding-inline-start: var(--wiki-document-gutter);
 
     @media print {
-        padding-left: 0;
+        padding-inline-start: 0;
     }
 }
 
+
+.connectingBadge {
+    width: fit-content;
+    margin-inline: auto var(--wiki-document-gutter, 1rem);
+    margin-bottom: 0.5rem;
+    padding: 2px 8px;
+    border-radius: var(--mantine-radius-sm);
+    background: var(--wiki-rail);
+    color: var(--mantine-color-dimmed);
+    font-size: var(--mantine-font-size-xs);
+}

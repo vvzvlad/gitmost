@@ -70,6 +70,7 @@ export interface ISuggestionResult {
 
 export interface IPageSearchParams {
   query: string;
+  labelId?: string;
   spaceId?: string;
   shareId?: string;
   // #529 A9: match mode (auto default) + pagination.

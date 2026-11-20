@@ -7,12 +7,12 @@
     border: 1px solid;
 
     @mixin light {
-        border-color: var(--mantine-color-gray-3);
+        border-color: var(--wiki-border);
         background-color: var(--mantine-color-white);
     }
 
     @mixin dark {
-        border-color: var(--mantine-color-dark-4);
+        border-color: var(--wiki-border);
         background-color: var(--mantine-color-dark-6);
     }
 
@@ -34,8 +34,8 @@
 
     @mixin light {
         color: var(--mantine-color-gray-7);
-        border-color: var(--mantine-color-gray-2);
-        background-color: var(--mantine-color-gray-0);
+        border-color: var(--wiki-border);
+        background-color: var(--wiki-rail);
     }
 
     @mixin dark {
@@ -43,4 +43,17 @@
         border-color: var(--mantine-color-dark-7);
         background-color: var(--mantine-color-dark-7);
     }
+}
+
+.contents {
+    width: 100%;
+}
+
+.label {
+    flex: 1;
+    min-width: 0;
+    margin-inline-end: 40px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }

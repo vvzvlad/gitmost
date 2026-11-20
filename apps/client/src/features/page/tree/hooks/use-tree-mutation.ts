@@ -168,12 +168,19 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
   );
 
   const handleCreate = useCallback(
-    async (parentId: string | null, opts?: { temporary?: boolean }) => {
+    async (
+      parentId: string | null,
+      opts?: { temporary?: boolean; template?: { title: string; content: string } },
+    ) => {
       const payload: {
         spaceId: string;
         parentPageId?: string;
         temporary?: boolean;
+        title?: string;
+        content?: string;
+        format?: "markdown";
       } = { spaceId };
+      if (opts?.template) Object.assign(payload, opts.template, { format: "markdown" });
       if (parentId) payload.parentPageId = parentId;
       // Ask the server to arm the death timer for a "temporary note".
       if (opts?.temporary) payload.temporary = true;
@@ -187,11 +194,8 @@ export function useTreeMutation(spaceId: string): UseTreeMutation {
 
       // Route through the canonical mapper so the field copy (esp.
       // `temporaryExpiresAt`, which shows the temporary-note clock marker on
-      // optimistic insert) can't drift from buildTree. `name: ""` because a
-      // freshly created page is untitled; `hasChildren: false` because it has no
-      // children yet.
+      // optimistic insert) can't drift from buildTree.
       const newNode: SpaceTreeNode = pageToTreeNode(createdPage, {
-        name: "",
         hasChildren: false,
       });
 

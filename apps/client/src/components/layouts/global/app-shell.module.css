@@ -1,10 +1,14 @@
 .header, .navbar, .aside {
-  background-color: light-dark(#f6f7f9, var(--mantine-color-dark-8));
+  background-color: var(--wiki-rail);
+}
+
+.navbar {
+  border-inline-end: 1px solid var(--wiki-border);
 }
 
 .navbar, .aside {
   @media (max-width: $mantine-breakpoint-sm) {
-    width: 350px;
+    width: min(350px, 100vw);
   }
 }
 
@@ -25,5 +29,27 @@
   &:hover, &:active {
     width: 5px;
     background: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-5))
+  }
+}
+
+.documentShell {
+  --wiki-page-header-height: 45px;
+
+  @media (min-width: $mantine-breakpoint-md) {
+    --wiki-page-header-height: 58px;
+  }
+}
+
+.documentMain {
+  @media (min-width: $mantine-breakpoint-md) {
+    padding-block-start: calc(var(--wiki-page-header-height) + var(--app-shell-padding));
+    padding-inline-end: calc(
+      var(--app-shell-aside-offset, 0px) + var(--app-shell-padding) +
+        clamp(0px, (100vw - 1120px) * 0.12, 44px)
+    );
+  }
+
+  @media print {
+    padding-block-start: 0;
   }
 }

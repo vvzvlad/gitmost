@@ -1,96 +1,144 @@
 .navbar {
-    /*background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));*/
     height: 100%;
     width: 100%;
-    padding: var(--mantine-spacing-md);
-    padding-top: 0;
     display: flex;
     flex-direction: column;
-    user-select: none;
+    padding: 14px 12px 24px 16px;
+    overflow-y: auto;
 }
 
-.section {
-    margin-left: calc(var(--mantine-spacing-md) * -1);
-    margin-right: calc(var(--mantine-spacing-md) * -1);
-    margin-bottom: var(--mantine-spacing-md);
+.brand,
+.navigationLink {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: none;
+    color: var(--wiki-ink);
+    text-decoration: none;
+}
 
-    &:not(:last-of-type) {
-        border-bottom: rem(1px) solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+.brand {
+    min-height: 32px;
+    padding-inline: 8px;
+}
+
+.brandLogo {
+    max-width: 100%;
+    object-fit: contain;
+    object-position: left center;
+}
+
+.workspaceLabel {
+    margin-bottom: 7px;
+}
+
+.workspaceButton,
+.workspaceSearch {
+    flex: none;
+    width: 100%;
+    min-height: 40px;
+    border: 1px solid var(--wiki-border);
+    border-radius: 8px;
+    background-color: var(--mantine-color-body);
+}
+
+.workspaceButton {
+    padding-inline: 12px;
+}
+
+.workspaceSearch {
+    margin-block: 20px 19px;
+}
+
+.navigationLink {
+    min-height: 40px;
+    padding-inline: 10px;
+    border-radius: 7px;
+    font-size: 16px;
+    font-weight: 550;
+
+    &:hover {
+        background: var(--wiki-hover);
     }
 }
 
 .sectionPages {
-    margin-bottom: 0;
-    overflow-y: hidden;
+    overflow: visible;
+    margin: 0;
+    border: 0;
 
     .pages {
-        height: 100%;
-        padding-bottom: 26px;
+        padding: 0 0 0 34px;
     }
-}
-
-.menuItems {
-    padding-left: calc(var(--mantine-spacing-md) - var(--mantine-spacing-xs));
-    padding-right: calc(var(--mantine-spacing-md) - var(--mantine-spacing-xs));
-    padding-bottom: var(--mantine-spacing-md);
-}
-
-.menu {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    font-size: var(--mantine-font-size-sm);
-    padding: rem(4px) var(--mantine-spacing-xs);
-    border-radius: var(--mantine-radius-sm);
-    font-weight: 500;
-    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
-
-    &:hover {
-        background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
-        color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
-    }
-}
-
-.menuItemInner {
-    display: flex;
-    align-items: center;
-    flex: 1;
-}
-
-.menuItemIcon {
-    margin-right: var(--mantine-spacing-sm);
-    color: light-dark(var(--mantine-color-gray-6), var(--mantine-color-dark-2));
-}
-
-.pages {
-    padding-left: calc(var(--mantine-spacing-md) - rem(6px));
-    padding-right: calc(var(--mantine-spacing-md) - rem(6px));
-    padding-bottom: var(--mantine-spacing-md);
 }
 
 .pagesHeader {
-    padding-left: calc(var(--mantine-spacing-md) + rem(2px));
-    padding-right: var(--mantine-spacing-md);
-    margin-bottom: rem(5px);
-}
+    position: absolute;
+    inset-block-start: 7px;
+    inset-inline-end: 4px;
+    z-index: 1;
+    padding: 0;
+    margin: 0;
+    opacity: var(--wiki-space-actions-opacity, 0);
 
-.pageLink {
-    display: block;
-    padding: rem(8px) var(--mantine-spacing-xs);
-    text-decoration: none;
-    border-radius: var(--mantine-radius-sm);
-    font-size: var(--mantine-font-size-xs);
-    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
-    line-height: 1;
-    font-weight: 500;
+    &:hover,
+    &:focus-within,
+    .sectionPages:hover & {
+        opacity: 1;
+    }
 
-    &:hover {
-        background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
-        color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
+    @media (hover: none) {
+        opacity: 1;
     }
 }
 
-.activeButton {
-    background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
-    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-0));
+.pinnedPage {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding-inline: 8px;
+    color: var(--wiki-selected-ink);
+    border-radius: 7px;
+    text-decoration: none;
+
+    &:hover {
+        background: var(--wiki-hover);
+    }
+
+    > svg {
+        flex: none;
+    }
+
+    > span {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+}
+
+
+.brandRow {
+    position: relative;
+    flex: none;
+    margin-bottom: 23px;
+}
+
+.utilities {
+    position: absolute;
+    inset-inline-end: 0;
+    inset-block-start: 50%;
+    transform: translateY(-50%);
+    border-radius: 8px;
+    background: var(--wiki-rail);
+    opacity: 0;
+
+    .brandRow:hover &,
+    &:focus-within {
+        opacity: 1;
+    }
+}
+
+.workspaceSearch p {
+    margin-inline-end: 0;
 }

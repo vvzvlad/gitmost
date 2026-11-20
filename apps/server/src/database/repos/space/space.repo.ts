@@ -89,6 +89,20 @@ export class SpaceRepo {
       .executeTakeFirst();
   }
 
+  async setHomePage(spaceId: string, workspaceId: string, pageId: string | null) {
+    return this.db
+      .updateTable('spaces')
+      .set({
+        settings: sql`coalesce(settings, '{}'::jsonb)
+          || jsonb_build_object('homePageId', ${pageId}::text)`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', spaceId)
+      .where('workspaceId', '=', workspaceId)
+      .returning('id')
+      .executeTakeFirst();
+  }
+
   async updateSharingSettings(
     spaceId: string,
     workspaceId: string,

@@ -83,6 +83,8 @@ export interface SidebarPagesParams {
   limit?: number;
 }
 
+export type ICreatePageInput = Partial<IPage> & { format?: "json" | "html" | "markdown" };
+
 export interface IPageInput {
   pageId: string;
   title: string;

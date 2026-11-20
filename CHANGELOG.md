@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Space home pages, account-synced page pins, search by label with result paths, and starter templates for new notes.
+
+### Fixed
+
+- Registered audit services in the collaboration server so it can start.
+
+### Changed
+
+- Applied the DozoR-WIKI branding to application logos, browser metadata, and install icons.
+- Rebuilt the document header, space tree, and page actions in light and dark mode with a blue accent.
+- Kept page actions accessible on narrow screens and moved the connection status clear of document text.
+
 ## [1.0.1] - 2026-10-12
 
 The 1.0.0 code with release images: the `v1.0.0` tag was pushed, but a failing integration test

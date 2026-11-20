@@ -1,93 +1,53 @@
-import React, { useState, useEffect } from "react";
-import {
-  Button,
-  Menu,
-  Text,
-  Group,
-  getDefaultZIndex,
-} from "@mantine/core";
-import {
-  IconChevronDown,
-  IconBuilding,
-  IconFileDescription,
-  IconCheck,
-} from "@tabler/icons-react";
+import { useState } from "react";
+import { Button, Select, getDefaultZIndex } from "@mantine/core";
+import { useDebouncedValue } from "@mantine/hooks";
+import { IconBuilding, IconChevronDown, IconTag } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useGetSpacesQuery } from "@/features/space/queries/space-query";
+import { useWorkspaceLabelsQuery } from "@/features/label/queries/label-query";
 import { SpaceFilterMenu } from "@/features/space/components/space-filter-menu";
-import { RadioMenuItem } from "@/components/ui/radio-menu-item";
 import classes from "./search-spotlight-filters.module.css";
 
-interface SearchSpotlightFiltersProps {
-  onFiltersChange?: (filters: any) => void;
-  spaceId?: string;
+interface Props {
+  spaceId?: string | null;
+  onSpaceChange: (id: string | null) => void;
+  labelId: string | null;
+  onLabelChange: (id: string | null) => void;
 }
 
 export function SearchSpotlightFilters({
-  onFiltersChange,
   spaceId,
-}: SearchSpotlightFiltersProps) {
+  onSpaceChange,
+  labelId,
+  onLabelChange,
+}: Props) {
   const { t } = useTranslation();
-  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(
-    spaceId || null,
-  );
-  const [contentType, setContentType] = useState<string | null>("page");
-
-  const { data: spacesData } = useGetSpacesQuery({ limit: 100 });
-  const selectedSpaceData = selectedSpaceId
-    ? spacesData?.items.find((space) => space.id === selectedSpaceId)
-    : null;
-
-  useEffect(() => {
-    if (onFiltersChange) {
-      onFiltersChange({
-        spaceId: selectedSpaceId,
-        contentType,
-      });
-    }
-  }, []);
-
-  const contentTypeOptions = [{ value: "page", label: t("Pages") }];
-
-  const handleSpaceSelect = (spaceId: string | null) => {
-    setSelectedSpaceId(spaceId);
-
-    if (onFiltersChange) {
-      onFiltersChange({
-        spaceId: spaceId,
-        contentType,
-      });
-    }
-  };
-
-  const handleFilterChange = (filterType: string, value: any) => {
-    let newSelectedSpaceId = selectedSpaceId;
-    let newContentType = contentType;
-
-    switch (filterType) {
-      case "spaceId":
-        newSelectedSpaceId = value;
-        setSelectedSpaceId(value);
-        break;
-      case "contentType":
-        newContentType = value;
-        setContentType(value);
-        break;
-    }
-
-    if (onFiltersChange) {
-      onFiltersChange({
-        spaceId: newSelectedSpaceId,
-        contentType: newContentType,
-      });
-    }
-  };
+  const { data: spaces } = useGetSpacesQuery({ limit: 100 });
+  const space = spaces?.items.find((item) => item.id === spaceId);
+  const [opened, setOpened] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery] = useDebouncedValue(query.trim(), 200);
+  const [selectedLabel, setSelectedLabel] = useState<{
+    value: string;
+    label: string;
+  }>();
+  const { data: labels } = useWorkspaceLabelsQuery(debouncedQuery, opened);
+  const options = (labels?.items ?? []).map((label) => ({
+    value: label.id,
+    label: label.name,
+  }));
+  if (
+    selectedLabel &&
+    !options.some((option) => option.value === selectedLabel.value)
+  ) {
+    options.push(selectedLabel);
+  }
 
   return (
     <div className={classes.filtersContainer}>
       <SpaceFilterMenu
-        value={selectedSpaceId}
-        onChange={handleSpaceSelect}
+        value={spaceId ?? null}
+        onChange={onSpaceChange}
         position="bottom-start"
         width={250}
         zIndex={getDefaultZIndex("max")}
@@ -101,61 +61,30 @@ export function SearchSpotlightFilters({
           className={classes.filterButton}
           fw={500}
         >
-          {selectedSpaceId
-            ? `${t("Space")}: ${selectedSpaceData?.name || t("Unknown")}`
-            : `${t("Space")}: ${t("All spaces")}`}
+          {`${t("Space")}: ${spaceId ? (space?.name ?? t("Current space")) : t("All spaces")}`}
         </Button>
       </SpaceFilterMenu>
-
-      {/* Only render the content-type dropdown when there is more than one
-          option to choose from. With a single option ("Pages") it is a no-op
-          control, so we hide it instead of showing a dead filter. */}
-      {contentTypeOptions.length > 1 && (
-        <Menu
-          shadow="md"
-          width={220}
-          position="bottom-start"
-          zIndex={getDefaultZIndex("max")}
-        >
-          <Menu.Target>
-            <Button
-              variant="subtle"
-              color="gray"
-              size="sm"
-              rightSection={<IconChevronDown size={14} />}
-              leftSection={<IconFileDescription size={16} />}
-              className={classes.filterButton}
-              fw={500}
-            >
-              {contentType
-                ? `${t("Type")}: ${contentTypeOptions.find((opt) => opt.value === contentType)?.label || t(contentType === "page" ? "Pages" : "Attachments")}`
-                : t("Type")}
-            </Button>
-          </Menu.Target>
-          <Menu.Dropdown>
-            {contentTypeOptions.map((option) => (
-              <Menu.Item
-                key={option.value}
-                component={RadioMenuItem}
-                aria-checked={contentType === option.value}
-                onClick={() =>
-                  contentType !== option.value &&
-                  handleFilterChange("contentType", option.value)
-                }
-              >
-                <Group flex="1" gap="xs">
-                  <div>
-                    <Text size="sm">{option.label}</Text>
-                  </div>
-                  {contentType === option.value && (
-                    <IconCheck size={20} aria-hidden />
-                  )}
-                </Group>
-              </Menu.Item>
-            ))}
-          </Menu.Dropdown>
-        </Menu>
-      )}
+      <Select
+        aria-label={t("Filter by label")}
+        placeholder={t("All labels")}
+        leftSection={<IconTag size={16} />}
+        size="xs"
+        w={180}
+        style={{ flexShrink: 0 }}
+        clearable
+        searchable
+        onSearchChange={setQuery}
+        onDropdownOpen={() => setOpened(true)}
+        onDropdownClose={() => setOpened(false)}
+        nothingFoundMessage={t("No labels found")}
+        data={options}
+        value={labelId}
+        comboboxProps={{ zIndex: getDefaultZIndex("max"), withinPortal: true }}
+        onChange={(id, option) => {
+          setSelectedLabel(id ? option : undefined);
+          onLabelChange(id);
+        }}
+      />
     </div>
   );
 }

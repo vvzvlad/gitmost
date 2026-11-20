@@ -1,4 +1,12 @@
-import { ActionIcon, Button, Group, Menu, Text, ThemeIcon, Tooltip } from "@mantine/core";
+import classes from "./page-header.module.css";
+import {
+  ActionIcon,
+  Group,
+  Menu,
+  Text,
+  ThemeIcon,
+  Tooltip,
+} from "@mantine/core";
 import {
   IconArrowRight,
   IconArrowsHorizontal,
@@ -12,6 +20,14 @@ import {
   IconLink,
   IconList,
   IconMarkdown,
+  IconMessageCircle,
+  IconCopy,
+  IconExternalLink,
+  IconPencil,
+  IconPin,
+  IconVersions,
+  IconSettings,
+  IconInfoCircle,
   IconPrinter,
   IconStar,
   IconStarFilled,
@@ -21,10 +37,17 @@ import {
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
 import { useAtom, useAtomValue } from "jotai";
-import { historyAtoms } from "@/features/page-history/atoms/history-atoms.ts";
+import {
+  historyAtoms,
+  highlightChangesAtom,
+} from "@/features/page-history/atoms/history-atoms.ts";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { useClipboard } from "@/hooks/use-clipboard";
 import { useParams } from "react-router-dom";
+import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query";
+import { useSetSpaceHome } from "@/features/space/queries/space-home-query";
+import { useSpaceAbility } from "@/features/space/permissions/use-space-ability";
+import { SpaceCaslAction, SpaceCaslSubject } from "@/features/space/permissions/permissions.type";
 import { usePageMetaQuery } from "@/features/page/queries/page-query.ts";
 import {
   useToggleTemporaryMutation,
@@ -37,10 +60,12 @@ import { extractPageSlugId } from "@/lib";
 import { useTreeMutation } from "@/features/page/tree/hooks/use-tree-mutation.ts";
 import { PageWidthToggle } from "@/features/user/components/page-width-pref.tsx";
 import { Trans, useTranslation } from "react-i18next";
+import { ExportFormat } from "@/features/page/types/page.types";
 import ExportModal from "@/components/common/export-modal";
 import { convertProseMirrorToMarkdown } from "@docmost/prosemirror-markdown/browser";
 import {
   collabProviderAtom,
+  currentPageEditModeAtom,
   pageEditorAtom,
   yjsConnectionStatusAtom,
 } from "@/features/editor/atoms/editor-atoms.ts";
@@ -49,7 +74,9 @@ import {
   saveVersionPending,
 } from "@/features/page-history/version-messages.ts";
 import { formattedDate } from "@/lib/time.ts";
-import { PageEditModeToggle } from "@/features/user/components/page-state-pref.tsx";
+import { PageEditMode } from "@/features/user/types/user.types";
+import CopyPageModal from "@/features/page/components/copy-page-modal";
+import { useSpacePin } from "@/features/page/atoms/space-pin-atom";
 import MovePageModal from "@/features/page/components/move-page-modal.tsx";
 import WorkTimeStat from "@/features/page-history/work-time/work-time-stat.tsx";
 import { useTimeAgo } from "@/hooks/use-time-ago.tsx";
@@ -71,12 +98,11 @@ interface PageHeaderMenuProps {
 }
 export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const { t } = useTranslation();
-  const commentsTriggerProps = useAsideTriggerProps("comments");
-  const tocTriggerProps = useAsideTriggerProps("toc");
   const { pageSlug } = useParams();
-  const { data: page } = usePageMetaQuery({
-    pageId: extractPageSlugId(pageSlug),
-  });
+  const pageId = extractPageSlugId(pageSlug);
+  const { data } = usePageMetaQuery({ pageId });
+  const page =
+    data?.slugId === pageId || data?.id === pageId ? data : undefined;
   // #563 — the header is now rendered from the boot cache BEFORE this query
   // resolves, so `page` is legitimately undefined on a reload. Nothing here may
   // dereference it unguarded; the edit-only entry points additionally require the
@@ -86,7 +112,8 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
   const [workspace] = useAtom(workspaceAtom);
   const collabProvider = useAtomValue(collabProviderAtom);
   // Community public-sharing entry point (replaces the removed EE PageShareModal)
-  const workspaceSharingDisabled = workspace?.settings?.sharing?.disabled === true;
+  const workspaceSharingDisabled =
+    workspace?.settings?.sharing?.disabled === true;
 
   // #370 — explicit "save a version" (Cmd+S / Save button). One path for the
   // human; the server derives the tier from the signed actor. Readers can't save
@@ -141,8 +168,6 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
     <>
       <ConnectionWarning />
 
-      {isPageLoaded && !readOnly && <PageEditModeToggle size="xs" />}
-
       {/* Hide the Share entry point for readers; the toggle inside is inert
           without edit permission, so gate it like other edit-only actions
           (issue #133) */}
@@ -150,27 +175,11 @@ export default function PageHeaderMenu({ readOnly }: PageHeaderMenuProps) {
         <ShareModal readOnly={false} />
       )}
 
-      <Button
-        variant="subtle"
-        color="dark"
-        size="compact-sm"
-        {...commentsTriggerProps}
-      >
-        {t("Comments")}
-      </Button>
-
-      <Tooltip label={t("Table of contents")} openDelay={250} withArrow>
-        <ActionIcon
-          variant="subtle"
-          color="dark"
-          aria-label={t("Table of contents")}
-          {...tocTriggerProps}
-        >
-          <IconList size={20} stroke={2} />
-        </ActionIcon>
-      </Tooltip>
-
-      <PageActionMenu readOnly={readOnly} onSaveVersion={handleSaveVersion} />
+      <PageActionMenu
+        key={pageSlug}
+        readOnly={readOnly}
+        onSaveVersion={handleSaveVersion}
+      />
     </>
   );
 }
@@ -182,14 +191,25 @@ interface PageActionMenuProps {
 function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
   const { t } = useTranslation();
   const [, setHistoryModalOpen] = useAtom(historyAtoms);
+  const [, setHighlightChanges] = useAtom(highlightChangesAtom);
+  const [editMode, setEditMode] = useAtom(currentPageEditModeAtom);
+  const commentsTriggerProps = useAsideTriggerProps("comments");
+  const tocTriggerProps = useAsideTriggerProps("toc");
+  const detailsTriggerProps = useAsideTriggerProps("details");
+  const [copyOpened, { open: openCopy, close: closeCopy }] =
+    useDisclosure(false);
   const clipboard = useClipboard({ timeout: 500 });
   const { pageSlug, spaceSlug } = useParams();
-  const { data: page } = usePageMetaQuery({
-    pageId: extractPageSlugId(pageSlug),
-  });
+  const { data: space } = useGetSpaceBySlugQuery(spaceSlug);
+  const spaceAbility = useSpaceAbility(space?.membership?.permissions);
+  const setSpaceHome = useSetSpaceHome(space);
+  const pageId = extractPageSlugId(pageSlug);
+  const { data } = usePageMetaQuery({ pageId });
+  const page =
+    data?.slugId === pageId || data?.id === pageId ? data : undefined;
   const { handleDelete } = useTreeMutation(page?.spaceId ?? "");
-  const [exportOpened, { open: openExportModal, close: closeExportModal }] =
-    useDisclosure(false);
+  const { pinnedId, togglePin, isPinPending } = useSpacePin(page?.spaceId);
+  const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null);
   const [
     movePageModalOpened,
     { open: openMovePageModal, close: closeMoveSpaceModal },
@@ -291,20 +311,19 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
 
   return (
     <>
-      {page?.id && <WorkTimeStat pageId={page.id} />}
-
+      <WorkTimeStat pageId={page.id} />
       <Menu
         shadow="xl"
         position="bottom-end"
-        offset={20}
-        width={230}
-        withArrow
-        arrowPosition="center"
+        offset={8}
+        width={246}
+        classNames={{ dropdown: classes.dropdown }}
       >
         <Menu.Target>
           <ActionIcon
             variant="subtle"
             color="dark"
+            className={classes.actionTrigger}
             aria-label={t("Page actions")}
           >
             <IconDots size={20} />
@@ -312,24 +331,49 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
         </Menu.Target>
 
         <Menu.Dropdown>
+          {!readOnly && (
+            <>
+              <Menu.Item
+                leftSection={<IconPencil size={18} />}
+                onClick={() => {
+                  setEditMode(PageEditMode.Edit);
+                  if (editMode === PageEditMode.Edit)
+                    pageEditor?.commands.focus();
+                }}
+              >
+                {t("Edit")}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconCopy size={18} />}
+                onClick={openCopy}
+              >
+                {t("Make a copy")}
+              </Menu.Item>
+            </>
+          )}
           <Menu.Item
-            leftSection={<IconLink size={16} />}
+            component="a"
+            href={buildPageUrl(spaceSlug, page.slugId, page.title)}
+            target="_blank"
+            rel="noopener noreferrer"
+            leftSection={<IconExternalLink size={18} />}
+          >
+            {t("Open in new tab")}
+          </Menu.Item>
+          <Menu.Divider />
+          <Menu.Item
+            leftSection={<IconLink size={18} />}
             onClick={handleCopyLink}
           >
             {t("Copy link")}
           </Menu.Item>
-
-          <Menu.Item
-            leftSection={<IconMarkdown size={16} />}
-            onClick={handleCopyAsMarkdown}
-          >
-            {t("Copy as Markdown")}
-          </Menu.Item>
-
           <Menu.Item
             leftSection={
               isFavorited ? (
-                <IconStarFilled size={16} color="var(--mantine-color-yellow-5)" />
+                <IconStarFilled
+                  size={16}
+                  color="var(--mantine-color-yellow-5)"
+                />
               ) : (
                 <IconStar size={16} />
               )
@@ -339,85 +383,55 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
             {isFavorited ? t("Remove from favorites") : t("Add to favorites")}
           </Menu.Item>
 
-          {watchStatus?.watching ? (
-            <Menu.Item
-              leftSection={<IconEyeOff size={16} />}
-              onClick={() => unwatchPage.mutate(page.id)}
-            >
-              {t("Stop watching")}
-            </Menu.Item>
-          ) : (
-            <Menu.Item
-              leftSection={<IconEye size={16} />}
-              onClick={() => watchPage.mutate(page.id)}
-            >
-              {t("Watch page")}
-            </Menu.Item>
-          )}
-
-          <Menu.Divider />
-
-          <Menu.Item leftSection={<IconArrowsHorizontal size={16} />}>
-            <Group wrap="nowrap">
-              <PageWidthToggle label={t("Full width")} />
-            </Group>
-          </Menu.Item>
-
-          {!readOnly && (
-            <Menu.Item
-              leftSection={<IconDeviceFloppy size={16} />}
-              onClick={onSaveVersion}
-              rightSection={
-                <Text size="xs" c="dimmed">
-                  {t("Ctrl+S")}
-                </Text>
-              }
-            >
-              {t("Save version")}
-            </Menu.Item>
-          )}
-
           <Menu.Item
-            leftSection={<IconHistory size={16} />}
+            leftSection={<IconPin size={18} />}
+            disabled={isPinPending}
+            onClick={() => togglePin(page.id)}
+          >
+            {pinnedId === page.id ? t("Unpin from space") : t("Pin in space")}
+          </Menu.Item>
+          <Menu.Divider />
+          <Menu.Item
+            leftSection={<IconHistory size={18} />}
             onClick={openHistoryModal}
           >
-            {t("Page history")}
+            {t("Version history")}
           </Menu.Item>
-
-          <Menu.Divider />
-
-          {!readOnly && (
-            <Menu.Item
-              leftSection={<IconArrowRight size={16} />}
-              onClick={openMovePageModal}
-            >
-              {t("Move to space")}
-            </Menu.Item>
-          )}
-
           <Menu.Item
-            leftSection={<IconFileExport size={16} />}
-            onClick={openExportModal}
+            leftSection={<IconVersions size={18} />}
+            onClick={() => {
+              setHighlightChanges(true);
+              openHistoryModal();
+            }}
           >
-            {t("Export")}
+            {t("Compare versions")}
           </Menu.Item>
-
+          <Menu.Divider />
           <Menu.Item
-            leftSection={<IconPrinter size={16} />}
+            leftSection={<IconPrinter size={18} />}
             onClick={handlePrint}
           >
-            {t("Print PDF")}
+            {t("Print")}
           </Menu.Item>
+          <Menu.Sub>
+            <Menu.Sub.Target>
+              <Menu.Sub.Item leftSection={<IconFileExport size={18} />}>
+                {t("Export")}
+              </Menu.Sub.Item>
+            </Menu.Sub.Target>
+            <Menu.Sub.Dropdown>
+              <Menu.Item onClick={() => setExportFormat(ExportFormat.Markdown)}>
+                Markdown
+              </Menu.Item>
+              <Menu.Item onClick={() => setExportFormat(ExportFormat.HTML)}>
+                HTML
+              </Menu.Item>
+            </Menu.Sub.Dropdown>
+          </Menu.Sub>
 
           {!readOnly && (
             <>
               <Menu.Divider />
-              <Menu.Item
-                leftSection={<IconClockHour4 size={16} />}
-                onClick={handleToggleTemporary}
-              >
-                {isTemporary ? t("Make permanent") : t("Make temporary")}
-              </Menu.Item>
               <Menu.Item
                 color={"red"}
                 leftSection={<IconTrash size={16} />}
@@ -427,50 +441,153 @@ function PageActionMenu({ readOnly, onSaveVersion }: PageActionMenuProps) {
               </Menu.Item>
             </>
           )}
+          <Menu.Sub>
+            <Menu.Sub.Target>
+              <Menu.Sub.Item leftSection={<IconSettings size={18} />}>
+                {t("More")}
+              </Menu.Sub.Item>
+            </Menu.Sub.Target>
+            <Menu.Sub.Dropdown>
+              {space?.id === page.spaceId && spaceAbility.can(SpaceCaslAction.Manage, SpaceCaslSubject.Settings) && (
+                <Menu.Item
+                  disabled={setSpaceHome.isPending}
+                  onClick={() => setSpaceHome.mutate(space.settings?.homePageId === page.id ? null : page.id)}
+                >
+                  {space.settings?.homePageId === page.id ? t("Clear space home page") : t("Set as space home page")}
+                </Menu.Item>
+              )}
 
-          <Menu.Divider />
-
-          <>
-            <Group px="sm" wrap="nowrap" style={{ cursor: "pointer" }}>
-              <Tooltip
-                label={t("Edited by {{name}} {{time}}", {
-                  name: page.lastUpdatedBy.name,
-                  time: pageUpdatedAt,
-                })}
-                position="left-start"
+              <Menu.Item
+                leftSection={<IconMessageCircle size={18} />}
+                {...commentsTriggerProps}
               >
-                <div style={{ width: 210 }}>
-                  <Text size="xs" c="dimmed" truncate="end">
-                    {t("Word count: {{wordCount}}", {
-                      wordCount: pageEditor?.storage?.characterCount?.words(),
-                    })}
-                  </Text>
+                {t("Comments")}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconList size={18} />}
+                {...tocTriggerProps}
+              >
+                {t("Table of contents")}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconInfoCircle size={18} />}
+                {...detailsTriggerProps}
+              >
+                {t("Details")}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconMarkdown size={18} />}
+                onClick={handleCopyAsMarkdown}
+              >
+                {t("Copy as Markdown")}
+              </Menu.Item>
+              {watchStatus?.watching ? (
+                <Menu.Item
+                  leftSection={<IconEyeOff size={16} />}
+                  onClick={() => unwatchPage.mutate(page.id)}
+                >
+                  {t("Stop watching")}
+                </Menu.Item>
+              ) : (
+                <Menu.Item
+                  leftSection={<IconEye size={16} />}
+                  onClick={() => watchPage.mutate(page.id)}
+                >
+                  {t("Watch page")}
+                </Menu.Item>
+              )}
 
-                  <Text size="xs" c="dimmed" lineClamp={1}>
-                    <Trans
-                      defaults="Created by: <b>{{creatorName}}</b>"
-                      values={{ creatorName: page?.creator?.name }}
-                      components={{ b: <Text span fw={500} /> }}
-                    />
-                  </Text>
-                  <Text size="xs" c="dimmed" truncate="end">
-                    {t("Created at: {{time}}", {
-                      time: formattedDate(page.createdAt),
+              <Menu.Item
+                closeMenuOnClick={false}
+                leftSection={<IconArrowsHorizontal size={18} />}
+              >
+                <PageWidthToggle label={t("Full width")} />
+              </Menu.Item>
+              {!readOnly && (
+                <>
+                  <Menu.Item
+                    leftSection={<IconEye size={18} />}
+                    onClick={() => setEditMode(PageEditMode.Read)}
+                  >
+                    {t("Read")}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<IconDeviceFloppy size={18} />}
+                    onClick={onSaveVersion}
+                  >
+                    {t("Save version")}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<IconArrowRight size={18} />}
+                    onClick={openMovePageModal}
+                  >
+                    {t("Move to space")}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<IconClockHour4 size={18} />}
+                    onClick={handleToggleTemporary}
+                  >
+                    {isTemporary ? t("Make permanent") : t("Make temporary")}
+                  </Menu.Item>
+                </>
+              )}
+              <Menu.Divider />
+              <>
+                <Group px="sm" wrap="nowrap" style={{ cursor: "pointer" }}>
+                  <Tooltip
+                    label={t("Edited by {{name}} {{time}}", {
+                      name: page.lastUpdatedBy?.name,
+                      time: pageUpdatedAt,
                     })}
-                  </Text>
-                </div>
-              </Tooltip>
-            </Group>
-          </>
+                    position="left-start"
+                  >
+                    <div style={{ width: 210 }}>
+                      <Text size="xs" c="dimmed" truncate="end">
+                        {t("Word count: {{wordCount}}", {
+                          wordCount:
+                            pageEditor?.storage?.characterCount?.words(),
+                        })}
+                      </Text>
+
+                      <Text size="xs" c="dimmed" lineClamp={1}>
+                        <Trans
+                          defaults="Created by: <b>{{creatorName}}</b>"
+                          values={{ creatorName: page?.creator?.name }}
+                          components={{ b: <Text span fw={500} /> }}
+                        />
+                      </Text>
+                      <Text size="xs" c="dimmed" truncate="end">
+                        {t("Created at: {{time}}", {
+                          time: formattedDate(page.createdAt),
+                        })}
+                      </Text>
+                    </div>
+                  </Tooltip>
+                </Group>
+              </>
+            </Menu.Sub.Dropdown>
+          </Menu.Sub>
         </Menu.Dropdown>
       </Menu>
 
-      <ExportModal
-        type="page"
-        id={page.id}
-        open={exportOpened}
-        onClose={closeExportModal}
-      />
+      {copyOpened && (
+        <CopyPageModal
+          pageId={page.id}
+          currentSpaceSlug={spaceSlug}
+          open
+          onClose={closeCopy}
+        />
+      )}
+
+      {exportFormat && (
+        <ExportModal
+          type="page"
+          id={page.id}
+          initialFormat={exportFormat}
+          open
+          onClose={() => setExportFormat(null)}
+        />
+      )}
 
       <MovePageModal
         pageId={page.id}

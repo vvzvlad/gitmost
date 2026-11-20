@@ -83,6 +83,6 @@ const isSidebarWidth = (v: unknown): v is number =>
 // `rem()`, which is numerically inert to string-vs-number.
 export const sidebarWidthAtom = atomWithUiStorage<number>(
   "sidebarWidth",
-  300,
+  306,
   isSidebarWidth,
 );

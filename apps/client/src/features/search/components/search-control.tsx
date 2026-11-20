@@ -15,17 +15,23 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { platformModifierLabel } from "@/lib";
 
-interface SearchControlProps extends BoxProps, ElementProps<"button"> {}
+interface SearchControlProps extends BoxProps, ElementProps<"button"> {
+  workspaceSearch?: boolean;
+}
 
-export function SearchControl({ className, ...others }: SearchControlProps) {
+export function SearchControl({
+  className,
+  workspaceSearch,
+  ...others
+}: SearchControlProps) {
   const { t } = useTranslation();
 
   return (
     <UnstyledButton {...others} className={cx(classes.root, className)}>
-      <Group gap="xs" wrap="nowrap">
+      <Group gap="xs" wrap="nowrap" className={classes.contents}>
         <IconSearch style={{ width: rem(15), height: rem(15) }} stroke={1.5} />
-        <Text fz="sm" c="dimmed" pr={80}>
-          {t("Search")}
+        <Text fz="sm" c="dimmed" className={classes.label}>
+          {workspaceSearch ? t("Search in workspace…") : t("Search")}
         </Text>
         <Text fw={700} className={classes.shortcut}>
           {platformModifierLabel} + K

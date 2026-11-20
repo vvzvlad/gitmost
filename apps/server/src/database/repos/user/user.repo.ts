@@ -155,7 +155,8 @@ export class UserRepo {
   async getUsersPaginated(workspaceId: string, pagination: PaginationOptions) {
     let query = this.db
       .selectFrom('users')
-      .select(this.baseFields)
+      .select(this.baseFields.filter((field) => field !== 'settings'))
+      .select(sql<User['settings']>`users.settings - 'spacePins'`.as('settings'))
       .where('workspaceId', '=', workspaceId)
       .where('deletedAt', 'is', null);
 
@@ -200,6 +201,42 @@ export class UserRepo {
       })
       .where('id', '=', userId)
       .returning(this.baseFields)
+      .executeTakeFirst();
+  }
+
+  async setSpacePin(
+    userId: string,
+    workspaceId: string,
+    spaceId: string,
+    pageId: string | null,
+    onlyIfUnset = false,
+  ) {
+    const existing = sql`coalesce(settings->'spacePins', '{}'::jsonb)`;
+    const next = sql`${existing} || jsonb_build_object(${spaceId}::text, ${pageId}::text)`;
+    const updated = await this.db
+      .updateTable('users')
+      .set({
+        settings: sql`coalesce(settings, '{}'::jsonb) || jsonb_build_object('spacePins', ${next})`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', userId)
+      .where('workspaceId', '=', workspaceId)
+      .where(sql<boolean>`pg_column_size(${next}) <= 32768`)
+      .$if(onlyIfUnset, (qb) =>
+        qb.where(sql<boolean>`not (${existing} ? ${spaceId}::text)`),
+      )
+      .returning('settings')
+      .executeTakeFirst();
+
+    if (updated || !onlyIfUnset) return updated;
+
+    // An import must respect a pin set or cleared on another device.
+    return this.db
+      .selectFrom('users')
+      .select('settings')
+      .where('id', '=', userId)
+      .where('workspaceId', '=', workspaceId)
+      .where(sql<boolean>`${existing} ? ${spaceId}::text`)
       .executeTakeFirst();
   }
 

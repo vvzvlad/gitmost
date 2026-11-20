@@ -34,6 +34,7 @@ interface ExportModalProps {
   id: string;
   type: "space" | "page";
   open: boolean;
+  initialFormat?: ExportFormat;
   onClose: () => void;
 }
 
@@ -41,9 +42,10 @@ export default function ExportModal({
   id,
   type,
   open,
+  initialFormat = ExportFormat.Markdown,
   onClose,
 }: ExportModalProps) {
-  const [format, setFormat] = useState<ExportFormat>(ExportFormat.Markdown);
+  const [format, setFormat] = useState<ExportFormat>(initialFormat);
   const [includeChildren, setIncludeChildren] = useState<boolean>(false);
   const [includeAttachments, setIncludeAttachments] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);

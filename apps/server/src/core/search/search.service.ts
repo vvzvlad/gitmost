@@ -386,6 +386,13 @@ export class SearchService {
     if (searchParams.creatorId) {
       scopePreds.push(sql`pages.creator_id = ${searchParams.creatorId}`);
     }
+    if (searchParams.labelId && !anonymous) {
+      scopePreds.push(sql`EXISTS (
+        SELECT 1 FROM page_labels
+        WHERE page_labels.page_id = pages.id
+          AND page_labels.label_id = ${searchParams.labelId}::uuid
+      )`);
+    }
     if (descendantIds) {
       scopePreds.push(sql`pages.id = ANY(${descendantIds}::uuid[])`);
     }

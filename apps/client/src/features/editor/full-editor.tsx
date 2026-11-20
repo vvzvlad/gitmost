@@ -2,30 +2,16 @@ import classes from "@/features/editor/styles/editor.module.css";
 import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { TitleEditor } from "@/features/editor/title-editor";
 import PageEditor from "@/features/editor/page-editor";
-import {
-  ActionIcon,
-  Alert,
-  Container,
-  Divider,
-  Group,
-  Popover,
-  Stack,
-  Text,
-  Tooltip,
-  UnstyledButton,
-} from "@mantine/core";
-import { IconInfoCircle, IconWifiOff } from "@tabler/icons-react";
+import { Alert, Container, Group } from "@mantine/core";
+import { IconWifiOff } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
 import {
   userAtom,
   workspaceAtom,
 } from "@/features/user/atoms/current-user-atom.ts";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
 import { useTranslation } from "react-i18next";
-import { IContributor } from "@/features/page/types/page.types.ts";
 import { FixedToolbar } from "@/features/editor/components/fixed-toolbar/fixed-toolbar";
 import { PageEditMode } from "@/features/user/types/user.types.ts";
-import { useAsideTriggerProps } from "@/hooks/use-toggle-aside.tsx";
 import { asideStateAtom } from "@/components/layouts/global/hooks/atoms/sidebar-atom.ts";
 import { MAIN_CONTENT_ID } from "@/components/ui/skip-to-main.tsx";
 import { computeColumnLayout } from "@/features/editor/utils/compute-column-layout.ts";
@@ -46,19 +32,13 @@ const MemoizedFixedToolbar = React.memo(FixedToolbar);
 const MemoizedDeletedPageBanner = React.memo(DeletedPageBanner);
 const MemoizedTemporaryNoteBanner = React.memo(TemporaryNoteBanner);
 
-type PageUser = {
-  id: string;
-  name: string;
-  avatarUrl: string;
-};
-
 // Module-level flag: survives component unmount/remount on page navigation,
 // reset only on full page reload (i.e. a new app session).
 let defaultEditModeApplied = false;
 
 // Max width of the non-fluid editor column. Single source of truth used for BOTH
 // the Container `size` and the left-edge-pinning layout math below (#570).
-const COL_MAX = 900;
+const COL_MAX = 936;
 // Gutter kept between the column's right edge and the aside panel when it opens.
 const ASIDE_GAP = 16;
 
@@ -90,14 +70,11 @@ export interface FullEditorProps {
   // Ф7 (#643) — loosened for the local-first mount on cached meta: the title may
   // be `null` (a titleless page) and the body `content` absent until the LIVE
   // `/pages/info` resolves (`content` comes ONLY from the live page — never the
-  // possibly-previous `page` under keepPreviousData). `creator`/`contributors`
-  // (the byline) likewise arrive with the live page.
+  // possibly-previous `page` under keepPreviousData).
   title: string | null;
   content?: string;
   spaceSlug: string;
   editable: boolean;
-  creator?: PageUser;
-  contributors?: IContributor[];
   canComment?: boolean;
   // Ф7 (#643) — the live REST body has not resolved for THIS page yet
   // (`isLoading || !livePage`). Owns the body's SKELETON vs static/live decision
@@ -113,8 +90,6 @@ export function FullEditor({
   content,
   spaceSlug,
   editable,
-  creator,
-  contributors,
   canComment,
   bodyContentPending,
 }: FullEditorProps) {
@@ -144,7 +119,8 @@ export function FullEditor({
   const isEditMode = currentPageEditMode === PageEditMode.Edit;
   // Ф7 (#643) — the LIVE page resolved (drives the title-editor's navigate /
   // force-save gates). Absent prop ⇒ resolved.
-  const pageResolved = bodyContentPending === undefined ? true : !bodyContentPending;
+  const pageResolved =
+    bodyContentPending === undefined ? true : !bodyContentPending;
 
   // Apply the user's saved preference only once on initial load, not on every
   // page navigation — so the mode sticks across navigations within a session.
@@ -270,10 +246,8 @@ export function FullEditor({
         editable={editable}
         pageResolved={pageResolved}
       />
-      <PageByline
+      <PageWritingActions
         pageId={pageId}
-        creator={creator}
-        contributors={contributors}
         editable={editable}
         isEditMode={isEditMode}
         isDictationEnabled={isDictationEnabled}
@@ -290,27 +264,21 @@ export function FullEditor({
   );
 }
 
-type PageBylineProps = {
+type PageWritingActionsProps = {
   pageId: string;
-  creator?: PageUser;
-  contributors?: IContributor[];
   editable?: boolean;
   isEditMode?: boolean;
   isDictationEnabled?: boolean;
   isTitleGenEnabled?: boolean;
 };
 
-function PageByline({
+function PageWritingActions({
   pageId,
-  creator,
-  contributors,
   editable,
   isEditMode,
   isDictationEnabled,
   isTitleGenEnabled,
-}: PageBylineProps) {
-  const { t } = useTranslation();
-  const detailsTriggerProps = useAsideTriggerProps("details");
+}: PageWritingActionsProps) {
   const editor = useAtomValue(pageEditorAtom);
   const showDictation = Boolean(
     isDictationEnabled && editable && isEditMode && editor,
@@ -319,101 +287,21 @@ function PageByline({
     isTitleGenEnabled && editable && isEditMode && editor,
   );
 
-  const otherContributors = (contributors ?? []).filter(
-    (c) => c.id !== creator?.id,
-  );
+  if (!showDictation && !showTitleGen) return null;
 
   return (
     <Group
-      gap="sm"
+      gap={4}
+      wrap="nowrap"
       mb="md"
       className={clsx("print-hide", classes.byline)}
-      style={{ marginTop: "-0.5em" }}
     >
-      {creator && (
-        <Popover position="bottom-start" shadow="md" width={280} withArrow>
-          <Popover.Target>
-            <UnstyledButton
-              aria-label={t("Created by {{name}}", { name: creator.name })}
-            >
-              <Group gap={6}>
-                <CustomAvatar
-                  avatarUrl={creator.avatarUrl}
-                  name={creator.name}
-                  size={22}
-                />
-                <Text size="sm" c="dimmed">
-                  {t("By {{name}}", { name: creator.name })}
-                </Text>
-              </Group>
-            </UnstyledButton>
-          </Popover.Target>
-          <Popover.Dropdown>
-            <Stack gap="xs">
-              <Group gap="sm">
-                <CustomAvatar
-                  avatarUrl={creator.avatarUrl}
-                  name={creator.name}
-                  size={36}
-                />
-                <div>
-                  <Text size="sm" fw={500}>
-                    {creator.name}
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {otherContributors.length === 0
-                      ? t("Owner, no contributors")
-                      : t("Owner")}
-                  </Text>
-                </div>
-              </Group>
-
-              {otherContributors.length > 0 && (
-                <>
-                  <Divider />
-                  <Text size="xs" fw={500} c="dimmed" tt="uppercase">
-                    {t("Contributors")}
-                  </Text>
-                  <Stack gap={6}>
-                    {otherContributors.map((contributor) => (
-                      <Group gap="sm" key={contributor.id}>
-                        <CustomAvatar
-                          avatarUrl={contributor.avatarUrl}
-                          name={contributor.name}
-                          size={28}
-                        />
-                        <Text size="sm">{contributor.name}</Text>
-                      </Group>
-                    ))}
-                  </Stack>
-                </>
-              )}
-            </Stack>
-          </Popover.Dropdown>
-        </Popover>
+      {showDictation && editor && (
+        <DictationGroup editor={editor} color="gray" iconSize={20} />
       )}
-      <Group gap={4} wrap="nowrap">
-        <Tooltip label={t("Details")} withArrow openDelay={250}>
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            aria-label={t("Details")}
-            {...detailsTriggerProps}
-          >
-            <IconInfoCircle size={20} stroke={1.5} />
-          </ActionIcon>
-        </Tooltip>
-        {/* Shown only in edit mode when workspace dictation is enabled, so
-            dictation stays reachable even when the fixed toolbar is hidden. */}
-        {showDictation && editor && (
-          <DictationGroup editor={editor} color="gray" iconSize={20} />
-        )}
-        {/* Shown only in edit mode when the workspace's AI chat flag is on,
-            so AI title generation stays reachable from the byline (#199). */}
-        {showTitleGen && (
-          <GenerateTitleGroup pageId={pageId} color="gray" iconSize={20} />
-        )}
-      </Group>
+      {showTitleGen && (
+        <GenerateTitleGroup pageId={pageId} color="gray" iconSize={20} />
+      )}
     </Group>
   );
 }

@@ -13,7 +13,11 @@ import {
   Text,
   Tooltip,
 } from "@mantine/core";
-import { IconCornerDownRightDouble, IconDots } from "@tabler/icons-react";
+import {
+  IconCornerDownRightDouble,
+  IconDots,
+  IconHome,
+} from "@tabler/icons-react";
 import { Link, useParams } from "react-router-dom";
 import classes from "./breadcrumb.module.css";
 import { SpaceTreeNode } from "@/features/page/tree/types.ts";
@@ -28,6 +32,8 @@ import { useCachedPageMeta } from "@/features/page/atoms/page-meta-cache-atom";
 import { useMediaQuery } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
 import { PageIcon } from "@/components/ui/page-icon.tsx";
+import { getSpaceUrl } from "@/lib/config";
+import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query";
 import { parseIconRef } from "@/lib/icon-ref.ts";
 
 function getTitle(name: string, icon: string | null | undefined) {
@@ -77,6 +83,7 @@ export default function Breadcrumb() {
     SpaceTreeNode[] | null
   >(null);
   const { pageSlug, spaceSlug } = useParams();
+  const { data: space } = useGetSpaceBySlugQuery(spaceSlug);
   const pageSlugId = extractPageSlugId(pageSlug);
   const { data: currentPage } = usePageMetaQuery({
     pageId: pageSlugId,
@@ -130,14 +137,15 @@ export default function Breadcrumb() {
     // fall back to the page's own ancestors and the stale-clearing logic — this
     // reproduces computeBreadcrumbState(fullTree, ancestors, …) exactly, since
     // its tree-hit branch is precisely findBreadcrumbPath(fullTree, pageId).
-    setBreadcrumbNodes((previous) =>
-      treePath ??
-      computeBreadcrumbState(
-        null,
-        ancestors as IPage[] | undefined,
-        currentPageMeta.id,
-        previous,
-      ),
+    setBreadcrumbNodes(
+      (previous) =>
+        treePath ??
+        computeBreadcrumbState(
+          null,
+          ancestors as IPage[] | undefined,
+          currentPageMeta.id,
+          previous,
+        ),
     );
   }, [currentPageMeta?.id, treePath, ancestors]);
 
@@ -273,6 +281,31 @@ export default function Breadcrumb() {
     <nav aria-label={t("Breadcrumb")} className={classes.breadcrumbDiv}>
       {breadcrumbNodes && (
         <Breadcrumbs className={classes.breadcrumbs}>
+          {!isMobile && (
+            <Anchor
+              component={Link}
+              to="/home"
+              aria-label={t("Home")}
+              className={classes.home}
+            >
+              <IconHome size={20} stroke={1.7} />
+            </Anchor>
+          )}
+          {!isMobile && (
+            <Anchor component={Link} to="/spaces" fz="sm">
+              {t("Spaces")}
+            </Anchor>
+          )}
+          {!isMobile && space && (
+            <Anchor
+              component={Link}
+              to={getSpaceUrl(space.slug)}
+              fz="sm"
+              className={classes.truncatedText}
+            >
+              {space.name}
+            </Anchor>
+          )}
           {isMobile ? getMobileBreadcrumbItems() : getBreadcrumbItems()}
         </Breadcrumbs>
       )}

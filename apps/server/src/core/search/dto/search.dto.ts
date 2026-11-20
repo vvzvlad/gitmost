@@ -39,6 +39,10 @@ export class SearchDTO {
   creatorId?: string;
 
   @IsOptional()
+  @IsUUID()
+  labelId?: string;
+
+  @IsOptional()
   @IsNumber()
   limit?: number;
 
