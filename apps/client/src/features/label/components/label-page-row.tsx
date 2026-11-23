@@ -1,11 +1,10 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Link } from "react-router-dom";
 import { Tooltip } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import { ILabelPageItem } from "@/features/label/types/label.types.ts";
 import { PageIcon } from "@/components/ui/page-icon.tsx";
 import { LabelChip } from "@/features/label/components/label-chip.tsx";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import { buildPageUrl } from "@/features/page/page.utils";
 import { formatLabelListDate } from "@/features/label/utils/format-label-date.ts";
 import classes from "@/features/label/label.module.css";
@@ -40,14 +39,7 @@ export function LabelPageRow({ page, currentLabelName }: LabelPageRowProps) {
           <div className={classes.rowMeta}>
             {page.space && (
               <>
-                <CustomAvatar
-                  name={page.space.name}
-                  avatarUrl={page.space.logo ?? undefined}
-                  type={AvatarIconType.SPACE_ICON}
-                  color="initials"
-                  variant="filled"
-                  size={18}
-                />
+                <SpaceIcon space={page.space} size={18} />
                 <span>{page.space.name}</span>
                 <span className={classes.metaDot} aria-hidden="true">
                   •

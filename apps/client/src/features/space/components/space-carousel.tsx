@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Text, Card, rem, Group, Button, Skeleton, Title } from "@mantine/core";
 import {
   prefetchSpace,
@@ -9,8 +10,6 @@ import classes from "./space-carousel.module.css";
 import { formatMemberCount } from "@/lib";
 import { useTranslation } from "react-i18next";
 import { IconArrowRight } from "@tabler/icons-react";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import CardCarousel from "@/components/ui/card-carousel";
 
 function SpaceCardSkeleton() {
@@ -57,15 +56,7 @@ export default function SpaceCarousel() {
       withBorder
     >
       <Card.Section className={classes.cardSection} h={40}></Card.Section>
-      <CustomAvatar
-        name={space.name}
-        avatarUrl={space.logo}
-        type={AvatarIconType.SPACE_ICON}
-        color="initials"
-        variant="filled"
-        size="md"
-        mt={rem(-20)}
-      />
+      <SpaceIcon space={space} size="md" mt={rem(-20)} />
 
       <Text fz="md" fw={500} mt="xs" className={classes.title}>
         {space.name}

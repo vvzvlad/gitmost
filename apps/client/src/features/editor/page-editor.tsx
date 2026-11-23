@@ -1,3 +1,4 @@
+import { usePagePresence } from "./hooks/use-page-presence";
 import editorClasses from "./styles/editor.module.css";
 import "@/features/editor/styles/index.css";
 import React, {
@@ -741,6 +742,17 @@ export default function PageEditor({
       }),
     );
   }, [currentPageEditMode, editor, editable, showStatic, isRemoteConfirmed]);
+
+  usePagePresence(
+    activeSession?.remote,
+    currentUser?.user,
+    isBodyEditable({
+      editable,
+      inEditMode: currentPageEditMode === PageEditMode.Edit,
+      showStatic,
+      isRemoteConfirmed,
+    }),
+  );
 
   // Publish whether dictation can start and, if not, the cause-specific reason
   // the mic button surfaces. Recomputed on the same signals that drive body

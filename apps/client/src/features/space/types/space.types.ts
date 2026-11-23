@@ -17,7 +17,13 @@ export interface ISpaceGitSyncSettings {
   enabled?: boolean;
 }
 
+export interface ISpaceAppearance {
+  icon?: string | null;
+  color?: string | null;
+}
+
 export interface ISpaceSettings {
+  appearance?: ISpaceAppearance;
   homePageId?: string | null;
   sharing?: ISpaceSharingSettings;
   comments?: ISpaceCommentsSettings;
@@ -38,6 +44,8 @@ export interface ISpace {
   spaceId?: string;
   membership?: IMembership;
   settings?: ISpaceSettings;
+  icon?: string | null;
+  iconColor?: string | null;
   // for updates
   disablePublicSharing?: boolean;
   allowViewerComments?: boolean;

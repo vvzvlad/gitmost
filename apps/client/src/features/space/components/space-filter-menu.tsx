@@ -1,3 +1,4 @@
+import { SpaceIcon } from "./space-icon";
 import { ReactNode, useMemo, useState } from "react";
 import {
   Avatar,
@@ -109,12 +110,7 @@ export function SpaceFilterMenu({
               onClick={() => onChange(space.id)}
             >
               <Group flex="1" gap="xs">
-                <Avatar
-                  color="initials"
-                  variant="filled"
-                  name={space.name}
-                  size={20}
-                />
+                <SpaceIcon space={space} size={20} />
                 <Text size="sm" fw={500} style={{ flex: 1 }} truncate>
                   {space.name}
                 </Text>

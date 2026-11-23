@@ -85,3 +85,22 @@
     padding-inline: 0;
   }
 }
+
+.presenceTrigger {
+  border-radius: 20px;
+  padding: 3px;
+  &:focus-visible {
+    outline: 2px solid var(--wiki-selected-ink);
+    outline-offset: 2px;
+  }
+}
+.presenceAvatar {
+  display: inline-flex;
+  border: 2px solid;
+  border-radius: 50%;
+}
+@media (max-width: $mantine-breakpoint-sm) {
+  .presenceTrigger > div > span:nth-child(n + 2) {
+    display: none;
+  }
+}

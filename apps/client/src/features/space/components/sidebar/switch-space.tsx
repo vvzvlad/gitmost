@@ -1,10 +1,11 @@
+import { SpaceIcon } from "../space-icon";
+import type { ISpace } from "../../types/space.types";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Collapse, UnstyledButton } from "@mantine/core";
 import {
   IconChevronDown,
   IconChevronRight,
-  IconFolder,
   IconStack2,
 } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
@@ -19,12 +20,14 @@ interface SwitchSpaceProps {
   spaceId: string;
   spaceName: string;
   children: ReactNode;
+  space?: ISpace;
 }
 
 export function SwitchSpace({
   spaceId,
   spaceName,
   children,
+  space,
 }: SwitchSpaceProps) {
   const { t } = useTranslation();
   const { data } = useGetSpacesQuery({ limit: 100 });
@@ -61,7 +64,7 @@ export function SwitchSpace({
             ) : (
               <IconChevronRight size={16} />
             )}
-            <IconFolder size={19} stroke={1.7} />
+            <SpaceIcon space={space ?? { name: spaceName }} size={19} compact />
             <span>{spaceName}</span>
           </UnstyledButton>
           <Collapse in={activeOpen}>{children}</Collapse>
@@ -74,7 +77,7 @@ export function SwitchSpace({
             onMouseEnter={() => prefetchSpace(space.slug, space.id)}
           >
             <IconChevronRight size={16} />
-            <IconFolder size={19} stroke={1.7} />
+            <SpaceIcon space={space} size={19} compact />
             <span>{space.name}</span>
           </Link>
         ))}

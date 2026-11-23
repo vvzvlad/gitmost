@@ -22,7 +22,7 @@
     flex: none;
   }
 
-  > span {
+  > span:not([data-space-icon]) {
     flex: 1;
     overflow: hidden;
     white-space: nowrap;

@@ -121,15 +121,13 @@ export function useUpdateSpaceMutation() {
     onSuccess: (data, variables) => {
       notifications.show({ message: t("Space updated successfully") });
 
-      const space = queryClient.getQueryData([
-        "space",
-        variables.spaceId,
-      ]) as ISpace;
-      if (space) {
-        const updatedSpace = { ...space, ...data };
-        queryClient.setQueryData(["space", variables.spaceId], updatedSpace);
-        queryClient.setQueryData(["space", data.slug], updatedSpace);
-      }
+      const previous =
+        queryClient.getQueryData<ISpace>(["space", variables.spaceId]) ??
+        queryClient.getQueryData<ISpace>(["space", data.slug]);
+      const updatedSpace = { ...previous, ...data };
+      queryClient.setQueryData(["space", variables.spaceId], updatedSpace);
+      queryClient.setQueryData(["space", data.slug], updatedSpace);
+      queryClient.invalidateQueries({ queryKey: ["favorites"] });
 
       queryClient.invalidateQueries({
         queryKey: ["spaces"],
@@ -196,10 +194,7 @@ export function useDeleteSpaceMutation() {
   });
 }
 
-export function useSpaceMembersInfiniteQuery(
-  spaceId: string,
-  query?: string,
-) {
+export function useSpaceMembersInfiniteQuery(spaceId: string, query?: string) {
   return useInfiniteQuery({
     queryKey: ["spaceMembers", spaceId, query],
     queryFn: ({ pageParam }) =>

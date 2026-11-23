@@ -147,7 +147,7 @@ export function SpaceSidebar() {
             <IconClockHour3 size={20} stroke={1.7} />
             {t("Recent")}
           </Link>
-          <SwitchSpace spaceId={space.id} spaceName={space.name}>
+          <SwitchSpace spaceId={space.id} spaceName={space.name} space={space}>
             <div className={classes.sectionPages}>
               <Group className={classes.pagesHeader} justify="space-between">
                 <Group gap="xs">

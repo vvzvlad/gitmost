@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Button, Menu, Stack, Text } from "@mantine/core";
 import { IconHourglass, IconPlus } from "@tabler/icons-react";
 import { ReactNode } from "react";
@@ -7,8 +8,6 @@ import { useGetSpacesQuery } from "@/features/space/queries/space-query.ts";
 import { useCreatePageMutation } from "@/features/page/queries/page-query.ts";
 import { buildPageUrl } from "@/features/page/page.utils.ts";
 import { ISpace } from "@/features/space/types/space.types.ts";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import { canCreatePage } from "./can-create-page.ts";
 
 // A single create-note action, parametrized by `temporary`. Self-contained: it
@@ -91,14 +90,7 @@ function CreateNoteButton({
             key={space.id}
             disabled={isPending}
             leftSection={
-              <CustomAvatar
-                name={space.name}
-                avatarUrl={space.logo}
-                type={AvatarIconType.SPACE_ICON}
-                color="initials"
-                variant="filled"
-                size={20}
-              />
+              <SpaceIcon space={space} size={20} />
             }
             onClick={() => createNote(space)}
           >
