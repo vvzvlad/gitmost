@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tapping a task checkbox on a phone no longer opens the keyboard and jumps the page to where the
+  caret was before; the checkbox just toggles.
 - `sharePage` and `listShares` in the server MCP and the in-app agent returned public links to the
   internal `http://127.0.0.1:3000` instead of `APP_URL`.
 - Voice dictation no longer stops on its own after two minutes (a non-streaming recording is
