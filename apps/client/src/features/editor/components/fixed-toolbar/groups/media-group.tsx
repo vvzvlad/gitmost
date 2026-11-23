@@ -89,6 +89,16 @@ export const MediaGroup: FC<Props> = ({ editor, templateMode }) => {
         )}
         {!templateMode && (
           <Menu.Item
+            leftSection={<IconPhoto size={16} />}
+            onClick={() =>
+              pickFile(editor, ".gif,image/gif", true, uploadImageAction)
+            }
+          >
+            GIF
+          </Menu.Item>
+        )}
+        {!templateMode && (
+          <Menu.Item
             leftSection={<IconMovie size={16} />}
             onClick={() => pickFile(editor, "video/*", true, uploadVideoAction)}
           >

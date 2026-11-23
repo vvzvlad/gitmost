@@ -1,3 +1,4 @@
+import { gifFromClipboard } from "../image/gif";
 import { uploadImageAction } from "@/features/editor/components/image/upload-image-action.tsx";
 import { uploadVideoAction } from "@/features/editor/components/video/upload-video-action.tsx";
 import { uploadAttachmentAction } from "../attachment/upload-attachment-action";
@@ -128,6 +129,12 @@ export const handlePaste = (
 
   const htmlData = event.clipboardData?.getData("text/html");
   const hasHtmlTable = htmlData && /<table[\s>]/i.test(htmlData);
+  const gif = gifFromClipboard(clipboardData, htmlData ?? "");
+  if (gif) {
+    event.preventDefault();
+    editor.chain().focus().setImage(gif).run();
+    return true;
+  }
 
   if (event.clipboardData?.files.length && !hasHtmlTable) {
     event.preventDefault();

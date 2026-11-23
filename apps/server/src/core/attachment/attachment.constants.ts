@@ -10,6 +10,7 @@ export const validImageExtensions = ['.jpg', '.png', '.jpeg'];
 export const MAX_AVATAR_SIZE = '10MB';
 
 export const inlineFileExtensions = [
+  '.gif',
   '.jpg',
   '.png',
   '.jpeg',
