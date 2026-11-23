@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { KeyboardEvent, useState } from "react";
 import { ActionIcon, Tooltip } from "@mantine/core";
 import { IconChevronRight, IconLock } from "@tabler/icons-react";
@@ -5,8 +6,6 @@ import { useTranslation } from "react-i18next";
 import { ISpace } from "@/features/space/types/space.types";
 import { IPage } from "@/features/page/types/page.types";
 import { SpaceRole } from "@/lib/types";
-import { CustomAvatar } from "@/components/ui/custom-avatar";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types";
 import { PageChildren } from "./page-children";
 import classes from "./destination-picker.module.css";
 
@@ -83,12 +82,7 @@ export function SpaceRow({
         <div style={{ width: 20, flexShrink: 0 }} />
       )}
 
-      <CustomAvatar
-        name={space.name}
-        avatarUrl={space.logo}
-        type={AvatarIconType.SPACE_ICON}
-        size={22}
-      />
+      <SpaceIcon space={space} size={22} />
 
       <div className={classes.pageTitle}>{space.name}</div>
 

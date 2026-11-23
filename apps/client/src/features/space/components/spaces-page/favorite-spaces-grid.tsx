@@ -1,10 +1,9 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Text, SimpleGrid, Card, rem, Group, Box, Button, Title } from "@mantine/core";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useFavoritesQuery } from "@/features/favorite/queries/favorite-query";
-import { CustomAvatar } from "@/components/ui/custom-avatar";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types";
 import { getSpaceUrl } from "@/lib/config";
 import { prefetchSpace } from "@/features/space/queries/space-query";
 import StarButton from "@/features/favorite/components/star-button";
@@ -58,15 +57,7 @@ export default function FavoriteSpacesGrid() {
                 />
               </div>
             </Card.Section>
-            <CustomAvatar
-              name={fav.space!.name}
-              avatarUrl={fav.space!.logo}
-              type={AvatarIconType.SPACE_ICON}
-              color="initials"
-              variant="filled"
-              size="md"
-              mt={rem(-20)}
-            />
+            <SpaceIcon space={fav.space!} size="md" mt={rem(-20)} />
             <Text fz="md" fw={500} mt="xs" className={spaceClasses.title}>
               {fav.space!.name}
             </Text>

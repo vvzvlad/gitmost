@@ -110,7 +110,9 @@ describe('computeLocalPath + getExportExtension', () => {
   it('getExportExtension returns the right extension and undefined for unknown', () => {
     expect(getExportExtension(ExportFormat.HTML)).toBe('.html');
     expect(getExportExtension(ExportFormat.Markdown)).toBe('.md');
-    expect(getExportExtension('pdf')).toBeUndefined();
+    expect(getExportExtension(ExportFormat.DOCX)).toBe('.docx');
+    expect(getExportExtension(ExportFormat.PDF)).toBe('.pdf');
+    expect(getExportExtension('unknown')).toBeUndefined();
   });
 });
 

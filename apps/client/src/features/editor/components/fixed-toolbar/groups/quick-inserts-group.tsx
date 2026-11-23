@@ -44,8 +44,8 @@ export const QuickInsertsGroup: FC<Props> = ({ editor }) => {
         </ActionIcon>
       </Tooltip>
       <Menu shadow="md" position="bottom-start" withArrow={false}>
-        <Menu.Target>
-          <Tooltip label={t("Columns")} withArrow>
+        <Tooltip label={t("Columns")} withArrow>
+          <Menu.Target>
             <ActionIcon
               variant="subtle"
               color="dark"
@@ -54,13 +54,17 @@ export const QuickInsertsGroup: FC<Props> = ({ editor }) => {
             >
               <IconColumns2 size={16} />
             </ActionIcon>
-          </Tooltip>
-        </Menu.Target>
+          </Menu.Target>
+        </Tooltip>
         <Menu.Dropdown>
           <Menu.Item
             leftSection={<IconColumns2 size={16} />}
             onClick={() =>
-              editor.chain().focus().insertColumns({ layout: "two_equal" }).run()
+              editor
+                .chain()
+                .focus()
+                .insertColumns({ layout: "two_equal" })
+                .run()
             }
           >
             {t("{{count}} Columns", { count: 2 })}
@@ -80,7 +84,11 @@ export const QuickInsertsGroup: FC<Props> = ({ editor }) => {
           <Menu.Item
             leftSection={<IconColumns4 size={16} />}
             onClick={() =>
-              editor.chain().focus().insertColumns({ layout: "four_equal" }).run()
+              editor
+                .chain()
+                .focus()
+                .insertColumns({ layout: "four_equal" })
+                .run()
             }
           >
             {t("{{count}} Columns", { count: 4 })}
@@ -88,7 +96,11 @@ export const QuickInsertsGroup: FC<Props> = ({ editor }) => {
           <Menu.Item
             leftSection={<IconColumns5 size={16} />}
             onClick={() =>
-              editor.chain().focus().insertColumns({ layout: "five_equal" }).run()
+              editor
+                .chain()
+                .focus()
+                .insertColumns({ layout: "five_equal" })
+                .run()
             }
           >
             {t("{{count}} Columns", { count: 5 })}

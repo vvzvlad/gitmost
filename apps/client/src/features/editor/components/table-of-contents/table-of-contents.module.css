@@ -1,12 +1,15 @@
 .headerPadding {
   display: none;
   top: calc(
-    var(--app-shell-header-offset, 0rem) + var(--app-shell-header-height, 0rem)
+    var(--app-shell-header-offset, 0rem) + var(--wiki-page-header-height, 64px) + 16px
   );
 }
 
 .link {
-  outline: none;
+  &:focus-visible {
+    outline: 2px solid var(--wiki-accent);
+    outline-offset: 2px;
+  }
   cursor: pointer;
   display: block;
   width: 100%;
@@ -37,19 +40,13 @@
 }
 
 .linkActive {
-  font-weight: 500;
-  border-left-color: light-dark(
-    var(--mantine-color-grey-5),
-    var(--mantine-color-grey-3)
-  );
-  color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
+  font-weight: 600;
+  color: var(--wiki-selected-ink);
+  box-shadow: inset 3px 0 var(--wiki-accent);
 
   &,
   &:hover {
-    background-color: light-dark(
-      var(--mantine-color-gray-3),
-      var(--mantine-color-dark-5)
-    ) !important;
+    background-color: transparent;
   }
 }
 

@@ -187,3 +187,34 @@ describe("EditSpaceForm git-sync toggle", () => {
     expect(getToggle().disabled).toBe(true);
   });
 });
+
+describe("EditSpaceForm appearance", () => {
+  it("saves the icon and color alongside existing space fields", async () => {
+    mutateAsync.mockResolvedValue({});
+    renderForm({ space: makeSpace() });
+    fireEvent.click(screen.getByRole("button", { name: "Rocket" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Icon color" }), {
+      target: { value: "#7c3aed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
+      spaceId: "space-1", icon: "rocket", iconColor: "#7c3aed",
+    }));
+  });
+
+  it("resets a custom appearance with explicit nulls", async () => {
+    mutateAsync.mockResolvedValue({});
+    renderForm({ space: makeSpace({ settings: { appearance: { icon: "code", color: "#166c9d" } } }) });
+    fireEvent.click(screen.getByRole("button", { name: "Reset space appearance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
+      spaceId: "space-1", icon: null, iconColor: null,
+    }));
+  });
+
+  it("disables appearance changes in a read-only space", () => {
+    renderForm({ space: makeSpace(), readOnly: true });
+    expect((screen.getByRole("button", { name: "Rocket" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+});

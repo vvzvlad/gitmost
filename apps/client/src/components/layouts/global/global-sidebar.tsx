@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { useEffect, useState } from "react";
 import { ScrollArea, Text, Divider, Modal, UnstyledButton } from "@mantine/core";
 import {
@@ -17,8 +18,6 @@ import { useFavoritesQuery } from "@/features/favorite/queries/favorite-query";
 import { getSpaceUrl } from "@/lib/config";
 import { useDisclosure } from "@mantine/hooks";
 import { WorkspaceInviteForm } from "@/features/workspace/components/members/components/workspace-invite-form";
-import { CustomAvatar } from "@/components/ui/custom-avatar";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types";
 
 export default function GlobalSidebar() {
   const { t } = useTranslation();
@@ -87,14 +86,7 @@ export default function GlobalSidebar() {
                   to={getSpaceUrl(fav.space!.slug)}
                   onClick={handleNavClick}
                 >
-                  <CustomAvatar
-                    name={fav.space!.name}
-                    avatarUrl={fav.space!.logo}
-                    type={AvatarIconType.SPACE_ICON}
-                    color="initials"
-                    variant="filled"
-                    size={20}
-                  />
+                  <SpaceIcon space={fav.space!} size={20} />
                   <Text size="sm" fw={500} lineClamp={1}>
                     {fav.space!.name}
                   </Text>

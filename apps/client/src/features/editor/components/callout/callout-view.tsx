@@ -3,9 +3,10 @@ import {
   IconAlertTriangleFilled,
   IconCircleCheckFilled,
   IconCircleXFilled,
-  IconInfoCircleFilled,
+  IconInfoCircle,
   IconNotes,
 } from "@tabler/icons-react";
+import clsx from "clsx";
 import { Alert } from "@mantine/core";
 import classes from "./callout.module.css";
 import { CalloutType } from "@docmost/editor-ext";
@@ -13,6 +14,7 @@ import { CalloutType } from "@docmost/editor-ext";
 export default function CalloutView(props: NodeViewProps) {
   const { node } = props;
   const { type, icon } = node.attrs;
+  const isInfo = type === "info";
 
   return (
     <NodeViewWrapper>
@@ -21,9 +23,9 @@ export default function CalloutView(props: NodeViewProps) {
         title=""
         color={getCalloutColor(type)}
         icon={getCalloutIcon(type, icon)}
-        p="xs"
+        p={isInfo ? 14 : "xs"}
         classNames={{
-          root: classes.root,
+          root: clsx(classes.root, isInfo && classes.info),
           message: classes.message,
           icon: classes.icon,
         }}
@@ -41,7 +43,7 @@ function getCalloutIcon(type: CalloutType, customIcon?: string) {
 
   switch (type) {
     case "info":
-      return <IconInfoCircleFilled />;
+      return <IconInfoCircle />;
     case "note":
       return <IconNotes />;
     case "success":
@@ -51,14 +53,14 @@ function getCalloutIcon(type: CalloutType, customIcon?: string) {
     case "danger":
       return <IconCircleXFilled />;
     default:
-      return <IconInfoCircleFilled />;
+      return <IconInfoCircle />;
   }
 }
 
 function getCalloutColor(type: CalloutType) {
   switch (type) {
     case "info":
-      return "blue";
+      return "ocean";
     case "note":
       return "grape";
     case "success":

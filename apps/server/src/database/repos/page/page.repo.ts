@@ -710,7 +710,7 @@ export class PageRepo {
     return jsonObjectFrom(
       eb
         .selectFrom('spaces')
-        .select(['spaces.id', 'spaces.name', 'spaces.slug'])
+        .select(['spaces.id', 'spaces.name', 'spaces.slug', 'spaces.logo', 'spaces.settings'])
         .whereRef('spaces.id', '=', 'pages.spaceId'),
     ).as('space');
   }

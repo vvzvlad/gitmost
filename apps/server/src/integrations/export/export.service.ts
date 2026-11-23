@@ -3,8 +3,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { jsonToHtml, jsonToNode } from '../../collaboration/collaboration.util';
+import {
+  DocumentExtractionBusyError,
+  runDocumentWorker,
+} from '../documents/document-extract';
 import { ExportFormat } from './dto/export-dto';
 import { Page } from '@docmost/db/types/entity.types';
 import { InjectKysely } from 'nestjs-kysely';
@@ -40,6 +45,8 @@ import {
 import { convertProseMirrorToMarkdown } from '@docmost/prosemirror-markdown';
 
 type AllowedAttachment = { id: string; fileName: string; filePath: string };
+const MAX_DOCUMENT_EXPORT_BYTES = 512 * 1024;
+const MAX_DOCUMENT_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
 @Injectable()
 export class ExportService {
@@ -77,6 +84,32 @@ export class ExportService {
 
     if (page.title) {
       prosemirrorJson.content.unshift(titleNode);
+    }
+
+    if (format === ExportFormat.DOCX || format === ExportFormat.PDF) {
+      if (
+        Buffer.byteLength(JSON.stringify(prosemirrorJson)) >
+        MAX_DOCUMENT_EXPORT_BYTES
+      ) {
+        throw new BadRequestException(
+          'PDF and DOCX export are limited to 512 KB of page content per document',
+        );
+      }
+      try {
+        const content = await runDocumentWorker<Uint8Array>(
+          'document-export.worker.js',
+          {
+            document: prosemirrorJson,
+            format,
+          },
+        );
+        return Buffer.from(content);
+      } catch (error) {
+        if (error instanceof DocumentExtractionBusyError) {
+          throw new ServiceUnavailableException(error.message);
+        }
+        throw error;
+      }
     }
 
     if (format === ExportFormat.HTML) {
@@ -273,6 +306,7 @@ export class ExportService {
     const slugIdToPath: Record<string, string> = {};
     const pageIdToFilePath: Record<string, string> = {};
     const pagesMetadata: Record<string, ExportPageMetadata> = {};
+    let documentBytes = 0;
 
     computeLocalPath(tree, format, null, '', slugIdToPath);
 
@@ -311,7 +345,11 @@ export class ExportService {
         );
 
         if (includeAttachments) {
-          await this.zipAttachments(updatedJsonContent, folder, allowedAttachments);
+          await this.zipAttachments(
+            updatedJsonContent,
+            folder,
+            allowedAttachments,
+          );
           updatedJsonContent =
             updateAttachmentUrlsToLocalPaths(updatedJsonContent);
         }
@@ -321,6 +359,14 @@ export class ExportService {
           ...page,
           content: updatedJsonContent,
         });
+        if (Buffer.isBuffer(pageExportContent)) {
+          documentBytes += pageExportContent.length;
+          if (documentBytes > MAX_DOCUMENT_ARCHIVE_BYTES) {
+            throw new BadRequestException(
+              'The exported PDF or DOCX documents exceed the 128 MB archive limit',
+            );
+          }
+        }
 
         folder.file(
           `${pageTitle}${getExportExtension(format)}`,
@@ -391,7 +437,9 @@ export class ExportService {
     for (const siblings of Object.values(tree)) {
       for (const page of siblings) {
         if (!spaceId) spaceId = page.spaceId;
-        for (const id of getAttachmentIds(getProsemirrorContent(page.content))) {
+        for (const id of getAttachmentIds(
+          getProsemirrorContent(page.content),
+        )) {
           allAttachmentIds.add(id);
         }
       }
@@ -412,9 +460,7 @@ export class ExportService {
     if (!ignorePermissions && userId) {
       const ownerPageIds = [
         ...new Set(
-          attachments
-            .map((a) => a.pageId)
-            .filter((id): id is string => !!id),
+          attachments.map((a) => a.pageId).filter((id): id is string => !!id),
         ),
       ];
       const accessible = ownerPageIds.length

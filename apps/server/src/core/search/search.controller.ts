@@ -53,10 +53,14 @@ export class SearchController {
       }
     }
 
-    return this.searchService.searchPage(searchDto, {
-      userId: user.id,
-      workspaceId: workspace.id,
-    });
+    const caller = { userId: user.id, workspaceId: workspace.id };
+    if (!searchDto.includeAttachments)
+      return this.searchService.searchPage(searchDto, caller);
+    const [results, attachments] = await Promise.all([
+      this.searchService.searchPage(searchDto, caller),
+      this.searchService.searchAttachments(searchDto, caller),
+    ]);
+    return { ...results, attachments };
   }
 
   @HttpCode(HttpStatus.OK)

@@ -20,6 +20,9 @@ export function getExportExtension(format: string) {
   if (format === ExportFormat.Markdown) {
     return '.md';
   }
+  if (format === ExportFormat.DOCX || format === ExportFormat.PDF) {
+    return `.${format}`;
+  }
   return;
 }
 
@@ -94,7 +97,10 @@ export function replaceInternalLinks(
             // if link and text are same, use page title
             if (markLink === node.text) {
               //@ts-expect-error
-              node.text = getInternalLinkPageName(relativePath, currentPagePath);
+              node.text = getInternalLinkPageName(
+                relativePath,
+                currentPagePath,
+              );
             }
           }
         }
@@ -105,7 +111,10 @@ export function replaceInternalLinks(
   return doc.toJSON();
 }
 
-export function getInternalLinkPageName(path: string, currentFilePath?: string): string {
+export function getInternalLinkPageName(
+  path: string,
+  currentFilePath?: string,
+): string {
   // Strip a trailing file extension from the basename, but only when there IS
   // one: an extensionless link target (e.g. "My Page") has no extension to drop,
   // so `split('.').slice(0,-1)` would otherwise collapse it to an empty string,

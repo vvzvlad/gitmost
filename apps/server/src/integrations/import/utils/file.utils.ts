@@ -10,6 +10,7 @@ export enum FileTaskType {
 export enum FileImportSource {
   Generic = 'generic',
   Notion = 'notion',
+  Confluence = 'confluence',
 }
 
 export enum FileTaskStatus {
@@ -82,8 +83,9 @@ export function isEntryPathSafe(
 export async function extractZip(
   source: string,
   target: string,
+  limits?: { expandedBytes: number; entries: number; markupBytes: number },
 ): Promise<void> {
-  return extractZipInternal(source, target, true);
+  return extractZipInternal(source, target, true, limits);
 }
 
 /**
@@ -96,6 +98,7 @@ function extractZipInternal(
   source: string,
   target: string,
   allowNested: boolean,
+  limits?: { expandedBytes: number; entries: number; markupBytes: number },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     yauzl.open(
@@ -103,6 +106,24 @@ function extractZipInternal(
       { lazyEntries: true, decodeStrings: false, autoClose: true },
       (err, zipfile) => {
         if (err) return reject(err);
+        if (limits && zipfile.entryCount > limits.entries) {
+          zipfile.close();
+          return reject(new Error('The ZIP archive contains too many entries'));
+        }
+        let expanded = 0;
+        const withinLimits = (entry: yauzl.Entry, name: string) => {
+          if (!limits) return true;
+          expanded += entry.uncompressedSize;
+          if (
+            expanded <= limits.expandedBytes &&
+            (!/\.(html?|md)$/i.test(name) ||
+              entry.uncompressedSize <= limits.markupBytes)
+          )
+            return true;
+          zipfile.close();
+          reject(new Error('The ZIP archive exceeds the expanded size limit'));
+          return false;
+        };
 
         // Handle one level of nested ZIP if allowed
         if (allowNested && zipfile.entryCount === 1) {
@@ -113,6 +134,7 @@ function extractZipInternal(
               !/\/$/.test(entry.fileName) &&
               name.toLowerCase().endsWith('.zip');
             if (isZip) {
+              if (!withinLimits(entry, name)) return;
               // temporary name to avoid overwriting file
               const nestedPath = source.endsWith('.zip')
                 ? source.slice(0, -4) + '.inner.zip'
@@ -125,7 +147,7 @@ function extractZipInternal(
                 ws.on('error', reject);
                 ws.on('finish', () => {
                   zipfile.close();
-                  extractZipInternal(nestedPath, target, false)
+                  extractZipInternal(nestedPath, target, false, limits)
                     .then(() => {
                       fs.unlinkSync(nestedPath);
                       resolve();
@@ -136,7 +158,10 @@ function extractZipInternal(
               });
             } else {
               zipfile.close();
-              extractZipInternal(source, target, false).then(resolve, reject);
+              extractZipInternal(source, target, false, limits).then(
+                resolve,
+                reject,
+              );
             }
           });
           zipfile.once('error', reject);
@@ -147,6 +172,7 @@ function extractZipInternal(
         zipfile.readEntry();
         zipfile.on('entry', (entry) => {
           const name = entry.fileName.toString('utf8');
+          if (!withinLimits(entry, name)) return;
           const safe = name.replace(/^\/+/, '');
 
           // Zip-slip / path-traversal guard (see isEntryPathSafe).

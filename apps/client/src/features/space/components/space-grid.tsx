@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Text, SimpleGrid, Card, rem, Group, Button, Title } from "@mantine/core";
 import React from "react";
 import {
@@ -10,8 +11,6 @@ import classes from "./space-grid.module.css";
 import { formatMemberCount } from "@/lib";
 import { useTranslation } from "react-i18next";
 import { IconArrowRight } from "@tabler/icons-react";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import StarButton from "@/features/favorite/components/star-button";
 import { useFavoriteIds } from "@/features/favorite/queries/favorite-query";
 
@@ -36,15 +35,7 @@ export default function SpaceGrid() {
           <StarButton type="space" spaceId={space.id} name={space.name} size={16} />
         </div>
       </Card.Section>
-      <CustomAvatar
-        name={space.name}
-        avatarUrl={space.logo}
-        type={AvatarIconType.SPACE_ICON}
-        color="initials"
-        variant="filled"
-        size="md"
-        mt={rem(-20)}
-      />
+      <SpaceIcon space={space} size="md" mt={rem(-20)} />
 
       <Text fz="md" fw={500} mt="xs" className={classes.title}>
         {space.name}

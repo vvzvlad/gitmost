@@ -16,8 +16,8 @@ permissions:
 
 env:
   VERSION: ${{ inputs.version || github.ref_name }}
-  IMAGE: ghcr.io/vvzvlad/gitmost
-  AI_AGENT_ROLES_CATALOG_URL: https://raw.githubusercontent.com/vvzvlad/gitmost/main/agent-roles-catalog
+  IMAGE: ghcr.io/dozor-dev-coder/dozor-wiki
+  AI_AGENT_ROLES_CATALOG_URL: https://raw.githubusercontent.com/Dozor-dev-coder/DozoR-WIKI/main/agent-roles-catalog
 
 jobs:
   # Run the reusable test suite first so a failing test blocks the image build.

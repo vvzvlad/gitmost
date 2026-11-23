@@ -83,7 +83,7 @@ export default function AiMcpServers() {
           />
           <Text fw={600}>{t("External tools")}</Text>
           <Badge size="sm" variant="light" color="gray">
-            {t("Gitmost as MCP client")}
+            {t("DozoR WIKI as MCP client")}
           </Badge>
         </Group>
         <Button

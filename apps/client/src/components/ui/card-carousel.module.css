@@ -66,3 +66,23 @@
 .arrowRight {
   right: -14px;
 }
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .arrowLeft {
+    left: 2px;
+  }
+
+  .arrowRight {
+    right: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track {
+    scroll-behavior: auto;
+  }
+
+  .arrow {
+    transition: none;
+  }
+}

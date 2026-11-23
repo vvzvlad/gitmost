@@ -102,7 +102,7 @@ export default function ShareAiWidget({
   if (!open) {
     return (
       // Offset 80px from the bottom so the FAB stacks ABOVE the bottom-right
-      // "Powered by Gitmost" branding button (share-branding.tsx) without
+      // "Powered by DozoR WIKI" branding button (share-branding.tsx) without
       // overlapping it.
       <Affix position={{ bottom: 80, right: 20 }}>
         <Tooltip label={t("Ask AI")} position="left">

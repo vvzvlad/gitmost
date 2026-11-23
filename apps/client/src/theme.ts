@@ -2,8 +2,24 @@ import {
   createTheme,
   CSSVariablesResolver,
   MantineColorsTuple,
+  Menu,
   Tabs,
 } from "@mantine/core";
+
+import classes from "./theme.module.css";
+
+const ocean: MantineColorsTuple = [
+  "#eff7fc",
+  "#dcecf6",
+  "#bddcee",
+  "#92c7e2",
+  "#63afd4",
+  "#3d92bf",
+  "#2479a8",
+  "#166c9d",
+  "#145a82",
+  "#114767",
+];
 
 const blue: MantineColorsTuple = [
   "#e7f3ff",
@@ -32,11 +48,20 @@ const red: MantineColorsTuple = [
 ];
 
 export const theme = createTheme({
+  primaryColor: "ocean",
+  primaryShade: { light: 7, dark: 6 },
+  defaultRadius: "md",
+  respectReducedMotion: true,
   colors: {
+    ocean,
     blue,
     red,
   },
   components: {
+    Menu: Menu.extend({
+      defaultProps: { transitionProps: { transition: "fade", duration: 120 } },
+      classNames: { dropdown: classes.dropdown, item: classes.menuItem },
+    }),
     Tabs: Tabs.extend({
       vars: (theme, props) => ({
         root: {
@@ -68,6 +93,13 @@ export const theme = createTheme({
 
 export const mantineCssResolver: CSSVariablesResolver = (theme) => ({
   variables: {
+    "--wiki-rail": "light-dark(#f3f6f8, #1c2229)",
+    "--wiki-border": "light-dark(#dce3e9, #343e49)",
+    "--wiki-ink": "light-dark(#202a35, #edf2f7)",
+    "--wiki-hover": "light-dark(#e8eef3, #293541)",
+    "--wiki-selected": "light-dark(#e1eff7, #243f52)",
+    "--wiki-selected-ink": "light-dark(#115782, #c2e7ff)",
+    "--wiki-accent": "light-dark(#166c9d, #83c8ee)",
     "--input-error-size": theme.fontSizes.sm,
   },
   light: {
@@ -105,6 +137,8 @@ export const mantineCssResolver: CSSVariablesResolver = (theme) => ({
     "--mantine-color-green-light-color": "#1B5E20",
   },
   dark: {
+    "--mantine-color-dimmed": "#a8b4c1",
+    "--mantine-color-placeholder": "#a8b4c1",
     "--mantine-color-dark-light-color": "var(--mantine-color-gray-4)",
     "--mantine-color-dark-light-hover": "var(--mantine-color-default-hover)",
   },

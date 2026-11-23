@@ -187,6 +187,8 @@ export function releasePageSession(session: PageSession): void {
     destroySession(session);
     return;
   }
+  // Keep the warm document connected without advertising an absent reader/caret.
+  session.remote.awareness?.setLocalState(null);
   session.holder = "parked";
   sessions.delete(session.dbName);
   sessions.set(session.dbName, session);

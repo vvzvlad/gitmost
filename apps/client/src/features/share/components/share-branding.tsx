@@ -1,6 +1,9 @@
 import { Affix, Button } from "@mantine/core";
+import { useTranslation } from "react-i18next";
+import { getAppName } from "@/lib/config";
 
 export default function ShareBranding() {
+  const { t } = useTranslation();
   return (
     // Pinned to the bottom-RIGHT corner. The AI assistant FAB
     // (share-ai-widget.tsx) is stacked ABOVE this with a higher `bottom`
@@ -10,9 +13,10 @@ export default function ShareBranding() {
         variant="default"
         component="a"
         target="_blank"
-        href="https://github.com/vvzvlad/gitmost?ref=public-share"
+        rel="noopener noreferrer"
+        href="https://github.com/Dozor-dev-coder/DozoR-WIKI"
       >
-        Powered by Gitmost
+        {t("Powered by {{appName}}", { appName: getAppName() })}
       </Button>
     </Affix>
   );

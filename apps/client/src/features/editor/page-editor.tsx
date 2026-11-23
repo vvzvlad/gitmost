@@ -1,3 +1,5 @@
+import { usePagePresence } from "./hooks/use-page-presence";
+import editorClasses from "./styles/editor.module.css";
 import "@/features/editor/styles/index.css";
 import React, {
   useCallback,
@@ -741,6 +743,17 @@ export default function PageEditor({
     );
   }, [currentPageEditMode, editor, editable, showStatic, isRemoteConfirmed]);
 
+  usePagePresence(
+    activeSession?.remote,
+    currentUser?.user,
+    isBodyEditable({
+      editable,
+      inEditMode: currentPageEditMode === PageEditMode.Edit,
+      showStatic,
+      isRemoteConfirmed,
+    }),
+  );
+
   // Publish whether dictation can start and, if not, the cause-specific reason
   // the mic button surfaces. Recomputed on the same signals that drive body
   // editability so the tooltip never lies about the current state (#309): in the
@@ -870,20 +883,8 @@ export default function PageEditor({
     <div
       role="status"
       aria-live="polite"
-      className="print-hide"
+      className={`print-hide ${editorClasses.connectingBadge}`}
       data-testid="body-connecting-badge"
-      style={{
-        position: "absolute",
-        top: 0,
-        right: 0,
-        zIndex: 2,
-        padding: "2px 8px",
-        fontSize: "12px",
-        borderRadius: "4px",
-        background: "var(--mantine-color-gray-light)",
-        color: "var(--mantine-color-dimmed)",
-        pointerEvents: "none",
-      }}
     >
       {t("Connecting… (read-only)")}
     </div>

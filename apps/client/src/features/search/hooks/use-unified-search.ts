@@ -16,7 +16,11 @@ export function useUnifiedSearch(
   params: UseUnifiedSearchParams,
   enabled: boolean = true,
 ): UseQueryResult<
-  { items: UnifiedSearchResult[]; related: IPageSearch[] },
+  {
+    items: UnifiedSearchResult[];
+    related: IPageSearch[];
+    attachments: IAttachmentSearch[];
+  },
   Error
 > {
   return useQuery({

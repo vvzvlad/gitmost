@@ -1,6 +1,6 @@
 {
-  "name": "Gitmost",
-  "short_name": "Gitmost",
+  "name": "DozoR WIKI",
+  "short_name": "DozoR WIKI",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0E1117",
@@ -19,7 +19,7 @@
     {
       "src": "icons/app-icon-192x192.png",
       "type": "image/png",
-      "sizes": "180x180 192x192"
+      "sizes": "192x192"
     },
     {
       "src": "icons/app-icon-512x512.png",

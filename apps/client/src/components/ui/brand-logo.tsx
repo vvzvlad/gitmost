@@ -1,4 +1,5 @@
 import { useComputedColorScheme } from "@mantine/core";
+import { getAppName } from "@/lib/config";
 
 type BrandLogoProps = {
   // When true, render the mark only; otherwise render the full lockup (mark + wordmark).
@@ -13,19 +14,14 @@ export function BrandLogo({
   height = 28,
   className,
 }: BrandLogoProps) {
-  // Detect the active color scheme and pick the contrasting ink variant.
-  // "*-light" = light ink for dark backgrounds, "*-dark" = dark ink for light backgrounds.
   const colorScheme = useComputedColorScheme("light");
-  const variant = colorScheme === "dark" ? "light" : "dark";
-
-  const src = markOnly
-    ? `/brand/gitmost-mark-${variant}.svg`
-    : `/brand/gitmost-logo-${variant}.svg`;
+  const variant = colorScheme === "dark" ? "white" : "black";
+  const artwork = markOnly ? "mark" : "logo";
 
   return (
     <img
-      src={src}
-      alt="Gitmost"
+      src={`/brand/dozor-${artwork}-${variant}.svg`}
+      alt={getAppName()}
       className={className}
       draggable={false}
       style={{ height, width: "auto", display: "block", userSelect: "none" }}

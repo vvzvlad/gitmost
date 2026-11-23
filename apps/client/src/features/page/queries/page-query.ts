@@ -26,6 +26,7 @@ import {
 import {
   IMovePage,
   IPage,
+  ICreatePageInput,
   IPageInput,
   SidebarPagesParams,
 } from "@/features/page/types/page.types";
@@ -161,7 +162,7 @@ export function usePageMetaQuery(
 
 export function useCreatePageMutation() {
   const { t } = useTranslation();
-  return useMutation<IPage, Error, Partial<IPageInput>>({
+  return useMutation<IPage, Error, ICreatePageInput>({
     mutationFn: (data) => createPage(data),
     onSuccess: (data) => {
       invalidateOnCreatePage(data);

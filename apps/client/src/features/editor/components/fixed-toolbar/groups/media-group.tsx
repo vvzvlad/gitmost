@@ -66,8 +66,8 @@ export const MediaGroup: FC<Props> = ({ editor, templateMode }) => {
 
   return (
     <Menu shadow="md" position="bottom-start" withArrow={false}>
-      <Menu.Target>
-        <Tooltip label={t("Insert media")} withArrow>
+      <Tooltip label={t("Insert media")} withArrow>
+        <Menu.Target>
           <ActionIcon
             variant="subtle"
             color="dark"
@@ -76,8 +76,8 @@ export const MediaGroup: FC<Props> = ({ editor, templateMode }) => {
           >
             <IconPhoto size={16} />
           </ActionIcon>
-        </Tooltip>
-      </Menu.Target>
+        </Menu.Target>
+      </Tooltip>
       <Menu.Dropdown>
         {!templateMode && (
           <Menu.Item
@@ -85,6 +85,16 @@ export const MediaGroup: FC<Props> = ({ editor, templateMode }) => {
             onClick={() => pickFile(editor, "image/*", true, uploadImageAction)}
           >
             {t("Image")}
+          </Menu.Item>
+        )}
+        {!templateMode && (
+          <Menu.Item
+            leftSection={<IconPhoto size={16} />}
+            onClick={() =>
+              pickFile(editor, ".gif,image/gif", true, uploadImageAction)
+            }
+          >
+            GIF
           </Menu.Item>
         )}
         {!templateMode && (

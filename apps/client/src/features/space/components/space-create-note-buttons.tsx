@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Button, Stack } from "@mantine/core";
-import { IconHourglass, IconPlus } from "@tabler/icons-react";
+import { Button, Menu, Stack } from "@mantine/core";
+import { IconFileText, IconHourglass, IconPlus } from "@tabler/icons-react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useGetSpaceBySlugQuery } from "@/features/space/queries/space-query.ts";
@@ -26,7 +26,9 @@ export default function SpaceCreateNoteButtons() {
   const { handleCreate } = useTreeMutation(space?.id ?? "");
   // Which create action is in flight: drives the per-button spinner and the
   // shared disabled state so a slow create round-trip cannot be double-fired.
-  const [pending, setPending] = useState<"regular" | "temporary" | null>(null);
+  const [pending, setPending] = useState<
+    "regular" | "temporary" | "template" | null
+  >(null);
 
   // Render nothing until the space loads, or when the user cannot manage pages.
   if (!space) return null;
@@ -34,20 +36,60 @@ export default function SpaceCreateNoteButtons() {
     return null;
   }
 
-  const createNote = (temporary: boolean) => {
+  const templates = [
+    {
+      title: t("How-to guide"),
+      sections: [
+        t("Purpose"),
+        t("Prerequisites"),
+        t("Steps"),
+        t("Expected result"),
+        t("Troubleshooting"),
+      ],
+    },
+    {
+      title: t("Meeting notes"),
+      sections: [
+        t("Agenda"),
+        t("Discussion"),
+        t("Decisions"),
+        t("Action items"),
+      ],
+    },
+    {
+      title: t("Knowledge base article"),
+      sections: [
+        t("Summary"),
+        t("When to use this"),
+        t("Details"),
+        t("Related resources"),
+      ],
+    },
+  ];
+
+  const createNote = (
+    kind: "regular" | "temporary" | "template",
+    template?: { title: string; sections: string[] },
+  ) => {
     if (pending) return;
-    setPending(temporary ? "temporary" : "regular");
-    // handleCreate creates the page then navigates away (unmounting this
-    // component); the create mutation already shows a red notification on
-    // failure, so swallow the rejection and just clear the pending flag.
-    handleCreate(null, temporary ? { temporary: true } : undefined)
-      .catch(() => {})
+    setPending(kind);
+    const options = template
+      ? {
+          template: {
+            title: template.title,
+            content: template.sections
+              .map((section) => `## ${section}`)
+              .join("\n\n"),
+          },
+        }
+      : { temporary: kind === "temporary" };
+    handleCreate(null, options)
+      .catch(() => {
+        // The create mutation displays the server error.
+      })
       .finally(() => setPending(null));
   };
 
-  // Two full-width, vertically stacked buttons: a neutral regular note and an
-  // orange-tinted temporary note. Stacking full-width keeps the longer "New
-  // temporary note" label from clipping on narrow mobile widths.
   return (
     <Stack gap="sm">
       <Button
@@ -58,7 +100,7 @@ export default function SpaceCreateNoteButtons() {
         leftSection={<IconPlus size={18} />}
         loading={pending === "regular"}
         disabled={pending !== null}
-        onClick={() => createNote(false)}
+        onClick={() => createNote("regular")}
       >
         {t("New note")}
       </Button>
@@ -70,10 +112,32 @@ export default function SpaceCreateNoteButtons() {
         leftSection={<IconHourglass size={18} />}
         loading={pending === "temporary"}
         disabled={pending !== null}
-        onClick={() => createNote(true)}
+        onClick={() => createNote("temporary")}
       >
         {t("New temporary note")}
       </Button>
+      <Menu position="bottom-start">
+        <Menu.Target>
+          <Button
+            variant="default"
+            leftSection={<IconFileText size={18} />}
+            loading={pending === "template"}
+            disabled={pending !== null}
+          >
+            {t("New from template")}
+          </Button>
+        </Menu.Target>
+        <Menu.Dropdown>
+          {templates.map((template) => (
+            <Menu.Item
+              key={template.title}
+              onClick={() => createNote("template", template)}
+            >
+              {template.title}
+            </Menu.Item>
+          ))}
+        </Menu.Dropdown>
+      </Menu>
     </Stack>
   );
 }

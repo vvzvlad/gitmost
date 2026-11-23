@@ -256,8 +256,6 @@ function PageContent({ pageSlug }: { pageSlug: string | undefined }) {
         slugId={chromeMeta.slugId}
         spaceSlug={urlSpaceSlug ?? ""}
         editable={canEdit}
-        creator={livePage?.creator}
-        contributors={livePage?.contributors}
         canComment={canComment}
         bodyContentPending={isLoading || !livePage}
       />

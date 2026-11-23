@@ -1,5 +1,5 @@
 <div align="center">
-    <h1><b>Gitmost</b></h1>
+    <h1><b>DozoR WIKI</b></h1>
     <p>
         Open-source collaborative wiki and documentation software.
         <br />
@@ -12,9 +12,9 @@
 
 ## About this fork
 
-**Gitmost** is a community fork of [Docmost](https://github.com/docmost/docmost), an open-source
+**DozoR WIKI** is a community fork of [Docmost](https://github.com/docmost/docmost), an open-source
 collaborative wiki and documentation app. It was forked from `docmost/docmost` on June 16, 2026
-and has been modified by the Gitmost contributors since then.
+and has been modified by the upstream contributors since then.
 
 The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Edition (EE) code**:
 
@@ -40,14 +40,14 @@ The goal of the fork is a **100% open, AGPL-only build with no Enterprise-Editio
 | **AI agent chat** | Built-in AI agent chat over your wiki, written from scratch as a community feature — no enterprise license. The agent reads and edits pages on your behalf (scoped to your permissions), with full-text + vector (RAG) search and optional web access via external MCP servers. |
 | **Git synchronization** | Two-way sync of a space with a git repository of Markdown files: edit in the wiki or in git, and `git clone` / `git push` a space over HTTP. Off by default. |
 | **Local-first reading** | Pages open from a copy cached on the device instead of waiting for the server; when the server is unreachable you get that copy read-only with an "offline" banner instead of an error screen. A device that has not confirmed its session with the server for longer than `OFFLINE_GRACE` (default: the session lifetime) erases its cached copy. |
-| **Rebranding** | App logo / name changed from *Docmost* to *Gitmost*. |
+| **Rebranding** | App logo / name changed from *Docmost* to *DozoR WIKI*. |
 | **Compact page tree** | Default page-tree indentation reduced from 16px to 8px per nesting level. |
 | **Persistent page-tree state** | The sidebar page tree remembers which nodes you expanded/collapsed across reloads — saved in the browser (localStorage), scoped per workspace + user so accounts sharing a browser don't clash. Upstream Docmost forgets the tree on every reload. |
 | **CI / images** | Release CI publishes container images to GHCR (`ghcr.io/vvzvlad/gitmost`) using the built-in `GITHUB_TOKEN` instead of Docker Hub. |
 
 ### Embedded MCP server
 
-Gitmost has **its own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
+DozoR WIKI has **its own MCP server** — [docmost-mcp](https://github.com/vvzvlad/docmost-mcp),
 a fork of [MrMartiniMo/docmost-mcp](https://github.com/MrMartiniMo/docmost-mcp) (MIT) that we
 have substantially extended — **built directly into the app** and served at `/mcp`. It exposes
 **55 agent-native tools**: surgical per-block edits (patch / insert / delete by id),
@@ -64,7 +64,7 @@ page. Ours is built around how an agent actually edits: address one block and pa
 *program* the change, instead of round-tripping a ~100 KB document through the model on
 every little fix. And it needs no enterprise license.
 
-| | **Gitmost `/mcp` (our docmost-mcp)** | Docmost's built-in MCP |
+| | **DozoR WIKI `/mcp` (our docmost-mcp)** | Docmost's built-in MCP |
 | --- | :---: | :---: |
 | **Enterprise license** | Not required | Required |
 | **Tools** | 55, agent-native | Coarse (read Markdown, page CRUD, replace whole page) |
@@ -84,7 +84,7 @@ is set on the server, every request must also carry it in the `X-MCP-Token` head
 
 ### AI agent chat
 
-Gitmost ships a **built-in AI agent chat** over your wiki — written from scratch as a
+DozoR WIKI ships a **built-in AI agent chat** over your wiki — written from scratch as a
 community feature, with no enterprise license. Open it from the page header; the agent can
 **read and edit** your workspace on your behalf:
 
@@ -139,11 +139,11 @@ community feature, with no enterprise license. Open it from the page header; the
 
 ## Getting started
 
-Gitmost follows the upstream Docmost setup. See the Docmost
+DozoR WIKI follows the upstream Docmost setup. See the Docmost
 [documentation](https://docmost.com/docs) for self-hosting and development instructions; replace the
 `docmost/docmost` image with `ghcr.io/vvzvlad/gitmost` where applicable.
 
-**Run a single instance.** Do not scale Gitmost horizontally behind a load balancer: stopping
+**Run a single instance.** Do not scale DozoR WIKI horizontally behind a load balancer: stopping
 an AI agent run only reaches the replica that is executing it, and git sync coordinates its
 work inside one process.
 
@@ -154,7 +154,7 @@ options are described in [.env.example](.env.example)):
 
 ```env
 GIT_SYNC_ENABLED=true
-# id of the Gitmost user that changes coming from git are attributed to
+# id of the DozoR WIKI user that changes coming from git are attributed to
 GIT_SYNC_SERVICE_USER_ID=<user id>
 ```
 
@@ -164,7 +164,7 @@ repository of Markdown files and reconciled in both directions: wiki edits becom
 pushed commits become page edits, written through the collaboration layer so they never
 overwrite someone typing on the page. Changes from git carry a "Git sync" badge in page history.
 
-The repository is served over HTTP, authenticated with a Gitmost email and password:
+The repository is served over HTTP, authenticated with a DozoR WIKI email and password:
 
 ```bash
 git clone https://wiki.example.com/git/<space-slug>.git
@@ -206,14 +206,14 @@ compression middleware is applied by proxy configuration, not headers:
 
 ## Migration from Docmost
 
-Gitmost's database schema is a **strict superset** of Docmost's. Gitmost-specific migrations
+DozoR WIKI's database schema is a **strict superset** of Docmost's. DozoR WIKI-specific migrations
 **add** new tables (`page_embeddings`, `ai_provider_credentials`, `ai_mcp_servers`,
 `ai_agent_roles`, `ai_chat_runs`, `share_aliases`, `page_template_references` and a few more)
 and new columns that are either nullable or have a default; they never drop Docmost tables or
 columns. Migrations run automatically on startup, so migrating an existing Docmost instance is
 essentially **two image swaps**.
 
-> ⚠️ **Page icons are reset.** Gitmost uses Lucide icons for pages instead of emoji, and one
+> ⚠️ **Page icons are reset.** DozoR WIKI uses Lucide icons for pages instead of emoji, and one
 > migration clears every emoji page icon — those pages show the default icon until you pick a new
 > one. Apart from rebuilding the full-text search index (for Russian + English morphology), this
 > is the only change migrations make to existing Docmost data.
@@ -274,12 +274,12 @@ provider (e.g. OpenAI `text-embedding-3-*`) to embed every page, you can run a s
 model yourself with Hugging Face
 [Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) (TEI), which
 serves an OpenAI-compatible `/v1/embeddings` endpoint. `intfloat/multilingual-e5-small` is a good
-default: multilingual, 384-dim, and comfortable on CPU (~1–2 GB RAM, 1–2 vCPU). Point Gitmost at it
+default: multilingual, 384-dim, and comfortable on CPU (~1–2 GB RAM, 1–2 vCPU). Point DozoR WIKI at it
 under **Workspace settings → AI → Embeddings**.
 
-### Option A — local (same Docker network as Gitmost)
+### Option A — local (same Docker network as DozoR WIKI)
 
-Run TEI as a container on the network Gitmost is already on. The port is never published, so the
+Run TEI as a container on the network DozoR WIKI is already on. The port is never published, so the
 endpoint stays internal and needs no authentication.
 
 ```yaml
@@ -289,7 +289,7 @@ services:
     container_name: embeddings
     restart: unless-stopped
     networks:
-      - gitmost_net          # same network Gitmost is on
+      - gitmost_net          # same network DozoR WIKI is on
     command:
       - "--model-id"
       - "intfloat/multilingual-e5-small"
@@ -299,13 +299,13 @@ services:
 
 networks:
   gitmost_net:
-    external: true           # the network Gitmost already uses
+    external: true           # the network DozoR WIKI already uses
 
 volumes:
   tei-models:
 ```
 
-Gitmost settings (**Workspace settings → AI → Embeddings**):
+DozoR WIKI settings (**Workspace settings → AI → Embeddings**):
 
 | Field             | Value                             |
 |-------------------|-----------------------------------|
@@ -313,7 +313,7 @@ Gitmost settings (**Workspace settings → AI → Embeddings**):
 | Base URL          | `http://embeddings:80/v1/`        |
 | Embedding API key | — (leave empty)                   |
 
-> `embeddings` is the container name — Gitmost resolves it over DNS inside the Docker network.
+> `embeddings` is the container name — DozoR WIKI resolves it over DNS inside the Docker network.
 > The port is not published, so the endpoint is reachable only by containers on that network and
 > no authorization is required.
 
@@ -364,7 +364,7 @@ volumes:
   tei-models:
 ```
 
-Gitmost settings (**Workspace settings → AI → Embeddings**):
+DozoR WIKI settings (**Workspace settings → AI → Embeddings**):
 
 | Field             | Value                                 |
 |-------------------|---------------------------------------|
@@ -385,9 +385,9 @@ curl -s https://embeddings.example.com/v1/embeddings \
 
 ### Embeddings server notes
 
-- **Vector dimension is 384.** If this Gitmost was previously embedded with a different model
+- **Vector dimension is 384.** If this DozoR WIKI was previously embedded with a different model
   (e.g. `text-embedding-3-large` = 3072-dim), the old pgvector rows won't match the new dimension —
-  clear the existing embeddings / re-index before switching. Gitmost only compares vectors of the
+  clear the existing embeddings / re-index before switching. DozoR WIKI only compares vectors of the
   same dimension, so mixed-dimension rows are silently ignored rather than searched.
 - **First start downloads the weights** (hundreds of MB) from `huggingface.co` into the
   `tei-models` volume; every start after that reads from the volume.
@@ -441,7 +441,7 @@ for the development setup and how to send a change.
 
 ### License
 
-Gitmost is licensed under the open-source AGPL 3.0 license. It is a modified version of
+DozoR WIKI is licensed under the open-source AGPL 3.0 license. It is a modified version of
 Docmost, forked on June 16, 2026. The **Source code** item in the app's user menu links to this
 repository.
 
@@ -455,13 +455,13 @@ The embedded MCP server in `packages/mcp` is based on
 
 ### Trademark
 
-Gitmost is an independent community fork and is not affiliated with, endorsed by or sponsored by
+DozoR WIKI is an independent community fork and is not affiliated with, endorsed by or sponsored by
 Docmost, Inc. "Docmost" is a trademark of Docmost, Inc.; it is used here only to describe where this
 project comes from.
 
 ### Credits
 
-Gitmost is based on [Docmost](https://github.com/docmost/docmost) by the Docmost team. Huge thanks to
+DozoR WIKI is based on [Docmost](https://github.com/docmost/docmost) by the Docmost team. Huge thanks to
 them for the original open-source project.
 
 <img width="100" alt="Crowdin" src="https://github.com/user-attachments/assets/a6c3d352-e41b-448d-b6cd-3fbca3109f07" />

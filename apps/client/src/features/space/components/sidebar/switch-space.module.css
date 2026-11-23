@@ -1,38 +1,54 @@
 .wrapper {
-  width: 100%;
+  min-width: 0;
 }
 
-.grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: rem(6px);
-  padding: rem(4px) var(--mantine-spacing-sm) var(--mantine-spacing-xs);
-  max-height: rem(180px);
-  overflow-y: auto;
-}
-
-.card {
+.section,
+.row {
   display: flex;
   align-items: center;
-  gap: rem(6px);
-  width: rem(120px);
-  padding: rem(6px) rem(8px);
-  border-radius: var(--mantine-radius-sm);
-  border: rem(1px) solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
-  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-7));
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding-inline: 10px;
+  border-radius: 7px;
+  color: var(--wiki-ink);
+  text-decoration: none;
+
+  &:hover {
+    background: var(--wiki-hover);
+  }
+
+  > svg {
+    flex: none;
+  }
+
+  > span:not([data-space-icon]) {
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 }
 
-.card:hover {
-  background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
+.section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--wiki-border);
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mantine-color-dimmed);
 }
 
-.cardActive {
-  border-color: var(--mantine-primary-color-filled);
-  background-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-6));
+.row {
+  font-size: 15px;
 }
 
-.cardName {
-  flex: 1;
-  min-width: 0;
-  color: light-dark(var(--mantine-color-gray-8), var(--mantine-color-dark-0));
+.activeSpace {
+  position: relative;
+}
+
+.activeSpace:hover,
+.activeSpace:focus-within {
+  --wiki-space-actions-opacity: 1;
 }

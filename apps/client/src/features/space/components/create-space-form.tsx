@@ -1,4 +1,13 @@
-import { Group, Box, Button, TextInput, Stack, Textarea, Text } from "@mantine/core";
+import { SpaceAppearancePicker } from "./space-appearance-picker";
+import {
+  Group,
+  Box,
+  Button,
+  TextInput,
+  Stack,
+  Textarea,
+  Text,
+} from "@mantine/core";
 import React, { useEffect } from "react";
 import { useForm } from "@mantine/form";
 import { zod4Resolver } from "mantine-form-zod-resolver";
@@ -10,6 +19,10 @@ import { getSpaceUrl } from "@/lib/config.ts";
 import { useTranslation } from "react-i18next";
 
 const formSchema = z.object({
+  icon: z.string().max(40),
+  iconColor: z
+    .string()
+    .regex(/^$|^#[0-9a-fA-F]{6}$/, "Use a six-digit HEX color"),
   name: z.string().trim().min(2).max(100),
   slug: z
     .string()
@@ -33,6 +46,8 @@ export function CreateSpaceForm() {
     validate: zod4Resolver(formSchema),
     validateInputOnChange: ["slug"],
     initialValues: {
+      icon: "",
+      iconColor: "",
       name: "",
       slug: "",
       description: "",
@@ -54,12 +69,10 @@ export function CreateSpaceForm() {
     }
   }, [form.values.name]);
 
-  const handleSubmit = async (data: {
-    name?: string;
-    slug?: string;
-    description?: string;
-  }) => {
+  const handleSubmit = async (data: FormValues) => {
     const spaceData = {
+      icon: data.icon || null,
+      iconColor: data.iconColor || null,
       name: data.name,
       slug: data.slug,
       description: data.description,
@@ -89,6 +102,18 @@ export function CreateSpaceForm() {
             {t("* indicates required fields")}
           </Text>
           <Stack>
+            <SpaceAppearancePicker
+              name={form.values.name}
+              icon={form.values.icon}
+              color={form.values.iconColor}
+              onIconChange={(value) => form.setFieldValue("icon", value)}
+              onColorChange={(value) => form.setFieldValue("iconColor", value)}
+              error={
+                form.errors.iconColor
+                  ? t("Use a six-digit HEX color")
+                  : undefined
+              }
+            />
             <TextInput
               withAsterisk
               id="name"
@@ -124,7 +149,9 @@ export function CreateSpaceForm() {
           </Stack>
 
           <Group justify="flex-end" mt="md">
-            <Button type="submit">{t("Create")}</Button>
+            <Button type="submit" loading={createSpaceMutation.isPending}>
+              {t("Create")}
+            </Button>
           </Group>
         </form>
       </Box>

@@ -7,17 +7,15 @@
     var(--mantine-color-default-color),
     var(--mantine-color-white)
   );
-  font-size: var(--mantine-font-size-md);
-  line-height: var(--mantine-line-height-xl);
+  font-size: var(--wiki-document-font-size, var(--mantine-font-size-md));
+  line-height: 1.5;
   font-weight: 400;
   width: 100%;
 
-  padding-left: 3rem;
-  padding-right: 3rem;
+  padding-inline: var(--wiki-document-gutter, 3rem);
 
   @media (max-width: $mantine-breakpoint-sm) {
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-inline: var(--wiki-document-gutter, 1rem);
   }
 
   @media print {
@@ -44,6 +42,14 @@
     margin-bottom: 0.25rem;
   }
 
+  > ul:not([data-type]) {
+    padding-inline-start: 2rem;
+
+    > li::marker {
+      color: var(--wiki-accent);
+    }
+  }
+
   ul p,
   ol p {
     margin-top: 0;
@@ -53,16 +59,17 @@
   h1,
   h2,
   h3 {
-    letter-spacing: -0.01em;
-    line-height: 1.2;
-    font-weight: 600;
+    color: var(--wiki-ink);
+    letter-spacing: -0.025em;
+    line-height: 1.24;
+    font-weight: 700;
     margin-bottom: 0;
   }
 
   h1 strong,
   h2 strong,
   h3 strong {
-    font-weight: 600;
+    font-weight: inherit;
   }
 
   h1 {
@@ -71,12 +78,16 @@
   }
 
   h2 {
-    font-size: 1.5rem;
-    margin-top: 1.5rem;
+    font-size: 1.875rem;
+    margin-top: 2rem;
+  }
+
+  > h2 {
+    padding-bottom: 0.15em;
   }
 
   h3 {
-    font-size: 1.25rem;
+    font-size: 1.375rem;
     margin-top: 1.25rem;
   }
 
@@ -109,10 +120,11 @@
   }
 
   blockquote {
-    padding-left: 1rem;
-    border-left: 3px solid
-      light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-4));
-    margin: 0;
+    padding: 0.6em 1em;
+    border-inline-start: 3px solid var(--wiki-accent);
+    border-radius: var(--mantine-radius-sm);
+    background: var(--wiki-rail);
+    margin-inline: 0;
   }
 
   hr {
@@ -281,8 +293,10 @@
 }
 
 .page-title .ProseMirror h1 {
-  font-size: 2.5rem;
+  font-size: clamp(1.875rem, 3vw, 2.75rem);
   font-weight: 700;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
   margin-top: 0;
-  margin-bottom: 0.75em;
+  margin-bottom: 0.28em;
 }

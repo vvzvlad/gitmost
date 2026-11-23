@@ -29,7 +29,6 @@ import {
   getPageTitle,
   sanitizeFileName,
 } from '../../common/helpers';
-import * as path from 'path';
 import { AuditEvent, AuditResource } from '../../common/events/audit-events';
 import {
   AUDIT_SERVICE,
@@ -91,7 +90,7 @@ export class ExportController {
       const fileName =
         sanitizeFileName(page.title || 'untitled', { preserveSpaces: true }) +
         ext;
-      const contentType = getMimeType(path.extname(fileName));
+      const contentType = getMimeType(fileName);
 
       res.headers({
         'Content-Type': contentType,

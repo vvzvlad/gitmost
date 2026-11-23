@@ -1,3 +1,4 @@
+import type { ISpaceSettings } from "@/features/space/types/space.types";
 export type FavoriteType = "page" | "space" | "template";
 
 export type IFavorite = {
@@ -21,6 +22,7 @@ export type IFavorite = {
     name: string;
     slug: string;
     logo: string | null;
+    settings?: ISpaceSettings;
   };
   template?: {
     id: string;

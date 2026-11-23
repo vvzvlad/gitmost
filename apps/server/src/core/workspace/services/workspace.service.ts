@@ -730,7 +730,9 @@ export class WorkspaceService {
     }
 
     if (user.role === newRole) {
-      return user;
+      const { spacePins, ...publicSettings } =
+        (user.settings ?? {}) as Record<string, any>;
+      return { ...user, settings: user.settings ? publicSettings : null };
     }
 
     const workspaceOwnerCount = await this.userRepo.roleCountByWorkspaceId(

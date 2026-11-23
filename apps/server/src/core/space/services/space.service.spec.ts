@@ -168,6 +168,22 @@ describe('SpaceService', () => {
       expect(spaceRepo.updateGitSyncSettings).not.toHaveBeenCalled();
     });
 
+    it('records icon changes and persists a partial appearance without overwriting other settings', async () => {
+      const { svc, spaceRepo, auditService } = buildService({
+        appearance: { icon: 'book', color: '#166c9d' },
+        homePageId: 'home',
+      });
+      const updateAppearanceSettings = jest.fn().mockResolvedValue({});
+      Object.assign(spaceRepo, { updateAppearanceSettings });
+      await svc.updateSpace({ spaceId, icon: 'rocket' } as any, workspaceId);
+      expect(updateAppearanceSettings).toHaveBeenCalledWith(
+        spaceId, workspaceId, { icon: 'rocket' }, expect.anything(),
+      );
+      expect(auditService.log).toHaveBeenCalledWith(expect.objectContaining({
+        changes: { before: { icon: 'book' }, after: { icon: 'rocket' } },
+      }));
+    });
+
     // --- audit delta on the git-sync toggle (test-strategy Module 4 / item #5)
     // updateSpace builds a before/after delta only when a flag's value actually
     // changes, and only logs an audit event when that delta is non-empty. These

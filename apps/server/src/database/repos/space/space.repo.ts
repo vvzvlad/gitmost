@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectKysely } from 'nestjs-kysely';
 import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
-import { dbOrTx } from '@docmost/db/utils';
+import { dbOrTx, jsonbBind } from '@docmost/db/utils';
 import {
   InsertableSpace,
   Space,
@@ -86,6 +86,39 @@ export class SpaceRepo {
       .where('id', '=', spaceId)
       .where('workspaceId', '=', workspaceId)
       .returningAll()
+      .executeTakeFirst();
+  }
+
+  async updateAppearanceSettings(
+    spaceId: string,
+    workspaceId: string,
+    appearance: { icon?: string | null; color?: string | null },
+    trx?: KyselyTransaction,
+  ) {
+    return dbOrTx(this.db, trx)
+      .updateTable('spaces')
+      .set({
+        settings: sql`coalesce(settings, '{}'::jsonb)
+          || jsonb_build_object('appearance', coalesce(settings->'appearance', '{}'::jsonb)
+            || ${jsonbBind(appearance, { preserveEmpty: true })})`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', spaceId)
+      .where('workspaceId', '=', workspaceId)
+      .executeTakeFirst();
+  }
+
+  async setHomePage(spaceId: string, workspaceId: string, pageId: string | null) {
+    return this.db
+      .updateTable('spaces')
+      .set({
+        settings: sql`coalesce(settings, '{}'::jsonb)
+          || jsonb_build_object('homePageId', ${pageId}::text)`,
+        updatedAt: new Date(),
+      })
+      .where('id', '=', spaceId)
+      .where('workspaceId', '=', workspaceId)
+      .returning('id')
       .executeTakeFirst();
   }
 

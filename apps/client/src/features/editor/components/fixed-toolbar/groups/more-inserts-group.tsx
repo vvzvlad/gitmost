@@ -52,8 +52,8 @@ export const MoreInsertsGroup: FC<Props> = ({ editor, templateMode }) => {
 
   return (
     <Menu shadow="md" position="bottom-start" withArrow={false} width={240}>
-      <Menu.Target>
-        <Tooltip label={t("More inserts")} withArrow>
+      <Tooltip label={t("More inserts")} withArrow>
+        <Menu.Target>
           <ActionIcon
             variant="subtle"
             color="dark"
@@ -62,8 +62,8 @@ export const MoreInsertsGroup: FC<Props> = ({ editor, templateMode }) => {
           >
             <IconChevronDown size={16} />
           </ActionIcon>
-        </Tooltip>
-      </Menu.Target>
+        </Menu.Target>
+      </Tooltip>
       <Menu.Dropdown mah={400} style={{ overflowY: "auto" }}>
         <Menu.Label>{t("Advanced")}</Menu.Label>
         <Menu.Item
@@ -155,7 +155,10 @@ export const MoreInsertsGroup: FC<Props> = ({ editor, templateMode }) => {
         >
           Vimeo
         </Menu.Item>
-        <Menu.Item leftSection={<LoomIcon size={16} />} onClick={() => setEmbed("loom")}>
+        <Menu.Item
+          leftSection={<LoomIcon size={16} />}
+          onClick={() => setEmbed("loom")}
+        >
           Loom
         </Menu.Item>
         <Menu.Item
@@ -176,7 +179,10 @@ export const MoreInsertsGroup: FC<Props> = ({ editor, templateMode }) => {
         >
           Typeform
         </Menu.Item>
-        <Menu.Item leftSection={<MiroIcon size={16} />} onClick={() => setEmbed("miro")}>
+        <Menu.Item
+          leftSection={<MiroIcon size={16} />}
+          onClick={() => setEmbed("miro")}
+        >
           Miro
         </Menu.Item>
         <Menu.Item

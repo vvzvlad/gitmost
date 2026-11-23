@@ -54,6 +54,7 @@ import { SpaceTreeRow } from "./space-tree-row";
 interface SpaceTreeProps {
   spaceId: string;
   readOnly: boolean;
+  rowHeight?: number;
 }
 
 export type SpaceTreeApi = {
@@ -63,7 +64,7 @@ export type SpaceTreeApi = {
 };
 
 const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
-  { spaceId, readOnly },
+  { spaceId, readOnly, rowHeight },
   ref,
 ) {
   const { t } = useTranslation();
@@ -400,7 +401,7 @@ const SpaceTree = forwardRef<SpaceTreeApi, SpaceTreeProps>(function SpaceTree(
           renderRow={renderRow}
           onMove={handleMove}
           onToggle={handleToggle}
-          rowHeight={compactTree ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_STANDARD}
+          rowHeight={rowHeight ?? (compactTree ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_STANDARD)}
           readOnly={readOnly}
           disableDrag={disableDragDrop}
           disableDrop={disableDragDrop}

@@ -83,6 +83,10 @@ export interface SidebarPagesParams {
   limit?: number;
 }
 
+export type ICreatePageInput = Partial<IPage> & {
+  format?: "json" | "html" | "markdown";
+};
+
 export interface IPageInput {
   pageId: string;
   title: string;
@@ -102,5 +106,7 @@ export interface IExportPageParams {
 
 export enum ExportFormat {
   HTML = "html",
+  DOCX = "docx",
+  PDF = "pdf",
   Markdown = "markdown",
 }
