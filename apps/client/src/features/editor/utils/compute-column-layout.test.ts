@@ -5,6 +5,15 @@ const COL_MAX = 900;
 const GAP = 16;
 
 describe("computeColumnLayout", () => {
+  it("keeps the article inset stable and clear of the contents panel", () => {
+    const closed = computeColumnLayout(1160, 0, 840, 8, 18);
+    const open = computeColumnLayout(866, 294, 840, 8, 18);
+    expect(closed.left).toBe(18);
+    expect(open.left).toBe(closed.left);
+    expect(open.width).toBe(840);
+    expect(open.left + open.width).toBeLessThanOrEqual(866 - 8);
+  });
+
   it("closed panel reproduces the current centered layout (full width column)", () => {
     // W = closed content width; asideOffset = 0.
     const { left, width } = computeColumnLayout(1400, 0, COL_MAX, GAP);

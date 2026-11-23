@@ -1,6 +1,6 @@
 import {
   IsBoolean,
-  IsIn,
+  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -9,6 +9,8 @@ import {
 export enum ExportFormat {
   HTML = 'html',
   Markdown = 'markdown',
+  DOCX = 'docx',
+  PDF = 'pdf',
 }
 
 export class ExportPageDto {
@@ -17,7 +19,7 @@ export class ExportPageDto {
   pageId: string;
 
   @IsString()
-  @IsIn(['html', 'markdown'])
+  @IsEnum(ExportFormat)
   format: ExportFormat;
 
   @IsOptional()
@@ -35,7 +37,7 @@ export class ExportSpaceDto {
   spaceId: string;
 
   @IsString()
-  @IsIn(['html', 'markdown'])
+  @IsEnum(ExportFormat)
   format: ExportFormat;
 
   @IsOptional()

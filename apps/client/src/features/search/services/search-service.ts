@@ -6,15 +6,21 @@ import {
   IPageSearchResponse,
   ISuggestionResult,
   SearchSuggestionParams,
-} from '@/features/search/types/search.types';
+} from "@/features/search/types/search.types";
 
 // #701: `items` are the real matches; `related` are vector-only semantic
 // neighbours (first page only, not counted as matches).
-export async function searchPage(
-  params: IPageSearchParams,
-): Promise<{ items: IPageSearch[]; related: IPageSearch[] }> {
+export async function searchPage(params: IPageSearchParams): Promise<{
+  items: IPageSearch[];
+  related: IPageSearch[];
+  attachments: IAttachmentSearch[];
+}> {
   const req = await api.post<IPageSearchResponse>("/search", params);
-  return { items: req.data.items, related: req.data.related ?? [] };
+  return {
+    items: req.data.items,
+    related: req.data.related ?? [],
+    attachments: req.data.attachments ?? [],
+  };
 }
 
 export async function searchSuggestions(
@@ -45,6 +51,6 @@ export async function searchShare(params: IPageSearchParams): Promise<{
 export async function searchAttachments(
   params: IPageSearchParams,
 ): Promise<IAttachmentSearch[]> {
-  const req = await api.post<{ items: IAttachmentSearch[] }>("/search-attachments", params);
-  return req.data.items;
+  return (await searchPage({ ...params, includeAttachments: true }))
+    .attachments;
 }

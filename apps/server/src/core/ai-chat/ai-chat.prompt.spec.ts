@@ -47,7 +47,7 @@ describe('buildSystemPrompt role layering', () => {
   it('falls back to the default persona when neither role nor admin set', () => {
     const prompt = buildSystemPrompt({ workspace });
     // Default persona opener.
-    expect(prompt).toContain('You are an AI assistant embedded in Gitmost');
+    expect(prompt).toContain('You are an AI assistant embedded in DozoR WIKI');
     expect(prompt).toContain(SAFETY_MARKER);
   });
 

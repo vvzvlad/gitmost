@@ -102,15 +102,15 @@ describe("sidebar chrome atoms round-trip and migrate", () => {
     expect(typeof w).toBe("number");
   });
 
-  it("garbage / out-of-range sidebarWidth degrades to the default 300", async () => {
+  it("garbage / out-of-range sidebarWidth degrades to the default 296", async () => {
     localStorage.setItem("sidebarWidth", "{{{");
     const store = createStore();
     let mod = await freshSidebar();
-    expect(store.get(mod.sidebarWidthAtom)).toBe(300);
+    expect(store.get(mod.sidebarWidthAtom)).toBe(296);
 
     localStorage.setItem("sidebarWidth", "99999");
     mod = await freshSidebar();
-    expect(createStore().get(mod.sidebarWidthAtom)).toBe(300);
+    expect(createStore().get(mod.sidebarWidthAtom)).toBe(296);
   });
 
   it("blocked site-data does not throw at import and yields defaults", async () => {
@@ -118,7 +118,7 @@ describe("sidebar chrome atoms round-trip and migrate", () => {
       const store = createStore();
       const { desktopSidebarAtom, sidebarWidthAtom } = await freshSidebar();
       expect(store.get(desktopSidebarAtom)).toBe(true);
-      expect(store.get(sidebarWidthAtom)).toBe(300);
+      expect(store.get(sidebarWidthAtom)).toBe(296);
     });
   });
 });

@@ -1,12 +1,9 @@
 import { Spotlight } from "@mantine/spotlight";
 import { IconSearch } from "@tabler/icons-react";
 import { Group, Text, VisuallyHidden } from "@mantine/core";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useDebouncedValue } from "@mantine/hooks";
-import {
-  markOperationStart,
-  measureOperation,
-} from "@/lib/telemetry/vitals";
+import { markOperationStart, measureOperation } from "@/lib/telemetry/vitals";
 import { useTranslation } from "react-i18next";
 import { searchSpotlightStore } from "../constants.ts";
 import { SearchSpotlightFilters } from "./search-spotlight-filters.tsx";
@@ -20,29 +17,25 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [debouncedSearchQuery] = useDebouncedValue(query, 300);
-  const [filters, setFilters] = useState<{
-    spaceId?: string | null;
-    contentType?: string;
-  }>({
-    contentType: "page",
+  const [spaceFilter, setSpaceFilter] = useState<{
+    context?: string;
+    value: string | null;
+  }>();
+  const selectedSpaceId =
+    spaceFilter && spaceFilter.context === spaceId
+      ? spaceFilter.value
+      : spaceId;
+  const [labelId, setLabelId] = useState<string | null>(null);
+  const {
+    data: searchResults,
+    isLoading,
+    isError,
+  } = useUnifiedSearch({
+    query: debouncedSearchQuery,
+    spaceId: selectedSpaceId || undefined,
+    labelId: labelId || undefined,
+    includeAttachments: true,
   });
-
-  // Build unified search params
-  const searchParams = useMemo(() => {
-    const params: any = {
-      query: debouncedSearchQuery,
-      contentType: filters.contentType || "page", // Only used for frontend routing
-    };
-
-    // Handle space filtering - only pass spaceId if a specific space is selected
-    if (filters.spaceId) {
-      params.spaceId = filters.spaceId;
-    }
-
-    return params;
-  }, [debouncedSearchQuery, filters]);
-
-  const { data: searchResults, isLoading, isError } = useUnifiedSearch(searchParams);
 
   // `search_full` — the user's search round-trip: a new non-empty debounced
   // query is the "submit" (mark), and the metric is settled when its results
@@ -68,10 +61,14 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
     <SearchResultItem
       key={result.id}
       result={result}
-      isAttachmentResult={filters.contentType === "attachment"}
-      showSpace={!filters.spaceId}
+      isAttachmentResult={false}
     />
   ));
+
+  const fileItems = (searchResults?.attachments ?? []).map((result) => (
+    <SearchResultItem key={result.id} result={result} isAttachmentResult />
+  ));
+  const matchCount = resultItems.length + fileItems.length;
 
   // #701: semantically similar pages that do NOT match the query — shown apart
   // from the matches and never counted as results.
@@ -80,13 +77,8 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
       key={result.id}
       result={result}
       isAttachmentResult={false}
-      showSpace={!filters.spaceId}
     />
   ));
-
-  const handleFiltersChange = (newFilters: any) => {
-    setFilters(newFilters);
-  };
 
   return (
     <>
@@ -116,8 +108,12 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
           }}
         >
           <SearchSpotlightFilters
-            onFiltersChange={handleFiltersChange}
-            spaceId={spaceId}
+            spaceId={selectedSpaceId}
+            onSpaceChange={(value) =>
+              setSpaceFilter({ context: spaceId, value })
+            }
+            labelId={labelId}
+            onLabelChange={setLabelId}
           />
           {/* #529: operator hint — matches ANY word by default; "…" for an exact
               phrase, +term to require, -term to exclude. */}
@@ -128,24 +124,33 @@ export function SearchSpotlight({ spaceId }: SearchSpotlightProps) {
 
         <VisuallyHidden role="status" aria-live="polite">
           {query.length > 0 && !isLoading
-            ? resultItems.length === 0
+            ? matchCount === 0
               ? t("No results found")
               : // Singular/plural handling so 1 result is not announced as
                 // "1 results found".
-                t("{{count}} result found", { count: resultItems.length })
+                t("{{count}} result found", { count: matchCount })
             : ""}
         </VisuallyHidden>
 
         <Spotlight.ActionsList>
-          {query.length === 0 && resultItems.length === 0 && (
+          {query.length === 0 && matchCount === 0 && (
             <Spotlight.Empty>{t("Start typing to search...")}</Spotlight.Empty>
           )}
 
-          {query.length > 0 && !isLoading && resultItems.length === 0 && (
+          {query.length > 0 && !isLoading && matchCount === 0 && (
             <Spotlight.Empty>{t("No results found...")}</Spotlight.Empty>
           )}
 
           {resultItems.length > 0 && <>{resultItems}</>}
+
+          {fileItems.length > 0 && (
+            <>
+              <Text size="xs" c="dimmed" px="sm" pt="sm" pb={4}>
+                {t("Attachments")}
+              </Text>
+              {fileItems}
+            </>
+          )}
 
           {relatedItems.length > 0 && (
             <>

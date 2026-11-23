@@ -35,6 +35,7 @@ export interface ICurrentUser {
 }
 
 export interface IUserSettings {
+  spacePins?: Record<string, string | null>;
   preferences: {
     fullPageWidth: boolean;
     pageEditMode: string;

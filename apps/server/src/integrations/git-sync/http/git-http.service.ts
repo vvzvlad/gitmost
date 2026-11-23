@@ -45,7 +45,7 @@ import {
   GitHttpServiceKind,
 } from './git-http.helpers';
 
-const WWW_AUTHENTICATE = 'Basic realm="gitmost"';
+const WWW_AUTHENTICATE = 'Basic realm="DozoR WIKI"';
 
 /** The 403 body for a member of a space that contains restricted pages. */
 const RESTRICTED_SPACE_MESSAGE =

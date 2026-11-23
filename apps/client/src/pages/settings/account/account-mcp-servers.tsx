@@ -114,7 +114,7 @@ export default function AccountMcpServers() {
               />
               <Text fw={600}>{t("My external tools")}</Text>
               <Badge size="sm" variant="light" color="gray">
-                {t("Gitmost as MCP client")}
+                {t("DozoR WIKI as MCP client")}
               </Badge>
             </Group>
             <Button

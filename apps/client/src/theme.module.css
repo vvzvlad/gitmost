@@ -1,0 +1,19 @@
+.dropdown {
+  padding: 5px;
+  border: 1px solid var(--wiki-border);
+  border-radius: var(--mantine-radius-md);
+  box-shadow: 0 12px 32px light-dark(rgb(30 42 55 / 14%), rgb(0 0 0 / 38%));
+}
+
+.menuItem {
+  min-height: 32px;
+  border-radius: var(--mantine-radius-sm);
+
+  @media (prefers-reduced-motion: no-preference) {
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+
+  &[data-hovered]:not([data-disabled]) {
+    background: var(--wiki-hover);
+  }
+}

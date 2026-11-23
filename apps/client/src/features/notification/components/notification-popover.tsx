@@ -99,8 +99,8 @@ export function NotificationPopover() {
               opened={filterMenuOpened}
               onChange={setFilterMenuOpened}
             >
-              <Menu.Target>
-                <Tooltip label={t("Filter")} withArrow>
+              <Tooltip label={t("Filter")} withArrow>
+                <Menu.Target>
                   <ActionIcon
                     variant="subtle"
                     color="dark"
@@ -109,8 +109,8 @@ export function NotificationPopover() {
                   >
                     <IconFilter size={16} />
                   </ActionIcon>
-                </Tooltip>
-              </Menu.Target>
+                </Menu.Target>
+              </Tooltip>
               <Menu.Dropdown>
                 <Menu.Label>{t("Filter")}</Menu.Label>
                 <Menu.Item
@@ -139,8 +139,8 @@ export function NotificationPopover() {
               opened={moreMenuOpened}
               onChange={setMoreMenuOpened}
             >
-              <Menu.Target>
-                <Tooltip label={t("More options")} withArrow>
+              <Tooltip label={t("More options")} withArrow>
+                <Menu.Target>
                   <ActionIcon
                     variant="subtle"
                     color="dark"
@@ -149,8 +149,8 @@ export function NotificationPopover() {
                   >
                     <IconDots size={16} />
                   </ActionIcon>
-                </Tooltip>
-              </Menu.Target>
+                </Menu.Target>
+              </Tooltip>
               <Menu.Dropdown>
                 <Menu.Item
                   leftSection={<IconChecks size={16} />}

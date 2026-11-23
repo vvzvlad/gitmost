@@ -74,10 +74,7 @@ import {
   FootnoteDefinition,
   Code,
 } from "@docmost/editor-ext";
-import {
-  randomElement,
-  userColors,
-} from "@/features/editor/extensions/utils.ts";
+import { participantColor } from "../page-presence";
 import { IUser } from "@/features/user/types/user.types.ts";
 import {
   createImageHandle,
@@ -622,7 +619,8 @@ export const collabExtensions: CollabExtensions = (provider, user) => [
     provider,
     user: {
       name: user.name,
-      color: randomElement(userColors),
+      id: user.id,
+      color: participantColor(user.id),
     },
   }),
   // #251 — emit an intentional-clear signal to the server when the user

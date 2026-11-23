@@ -5,6 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Readable } from 'stream';
+import { sql } from 'kysely';
+import {
+  DocumentExtractionBusyError,
+  extractDocument,
+  INDEXABLE_DOCUMENT_EXTENSIONS,
+  MAX_DOCUMENT_FILE_BYTES,
+} from '../../../integrations/documents/document-extract';
 import { StorageService } from '../../../integrations/storage/storage.service';
 import { MultipartFile } from '@fastify/multipart';
 import {
@@ -27,6 +34,9 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { QueueJob, QueueName } from '../../../integrations/queue/constants';
 import { Queue } from 'bullmq';
 import { createByteCountingStream } from '../../../common/helpers/utils';
+
+const BACKFILL_BATCH_SIZE = 100;
+const INDEX_READ_TIMEOUT_MS = 15_000;
 
 @Injectable()
 export class AttachmentService {
@@ -98,6 +108,8 @@ export class AttachmentService {
       if (isUpdate) {
         attachment = await this.attachmentRepo.updateAttachment(
           {
+            textContent: null,
+            tsv: null,
             fileSize: preparedFile.fileSize,
             updatedAt: new Date(),
           },
@@ -116,8 +128,9 @@ export class AttachmentService {
         });
       }
 
-      // Only index PDFs and DOCX files
-      if (['.pdf', '.docx'].includes(attachment.fileExt.toLowerCase())) {
+      if (
+        INDEXABLE_DOCUMENT_EXTENSIONS.includes(attachment.fileExt.toLowerCase())
+      ) {
         await this.attachmentQueue.add(
           QueueJob.ATTACHMENT_INDEX_CONTENT,
           {
@@ -138,6 +151,134 @@ export class AttachmentService {
     }
 
     return attachment;
+  }
+
+  async scheduleDocumentBackfill() {
+    await this.attachmentQueue.add(
+      QueueJob.ATTACHMENT_INDEXING,
+      {},
+      {
+        jobId: 'document-text-backfill-v1',
+        delay: 5000,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 10_000 },
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
+  }
+
+  async enqueueUnindexedDocuments(workspaceId?: string, afterId?: string) {
+    const candidates = await this.db
+      .selectFrom('attachments')
+      .select('id')
+      .where('type', '=', AttachmentType.File)
+      .where('pageId', 'is not', null)
+      .where('deletedAt', 'is', null)
+      .where('textContent', 'is', null)
+      .where(sql<string>`lower(file_ext)`, 'in', INDEXABLE_DOCUMENT_EXTENSIONS)
+      .$if(!!workspaceId, (query) =>
+        query.where('workspaceId', '=', workspaceId),
+      )
+      .$if(!!afterId, (query) => query.where('id', '>', afterId))
+      .orderBy('id')
+      .limit(BACKFILL_BATCH_SIZE)
+      .execute();
+
+    if (!candidates.length) return;
+    const jobs = candidates.map(({ id }) => ({
+      name: QueueJob.ATTACHMENT_INDEX_CONTENT,
+      data: { attachmentId: id } as {
+        attachmentId?: string;
+        workspaceId?: string;
+        afterId?: string;
+      },
+      opts: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 10_000 },
+        removeOnComplete: true,
+      },
+    }));
+
+    if (candidates.length === BACKFILL_BATCH_SIZE) {
+      jobs.push({
+        name: QueueJob.ATTACHMENT_INDEXING,
+        data: { workspaceId, afterId: candidates[candidates.length - 1].id },
+        opts: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 10_000 },
+          removeOnComplete: true,
+        },
+      });
+    }
+    await this.attachmentQueue.addBulk(jobs);
+  }
+
+  async indexDocument(attachmentId: string) {
+    const file = await this.attachmentRepo.findById(attachmentId);
+    const extension = file?.fileExt?.toLowerCase();
+    if (
+      !file?.pageId ||
+      file.deletedAt ||
+      !INDEXABLE_DOCUMENT_EXTENSIONS.includes(extension)
+    )
+      return;
+
+    let text = '';
+    if (Number(file.fileSize) <= MAX_DOCUMENT_FILE_BYTES) {
+      const input = await this.storageService.readStream(file.filePath);
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const timeout = setTimeout(
+        () => input.destroy(new Error('Reading the attachment timed out')),
+        INDEX_READ_TIMEOUT_MS,
+      );
+      try {
+        for await (const chunk of input) {
+          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += data.length;
+          if (size > MAX_DOCUMENT_FILE_BYTES) break;
+          chunks.push(data);
+        }
+      } finally {
+        clearTimeout(timeout);
+        input.destroy();
+      }
+
+      if (size <= MAX_DOCUMENT_FILE_BYTES) {
+        const buffer = Buffer.concat(chunks);
+        if (extension === '.pdf' || extension === '.docx') {
+          try {
+            text = await extractDocument(
+              extension === '.pdf' ? 'pdf' : 'docx',
+              buffer,
+              'search',
+            );
+          } catch (error) {
+            if (error instanceof DocumentExtractionBusyError) throw error;
+            this.logger.warn(
+              `Could not extract attachment ${attachmentId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } else {
+          text = buffer
+            .toString('utf8')
+            .replace(/\u0000/g, '')
+            .slice(0, 100_000);
+        }
+      }
+    }
+
+    await this.db
+      .updateTable('attachments')
+      .set({
+        textContent: text,
+        tsv: sql<string>`to_tsvector('simple', f_unaccent(${text}))`,
+      })
+      .where('id', '=', attachmentId)
+      .where('deletedAt', 'is', null)
+      .where(sql`date_trunc('milliseconds', updated_at)`, '=', file.updatedAt)
+      .execute();
   }
 
   async uploadImage(

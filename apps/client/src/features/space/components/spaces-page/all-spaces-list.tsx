@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import {
   Table,
   Text,
@@ -31,8 +32,6 @@ import SpaceSettingsModal from "@/features/space/components/settings-modal";
 import classes from "./all-spaces-list.module.css";
 import rowClasses from "@/components/ui/clickable-table-row.module.css";
 import clsx from "clsx";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import { AutoTooltipText } from "@/components/ui/auto-tooltip-text.tsx";
 
 function WatchButton({ spaceId, watchedIds, size = 16 }: { spaceId: string; watchedIds: Set<string>; size?: number }) {
@@ -146,14 +145,7 @@ export default function AllSpacesList({
                         wrap="nowrap"
                         onMouseEnter={() => prefetchSpace(space.slug, space.id)}
                       >
-                        <CustomAvatar
-                          name={space.name}
-                          avatarUrl={space.logo}
-                          type={AvatarIconType.SPACE_ICON}
-                          color="initials"
-                          variant="filled"
-                          size="md"
-                        />
+                        <SpaceIcon space={space} size="md" />
                         <div style={{ minWidth: 0, overflow: "hidden", maxWidth: 350 }}>
                           <AutoTooltipText fz="sm" fw={500} lineClamp={1}>
                             {space.name}

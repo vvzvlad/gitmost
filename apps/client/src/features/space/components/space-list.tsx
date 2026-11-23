@@ -1,3 +1,4 @@
+import { SpaceIcon } from "@/features/space/components/space-icon";
 import { Group, Table, Text } from "@mantine/core";
 import React, { useState } from "react";
 import { useGetSpacesQuery } from "@/features/space/queries/space-query.ts";
@@ -6,8 +7,6 @@ import { useDisclosure } from "@mantine/hooks";
 import { formatMemberCount } from "@/lib";
 import { useTranslation } from "react-i18next";
 import Paginate from "@/components/common/paginate.tsx";
-import { CustomAvatar } from "@/components/ui/custom-avatar.tsx";
-import { AvatarIconType } from "@/features/attachments/types/attachment.types.ts";
 import { AutoTooltipText } from "@/components/ui/auto-tooltip-text.tsx";
 import { SearchInput } from "@/components/common/search-input.tsx";
 import NoTableResults from "@/components/common/no-table-results.tsx";
@@ -57,13 +56,7 @@ export default function SpaceList() {
               >
                 <Table.Td>
                   <Group gap="sm" wrap="nowrap">
-                    <CustomAvatar
-                      color="initials"
-                      avatarUrl={space.logo}
-                      type={AvatarIconType.SPACE_ICON}
-                      variant="filled"
-                      name={space.name}
-                    />
+                    <SpaceIcon space={space} />
                     <div style={{ minWidth: 0, overflow: "hidden" }}>
                       <AutoTooltipText fz="sm" fw={500} lineClamp={1}>
                         {space.name}

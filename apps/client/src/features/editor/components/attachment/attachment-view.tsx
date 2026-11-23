@@ -1,19 +1,42 @@
 import { NodeViewProps, NodeViewWrapper } from "@tiptap/react";
-import { Group, Text, Paper, ActionIcon, Loader, Tooltip } from "@mantine/core";
+import {
+  Group,
+  Text,
+  Paper,
+  ActionIcon,
+  Loader,
+  Tooltip,
+  ThemeIcon,
+  Button,
+} from "@mantine/core";
 import { getFileUrl } from "@/lib/config.ts";
-import { IconDownload, IconFileTypePdf, IconPaperclip } from "@tabler/icons-react";
-import { useHover } from "@mantine/hooks";
+import {
+  IconDownload,
+  IconFileTypePdf,
+  IconFileTypeDocx,
+  IconPaperclip,
+  IconExternalLink,
+} from "@tabler/icons-react";
 import { formatBytes } from "@/lib";
 import { useTranslation } from "react-i18next";
 import { useCallback } from "react";
+import classes from "./attachment-view.module.css";
 
 export default function AttachmentView(props: NodeViewProps) {
   const { t } = useTranslation();
-  const { editor, node, getPos, selected } = props;
+  const { editor, node, getPos } = props;
   const { url, name, size, mime, attachmentId, placeholder } = node.attrs;
-  const { hovered, ref } = useHover();
 
-  const isPdf = mime === "application/pdf" || name?.toLowerCase().endsWith(".pdf");
+  const isPdf =
+    mime === "application/pdf" || name?.toLowerCase().endsWith(".pdf");
+
+  const isWord = name?.toLowerCase().endsWith(".docx");
+  const FileIcon = isPdf
+    ? IconFileTypePdf
+    : isWord
+      ? IconFileTypeDocx
+      : IconPaperclip;
+  const fileUrl = url ? getFileUrl(url) : undefined;
 
   const handleEmbedAsPdf = useCallback(() => {
     const pos = getPos();
@@ -40,44 +63,76 @@ export default function AttachmentView(props: NodeViewProps) {
 
   return (
     <NodeViewWrapper>
-      <Paper withBorder p="4px" ref={ref} data-drag-handle>
-        <Group
-          justify="space-between"
-          gap="xl"
-          style={{ cursor: "pointer" }}
-          wrap="nowrap"
-          h={25}
-        >
-          <Group wrap="nowrap" gap="sm" style={{ minWidth: 0, flex: 1 }}>
+      <Paper withBorder className={classes.file} data-drag-handle>
+        <Group wrap="nowrap" gap="sm">
+          <ThemeIcon
+            variant="light"
+            color={isPdf ? "red" : "ocean"}
+            size={40}
+            radius="md"
+            className={classes.fileIcon}
+          >
             {!url && placeholder ? (
-              <Loader size={20} style={{ flexShrink: 0 }} />
+              <Loader size={20} />
             ) : (
-              <IconPaperclip size={20} style={{ flexShrink: 0 }} />
+              <FileIcon size={24} />
             )}
-
-            <Text component="span" size="md" truncate="end" style={{ minWidth: 0 }}>
+          </ThemeIcon>
+          <div className={classes.details}>
+            <Text component="span" className={classes.name} title={name}>
               {!url && placeholder ? t("Uploading {{name}}", { name }) : name}
             </Text>
-
-            <Text component="span" size="sm" c="dimmed" style={{ flexShrink: 0 }}>
+            <Text size="xs" c="dimmed">
               {formatBytes(size)}
             </Text>
-          </Group>
-
-          {url && (selected || hovered) && (
-            <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
+          </div>
+          {fileUrl && (
+            <Group
+              gap={4}
+              wrap="nowrap"
+              className={classes.actions}
+              contentEditable={false}
+            >
               {isPdf && editor.isEditable && (
-                <Tooltip label={t("Embed as PDF")} position="top" withinPortal={false}>
-                  <ActionIcon variant="default" aria-label={t("Embed as PDF")} onClick={handleEmbedAsPdf}>
+                <Tooltip label={t("Embed as PDF")} withinPortal={false}>
+                  <ActionIcon
+                    variant="subtle"
+                    aria-label={t("Embed as PDF")}
+                    onClick={handleEmbedAsPdf}
+                  >
                     <IconFileTypePdf size={18} />
                   </ActionIcon>
                 </Tooltip>
               )}
-              <a href={getFileUrl(url)} target="_blank">
-                <ActionIcon variant="default" aria-label="download file">
-                  <IconDownload size={18} />
-                </ActionIcon>
-              </a>
+              <Tooltip label={t("Open in new tab")} withinPortal={false}>
+                <Button
+                  component="a"
+                  href={fileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="subtle"
+                  aria-label={t("Open in new tab")}
+                  leftSection={<IconExternalLink size={17} />}
+                  size="compact-sm"
+                  className={classes.fileAction}
+                >
+                  <span className={classes.actionLabel}>{t("Open file")}</span>
+                </Button>
+              </Tooltip>
+              <Tooltip label={t("Download attachment")} withinPortal={false}>
+                <Button
+                  component="a"
+                  href={fileUrl}
+                  download={name}
+                  variant="subtle"
+                  aria-label={t("Download attachment")}
+                  leftSection={<IconDownload size={17} />}
+                  size="compact-sm"
+                  className={classes.fileAction}
+                >
+                  <span className={classes.actionLabel}>{t("Download")}</span>
+                </Button>
+              </Tooltip>
             </Group>
           )}
         </Group>

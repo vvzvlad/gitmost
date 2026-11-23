@@ -1,13 +1,14 @@
 .header {
   height: 45px;
   background-color: var(--mantine-color-body);
+  border-bottom: 1px solid var(--wiki-border);
   padding-left: var(--mantine-spacing-md);
   padding-right: var(--mantine-spacing-md);
   position: fixed;
   z-index: 99;
   top: var(--app-shell-header-offset, 0rem);
   inset-inline-start: var(--app-shell-navbar-offset, 0rem);
-  inset-inline-end: var(--app-shell-aside-offset, 0rem);
+  inset-inline-end: 0;
 
   @media (max-width: $mantine-breakpoint-sm) {
     padding-left: var(--mantine-spacing-xs);
@@ -20,8 +21,86 @@
 }
 
 .group {
-  @media (max-width: $mantine-breakpoint-sm) {
-    gap: var(--mantine-spacing-sm);
-    padding-inline: 0 !important;
+  padding-inline: var(--mantine-spacing-md);
+}
+
+.actions {
+  flex-shrink: 0;
+  gap: var(--mantine-spacing-xs);
+  padding-inline-end: var(--mantine-spacing-md);
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .group,
+  .actions {
+    gap: 4px;
+    padding-inline: 0;
+  }
+}
+
+.trail {
+  min-width: 0;
+
+  > nav {
+    min-width: 0;
+  }
+}
+
+.actionTrigger {
+  width: 48px;
+  height: 38px;
+  color: var(--wiki-selected-ink);
+  background: var(--wiki-selected);
+
+  &:hover,
+  &[data-expanded] {
+    color: var(--wiki-selected-ink);
+    background: var(--wiki-hover);
+  }
+}
+
+.dropdown {
+  padding: 8px 12px;
+  max-height: calc(100dvh - 70px);
+  overflow-y: auto;
+
+  /* Mantine renders submenus inside the dropdown so parent and child share focus. */
+  &:has([aria-haspopup="menu"][aria-expanded="true"]) {
+    overflow: visible;
+  }
+
+  [role="menuitem"] {
+    font-size: 15px;
+  }
+}
+
+@media (min-width: $mantine-breakpoint-md) {
+  .header {
+    height: var(--wiki-page-header-height, 45px);
+    padding-inline: 34px 16px;
+  }
+
+  .group,
+  .actions {
+    padding-inline: 0;
+  }
+}
+
+.presenceTrigger {
+  border-radius: 20px;
+  padding: 3px;
+  &:focus-visible {
+    outline: 2px solid var(--wiki-selected-ink);
+    outline-offset: 2px;
+  }
+}
+.presenceAvatar {
+  display: inline-flex;
+  border: 2px solid;
+  border-radius: 50%;
+}
+@media (max-width: $mantine-breakpoint-sm) {
+  .presenceTrigger > div > span:nth-child(n + 2) {
+    display: none;
   }
 }

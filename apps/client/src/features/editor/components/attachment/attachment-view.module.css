@@ -1,0 +1,96 @@
+.file {
+  padding: 12px 14px;
+  border-color: var(--wiki-border);
+  border-radius: 10px;
+  background: var(--mantine-color-body);
+}
+
+.fileIcon,
+.actions {
+  flex-shrink: 0;
+}
+
+.details {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.file:focus-within {
+  border-color: var(--wiki-accent);
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .file {
+    padding: 10px;
+  }
+
+  .fileIcon {
+    display: none;
+  }
+}
+
+@media print {
+  .actions {
+    display: none;
+  }
+}
+
+.file .actions a {
+  border-bottom: 0;
+}
+
+:global(.node-attachment):has(+ :global(.node-attachment)) .file {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+:global(.node-attachment) + :global(.node-attachment) {
+  margin-top: -1px;
+}
+
+:global(.node-attachment) + :global(.node-attachment) .file {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.fileAction {
+  height: 32px;
+  font-weight: 500;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .actionLabel {
+    display: none;
+  }
+
+  .fileAction {
+    width: 32px;
+    padding-inline: 0;
+
+    :global(.mantine-Button-section) {
+      margin: 0;
+    }
+  }
+}
+
+.file .actions a {
+  color: var(--wiki-selected-ink);
+}
+
+:global(.ProseMirror) > :global(.node-attachment):has(+ :global(.node-attachment)) {
+  margin-bottom: 0;
+}
+
+:global(.ProseMirror) > :global(.node-attachment) + :global(.node-attachment) {
+  margin-top: -1px;
+}

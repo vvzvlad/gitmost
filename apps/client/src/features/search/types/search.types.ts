@@ -30,6 +30,7 @@ export interface IPageSearch {
 // list helpers read `items`; these travel alongside for pagination + diagnostics.
 export interface IPageSearchResponse {
   items: IPageSearch[];
+  attachments?: IAttachmentSearch[];
   // #701: vector-only semantic neighbours (not matches, first page only).
   related?: IPageSearch[];
   // Share search only: set when search is disabled on the share (it publishes
@@ -70,6 +71,8 @@ export interface ISuggestionResult {
 
 export interface IPageSearchParams {
   query: string;
+  labelId?: string;
+  includeAttachments?: boolean;
   spaceId?: string;
   shareId?: string;
   // #529 A9: match mode (auto default) + pagination.
@@ -79,23 +82,18 @@ export interface IPageSearchParams {
 }
 
 export interface IAttachmentSearch {
+  snippet: string;
   id: string;
   fileName: string;
   pageId: string;
-  creatorId: string;
-  createdAt: Date;
-  updatedAt: Date;
-  rank: string;
-  highlight: string;
   space: {
     id: string;
     name: string;
     slug: string;
-    icon: string;
   };
   page: {
     id: string;
-    title: string;
+    title: string | null;
     slugId: string;
   };
 }

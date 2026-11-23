@@ -51,7 +51,7 @@ export class ImportController {
     @AuthUser() user: User,
     @AuthWorkspace() workspace: Workspace,
   ) {
-    const validFileExtensions = ['.md', '.html'];
+    const validFileExtensions = ['.md', '.html', '.docx', '.pdf'];
 
     const maxFileSize = bytes('30mb');
 
@@ -64,7 +64,7 @@ export class ImportController {
       this.logger.error(err.message);
       if (err?.statusCode === 413) {
         throw new BadRequestException(
-          `File too large. Exceeds the 10mb import limit`,
+          `File too large. Exceeds the 30 MB import limit`,
         );
       }
     }
@@ -110,6 +110,8 @@ export class ImportController {
     const sourceMap: Record<string, string> = {
       '.md': 'markdown',
       '.html': 'html',
+      '.docx': 'docx',
+      '.pdf': 'pdf',
     };
 
     if (createdPage) {
@@ -168,10 +170,10 @@ export class ImportController {
     const spaceId = file.fields?.spaceId?.value;
     const source = file.fields?.source?.value;
 
-    const validZipSources = ['generic', 'notion'];
+    const validZipSources = ['generic', 'notion', 'confluence'];
     if (!validZipSources.includes(source)) {
       throw new BadRequestException(
-        'Invalid import source. Import source must either be generic or notion.',
+        'Invalid import source. Expected generic, notion, or confluence.',
       );
     }
 

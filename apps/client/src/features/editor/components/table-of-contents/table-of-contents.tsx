@@ -50,21 +50,22 @@ export const TableOfContents: FC<TableOfContentsProps> = (props) => {
   const [activeElement, setActiveElement] = useState<HTMLElement | null>(null);
   const headerPaddingRef = useRef<HTMLDivElement | null>(null);
 
-  const handleScrollToHeading = (position: number) => {
+  const handleScrollToHeading = (heading: HeadingLink) => {
+    const position = heading.position;
+    setActiveElement(heading.element);
     const { view } = props.editor;
 
     const headerOffset = parseInt(
       window.getComputedStyle(headerPaddingRef.current).getPropertyValue("top"),
     );
 
-    const { node } = view.domAtPos(position);
-    const element = node as HTMLElement;
+    const element = heading.element;
     const scrollPosition =
       element.getBoundingClientRect().top + window.scrollY - headerOffset;
 
     window.scrollTo({
       top: scrollPosition,
-      behavior: "smooth",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
     });
 
     const tr = view.state.tr;
@@ -175,6 +176,11 @@ export const TableOfContents: FC<TableOfContentsProps> = (props) => {
     );
   }
 
+  const firstLevel = Math.min(...links.map((link) => link.level));
+  const currentElement = links.some((link) => link.element === activeElement)
+    ? activeElement
+    : links[0]?.element;
+
   return (
     <>
       {props.isShare && (
@@ -186,13 +192,14 @@ export const TableOfContents: FC<TableOfContentsProps> = (props) => {
         {links.map((item, idx) => (
           <Box<"button">
             component="button"
-            onClick={() => handleScrollToHeading(item.position)}
+            onClick={() => handleScrollToHeading(item)}
             key={idx}
+            aria-current={item.element === currentElement ? "location" : undefined}
             className={clsx(classes.link, {
-              [classes.linkActive]: item.element === activeElement,
+              [classes.linkActive]: item.element === currentElement,
             })}
             style={{
-              paddingLeft: `calc(${item.level} * var(--mantine-spacing-md))`,
+              paddingLeft: `${12 + (item.level - firstLevel) * 12}px`,
             }}
           >
             {item.label}

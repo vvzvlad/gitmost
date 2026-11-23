@@ -14,7 +14,7 @@
 
 .node {
     position: relative;
-    border-radius: 4px;
+    border-radius: var(--mantine-radius-md);
     display: flex;
     align-items: center;
     /* Inset the highlight pill by 2px top + 2px bottom inside the full-height
@@ -31,7 +31,7 @@
        second tap, requiring a double-tap to navigate. */
     @media (hover: hover) {
         &:hover {
-            background-color: light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-5));
+            background-color: var(--wiki-hover);
         }
 
         &:hover .actions {
@@ -110,7 +110,7 @@
     position: relative;
     display: flex;
     align-items: center;
-    border-radius: 4px;
+    border-radius: var(--mantine-radius-md);
     /* Fill the full row slot (the <li> is sized to the virtualizer stride) so
        align-items: center can vertically center the inset `.node` pill. */
     height: 100%;
@@ -122,8 +122,8 @@
 
 .node:focus-visible {
     outline: 2px solid light-dark(
-        var(--mantine-color-blue-5),
-        var(--mantine-color-blue-4)
+        var(--mantine-color-ocean-7),
+        var(--mantine-color-ocean-3)
     );
     outline-offset: -2px;
 }
@@ -133,10 +133,24 @@
 }
 
 .node[data-selected="true"] {
-    background-color: light-dark(
-        var(--mantine-color-gray-3),
-        var(--mantine-color-dark-6)
-    );
+    background-color: var(--wiki-selected);
+    color: var(--wiki-selected-ink);
+
+    .text {
+        color: var(--wiki-selected-ink);
+        font-weight: 650;
+    }
+
+    &::before {
+        content: "";
+        position: absolute;
+        inset-block: 3px;
+        inset-inline-start: 0;
+        width: 3px;
+        border-radius: 3px;
+        background: var(--wiki-accent);
+        pointer-events: none;
+    }
 }
 
 .node[data-selected="true"] .actions {
@@ -243,4 +257,19 @@
 
 .dropLine[data-edge="bottom"] {
     bottom: -1px;
+}
+
+
+.leafSpacer {
+    flex: 0 0 22px;
+}
+
+@media (hover: hover) {
+    .node[data-selected="true"] .actions {
+        display: none;
+    }
+
+    .node[data-selected="true"]:is(:hover, :focus-within, :has([data-expanded])) .actions {
+        display: inline-flex;
+    }
 }

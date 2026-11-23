@@ -119,6 +119,12 @@ export class SpaceService {
         creatorId: userId,
         workspaceId: workspaceId,
         slug: createSpaceDto.slug,
+        settings: {
+          appearance: {
+            icon: createSpaceDto.icon ?? null,
+            color: createSpaceDto.iconColor ?? null,
+          },
+        },
       },
       trx,
     );
@@ -253,6 +259,30 @@ export class SpaceService {
           workspaceId,
           'enabled',
           updateSpaceDto.gitSyncEnabled,
+          trx,
+        );
+      }
+
+      const appearance: Record<string, string | null> = {};
+      for (const [field, key] of [
+        ['icon', 'icon'],
+        ['iconColor', 'color'],
+      ] as const) {
+        if (updateSpaceDto[field] !== undefined) {
+          appearance[key] = updateSpaceDto[field];
+          const prev = settingsBefore.appearance?.[key] ?? null;
+          if (prev !== updateSpaceDto[field]) {
+            before[field] = prev;
+            after[field] = updateSpaceDto[field];
+          }
+        }
+      }
+
+      if (Object.keys(appearance).length) {
+        await this.spaceRepo.updateAppearanceSettings(
+          updateSpaceDto.spaceId,
+          workspaceId,
+          appearance,
           trx,
         );
       }

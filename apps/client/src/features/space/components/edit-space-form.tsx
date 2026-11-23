@@ -1,3 +1,4 @@
+import { SpaceAppearancePicker } from "./space-appearance-picker";
 import {
   Group,
   Box,
@@ -18,6 +19,10 @@ import { useTranslation } from "react-i18next";
 import { isGitSyncEnabled } from "@/lib/config.ts";
 
 const formSchema = z.object({
+  icon: z.string().max(40),
+  iconColor: z
+    .string()
+    .regex(/^$|^#[0-9a-fA-F]{6}$/, "Use a six-digit HEX color"),
   name: z.string().min(2).max(100),
   description: z.string().max(500),
   slug: z
@@ -68,17 +73,16 @@ export function EditSpaceForm({ space, readOnly }: EditSpaceFormProps) {
   const form = useForm<FormValues>({
     validate: zod4Resolver(formSchema),
     initialValues: {
+      icon: space.settings?.appearance?.icon ?? "",
+      iconColor: space.settings?.appearance?.color ?? "",
       name: space?.name,
       description: space?.description || "",
       slug: space.slug,
     },
   });
 
-  const handleSubmit = async (values: {
-    name?: string;
-    description?: string;
-    slug?: string;
-  }) => {
+  const handleSubmit = async (values: FormValues) => {
+    if (readOnly) return;
     const spaceData: Partial<ISpace> = {
       spaceId: space.id,
     };
@@ -93,6 +97,9 @@ export function EditSpaceForm({ space, readOnly }: EditSpaceFormProps) {
       spaceData.slug = values.slug;
     }
 
+    if (form.isDirty("icon")) spaceData.icon = values.icon || null;
+    if (form.isDirty("iconColor"))
+      spaceData.iconColor = values.iconColor || null;
     await updateSpaceMutation.mutateAsync(spaceData);
     form.resetDirty();
   };
@@ -102,6 +109,20 @@ export function EditSpaceForm({ space, readOnly }: EditSpaceFormProps) {
       <Box>
         <form onSubmit={form.onSubmit((values) => handleSubmit(values))}>
           <Stack>
+            <SpaceAppearancePicker
+              name={form.values.name}
+              logo={space.logo}
+              icon={form.values.icon}
+              color={form.values.iconColor}
+              onIconChange={(value) => form.setFieldValue("icon", value)}
+              onColorChange={(value) => form.setFieldValue("iconColor", value)}
+              readOnly={readOnly}
+              error={
+                form.errors.iconColor
+                  ? t("Use a six-digit HEX color")
+                  : undefined
+              }
+            />
             <TextInput
               id="name"
               label={t("Name")}
@@ -134,7 +155,11 @@ export function EditSpaceForm({ space, readOnly }: EditSpaceFormProps) {
 
           {!readOnly && (
             <Group justify="flex-end" mt="md">
-              <Button type="submit" disabled={!form.isDirty()}>
+              <Button
+                type="submit"
+                loading={updateSpaceMutation.isPending}
+                disabled={!form.isDirty()}
+              >
                 {t("Save")}
               </Button>
             </Group>

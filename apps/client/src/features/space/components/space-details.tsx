@@ -71,7 +71,7 @@ export default function SpaceDetails({ spaceId, readOnly }: SpaceDetailsProps) {
 
           <div style={{ marginBottom: "20px" }}>
             <Text size="sm" fw={500} mb="xs">
-              {t("Icon")}
+              {t("Uploaded space image")}
             </Text>
             <AvatarUploader
               currentImageUrl={space.logo}
@@ -84,6 +84,7 @@ export default function SpaceDetails({ spaceId, readOnly }: SpaceDetailsProps) {
               isLoading={isIconUploading}
               disabled={readOnly}
             />
+            <Text size="xs" c="dimmed" mt="xs">{t("Used when the space appearance is reset")}</Text>
           </div>
 
           <EditSpaceForm space={space} readOnly={readOnly} />

@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add customizable space icons and colors in creation and settings, displayed consistently in navigation, favorites, lists, and destination pickers.
+
+- Show live page participants with matching cursor colors, viewing/editing status, and deduplication across tabs. Clear presence when leaving a cached page.
+
+
+- Space home pages, account-synced page pins, search by label with result paths, and starter templates for new notes.
+- Import Confluence HTML archives, Word documents, and text-based PDFs. Export pages and spaces as DOCX or server-generated PDF.
+- Search the text of PDF, DOCX, Markdown, and plain-text attachments within accessible pages.
+
+### Fixed
+
+- Localized the main menus in Ukrainian and Russian, removed duplicate account and space settings entries, and unified application branding as DozoR WIKI.
+
+- Registered audit services in the collaboration server so it can start.
+
+### Changed
+
+- Rebuilt document screens around the DozoR design with a panoramic cover, editable page icon, author byline, contributor avatars, complete sidebar navigation and account footer, responsive contents panel, and persistent file actions in light and dark themes.
+
+- Applied the DozoR-WIKI branding to application logos, browser metadata, and install icons.
+- Rebuilt the document header, space tree, and page actions in light and dark mode with a blue accent.
+- Kept page actions accessible on narrow screens and moved the connection status clear of document text.
+
 ## [1.0.1] - 2026-10-12
 
 The 1.0.0 code with release images: the `v1.0.0` tag was pushed, but a failing integration test

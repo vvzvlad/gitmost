@@ -1,3 +1,4 @@
+import type { ISpaceSettings } from "@/features/space/types/space.types";
 import { QueryParams } from "@/lib/types.ts";
 
 export type LabelType = "page" | "space";
@@ -52,6 +53,7 @@ export interface ILabelPageItem {
     name: string;
     slug: string;
     logo: string | null;
+    settings?: ISpaceSettings;
   } | null;
   creator: { id: string; name: string; avatarUrl: string | null } | null;
   labels: { id: string; name: string }[];

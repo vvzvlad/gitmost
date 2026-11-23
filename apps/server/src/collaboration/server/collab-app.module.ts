@@ -1,4 +1,8 @@
 import { Module } from '@nestjs/common';
+import { ClsModule } from 'nestjs-cls';
+import { SessionModule } from '../../core/session/session.module';
+import { MailModule } from '../../integrations/mail/mail.module';
+import { AuditModule } from '../../integrations/audit/audit.module';
 import { AppController } from '../../app.controller';
 import { AppService } from '../../app.service';
 import { EnvironmentModule } from '../../integrations/environment/environment.module';
@@ -25,6 +29,10 @@ import { CollabAccessSubscriber } from '../collab-access-relay';
 
 @Module({
   imports: [
+    ClsModule.forRoot({ global: true, middleware: { mount: true } }),
+    AuditModule,
+    SessionModule,
+    MailModule.forRootAsync({ imports: [EnvironmentModule] }),
     LoggerModule,
     DatabaseModule,
     EnvironmentModule,
