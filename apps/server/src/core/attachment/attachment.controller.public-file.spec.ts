@@ -105,6 +105,23 @@ describe('AttachmentController.getPublicFile — soft-delete re-check', () => {
     );
   });
 
+  it('serves GIF bytes inline with image/gif, preserving the animation stream', async () => {
+    const h = build({ attachment: {
+      ...liveAttachment(), fileName: 'animation.gif', fileExt: '.gif', mimeType: 'image/gif',
+    } });
+    await expect(call(h)).resolves.toBe('file-stream');
+    expect(h.res.headers).toHaveBeenCalledWith(expect.objectContaining({ 'Content-Type': 'image/gif' }));
+    expect(h.res.header).not.toHaveBeenCalledWith('Content-Disposition', expect.anything());
+  });
+
+  it('keeps non-inline files as downloads', async () => {
+    const h = build({ attachment: {
+      ...liveAttachment(), fileName: 'archive.zip', fileExt: '.zip', mimeType: 'application/zip',
+    } });
+    await call(h);
+    expect(h.res.header).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename="archive.zip"');
+  });
+
   it('(b) refuses a soft-deleted attachment with 404 "File not found"', async () => {
     const h = build({
       attachment: { ...liveAttachment(), deletedAt: new Date() },

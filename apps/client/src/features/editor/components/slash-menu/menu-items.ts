@@ -180,7 +180,9 @@ const CommandGroups: SlashMenuGroupedItemsType = {
     {
       title: "Image",
       description: "Upload any image from your device.",
-      searchTerms: ["photo", "picture", "media", "file", "attachment"],
+      searchTerms: [
+        "photo", "picture", "media", "file", "attachment", "gif", "гіф", "гиф",
+      ],
       icon: IconPhoto,
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).run();

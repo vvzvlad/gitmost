@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add GIF insertion in the media menu and direct GIF link pasting, preserve animated clipboard images, and serve GIF attachments inline.
+
 - Add customizable space icons and colors in creation and settings, displayed consistently in navigation, favorites, lists, and destination pickers.
 
 - Show live page participants with matching cursor colors, viewing/editing status, and deduplication across tabs. Clear presence when leaving a cached page.

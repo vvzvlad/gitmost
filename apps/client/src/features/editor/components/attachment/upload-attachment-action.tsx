@@ -1,3 +1,4 @@
+import { isImageFile } from "../image/gif";
 import { handleAttachmentUpload } from "@docmost/editor-ext";
 import { uploadFile } from "@/features/page/services/page-service.ts";
 import { notifications } from "@mantine/notifications";
@@ -19,7 +20,7 @@ export const uploadAttachmentAction = handleAttachmentUpload({
   },
   validateFn: (file, allowMedia: boolean) => {
     if (
-      (file.type.includes("image/") ||
+      (isImageFile(file) ||
         file.type.includes("video/") ||
         file.type === "application/pdf") &&
       !allowMedia

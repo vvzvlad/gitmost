@@ -1,3 +1,4 @@
+import { isImageFile } from "./gif";
 import { handleImageUpload } from "@docmost/editor-ext";
 import { uploadFile } from "@/features/page/services/page-service.ts";
 import { notifications } from "@mantine/notifications";
@@ -18,7 +19,7 @@ export const uploadImageAction = handleImageUpload({
     }
   },
   validateFn: (file) => {
-    if (!file.type.includes("image/")) {
+    if (!isImageFile(file)) {
       return false;
     }
     if (file.size > getFileUploadSizeLimit()) {
